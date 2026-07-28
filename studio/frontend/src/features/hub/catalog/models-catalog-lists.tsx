@@ -285,7 +285,6 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
-  /** Open a downloaded model's full settings page. */
   onOpenModelSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   // Pinned repos surface first regardless of the active sort; the chosen sort

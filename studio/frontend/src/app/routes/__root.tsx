@@ -70,10 +70,9 @@ const CHAT_ONLY_ALLOWED = new Set([
   // Export stays reachable on chat-only hosts so the page can show its own grayed-out reason
   // instead of a silent redirect; it self-gates via export capability, so nothing runs.
   "/export",
-  // Chat-only hosts (Intel Macs, Apple Silicon without MLX, no-GPU boxes) serve
-  // the OpenAI-compatible API exactly like any other host, so the monitor has to
-  // be reachable there. Without this the floating panel's own "Expand" button
-  // and the Settings > API card both redirect to /chat.
+  // Chat-only hosts (Intel Macs, Apple Silicon without MLX, no-GPU boxes) serve the
+  // OpenAI-compatible API like any other host, so the monitor must be reachable
+  // there or the overlay's "Expand" and the Settings > API card redirect to /chat.
   "/api-monitor",
 ]);
 
@@ -177,8 +176,7 @@ function RootLayout() {
   }, [documentTitle]);
 
   // Settings saved before the server-side override map existed live only in this
-  // browser, so an API load would use app defaults while the UI still showed the
-  // model as remembered. Backfill once, after auth.
+  // browser, so an API load would use app defaults. Backfill once, after auth.
   useEffect(() => {
     if (isAuthFlowRoute) {
       return;

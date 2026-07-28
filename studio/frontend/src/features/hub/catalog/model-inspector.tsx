@@ -403,7 +403,7 @@ export type ModelInspectorActions = {
   onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
-  /** Open this model's full settings page, with the quant the card resolved. */
+  /** Open settings with the quant the card resolved. */
   onOpenSettings?: (ggufVariant: string | null) => void;
 };
 

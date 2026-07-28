@@ -30,11 +30,11 @@ import { computeStats } from "./use-api-monitor";
 
 // Live cadence while the panel is on screen.
 const OPEN_POLL_MS = 1500;
-// While closed the poll only has to notice that traffic started, so it backs off.
+// Closed, the poll only has to notice traffic started, so it backs off.
 const IDLE_POLL_MS = 5000;
 // Requests shown in the panel; the rest are one click away on the full page.
 const VISIBLE_ENTRIES = 4;
-// How long the API must be quiet before a dismissed panel will open itself again.
+// Quiet time before a dismissed panel re-arms.
 const REARM_QUIET_MS = 60_000;
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
@@ -90,7 +90,7 @@ function StatCell({
       >
         {value}
       </span>
-      {/* Sentence case: Unsloth metric rows read as words, not headers. */}
+      {/* Sentence case: metric rows read as words, not headers. */}
       <span className="truncate text-ui-11 tracking-nav text-muted-foreground">
         {label}
       </span>
@@ -109,11 +109,10 @@ export function ApiMonitorOverlay(): ReactElement | null {
     ReturnType<typeof getApiMonitor>
   > | null>(null);
 
-  // One loop for both jobs: panel contents while open, traffic watch while
-  // closed. Stands down on the full page, which polls for itself.
+  // One loop for both jobs: panel contents while open, traffic watch while closed.
+  // Stands down on the full page, which polls for itself.
   useEffect(() => {
-    // Opted out and closed: the panel can neither open nor show anything, so
-    // polling would be pure background load on every open Studio window.
+    // Opted out and closed: nothing to open or show, so polling is pure load.
     if (onFullPage || (!autoOpen && !isOpen)) {
       return;
     }
@@ -154,11 +153,11 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);
 
-  // Ids already seen. A set, not "the newest id": finishing moves an entry to
-  // the front, so the head flips without any new traffic.
+  // Ids already seen. A set, not "the newest id": finishing moves an entry to the
+  // front, so the head flips without any new traffic.
   const seenIdsRef = useRef<Set<string>>(new Set());
-  // Seeded on the first response even when empty, so the first request of a
-  // fresh session is not mistaken for history.
+  // Seeded on the first response even when empty, so the first request of a fresh
+  // session is not mistaken for history.
   const seededRef = useRef(false);
   const lastNewEntryAtRef = useRef(0);
 
@@ -169,9 +168,8 @@ export function ApiMonitorOverlay(): ReactElement | null {
     const ids = data.entries.map((entry) => entry.id);
     if (!seededRef.current) {
       seededRef.current = true;
-      // Seed finished requests only. A request that is still running when the
-      // first snapshot lands started while Studio was loading, so it is live
-      // traffic the user has not seen, not history to adopt silently.
+      // Seed finished requests only: one still running at the first snapshot started
+      // while Studio was loading, so it is unseen live traffic, not history.
       seenIdsRef.current = new Set(
         data.entries
           .filter((entry) => entry.status !== "running")
@@ -182,9 +180,8 @@ export function ApiMonitorOverlay(): ReactElement | null {
       }
     }
     const seen = seenIdsRef.current;
-    // Only API-key traffic counts. Studio's own chat goes through these same
-    // endpoints, and this panel is about serving other clients, not about the
-    // request the user is watching stream in front of them.
+    // Only API-key traffic counts: Studio's own chat uses these same endpoints, and
+    // this panel is about serving other clients.
     const hasNewTraffic = data.entries.some(
       (entry) => entry.via_api_key && !seen.has(entry.id),
     );
@@ -199,8 +196,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
     if (!autoOpen || isOpen) {
       return;
     }
-    // A dismissal holds for that burst and re-arms only once the API goes
-    // quiet, so the next request cannot re-open it a second later.
+    // A dismissal holds for the burst and re-arms only once the API goes quiet.
     if (suppressed && quietFor < REARM_QUIET_MS) {
       return;
     }
@@ -247,10 +243,8 @@ export function ApiMonitorOverlay(): ReactElement | null {
             initial={{ opacity: 0, scale: 0.94 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.94 }}
-            /* Panel language borrowed from the sidebar's user menu and the
-               model selector: no hard border, an inset hairline plus a soft
-               drop shadow (menu-soft-surface), a 20px corner, and the heading
-               font throughout. */
+            /* Panel language from the sidebar's user menu and the model selector:
+               menu-soft-surface, a 20px corner, and the heading font throughout. */
             className="menu-soft-surface pointer-events-auto fixed bottom-4 right-4 flex w-[400px] max-w-[calc(100vw-2rem)] cursor-default select-none resize flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0"
           >
             <div className="flex items-center justify-between gap-2 px-1.5 pb-2 pt-0.5">
@@ -302,7 +296,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
               {data?.active_model ?? "No model loaded"}
             </p>
 
-            {/* Metrics on a soft tile, as the Hub and Train pages group readouts. */}
+            {/* Soft tile, as the Hub and Train pages group readouts. */}
             <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 py-2.5 dark:bg-background/45">
               <StatCell
                 label="Live"
@@ -384,7 +378,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
               Expand to full monitor
             </button>
 
-            {/* Closing only silences this burst; this is the permanent off. */}
+            {/* Closing silences this burst; this is the permanent off. */}
             <button
               type="button"
               onClick={() => {

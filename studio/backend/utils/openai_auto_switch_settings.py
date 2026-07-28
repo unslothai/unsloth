@@ -250,24 +250,18 @@ def set_openai_auto_switch(
 # --- Per-model launch config -------------------------------------------------
 #
 # An override is the server-side twin of the UI's per-model config (the browser
-# localStorage map behind features/model-picker/model-config). The UI mirrors
-# every save here so a model loaded by an OpenAI-compatible API request gets the
-# same launch settings a user would get loading it from the picker; without this
-# the API path could only ever apply the two legacy fields below.
+# localStorage map behind features/model-picker/model-config). The UI mirrors every
+# save here so an OpenAI-compatible API load gets the same launch settings the
+# picker would apply, rather than only the two legacy fields below.
 #
-# Legacy entries hold just {llama_extra_args, max_seq_length}; every field is
-# optional and absent means "fall back to the app default", so old entries keep
-# loading correctly. A write is a full replace of the fields it expresses, so the
-# route carries `llama_extra_args` over when the payload omits it (the settings
-# UI has no control for launch flags and must not wipe them).
+# Legacy entries hold just {llama_extra_args, max_seq_length}. Every field is
+# optional and absent means "app default". A write replaces the fields it
+# expresses, so the route carries `llama_extra_args` over when the payload omits it.
 #
-# Known gap: the picker resolves a couple of knobs as "per-model value, else the
-# user's global preference" -- GPU memory mode and speculative decoding, whose
-# globals live in browser localStorage. An override deliberately stores only an
-# explicit per-model choice (so the model keeps following later global changes),
-# and the server cannot see the globals at all. So for a model that follows the
-# global on one of those two, an API load falls back to the app default rather
-# than the user's global. Every other field matches the picker exactly.
+# Known gap: the picker falls back to a global preference for GPU memory mode and
+# speculative decoding, and those globals live in browser localStorage. An override
+# stores only an explicit per-model choice, so an API load of a model that follows
+# the global gets the app default instead. Every other field matches the picker.
 
 # Mirrors _valid_cache_types in core/inference/llama_cpp.py.
 VALID_KV_CACHE_DTYPES = frozenset(
@@ -287,7 +281,7 @@ VALID_SPECULATIVE_TYPES = frozenset(
         "ngram-simple",
     }
 )
-# Only these two consume spec_draft_n_max (mirrors MTP_SPECULATIVE_TYPES in the UI).
+# Only these consume spec_draft_n_max (mirrors MTP_SPECULATIVE_TYPES in the UI).
 MTP_SPECULATIVE_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp"})
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 
@@ -303,12 +297,10 @@ def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
 
 
 def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
-    # bool is a subclass of int, so `gpu_ids: [true, false]` would otherwise pin
-    # the model to GPUs 1 and 0.
+    # bool subclasses int, so `gpu_ids: [true, false]` would pin GPUs 1 and 0.
     if isinstance(value, bool):
         return None
-    # int(1.5) is 1, which would silently turn a fractional context into a
-    # useless one. Only exact integers count.
+    # int(1.5) is 1, which would silently mangle a fractional context.
     if isinstance(value, float) and not value.is_integer():
         return None
     try:
@@ -349,8 +341,7 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
         entry["speculative_type"] = speculative_type
-        # Only meaningful for the MTP modes; storing it otherwise would resurface
-        # in the UI as an edit the loader silently ignores.
+        # MTP-only; storing it otherwise shows an edit the loader ignores.
         if speculative_type in MTP_SPECULATIVE_TYPES:
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
@@ -361,8 +352,8 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
 
     template = payload.get("chat_template_override")
     if isinstance(template, str) and template.strip():
-        # JSON can carry lone surrogates, which encode() rejects outright. Such a
-        # template can never render, so it is dropped like any other bad field.
+        # A lone surrogate from JSON breaks encode(), and such a template can
+        # never render, so drop it like any other bad field.
         try:
             template_bytes = len(template.encode("utf-8"))
         except UnicodeEncodeError:
@@ -370,13 +361,12 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
         if template_bytes <= MAX_CHAT_TEMPLATE_OVERRIDE_BYTES:
             entry["chat_template_override"] = template
 
-    # Only "manual" is a real override: persisting "auto" would pin the model and
-    # stop it following later changes to the global GPU memory preference.
+    # Only "manual" is a real override: "auto" would pin the model and stop it
+    # following the global GPU memory preference.
     if _clean_str(payload.get("gpu_memory_mode"), VALID_GPU_MEMORY_MODES) == "manual":
         entry["gpu_memory_mode"] = "manual"
 
-    # -1 is Auto (llama.cpp --fit owns layer sizing), which is also the default,
-    # so only a pinned count >= 0 is worth storing.
+    # -1 is Auto (llama.cpp --fit), which is the default, so only >= 0 is stored.
     gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 1024)
     if gpu_layers is not None:
         entry["gpu_layers"] = gpu_layers
@@ -387,9 +377,8 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
 
     gpu_ids = payload.get("gpu_ids")
     if isinstance(gpu_ids, (list, tuple)) and gpu_ids:
-        # De-duplicate, preserving order: resolve_requested_gpu_ids rejects a
-        # repeated id outright, so storing [0, 0] would make every later API load
-        # of this model fail with a 400 that the picker never hits.
+        # De-duplicate, preserving order: resolve_requested_gpu_ids rejects a repeat,
+        # so storing [0, 0] would 400 every later API load of this model.
         cleaned_ids: list[int] = []
         for gid in gpu_ids:
             parsed = _bounded_int(gid, minimum = 0, maximum = 1024)
@@ -417,10 +406,8 @@ def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Op
     )
     if manual_auto_layers:
         return override.get("custom_context_length") or 0
-    # max_seq_length wins where both are set. The UI only ever sends it for a
-    # non-GGUF model (a GGUF's context is `custom_context_length`), so in
-    # practice the two never collide from that path; a hand-written or legacy
-    # entry that sets it on a GGUF is honoured, which is this API's contract.
+    # max_seq_length wins where both are set. The UI only sends it for non-GGUF
+    # models, so the two only collide in a hand-written or legacy entry.
     return override.get("max_seq_length") or override.get("custom_context_length")
 
 
@@ -471,10 +458,9 @@ def _looks_like_filesystem_path(model_id: str) -> bool:
     return len(model_id) >= 3 and model_id[1] == ":" and model_id[2] in ("\\", "/")
 
 
-# The three path shapes whose filesystem is case-insensitive, matching the rule
-# the browser applies in features/hub/lib/model-identity.ts. Kept in step with
-# it: the browser folds these before storing, so the two sides have to agree on
-# which paths fold or a stored key becomes unreachable.
+# The three case-insensitive path shapes. Must stay in step with
+# features/hub/lib/model-identity.ts, which folds these before storing, or a
+# stored key becomes unreachable.
 _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _WSL_DRIVE_PATH = re.compile(r"^/mnt/[A-Za-z](?:/|$)")
 
@@ -502,10 +488,9 @@ def _fold_case_insensitive_path(model_id: str) -> Optional[str]:
     return trimmed.casefold()
 
 
-# A quant label may carry a bits-per-weight modifier, because two files at the
-# same base quant are kept distinct by it ("IQ4_XS-3.53bpw"). The two label
-# helpers disagree on whether to keep it, so anything reading a stored key has
-# to accept both forms.
+# A quant label may carry a bits-per-weight modifier ("IQ4_XS-3.53bpw") to keep two
+# files at the same base quant distinct. The two label helpers disagree on whether
+# to keep it, so readers of a stored key must accept both forms.
 _BPW_SUFFIX = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw$", re.IGNORECASE)
 _MAX_QUANT_SUFFIX_LEN = 64
 
@@ -529,13 +514,11 @@ def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
         _BPW_SUFFIX.sub("", tail)
     ):
         return head, tail
-    # A .gguf whose filename holds no recognizable quant token is still labelled
-    # by the scanner, which falls back to the stem, so keys like
-    # "/models/CustomModel.gguf:custommodel" exist. Storage lowercases that
-    # label while the scanner probes with the filename's own casing, so the
-    # comparison is case-insensitive. Requiring the suffix to be exactly that
-    # label is what keeps an ordinary colon out: "/models/foo:bar.gguf" splits
-    # to a head that is not a .gguf at all.
+    # A .gguf with no recognizable quant token is labelled by its stem, so keys like
+    # "/models/CustomModel.gguf:custommodel" exist. Storage lowercases the label
+    # while the scanner keeps the filename casing, hence the case-insensitive
+    # compare. Requiring exactly that label keeps an ordinary colon out:
+    # "/models/foo:bar.gguf" splits to a head that is not a .gguf.
     if not head.lower().endswith(".gguf"):
         return None
     filename = head.replace("\\", "/").rsplit("/", 1)[-1]
@@ -590,12 +573,10 @@ def resolve_model_override_key(model_id: str) -> Optional[str]:
         return model_id
     if not isinstance(model_id, str):
         return None
-    # A POSIX path is case-sensitive and names a different file, so matching
-    # "/models/Foo.gguf" against an entry saved for "/models/foo.gguf" would
-    # replay another model's context and GPU pin. A Windows drive path, a UNC
-    # share and a WSL drive path are not case-sensitive, and the browser folds
-    # exactly those before storing, so refusing to fold them here would leave
-    # every migrated Windows entry unreachable until the user saved it again.
+    # A POSIX path is case-sensitive, so folding "/models/Foo.gguf" onto
+    # "/models/foo.gguf" would replay another model's settings. Windows drive, UNC
+    # and WSL paths are not, and the browser folds exactly those before storing, so
+    # not folding them here would strand every migrated Windows entry.
     if _looks_like_filesystem_path(model_id):
         folded = _fold_case_insensitive_path(model_id)
         if folded is not None:
@@ -603,10 +584,9 @@ def resolve_model_override_key(model_id: str) -> Optional[str]:
             def fold(key: str) -> Optional[str]:
                 return _fold_case_insensitive_path(key)
         else:
-            # POSIX: the path itself stays case-sensitive, but the browser
-            # lowercases the quant suffix while keeping the path casing, so a
-            # migrated "/models/Foo:q4_k_m" has to stay reachable from the
-            # scanner's "/models/Foo:Q4_K_M".
+            # POSIX: the path stays case-sensitive, but the browser lowercases the
+            # quant suffix, so "/models/Foo:q4_k_m" must be reachable from
+            # the scanner's "/models/Foo:Q4_K_M".
             folded = _fold_posix_path_variant(model_id)
 
             def fold(key: str) -> Optional[str]:

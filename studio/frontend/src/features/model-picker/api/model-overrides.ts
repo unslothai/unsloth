@@ -3,13 +3,11 @@
 
 // Server-side mirror of the per-model config.
 //
-// The per-model config in ../model-config/per-model-config.ts lives in browser
-// localStorage, so it only ever applied to loads the browser made. A model loaded
-// by an OpenAI-compatible API request (Model auto-switch) is loaded by the backend
-// with no browser in the loop, which is why an API load used to come up with none
-// of the settings the user had configured. Mirroring every save to the backend's
-// override map closes that gap: routes/inference.py reads it on the auto-switch
-// path and rebuilds the same LoadRequest the picker would have sent.
+// The config in ../model-config/per-model-config.ts lives in browser localStorage,
+// so it only applied to loads the browser made, and an API auto-switch load (no
+// browser in the loop) came up with none of the user's settings. Mirroring every
+// save to the backend's override map closes that gap: routes/inference.py reads it
+// and rebuilds the same LoadRequest the picker would have sent.
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -52,11 +50,9 @@ export interface ApiModelOverride {
 export type ApiModelOverrides = Record<string, ApiModelOverride>;
 
 /**
- * The key one model's config is stored under.
- *
- * Uses the `repo:VARIANT` form an OpenAI request names a quant by, so two quants
- * of the same repo keep separate configs and the backend can match the requested
- * model name directly. Falls back to the bare id when there is no variant.
+ * The key one model's config is stored under: the `repo:VARIANT` form an OpenAI
+ * request names a quant by, so two quants of one repo keep separate configs and the
+ * backend matches the requested name directly. Bare id when there is no variant.
  */
 export function modelOverrideKey(
   modelId: string,
@@ -79,10 +75,9 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
 /**
  * Translate the UI's per-model config into the backend's schema.
  *
- * Only fields the user actually set are sent: the backend reads an absent field
- * as "use the app default", so sending nulls would pin defaults and stop the
- * model following later changes to the global preferences. `null` config means
- * "no saved settings", which clears the entry.
+ * Only fields the user set are sent: the backend reads an absent field as "app
+ * default", so nulls would pin defaults and stop the model following later global
+ * changes. A `null` config means "no saved settings", which clears the entry.
  */
 function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (!config) {
@@ -127,12 +122,10 @@ function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   return payload;
 }
 
-// One in-flight write per model, so writes for the same model commit in the
-// order they were issued. Saving twice quickly, or saving while the one-time
-// backfill is still running, otherwise leaves two independent requests racing:
-// the older response can land last and resurrect the entry the newer one meant
-// to replace or remove, and an API load then applies settings the user has
-// already changed. Different models still overlap.
+// One in-flight write per model, so writes for a model commit in issue order.
+// Otherwise saving twice quickly, or saving during the one-time backfill, races:
+// the older response can land last and resurrect the entry the newer one meant to
+// replace. Different models still overlap.
 const writesByKey = new Map<string, Promise<void>>();
 
 export async function putModelOverride(
@@ -140,10 +133,9 @@ export async function putModelOverride(
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
 ): Promise<void> {
-  // Keyed by the folded identity, not the literal spelling: the backfill sends
-  // a legacy casing while a UI save sends the normalized one, and the backend
-  // resolves both to the same row, so raw strings would open two queues for one
-  // model and let them race again.
+  // Keyed by the folded identity, not the literal spelling: the backfill sends a
+  // legacy casing and a UI save the normalized one, and the backend resolves both
+  // to one row, so raw strings would open two queues and race again.
   const key = modelOverrideKey(
     normalizeModelIdentity(modelId),
     normalizeGgufVariantIdentity(ggufVariant),
@@ -157,8 +149,7 @@ export async function putModelOverride(
   try {
     await write;
   } finally {
-    // Only the last writer clears the slot, so a queue that is still building
-    // keeps its ordering.
+    // Only the last writer clears the slot, so a queue still building keeps order.
     if (writesByKey.get(key) === write) {
       writesByKey.delete(key);
     }
@@ -176,13 +167,12 @@ async function sendModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
-      // Say which operation this is. A save of an all-default config carries no
-      // fields, which is shape-identical to "forget this model", and guessing
-      // wrong wipes launch flags the UI cannot show or restore.
+      // Say which operation this is: an all-default save carries no fields, which is
+      // shape-identical to "forget this model", and guessing wrong wipes launch flags
+      // the UI cannot show or restore.
       remove: config === null,
-      // Launch flags have no UI control, so the backend preserves them when the
-      // field is omitted. Forgetting a model means forgetting all of it, so that
-      // path sends an explicit empty list to clear them.
+      // Launch flags have no UI control, so the backend preserves them when omitted.
+      // Forgetting means forgetting all of it, so that path sends an explicit [].
       // biome-ignore lint/style/useNamingConvention: API schema
       ...(config === null ? { llama_extra_args: [] } : {}),
       ...toApiOverride(config),
@@ -198,11 +188,10 @@ async function sendModelOverride(
 /**
  * Mirror a per-model config save to the backend without blocking the UI.
  *
- * Deliberately best-effort: the localStorage write is the source of truth for
- * this browser and has already happened by the time this runs, so a failed sync
- * must not fail the save or interrupt a model load. It is logged rather than
- * toasted -- the only consequence is that an API-triggered load of this model
- * falls back to app defaults until the next successful save.
+ * Best-effort: the localStorage write is this browser's source of truth and has
+ * already happened, so a failed sync must not fail the save or interrupt a load.
+ * Logged rather than toasted: an API load of this model just falls back to app
+ * defaults until the next successful save.
  */
 export function syncModelOverride(
   modelId: string,

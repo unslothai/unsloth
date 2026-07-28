@@ -4354,20 +4354,14 @@ async def _maybe_auto_switch_model(
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Apply this model's saved launch config so an API-driven swap
-                        # loads it exactly as the picker would: context, KV dtype,
-                        # speculative decoding, chat template and GPU placement, not
-                        # just the two legacy flags. Look the config up under the
-                        # variant-qualified id first (two quants of one repo can carry
-                        # different configs), then the bare ids. Both the advertised
-                        # repo id and the concrete load path are tried: a local folder
-                        # or a non-active HF cache is configured against its path.
-                        # A standalone .gguf needs no quant sub-selection, so the
-                        # resolver reports variant=None for it. The picker still
-                        # keys its config by the quant label it derives from the
-                        # filename (LocalModelInfo.format_variant), which is never
-                        # empty, so those settings live under "<path>:LABEL" and no
-                        # bare key would ever reach them.
+                        # Apply this model's saved launch config so an API swap loads
+                        # it exactly as the picker would. Try variant-qualified keys
+                        # first (two quants of one repo can differ), then bare ids, and
+                        # both the repo id and the load path (a local folder or a
+                        # non-active HF cache is configured against its path).
+                        # A standalone .gguf resolves with variant=None, but the picker
+                        # keys it by the quant label derived from the filename, so its
+                        # settings live under "<path>:LABEL" and no bare key reaches them.
                         file_variant = None
                         if not variant and target_id.lower().endswith(".gguf"):
                             from hub.utils.gguf import extract_quant_label
@@ -4389,7 +4383,7 @@ async def _maybe_auto_switch_model(
                         load_kwargs.update(
                             model_override_load_kwargs(
                                 override,
-                                # variant is set for every GGUF the resolver returns; the
+                                # Set for every GGUF the resolver returns; the
                                 # reload-stash path carries the quant it froze.
                                 is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
                             )
@@ -4398,9 +4392,8 @@ async def _maybe_auto_switch_model(
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids
                         ):
-                            # A pin saved before a GPU was removed, before a
-                            # visibility-mask change, or on another host. Dropping the
-                            # one dead field beats 400ing the whole load.
+                            # Stale pin (GPU removed, mask changed, another host).
+                            # Dropping the one dead field beats 400ing the whole load.
                             load_kwargs.pop("gpu_ids", None)
                             logger.warning(
                                 "Dropping saved gpu_ids %s for %s: not available here.",
@@ -4418,12 +4411,10 @@ async def _maybe_auto_switch_model(
                                 current_request_counted = True,
                             )
                         except HTTPException as exc:
-                            # The pre-flight check above cannot mirror every rule the
-                            # loader applies to gpu_ids (a Vulkan diffusion GGUF refuses
-                            # GPU selection outright, and the rules move). Rather than
-                            # duplicating them, retry once without the saved pin: a
-                            # stale placement preference must never be the reason an
-                            # API request cannot be served.
+                            # The pre-flight check cannot mirror every gpu_ids rule the
+                            # loader applies (a Vulkan diffusion GGUF refuses GPU
+                            # selection outright). Retry once without the saved pin: a
+                            # stale placement preference must never block a request.
                             if not (
                                 exc.status_code == 400
                                 and load_kwargs.get("gpu_ids")
@@ -4719,12 +4710,12 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
 
         is_vulkan = LlamaCppBackend._is_vulkan_backend()
         if get_device() == DeviceType.XPU and not is_vulkan:
-            # gpu_ids is rejected outright on XPU.
+            # Rejected outright on XPU.
             return False
         resolved = resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
         if is_vulkan and resolved:
             # Vulkan ordinals are their own index space, so resolve() only rejects
-            # malformed ones. Presence needs the same ggml probe the load does.
+            # malformed ones; presence needs the ggml probe the load runs.
             binary = LlamaCppBackend._find_llama_server_binary()
             if binary:
                 probed = {

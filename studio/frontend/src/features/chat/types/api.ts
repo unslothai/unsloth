@@ -284,8 +284,8 @@ export interface ApiMonitorEntry {
   model: string;
   prompt?: string;
   reply?: string;
-  // True when the caller used an API key rather than a UI session. The floating
-  // panel keys its auto-open off this so Studio's own chat does not pop it.
+  // True for API-key callers, not UI sessions. The floating panel keys its
+  // auto-open off this so Studio's own chat does not pop it.
   via_api_key: boolean;
   prompt_preview: string;
   reply_preview: string;

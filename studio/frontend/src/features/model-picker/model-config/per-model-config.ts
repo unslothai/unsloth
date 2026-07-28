@@ -627,10 +627,9 @@ export function savePerModelConfig(
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
   /**
-   * Receives models dropped to stay inside the storage budget. Eviction is
-   * silent and still reports success, so without this their server-side
-   * overrides would keep being applied by API loads with nothing in the UI
-   * still showing them or able to forget them.
+   * Receives models dropped to stay inside the storage budget. Eviction is silent
+   * and still reports success, so without this their server-side overrides would
+   * keep being applied with nothing in the UI able to forget them.
    */
   evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
@@ -690,10 +689,9 @@ export function listPerModelConfigs(): {
     if (!modelId) {
       continue;
     }
-    // Never report a future-schema record. loadPerModelConfig refuses to apply
-    // one and eviction refuses to drop one, so handing it to the backfill would
-    // persist this client's partial reading of it server-side and let an
-    // API-triggered load apply settings the same client will not apply locally.
+    // Never report a future-schema record: loadPerModelConfig refuses to apply one
+    // and eviction refuses to drop one, so the backfill would persist this client's
+    // partial reading and let an API load apply what it will not apply locally.
     if (storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION) {
       continue;
     }

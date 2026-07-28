@@ -677,8 +677,8 @@ def test_evicted_local_configs_drop_their_server_overrides():
         in src
     )
 
-    # The eviction path has to actually report what it dropped, decoded back into
-    # a model id and variant rather than the normalized storage key.
+    # The eviction path must report what it dropped, decoded back into a model id
+    # and variant rather than the normalized storage key.
     store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "evicted?: { modelId: string; ggufVariant: string | null }[]" in store
     assert "modelIdFromStorageKey(" in store and "ggufVariantFromStorageKey(" in store
@@ -694,13 +694,13 @@ def test_backfill_compares_server_keys_by_normalized_identity():
     """
     src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "function normalizedOverrideKey(" in src
-    # Folded on both sides: the older `id::variant` local keys are not folded.
+    # Folded on both sides: the older `id::variant` local keys are not.
     assert "const known = new Set(Object.keys(existing).map(normalizedOverrideKey));" in src
     assert "if (known.has(key)) { continue; }" in src
-    # A variant never holds a colon, so the last one splits the key. Splitting on
-    # the first would cut a Windows drive letter off every path id.
+    # A variant never holds a colon, so the last one splits the key; the first would
+    # cut the drive letter off every Windows path id.
     assert 'key.lastIndexOf(":")' in src
-    # Repo ids fold and POSIX paths do not, which is exactly what these do.
+    # Repo ids fold and POSIX paths do not, which is what these do.
     assert "normalizeModelIdentity(" in src and "normalizeGgufVariantIdentity(" in src
 
 
@@ -775,9 +775,8 @@ def test_override_writes_are_ordered_per_model():
     src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert "const writesByKey = new Map<string, Promise<void>>();" in src
     # Keyed by the same override key the server stores under.
-    # Folded, not literal: the backfill uses a legacy casing while a UI save
-    # uses the normalized one, and the backend resolves both to one row, so
-    # raw strings would open two queues for one model and race again.
+    # Folded, not literal: the backfill uses a legacy casing and a UI save the
+    # normalized one, and the backend resolves both to one row.
     assert (
         "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );"
         in src

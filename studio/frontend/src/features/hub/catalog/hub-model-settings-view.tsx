@@ -4,9 +4,8 @@
 // Full-page settings for one model, opened from the Hub.
 //
 // The same controls exist in the chat picker's popover, but a popover is a poor
-// place to work through every knob a model has. This gives them a page, and
-// states plainly that whatever is saved here is what an API load will use --
-// the settings are mirrored server-side by ModelConfigPage's save.
+// place to work through every knob. This gives them a page and says plainly that
+// what is saved here is what an API load uses, mirrored by ModelConfigPage.
 
 import { ModelConfigPage, type ModelPickTarget } from "@/features/model-picker";
 import type { PerModelConfig } from "@/features/model-picker";
@@ -24,7 +23,7 @@ export function HubModelSettingsView({
   compact = false,
 }: {
   target: ModelPickTarget;
-  /** Non-null when this model is the loaded one, so the page can show live values. */
+  /** Non-null when this model is loaded, so the page can show live values. */
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
   onBack: () => void;
@@ -34,8 +33,7 @@ export function HubModelSettingsView({
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  // Mirrors HubDetailView so this view sits at the same measure as the rest of
-  // the Hub rather than introducing a third column width.
+  // Mirrors HubDetailView so this view sits at the Hub's measure.
   const measure = compact
     ? "mx-auto w-full max-w-[860px] px-5 sm:px-5"
     : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
@@ -109,9 +107,8 @@ export function HubModelSettingsView({
               />
             </span>
             <p className="min-w-0 text-ui-12 leading-[1.5] text-muted-foreground">
-              {/* Only what auto-switch can reach is mirrored to the server: it
-                  indexes GGUFs and skips Ollama, so promising the API case for
-                  anything else describes a load that cannot happen. */}
+              {/* Only what auto-switch can reach is mirrored: it indexes GGUFs and
+                  skips Ollama, so anything else cannot be loaded by the API. */}
               {(target.apiLoadable ?? target.isGguf)
                 ? "Saved settings apply everywhere this model loads, including when an OpenAI-compatible API request asks for it."
                 : "Saved settings apply everywhere Studio loads this model."}{" "}
@@ -131,8 +128,7 @@ export function HubModelSettingsView({
               loadedConfig={loadedConfig}
               loadedContextLength={loadedContextLength}
               variant="page"
-              // The page heading above already names the model; the built-in
-              // "Run settings" block would print it a second time.
+              // The page heading already names the model; "Run settings" would repeat it.
               showHeader={false}
             />
           </div>

@@ -83,7 +83,6 @@ export function CardDivider() {
   );
 }
 
-/** Gear that opens a downloaded model's full settings page. */
 export function CardSettingsButton({
   label,
   onClick,

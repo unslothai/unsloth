@@ -132,16 +132,14 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
 
 
-# A quant suffix, as modelOverrideKey builds it. Matched against the loader's own
-# quant pattern rather than a length heuristic: a POSIX path may legitimately
-# contain a colon ("/models/foo:bar.gguf"), and treating "bar.gguf" as a quant
-# would graft an unrelated model's launch flags onto this one.
+# A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant
+# pattern, not a length heuristic: a POSIX path may hold a colon
+# ("/models/foo:bar.gguf") and would otherwise inherit another model's flags.
 _MAX_VARIANT_SUFFIX_LEN = 64
 
-# A local model's id is its filesystem path, optionally with a quant suffix, and
+# A local model's id is its path plus an optional quant suffix, and
 # LoadRequest.model_path is unbounded. A limit under PATH_MAX would 422 the server
-# sync while the local save succeeded, leaving the UI showing settings the API
-# never applies.
+# sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
 
 
@@ -156,9 +154,8 @@ class ModelOverridePayload(BaseModel):
     """
 
     model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
-    # None means "leave the stored value alone": the settings UI has no control
-    # for launch flags, so a save from it must not wipe flags set through this
-    # API. An explicit [] clears them (that is how "forget this model" arrives).
+    # None means "leave the stored value alone": the settings UI has no control for
+    # launch flags and must not wipe them. An explicit [] clears them (forget).
     llama_extra_args: Optional[list[str]] = None
     # ge=1: 0 is not a valid sequence length, and the setter drops a falsy value,
     # so reject it at the boundary instead of accepting then silently discarding it.
@@ -168,25 +165,22 @@ class ModelOverridePayload(BaseModel):
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     tensor_parallel: bool = False
-    # Validated in bytes below, not by max_length: pydantic counts characters,
-    # so a multi-byte template could pass here and then be silently dropped by
-    # the normalizer (which measures UTF-8) while the request still returned 200.
+    # Validated in bytes below, not by max_length: pydantic counts characters, so a
+    # multi-byte template would pass here and be dropped by the UTF-8 normalizer.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     gpu_ids: Optional[list[int]] = None
-    # Explicit intent. A save whose config is entirely default carries no fields
-    # at all, which is indistinguishable from "forget this model" by shape alone.
-    # None keeps the original contract: a bare model_id means remove.
+    # Explicit intent: an all-default save carries no fields, which is shape
+    # identical to "forget this model". None keeps the legacy contract.
     remove: Optional[bool] = None
 
     @field_validator("chat_template_override")
     @classmethod
     def _limit_chat_template_bytes(cls, value: Optional[str]) -> Optional[str]:
-        # Mirrors LoadRequest.normalize_blank_chat_template_override so the same
-        # template is accepted or rejected identically on both paths.
+        # Mirrors LoadRequest.normalize_blank_chat_template_override.
         if value is None:
             return None
         size = chat_template_byte_length(value)
@@ -357,10 +351,8 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
     from utils.openai_auto_switch_settings import split_quant_suffix
 
-    # Must actually look like a quant, not just like a short path segment. The
-    # label may carry a bits-per-weight modifier ("IQ4_XS-3.53bpw"), which keeps
-    # two files at the same base quant distinct, and a .gguf with no recognized
-    # token is labelled by its stem, so both forms count.
+    # Must look like a quant, not just a short path segment. Both a bits-per-weight
+    # modifier ("IQ4_XS-3.53bpw") and a stem fallback label count.
     split = split_quant_suffix(model_id)
     return split[0] if split is not None else None
 
@@ -373,10 +365,8 @@ def update_openai_auto_switch_override(
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
-        # A payload carrying only model_id is the documented "remove", so it
-        # wipes everything. Otherwise it is a real save, and omitted launch flags
-        # are carried over from the stored entry (the settings UI cannot express
-        # them and must not delete them).
+        # Only model_id is the documented "remove". Otherwise omitted launch flags
+        # carry over from the stored entry, since the settings UI cannot express them.
         requested_extra_args = payload.llama_extra_args
         saved_fields = payload.model_dump(
             exclude = {"model_id", "llama_extra_args", "remove"}, exclude_none = True
@@ -390,33 +380,24 @@ def update_openai_auto_switch_override(
         if requested_extra_args is None and not is_removal:
             requested_extra_args = get_model_override(payload.model_id).get("llama_extra_args")
             if requested_extra_args is None:
-                # First per-quant save for a model whose flags were stored under the
-                # bare repo id. Auto-switch prefers the qualified entry, so without
-                # this the flags are silently dropped and no UI can restore them.
+                # First per-quant save for flags stored under the bare repo id.
+                # Auto-switch prefers the qualified entry, so carry them over.
                 bare_id = _bare_model_id(payload.model_id)
                 if bare_id:
                     requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
-        # Not validated on an explicit remove: nothing is stored, so the only
-        # effect would be a 400 that leaves the override in place, which is the
-        # opposite of what remove means. A stale form still carrying a rejected
-        # flag must not be able to block forgetting a model.
+        # Not validated on an explicit remove: nothing is stored, so a 400 would only
+        # leave the override in place. A stale flag must not block forgetting.
         extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
         if payload.remove is True:
-            # An explicit remove wins over anything else in the payload: a stale
-            # form field must not turn "forget this model" into an update that
-            # keeps it. Only the explicit flag short-circuits; the legacy
-            # inferred path still just gates launch-flag carry-over.
-            # Remove the key a load would actually resolve to, not just the
-            # literal one sent: the browser normalizes casing before storing, so
-            # the two can differ and a stale entry would survive forgetting.
+            # An explicit remove wins over any other field in the payload. Remove the
+            # key a load resolves to, not the literal one sent: the browser normalizes
+            # casing before storing, so a stale entry would survive forgetting.
             target_id = resolve_model_override_key(payload.model_id) or payload.model_id
             set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
         else:
-            # Save under the key a load would resolve to, for the same reason the
-            # removal branch does. The browser normalizes casing before storing,
-            # so saving the literal id leaves a second entry for one model, and
-            # two equivalent keys make every other casing ambiguous: the lookup
-            # then matches neither and the model silently loses its settings.
+            # Save under the key a load resolves to, as the removal branch does.
+            # Saving the literal id leaves two keys for one model, which makes every
+            # other casing ambiguous and silently loses the settings.
             target_id = resolve_model_override_key(payload.model_id) or payload.model_id
             set_model_override(
                 target_id,

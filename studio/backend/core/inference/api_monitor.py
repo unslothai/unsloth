@@ -50,9 +50,8 @@ class ApiMonitorEntry:
     started_at: float
     updated_at: float
     subject: Optional[str] = None
-    # True when the caller used an sk-unsloth key rather than a UI session. The
-    # floating panel only opens itself for these: Studio's own chat goes through
-    # the same endpoints, and popping the monitor open mid-chat is noise.
+    # True for sk-unsloth key callers, not UI sessions. The floating panel only
+    # auto-opens for these, so Studio's own chat does not pop it mid-chat.
     via_api_key: bool = False
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
@@ -125,11 +124,8 @@ class ApiMonitor:
         enabled: bool = True,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
-        # Shared rows one subject has cleared. A shared row belongs to everyone,
-        # so dropping it would erase another caller's history, but leaving it
-        # means "Clear log" visibly does nothing to it: the frontend reloads
-        # straight after and the row comes back. Hiding it per subject is the
-        # only thing that is both true for that caller and safe for the others.
+        # Shared rows one subject cleared. Deleting them would erase another
+        # caller's history; keeping them makes "Clear log" look broken on reload.
         self._hidden_shared: dict[str, set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
@@ -153,8 +149,8 @@ class ApiMonitor:
             id = f"apireq_{uuid.uuid4().hex[:12]}",
             endpoint = endpoint,
             method = method,
-            # str(): a raw JSON body can carry any type here, and the field is
-            # rendered in the UI, where a non-string breaks the whole monitor.
+            # str(): a raw JSON body can carry any type, and a non-string
+            # breaks the UI that renders it.
             model = str(model) if model else "default",
             prompt = _trim(prompt, _MAX_PROMPT_CHARS),
             status = "running",
@@ -411,9 +407,7 @@ class ApiMonitor:
                 self._entries.clear()
                 self._hidden_shared.clear()
                 return
-            # A shared row that is still running is a load in progress, not
-            # history, so it stays visible; clearing the log is about what has
-            # already happened.
+            # A running shared row is a load in progress, not history, so it stays.
             hidden = self._hidden_shared.setdefault(subject, set())
             for entry in self._entries:
                 if entry.shared and entry.subject != subject and entry.status != "running":
@@ -446,8 +440,7 @@ class ApiMonitor:
                 kept.append(entry)
                 terminal_seen += 1
         self._entries = kept
-        # The hidden sets only ever name rows that exist, so they stay bounded
-        # by the ring buffer rather than growing for the life of the process.
+        # Keep hidden sets to live rows so they stay bounded by the ring buffer.
         live = {entry.id for entry in kept}
         for subject, hidden in list(self._hidden_shared.items()):
             hidden &= live

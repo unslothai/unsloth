@@ -261,9 +261,8 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
 
 
 def test_api_monitor_clear_is_scoped_to_one_subject():
-    # Every other read on the monitor is subject-scoped. An unscoped clear from
-    # the route would let one caller erase another's history and zero their
-    # active count in the middle of a generation.
+    # Every other read is subject-scoped; an unscoped clear from the route would let
+    # one caller erase another's history mid-generation.
     monitor = ApiMonitor(max_entries = 4)
     alice = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -292,9 +291,8 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
 
 
 def test_api_monitor_records_whether_the_caller_used_an_api_key():
-    # Studio's own chat hits these endpoints with a session JWT. The floating
-    # panel keys its auto-open off this flag, so mislabelling in-app chat as API
-    # traffic pops the panel over the composer mid-conversation.
+    # Studio's own chat hits these endpoints with a session JWT, and the floating
+    # panel keys its auto-open off this flag, so mislabelling it pops the panel.
     monitor = ApiMonitor(max_entries = 4)
     ui = monitor.start(
         endpoint = "/api/inference/chat",
@@ -494,7 +492,7 @@ def test_clear_hides_shared_lifecycle_rows_for_that_caller_only():
     monitor.clear(subject = "alice")
 
     assert monitor.snapshot(subject = "alice") == []
-    # Bob's view is untouched: the row is hidden for alice, not deleted.
+    # Hidden for alice, not deleted, so bob's view is untouched.
     assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
     assert monitor.get(shared, subject = "alice") is None
     assert monitor.get(shared, subject = "bob") is not None

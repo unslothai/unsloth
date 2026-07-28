@@ -4150,9 +4150,7 @@ def test_env_idle_below_floor_is_clamped(monkeypatch):
     assert settings.get_auto_unload_idle_seconds() == 0
 
 
-# ---------------------------------------------------------------------------
 # Per-model launch config: normalization, LoadRequest mapping, key resolution.
-# ---------------------------------------------------------------------------
 
 
 def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
@@ -4178,8 +4176,8 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
 def test_normalize_model_override_rejects_oversized_chat_template():
     small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
     assert small["chat_template_override"] == "{{ bos }}"
-    # The limit is bytes, not characters: a multi-byte template just under the
-    # character limit can still be over the byte limit.
+    # The limit is bytes, not characters, so a multi-byte template just under the
+    # character limit can still be over.
     huge = "é" * settings.MAX_CHAT_TEMPLATE_OVERRIDE_BYTES
     assert "chat_template_override" not in settings.normalize_model_override(
         {"chat_template_override": huge}
@@ -4189,15 +4187,15 @@ def test_normalize_model_override_rejects_oversized_chat_template():
 def test_spec_draft_n_max_only_stored_for_mtp_modes():
     mtp = settings.normalize_model_override({"speculative_type": "mtp", "spec_draft_n_max": 4})
     assert mtp["spec_draft_n_max"] == 4
-    # A non-MTP mode ignores the draft count at load time, so storing it would
-    # show the user an edit that never takes effect.
+    # A non-MTP mode ignores the draft count, so storing it shows an edit that
+    # never takes effect.
     ngram = settings.normalize_model_override({"speculative_type": "ngram", "spec_draft_n_max": 4})
     assert "spec_draft_n_max" not in ngram
 
 
 def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
-    # Manual GPU memory with Auto layers means llama.cpp --fit owns the context,
-    # so the load sends the context pin (or 0), not the stored max seq length.
+    # Manual GPU memory with Auto layers hands the context to llama.cpp --fit, so
+    # the load sends the context pin (or 0), not the stored max seq length.
     override = {"gpu_memory_mode": "manual", "max_seq_length": 8192}
     assert settings.resolve_fit_max_seq_length(override, is_gguf = True) == 0
     assert (
@@ -4228,8 +4226,8 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     assert gguf["gpu_layers"] == 20
     assert gguf["gpu_ids"] == [0, 1]
 
-    # A safetensors model loads through HF auto-placement; inheriting a GGUF GPU
-    # pin here would silently change where the weights land.
+    # A safetensors model loads through HF auto-placement, so a GGUF GPU pin would
+    # silently change where the weights land.
     safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
     assert safetensors["max_seq_length"] == 4096
     assert "gpu_layers" not in safetensors
@@ -4237,14 +4235,14 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     assert "n_cpu_moe" not in safetensors
     assert "gpu_memory_mode" not in safetensors
 
-    # Every key it produces has to be a real LoadRequest field, or the load call
-    # raises TypeError at the moment the user's request arrives.
+    # Every key must be a real LoadRequest field, or the load raises TypeError when
+    # the user's request arrives.
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
 
 
 def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
-    # Settings are saved per quant, so Q4_K_M and Q8_0 of the same repo are
-    # different entries; the bare repo id is only the fallback.
+    # Settings are per quant, so Q4_K_M and Q8_0 of one repo are separate entries
+    # and the bare repo id is only the fallback.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4284,9 +4282,8 @@ def test_auto_switch_falls_back_to_bare_repo_override(monkeypatch):
 
 
 def test_override_route_preserves_launch_flags_across_a_settings_only_update(monkeypatch):
-    # The settings page has no control for llama_extra_args, so saving from it
-    # omits the field. Omitted must mean "leave it alone", or every save from the
-    # UI would quietly wipe flags set elsewhere.
+    # The settings page has no control for llama_extra_args, so it omits the field.
+    # Omitted must mean "leave it alone", or every UI save wipes flags set elsewhere.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4304,8 +4301,8 @@ def test_override_route_preserves_launch_flags_across_a_settings_only_update(mon
     assert entry["llama_extra_args"] == ["--flash-attn"]
     assert entry["max_seq_length"] == 4096
 
-    # An explicit empty list is how the UI says "forget this model", and with no
-    # other fields left that removes the entry outright.
+    # An explicit empty list is the UI's "forget this model", and with no other
+    # fields left it removes the entry outright.
     gone = settings_route.update_openai_auto_switch_override(
         settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", llama_extra_args = []),
         "tester",
@@ -4314,8 +4311,8 @@ def test_override_route_preserves_launch_flags_across_a_settings_only_update(mon
 
 
 def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
-    # A local folder or non-active HF cache resolves to a public repo id plus a
-    # concrete path. Settings saved against the path must still be found.
+    # A local folder or non-active HF cache resolves to a repo id plus a concrete
+    # path, and settings saved against the path must still be found.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4333,8 +4330,8 @@ def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
 
 
 def test_repo_qualified_override_beats_path_qualified(monkeypatch):
-    # Ordering is most specific first, and the public repo id is the name the
-    # user configured against in the picker.
+    # Most specific first, and the public repo id is what the picker configured
+    # against.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4355,10 +4352,9 @@ def test_repo_qualified_override_beats_path_qualified(monkeypatch):
 
 
 def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(monkeypatch):
-    # Flags were stored under the bare repo id before per-quant settings existed.
-    # The first save from the settings page writes repo:QUANT, and auto-switch
-    # then prefers that entry, so the flags must come with it or they are
-    # silently disabled with no UI able to show or restore them.
+    # Flags predating per-quant settings live under the bare repo id. The first save
+    # writes repo:QUANT, which auto-switch prefers, so the flags must come with it
+    # or they are silently disabled with no UI able to restore them.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4374,8 +4370,8 @@ def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(monkeypatch):
 
 
 def test_bare_repo_carry_over_does_not_split_a_windows_path(monkeypatch):
-    # "C:\models\x.gguf" has a colon that is not a variant separator. Splitting
-    # naively would look up "C" and, worse, could graft another model's flags on.
+    # The colon in "C:\models\x.gguf" is not a variant separator: splitting naively
+    # looks up "C" and could graft another model's flags on.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4404,8 +4400,8 @@ def test_windows_path_with_quant_still_carries_over(monkeypatch):
 
 
 def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
-    # A pin saved on a two-GPU box, replayed on a one-GPU box. Before this the
-    # whole load 400d; the contract is that one dead field degrades to defaults.
+    # A two-GPU pin replayed on a one-GPU box used to 400 the whole load; the
+    # contract is that one dead field degrades to defaults.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4455,8 +4451,7 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
 
 
 def test_override_gpu_ids_probe_never_raises(monkeypatch):
-    # The probe runs on the load path, so any hardware error must read as
-    # "unusable" rather than escaping as a 500.
+    # On the load path, so a hardware error must read as "unusable", not a 500.
     import utils.hardware.hardware as hw
 
     def boom(*args, **kwargs):
@@ -4467,9 +4462,8 @@ def test_override_gpu_ids_probe_never_raises(monkeypatch):
 
 
 def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
-    # resolve_requested_gpu_ids only rejects malformed Vulkan ordinals, so
-    # presence needs the same ggml probe the load itself runs. Without it this
-    # helper says "fine" and the load 400s on the check it skipped.
+    # resolve_requested_gpu_ids only rejects malformed Vulkan ordinals, so presence
+    # needs the ggml probe the load runs, or the load 400s on the skipped check.
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
@@ -4485,8 +4479,8 @@ def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
 
 
 def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
-    # No binary means nothing to probe with. Refusing here would drop a valid
-    # pin on every load, so the later path stays the authority.
+    # Nothing to probe with, and refusing would drop a valid pin on every load,
+    # so the later path stays the authority.
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
@@ -4495,9 +4489,8 @@ def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
 
 
 def test_default_save_preserves_flags_instead_of_removing(monkeypatch):
-    # "Remember for this model" is on but every value is default, so the payload
-    # carries no fields. That is shape-identical to a removal, and guessing wrong
-    # wipes launch flags no UI can show or restore.
+    # "Remember for this model" with all-default values sends no fields, which is
+    # shape-identical to a removal; guessing wrong wipes unrecoverable launch flags.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4552,7 +4545,7 @@ def test_remove_false_with_real_fields_saves_normally(monkeypatch):
 
 
 def test_override_lookup_falls_back_to_case_insensitive(monkeypatch):
-    # The browser lowercases ids before storing them, so the backfill writes
+    # The browser lowercases ids, so the backfill writes
     # "unsloth/qwen3-8b-gguf:q4_k_m" while the resolver asks for the repo's real
     # casing. Without this fallback every migrated entry is invisible.
     _mock_override_store(monkeypatch)
@@ -4570,8 +4563,8 @@ def test_exact_override_match_beats_a_case_variant(monkeypatch):
 
 
 def test_ambiguous_case_fallback_matches_nothing(monkeypatch):
-    # Two POSIX paths differing only in case are two different files. Guessing
-    # between them would apply one model's settings to another.
+    # Two POSIX paths differing only in case are two files, so guessing between
+    # them applies one model's settings to another.
     _mock_override_store(monkeypatch)
     settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
     settings.set_model_override("/models/FOO.gguf", max_seq_length = 8192)
@@ -4590,14 +4583,14 @@ def test_request_used_api_key_distinguishes_key_from_session():
     assert inference_route._request_used_api_key(_Req("Bearer eyJhbGciOiJIUzI1NiJ9.x")) is False
     assert inference_route._request_used_api_key(_Req("")) is False
     assert inference_route._request_used_api_key(_Req(None)) is False
-    # A malformed request object must read as "not an API key", never raise, since
-    # this runs on the hot path of every tracked request.
+    # Runs on the hot path of every tracked request, so a malformed request object
+    # must read as "not an API key" rather than raise.
     assert inference_route._request_used_api_key(object()) is False
 
 
 def test_case_fallback_never_applies_to_a_posix_path(monkeypatch):
-    # Two files that differ only in case are two different models on Linux, so a
-    # near miss must load defaults rather than another model's context and GPU pin.
+    # Two files differing only in case are two models on Linux, so a near miss must
+    # load defaults rather than another model's context and GPU pin.
     _mock_override_store(monkeypatch)
     settings.set_model_override("/models/foo.gguf", max_seq_length = 8192, gpu_ids = [1])
     assert settings.get_model_override("/models/Foo.gguf") == {}
@@ -4605,10 +4598,9 @@ def test_case_fallback_never_applies_to_a_posix_path(monkeypatch):
 
 
 def test_case_fallback_does_apply_to_a_windows_path(monkeypatch):
-    # NTFS is case-insensitive, so these name one file, and the browser folds
-    # drive paths before storing. Treating them as two models would leave every
-    # migrated Windows entry unreachable until the user saved it again, which is
-    # the opposite of the POSIX rule and for the opposite reason. The separator
+    # NTFS is case-insensitive, so these name one file and the browser folds drive
+    # paths before storing. Treating them as two would strand every migrated Windows
+    # entry: the opposite of the POSIX rule, for the opposite reason. The separator
     # is interchangeable there too.
     _mock_override_store(monkeypatch)
     settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 8192)
@@ -4625,16 +4617,16 @@ def test_case_fallback_applies_to_unc_and_wsl_drive_paths(monkeypatch):
 
 
 def test_a_plain_posix_path_under_mnt_stays_case_sensitive(monkeypatch):
-    # Only /mnt/<letter> is a WSL drive mount. /mnt/data is an ordinary Linux
-    # mount point and stays case-sensitive like any other POSIX path.
+    # Only /mnt/<letter> is a WSL drive mount; /mnt/data is an ordinary Linux mount
+    # point and stays case-sensitive.
     _mock_override_store(monkeypatch)
     settings.set_model_override("/mnt/data/models/foo.gguf", max_seq_length = 8192)
     assert settings.get_model_override("/mnt/data/models/Foo.gguf") == {}
 
 
 def test_an_ambiguous_windows_case_fallback_still_matches_nothing(monkeypatch):
-    # Two stored keys folding to one leaves no single answer, so the load takes
-    # defaults rather than guessing between them.
+    # Two stored keys folding to one has no single answer, so the load takes
+    # defaults rather than guessing.
     _mock_override_store(monkeypatch)
     settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 1024)
     settings.set_model_override("C:/models/FOO.gguf", max_seq_length = 8192)
@@ -4649,10 +4641,9 @@ def test_case_fallback_still_covers_repo_ids(monkeypatch):
 
 
 def test_explicit_remove_is_not_blocked_by_stale_invalid_flags(monkeypatch):
-    # remove is the operation discriminator, so a form still carrying a rejected
-    # launch flag must not turn "forget this model" into a 400 that leaves the
-    # override in place. Nothing is stored on this path, so there is nothing to
-    # validate.
+    # remove is the operation discriminator, so a rejected launch flag must not turn
+    # "forget this model" into a 400 that leaves the override in place. Nothing is
+    # stored on this path, so there is nothing to validate.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4667,8 +4658,8 @@ def test_explicit_remove_is_not_blocked_by_stale_invalid_flags(monkeypatch):
 
 
 def test_explicit_remove_wins_over_config_fields_in_the_same_payload(monkeypatch):
-    # remove is the operation discriminator, so a stale form field alongside it
-    # must not quietly turn "forget this model" into an update.
+    # remove is the operation discriminator, so a stale field alongside it must not
+    # turn "forget this model" into an update.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4683,8 +4674,8 @@ def test_explicit_remove_wins_over_config_fields_in_the_same_payload(monkeypatch
 
 
 def test_posix_colon_in_a_path_is_not_treated_as_a_quant(monkeypatch):
-    # "/models/foo:bar.gguf" is one valid POSIX filename, not repo + quant.
-    # Splitting it would graft /models/foo's launch flags onto a different model.
+    # "/models/foo:bar.gguf" is one POSIX filename, not repo + quant; splitting it
+    # grafts /models/foo's launch flags onto a different model.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4697,11 +4688,10 @@ def test_posix_colon_in_a_path_is_not_treated_as_a_quant(monkeypatch):
 
 
 def test_unknown_quant_label_on_a_gguf_still_carries_flags_over(monkeypatch):
-    # A .gguf whose filename holds no recognizable quant token is still labelled
-    # by the scanner, which falls back to the stem, so the UI saves under
-    # "/models/custom.gguf:custom". Refusing that suffix dropped the bare entry's
-    # legacy flags on the first save, and auto-switch then prefers the qualified
-    # entry, so nothing was left that could restore them.
+    # A .gguf with no recognizable quant token is labelled by its stem, so the UI
+    # saves under "/models/custom.gguf:custom". Refusing that suffix dropped the bare
+    # entry's legacy flags on the first save, and auto-switch prefers the qualified
+    # entry, so nothing was left to restore them.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4716,10 +4706,10 @@ def test_unknown_quant_label_on_a_gguf_still_carries_flags_over(monkeypatch):
 
 
 def test_bpw_qualified_variants_still_carry_flags_over(monkeypatch):
-    # utils/models/model_config.py keeps a bits-per-weight modifier on the label
-    # so two files at the same base quant stay distinct, and that form reaches
-    # the override keys. The known-quant pattern does not accept it, so the bare
-    # entry was missed and the first qualified save dropped its launch flags.
+    # utils/models/model_config.py keeps a bits-per-weight modifier on the label to
+    # keep two files at the same base quant distinct, and that form reaches the
+    # override keys. The known-quant pattern rejects it, so the bare entry was missed
+    # and the first qualified save dropped its launch flags.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4736,9 +4726,9 @@ def test_bpw_qualified_variants_still_carry_flags_over(monkeypatch):
 
 
 def test_a_posix_path_variant_folds_while_the_path_does_not(monkeypatch):
-    # The browser lowercases the quant but keeps POSIX path casing, so the
-    # migrated key is "/models/Foo:q4_k_m" while the scanner asks for
-    # "/models/Foo:Q4_K_M". The path itself must still be case-sensitive.
+    # The browser lowercases the quant but keeps POSIX path casing, so the migrated
+    # "/models/Foo:q4_k_m" must answer the scanner's "/models/Foo:Q4_K_M" while the
+    # path itself stays case-sensitive.
     _mock_override_store(monkeypatch)
     settings.set_model_override("/models/Foo:q4_k_m", max_seq_length = 8192)
     assert settings.get_model_override("/models/Foo:Q4_K_M")["max_seq_length"] == 8192
@@ -4746,10 +4736,9 @@ def test_a_posix_path_variant_folds_while_the_path_does_not(monkeypatch):
 
 
 def test_an_unknown_gguf_label_is_reachable_in_either_casing(monkeypatch):
-    # A .gguf with no recognizable quant token is labelled by its stem, and v2
-    # storage lowercases that label while the scanner probes with the filename's
-    # own casing. Folding only recognized quant labels left the migrated entry
-    # unreachable for exactly the files that need the fallback.
+    # A .gguf with no recognizable quant token is labelled by its stem, and v2 storage
+    # lowercases that label while the scanner keeps the filename casing. Folding only
+    # recognized labels stranded exactly the files that need the fallback.
     _mock_override_store(monkeypatch)
     settings.set_model_override("/models/CustomModel.gguf:custommodel", max_seq_length = 8192)
     got = settings.get_model_override("/models/CustomModel.gguf:CustomModel")
@@ -4759,16 +4748,16 @@ def test_an_unknown_gguf_label_is_reachable_in_either_casing(monkeypatch):
 
 
 def test_a_posix_colon_filename_is_not_folded_as_a_variant(monkeypatch):
-    # "/models/foo:Bar.gguf" is one filename, not path + quant, so folding its
-    # tail would let it reach a different file's settings.
+    # "/models/foo:Bar.gguf" is one filename, not path + quant, so folding its tail
+    # would reach a different file's settings.
     _mock_override_store(monkeypatch)
     settings.set_model_override("/models/foo:bar.gguf", max_seq_length = 8192)
     assert settings.get_model_override("/models/foo:Bar.gguf") == {}
 
 
 def test_a_suffix_the_scanner_would_not_derive_carries_nothing_over(monkeypatch):
-    # Only the exact label the scanner derives for this filename is accepted, so
-    # an unrelated colon suffix cannot reach into another model's flags.
+    # Only the scanner's exact label is accepted, so an unrelated colon suffix cannot
+    # reach another model's flags.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4783,8 +4772,8 @@ def test_a_suffix_the_scanner_would_not_derive_carries_nothing_over(monkeypatch)
 
 
 def test_unknown_quant_label_carries_over_for_a_windows_path(monkeypatch):
-    # The key is written on Windows but may be read back by a backend that is
-    # not, where a backslash is an ordinary filename character.
+    # Written on Windows but read back on a backend where a backslash is an ordinary
+    # filename character.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4811,9 +4800,8 @@ def test_real_quant_suffix_on_a_path_still_carries_flags_over(monkeypatch):
 
 
 def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatch):
-    # The pre-flight check cannot mirror every rule the loader applies (a Vulkan
-    # diffusion GGUF refuses GPU selection outright). A stale placement preference
-    # must never be the reason a request cannot be served.
+    # The pre-flight check cannot mirror every loader rule (a Vulkan diffusion GGUF
+    # refuses GPU selection), and a stale pin must never block a request.
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
@@ -4887,9 +4875,8 @@ def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
 
 
 def test_removal_clears_the_entry_a_load_would_actually_resolve(monkeypatch):
-    # The browser normalizes casing before storing, so a forget request can carry
-    # a different casing than the stored key. Removing only the literal key would
-    # leave the entry a load still resolves to, with no UI able to clear it.
+    # The browser normalizes casing before storing, so a forget can carry a different
+    # casing; removing only the literal key leaves an entry loads still resolve to.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -4905,10 +4892,9 @@ def test_removal_clears_the_entry_a_load_would_actually_resolve(monkeypatch):
 
 
 def test_save_updates_the_existing_case_variant_instead_of_forking_it(monkeypatch):
-    # The backfill stores normalized (lowercase) keys while a later UI save carries
-    # the catalog's casing. Writing that literally leaves two keys for one model,
-    # and with two equivalent keys present any third casing resolves ambiguously,
-    # so the model silently loses every saved setting on the API path.
+    # The backfill stores lowercase keys while a later UI save carries the catalog's
+    # casing. Writing that literally leaves two keys for one model, which makes any
+    # third casing ambiguous and silently loses every setting on the API path.
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)

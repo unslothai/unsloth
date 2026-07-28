@@ -5,12 +5,9 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 /**
- * localStorage that cannot throw.
- *
- * Safari private browsing, Firefox with the origin's cookies blocked, and an
- * opaque origin in a webview all make `window.localStorage` throw on access
- * rather than return null. Losing the preference there is fine; taking the
- * whole panel down with it is not.
+ * localStorage that cannot throw: Safari private browsing, blocked cookies and an
+ * opaque webview origin all make `window.localStorage` throw on access. Losing the
+ * preference there is fine; taking the whole panel down with it is not.
  */
 const safeStorage = {
   getItem: (name: string): string | null => {
@@ -24,7 +21,7 @@ const safeStorage = {
     try {
       window.localStorage.setItem(name, value);
     } catch {
-      // Quota exceeded or storage denied. The preference stays session-only.
+      // Quota exceeded or denied; the preference stays session-only.
     }
   },
   removeItem: (name: string): void => {
@@ -39,7 +36,7 @@ const safeStorage = {
 interface ApiMonitorOverlayState {
   /** Whether the floating panel is on screen right now. Session state. */
   isOpen: boolean;
-  /** Set on close so the panel does not pop back during the same burst. */
+  /** Set on close so the panel does not pop back in the same burst. */
   suppressed: boolean;
   /** Persisted opt out: when false the panel never opens itself. */
   autoOpen: boolean;
@@ -48,10 +45,7 @@ interface ApiMonitorOverlayState {
   setAutoOpen: (autoOpen: boolean) => void;
 }
 
-/**
- * Only `autoOpen` persists. Open/closed is session state: a dismissal lasts the
- * sitting, not forever.
- */
+/** Only `autoOpen` persists; a dismissal lasts the sitting, not forever. */
 export const useApiMonitorOverlayStore = create<ApiMonitorOverlayState>()(
   persist(
     (set) => ({
@@ -67,8 +61,8 @@ export const useApiMonitorOverlayStore = create<ApiMonitorOverlayState>()(
       version: 1,
       storage: createJSONStorage(() => safeStorage),
       partialize: (state) => ({ autoOpen: state.autoOpen }),
-      // Without this a version bump discards the payload, quietly handing the
-      // popup back to someone who had turned it off.
+      // Without this a version bump discards the payload and hands the popup back
+      // to someone who had turned it off.
       migrate: (persisted) => persisted,
       // Explicit merge so an older stored payload cannot resurrect `isOpen`.
       merge: (persisted, current) => ({

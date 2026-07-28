@@ -12,7 +12,7 @@ import type {
 } from "@/features/chat/types/api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-/** Poll cadence while the monitor is live. Matches the settings console it replaces. */
+/** Poll cadence while live. Matches the settings console it replaces. */
 const POLL_INTERVAL_MS = 1500;
 
 export type MonitorStatusFilter =
@@ -30,7 +30,7 @@ export interface MonitorStats {
   cancelled: number;
   /** Mean duration over finished requests, or null when none have finished. */
   avgDurationMs: number | null;
-  /** Slowest finished request, for spotting a single pathological call. */
+  /** Slowest finished request, for spotting a pathological call. */
   maxDurationMs: number | null;
   totalTokens: number;
   /** Share of finished requests that failed, 0-1. Null when nothing finished. */
@@ -47,8 +47,8 @@ function completionTokens(entry: ApiMonitorEntry): number | null {
   if (entry.completion_tokens != null) {
     return entry.completion_tokens;
   }
-  // Some providers only report a total; subtracting the prompt is the best
-  // available estimate of what was actually generated.
+  // Some providers report only a total, so subtracting the prompt is the best
+  // estimate of what was generated.
   if (entry.total_tokens != null && entry.prompt_tokens != null) {
     return Math.max(0, entry.total_tokens - entry.prompt_tokens);
   }
@@ -71,21 +71,18 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let durationSum = 0;
   let durationCount = 0;
   let maxDurationMs: number | null = null;
-  // Throughput is aggregated as total tokens over total time, not as the mean of
-  // each request's rate. Averaging rates lets one tiny fast request outweigh a
-  // long slow one, which is the opposite of what someone debugging wants to see.
+  // Total tokens over total time, not the mean of each request's rate: averaging
+  // rates lets one tiny fast request outweigh a long slow one.
   let generatedTokens = 0;
   let generatedDurationMs = 0;
 
   let requests = 0;
 
   for (const entry of entries) {
-    // A model load, unload or download is not an HTTP call. It shows as
-    // "running" for as long as the load takes, so counting it would report an
-    // in-flight request with no client waiting and fold a multi-minute download
-    // into "Avg latency". The backend already leaves these out of
-    // active_count for the same reason, so counting them here would also make
-    // the page disagree with the number the API itself reports.
+    // A load, unload or download is not an HTTP call. It reads as "running" for the
+    // whole load, so counting it reports an in-flight request with no client waiting
+    // and folds a multi-minute download into "Avg latency". The backend leaves these
+    // out of active_count too, so counting them would also disagree with the API.
     if (entry.kind === "lifecycle") {
       continue;
     }
@@ -107,7 +104,7 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
       maxDurationMs =
         maxDurationMs == null ? duration : Math.max(maxDurationMs, duration);
       const generated = completionTokens(entry);
-      // Sub-millisecond durations would divide into a meaningless rate.
+      // A sub-millisecond duration divides into a meaningless rate.
       if (generated != null && generated > 0 && duration > 0) {
         generatedTokens += generated;
         generatedDurationMs += duration;
@@ -146,11 +143,9 @@ export function filterEntries(
     if (!needle) {
       return true;
     }
-    // Search the fields a debugging session actually keys off: which model,
-    // which endpoint, and the previews/error text visible in the row.
-    //
-    // Coerced, not trusted: these arrive over the network, and one malformed
-    // entry throwing here would blank the whole log.
+    // The fields a debugging session keys off: model, endpoint, and the previews and
+    // error text visible in the row. Coerced, not trusted: these arrive over the
+    // network, and one malformed entry throwing here would blank the whole log.
     return [
       entry.model,
       entry.endpoint,
@@ -170,14 +165,14 @@ interface UseApiMonitorResult {
   entries: ApiMonitorEntry[];
   stats: MonitorStats;
   error: string | null;
-  /** True until the first response lands, so the page can show skeletons once. */
+  /** True until the first response lands, so skeletons show once. */
   loading: boolean;
   refreshing: boolean;
   paused: boolean;
   setPaused: (paused: boolean) => void;
   refresh: () => void;
   clear: () => Promise<void>;
-  /** Full prompt/reply for entries the user expanded, keyed by entry id. */
+  /** Full prompt/reply for expanded entries, keyed by entry id. */
   details: Record<string, ApiMonitorEntry>;
   loadingDetails: ReadonlySet<string>;
   requestDetail: (id: string) => boolean;
@@ -186,10 +181,9 @@ interface UseApiMonitorResult {
 /**
  * Live view of the server's OpenAI-compatible API traffic.
  *
- * Polls rather than streams because the backing monitor is an in-memory ring
- * buffer with no change feed. Polling is self-rescheduling (never overlapping),
- * and pausing stops it entirely so a user reading a stalled request's payload
- * isn't fighting a list that reorders under them.
+ * Polls rather than streams because the backing monitor is an in-memory ring buffer
+ * with no change feed. Polling self-reschedules (never overlapping), and pausing
+ * stops it so reading a stalled payload is not fighting a list that reorders.
  *
  * `intervalMs` lets a caller trade freshness for cost: the full page wants the
  * default live cadence, while the floating overlay slows right down when it is
@@ -207,8 +201,8 @@ export function useApiMonitor({
   const [loadingDetails, setLoadingDetails] = useState<Set<string>>(
     () => new Set(),
   );
-  // Mirrors `loadingDetails` outside React state so the fetch guard sees writes
-  // from the same tick (state updates are async and would let duplicates through).
+  // Mirrors `loadingDetails` outside React state so the fetch guard sees same-tick
+  // writes; async state updates would let duplicates through.
   const inFlightDetails = useRef<Set<string>>(new Set());
 
   const load = useCallback(async (): Promise<void> => {
@@ -259,9 +253,8 @@ export function useApiMonitor({
     };
   }, [paused, intervalMs]);
 
-  // Returns whether a fetch actually started. Callers that remember "I have
-  // fetched revision N" must not record it when the in-flight guard turned them
-  // away, or that revision is skipped for good once updated_at stops moving.
+  // Returns whether a fetch started: a caller must not record "fetched revision N"
+  // when the guard refused, or that revision is skipped once updated_at settles.
   const requestDetail = useCallback((id: string): boolean => {
     if (inFlightDetails.current.has(id)) {
       return false;
@@ -273,8 +266,8 @@ export function useApiMonitor({
         setDetails((prev) => ({ ...prev, [id]: entry }));
       })
       .catch(() => {
-        // The entry aged out of the ring buffer; drop any stale copy so the UI
-        // falls back to the row previews instead of showing a frozen payload.
+        // Aged out of the ring buffer; drop the stale copy so the UI falls back to
+        // the row previews instead of a frozen payload.
         setDetails((prev) => {
           if (!(id in prev)) return prev;
           const next = { ...prev };

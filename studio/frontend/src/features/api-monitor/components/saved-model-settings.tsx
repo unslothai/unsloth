@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What a remote load will actually apply, which is otherwise unanswerable from
-// outside the process.
-//
-// Read only on purpose: the config lives both here and in the browser's own
-// per-model store, and the model's settings page is the only place that owns
-// both, so it is the only place that can forget a model completely.
+// What a remote load will actually apply, otherwise unanswerable from outside the
+// process. Read only: the config also lives in the browser's per-model store, and
+// the model's settings page is the only place that owns both.
 
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -16,7 +13,7 @@ import {
 } from "@/features/model-picker/api/model-overrides";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 
-/** Human-readable summary of the fields the loader will apply, in load order. */
+/** Summary of the fields the loader will apply, in load order. */
 function describeOverride(override: ApiModelOverride): string[] {
   const parts: string[] = [];
   if (override.custom_context_length) {

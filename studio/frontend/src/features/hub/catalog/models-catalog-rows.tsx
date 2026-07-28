@@ -586,7 +586,7 @@ export const InventoryRow = memo(function InventoryRow({
   compact?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
-  /** Open this model's full settings page. Omitted for datasets. */
+  /** Open this model's settings page. Omitted for datasets. */
   onOpenSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   const rowModelId =
@@ -735,11 +735,9 @@ export const InventoryRow = memo(function InventoryRow({
   const rowPinned =
     cacheDeletableRepoId != null &&
     pinnedKeys.includes(pinKey(cacheDeletableRepoId));
-  // Settings is available for any downloaded model, not just deletable ones: a
-  // model scanned from a local folder is just as configurable as a cached repo.
-  // The menu therefore renders whenever either action applies, and each item
-  // gates itself. `deletableRepoId` (rather than the boolean) keeps the non-null
-  // narrowing the delete closures below rely on.
+  // Settings applies to any downloaded model, not just deletable ones, so the menu
+  // renders when either action applies and each item gates itself. `deletableRepoId`
+  // (not the boolean) keeps the non-null narrowing the delete closures rely on.
   const settingsAction =
     !isDataset && onOpenSettings ? { onOpen: () => onOpenSettings(row) } : undefined;
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;

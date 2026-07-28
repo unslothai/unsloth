@@ -3,10 +3,8 @@
 
 // Full-page monitor for Unsloth's OpenAI-compatible API server.
 //
-// This replaces the small console that used to be buried in the API settings
-// tab. Settings still owns configuration (keys, auto-switch, examples); this
-// page owns observability -- what is being served right now, which requests
-// failed and why, and which saved settings a remote load will apply.
+// Replaces the small console buried in the API settings tab. Settings still owns
+// configuration (keys, auto-switch, examples); this page owns observability.
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,8 +48,8 @@ import {
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
-// Tries per revision for a detail payload. Bounded because the usual failure
-// is an entry that has aged out of the ring buffer and never comes back.
+// Tries per revision for a detail payload. Bounded because the usual failure is
+// an entry aged out of the ring buffer, which never comes back.
 const DETAIL_FETCH_ATTEMPTS = 3;
 
 const STATUS_FILTERS: { value: MonitorStatusFilter; label: string }[] = [
@@ -158,8 +156,7 @@ function CopyButton({
   label: string;
 }): ReactElement {
   const [copied, setCopied] = useState(false);
-  // Clearing the tick on a timer would set state after unmount if the user
-  // navigates away mid-flash, so the timer is cancelled on cleanup.
+  // Cancel on cleanup, or navigating away mid-flash sets state after unmount.
   const timerRef = useRef<number | undefined>(undefined);
   useEffect(
     () => () => {
@@ -210,8 +207,7 @@ function ContextUsageBar({
         <div
           className={cn(
             "h-full rounded-full transition-[width]",
-            // Near-full context is the usual cause of truncated replies, so it
-            // reads as a warning before it becomes a bug report.
+            // Near-full context is the usual cause of truncated replies.
             pct >= 90
               ? "bg-red-500"
               : pct >= 75
@@ -243,7 +239,7 @@ function RequestRow({
     entry.prompt_preview ||
     (entry.status === "running" ? "Waiting for output…" : "No preview");
   // A load, unload or download has no prompt or reply, so it reads as a status
-  // line rather than a request with a payload behind it.
+  // line rather than a request with a payload.
   if (isLifecycleEntry(entry)) {
     return (
       <div className="flex w-full min-w-0 flex-col gap-1 border-b border-border/50 bg-muted/25 px-4 py-3 last:border-b-0">
@@ -371,9 +367,8 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
-  // The detail fetch is a separate request, so it can describe an older state of
-  // a still-streaming entry. Prefer it only once it is at least as fresh as the
-  // list row, otherwise the panel would appear to rewind while tokens arrive.
+  // The detail fetch is separate, so it can describe an older state of a streaming
+  // entry. Prefer it only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
     detail.status === entry.status &&
@@ -507,9 +502,8 @@ export function ApiMonitorPage(): ReactElement {
   const [unloading, setUnloading] = useState(false);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
-  // Manual release of the loaded model, so VRAM can be freed without waiting for
-  // the idle timer. /unload matches on the internal id, which the monitor does
-  // not carry (it advertises a host path), so read it from status.
+  // Manual release so VRAM is freed without waiting for the idle timer. /unload
+  // matches on the internal id, which the monitor does not carry, so read status.
   const unloadActiveModel = async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -545,10 +539,9 @@ export function ApiMonitorPage(): ReactElement {
     [visible, selectedId],
   );
 
-  // Refetch the selected entry while it streams so the payload grows with the
-  // reply. Keyed on identity and revision, never on `details`: the fetch rewrites
-  // `details` on every success, so depending on it loops on the detail endpoint,
-  // which takes the same lock every generated token does.
+  // Refetch the selected entry while it streams so the payload grows with the reply.
+  // Keyed on identity and revision, never on `details`: the fetch rewrites `details`
+  // on every success, so depending on it loops on the detail endpoint.
   const selectedId_ = selected?.id ?? null;
   const selectedUpdatedAt = selected?.updated_at ?? null;
   const selectedIsMissing = selectedId_ != null && details[selectedId_] == null;
@@ -558,8 +551,7 @@ export function ApiMonitorPage(): ReactElement {
     count: 0,
   });
   const [retryTick, setRetryTick] = useState(0);
-  // Flips as a fetch settles, successfully or not, which is what lets a failed
-  // one be noticed at all.
+  // Flips as a fetch settles either way, which is what lets a failure be noticed.
   const detailInFlight = selectedId_ != null && loadingDetails.has(selectedId_);
   useEffect(() => {
     if (selectedId_ == null || detailInFlight) {
@@ -571,12 +563,9 @@ export function ApiMonitorPage(): ReactElement {
     if (!selectedIsMissing && lastFetchedRef.current === revision) {
       return;
     }
-    // A terminal row's revision never advances, so a fetch that failed had
-    // nothing left to re-run this effect and the payload stayed unavailable
-    // until the user picked another row. `loadingDetails` changing as the failed
-    // fetch settles is the trigger; the count bounds it, because the usual
-    // failure is an entry that aged out of the ring buffer and will never
-    // arrive however often it is asked for.
+    // A terminal row's revision never advances, so a failed fetch had nothing left to
+    // re-run this effect. `loadingDetails` settling is the trigger; the count bounds
+    // it, since the usual failure is an entry aged out of the ring buffer.
     if (attemptsRef.current.revision !== revision) {
       attemptsRef.current = { revision, count: 0 };
     }
@@ -584,15 +573,14 @@ export function ApiMonitorPage(): ReactElement {
       return;
     }
     attemptsRef.current.count += 1;
-    // Only remember the revision when a fetch really started; the in-flight
-    // guard can refuse, and recording it anyway skips that revision for good.
+    // Only remember the revision when a fetch started: the in-flight guard can
+    // refuse, and recording it anyway skips that revision for good.
     if (requestDetail(selectedId_)) {
       lastFetchedRef.current = revision;
       setRetryTick(0);
     } else {
-      // Refused because an older fetch is still running. Nothing in this effect's
-      // deps will change when that one settles, so without a nudge a revision
-      // rejected here is never fetched, and a terminal reply stays truncated.
+      // Refused because an older fetch is running. No dep changes when it settles, so
+      // without this nudge the rejected revision is never fetched.
       const timer = window.setTimeout(() => setRetryTick((n) => n + 1), 250);
       return () => window.clearTimeout(timer);
     }
@@ -605,8 +593,8 @@ export function ApiMonitorPage(): ReactElement {
     detailInFlight,
   ]);
 
-  // The desktop webview's origin is tauri://, not the API server, and the
-  // packaged app picks its port dynamically. Same source as the Agents tab.
+  // The desktop webview's origin is tauri://, not the API server, and the packaged
+  // app picks its port dynamically. Same source as the Agents tab.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const baseUrl = `${isTauri ? (serverUrl ?? getApiBase()) : origin}/v1`;
   const serverStatus = data?.status ?? "idle";
@@ -715,8 +703,8 @@ export function ApiMonitorPage(): ReactElement {
         </div>
       </header>
 
-      {/* Server summary: the two things you check first when a client can't
-          reach the API -- the base URL to point it at, and what is loaded. */}
+      {/* What you check first when a client can't reach the API: the base URL
+          to point it at, and what is loaded. */}
       <section className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">

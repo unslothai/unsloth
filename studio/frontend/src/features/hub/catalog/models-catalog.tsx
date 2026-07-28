@@ -71,7 +71,6 @@ export interface ModelsCatalogHandlers {
   onRetry: () => void;
   onInventoryChange?: () => void;
   onSwitchDevice?: () => void;
-  /** Open a downloaded model's full settings page. */
   onOpenModelSettings?: (row: InventoryRow) => void;
 }
 

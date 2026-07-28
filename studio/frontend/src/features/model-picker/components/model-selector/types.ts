@@ -53,19 +53,16 @@ export interface ModelPickTarget {
    * Whether an OpenAI-compatible request can actually load this model.
    *
    * Not the same as isGguf: local_model_resolver skips Ollama's scanner, so an
-   * Ollama GGUF is never in the auto-switch index and no API request can resolve
-   * it. Mirroring its settings would advertise a load that cannot happen.
-   * Defaults to isGguf where a caller does not know.
+   * Ollama GGUF is never in the auto-switch index and mirroring its settings would
+   * advertise a load that cannot happen. Defaults to isGguf when unknown.
    */
   apiLoadable?: boolean;
   /**
    * Identity the saved settings are keyed by, when that is not what loads.
    *
    * A repo cached outside the active HF cache loads by snapshot path, while the
-   * picker and the auto-switch index keep its settings under the repo id.
-   * Keying the save by the path would strand the settings where no load looks
-   * for them. Probes that need something openable (the chat template, the GGUF
-   * header) keep using `id`. Defaults to `id`.
+   * picker and the auto-switch index key its settings by repo id, so saving by the
+   * path would strand them. Probes that must open the model keep using `id`.
    */
   configId?: string;
   meta: ModelSelectorChangeMeta;

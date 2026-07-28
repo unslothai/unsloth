@@ -113,11 +113,9 @@ import type {
 } from "./types";
 
 // What per-model settings are keyed by, which is not always what the loader is
-// handed: a repo cached outside the active HF cache loads by snapshot path,
-// while the chat picker (toCachedModelRepo) and the auto-switch index both key
-// it by repo id. Saving under the path would leave the settings where no other
-// load looks for them. Local rows are keyed by their load id in both places, so
-// they keep it.
+// handed: a repo cached outside the active HF cache loads by snapshot path, while
+// the chat picker and the auto-switch index key it by repo id, so saving under the
+// path strands the settings. Local rows are keyed by load id in both places.
 function modelConfigIdentity(
   kind: SelectedModelView["kind"],
   resource: SelectedResourceRef,
@@ -369,8 +367,8 @@ export function ModelsPage() {
   const activeGgufContextLength = useChatRuntimeStore(
     (s) => s.ggufContextLength,
   );
-  // Live settings of the loaded model, so opening its settings page shows what
-  // it is actually running with rather than the last saved draft.
+  // Live settings of the loaded model, so its settings page shows what it is
+  // running with rather than the last saved draft.
   const { config: activeModelConfig } = useActiveModelConfig();
   // Shared with the chat model selector: list only models sized for this device.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
@@ -1245,23 +1243,23 @@ export function ModelsPage() {
     [runSelectedModel, selectedModel],
   );
 
-  // Full-page per-model settings, opened from a downloaded row's menu. Local
-  // state rather than a URL param: the page is a transient editor over the
-  // catalog, and a deep link to it would need the row's identity re-resolved
-  // against an inventory that may not have loaded yet.
+  // Full-page per-model settings, opened from a downloaded row's menu. Local state
+  // rather than a URL param: the page is a transient editor over the catalog, and a
+  // deep link would need the row re-resolved against an inventory that may not have
+  // loaded.
   const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
     null,
   );
-  // Bumped per open so a slow variant lookup for a row the user has moved on
-  // from cannot land on top of the row they actually chose.
+  // Bumped per open so a slow variant lookup for an abandoned row cannot land
+  // on top of the row actually chosen.
   const settingsOpenSeq = useRef(0);
   const openModelSettings = useCallback(
     async (row: CachedInventoryRow | LocalInventoryRow) => {
       const openSeq = ++settingsOpenSeq.current;
       // loadId is what the loader accepts; repoId is only a display/API alias.
       const id = row.loadId;
-      // Whether the loaded model is this row, under any of the names it goes by.
-      // Gates the "prefer the loaded quant" hint below.
+      // Whether this row is the loaded model, under any of its names. Gates the
+      // "prefer the loaded quant" hint below.
       const rowAliases =
         row.kind === "local"
           ? [id, row.repoId, row.path]
@@ -1269,12 +1267,10 @@ export function ModelsPage() {
       const rowIsActive = rowAliases.some((alias) =>
         modelIdsMatch(alias, activeCheckpoint),
       );
-      // Cached repo rows never carry a quant: the inventory emits one row per
-      // repo with format_variant null (see cache_inventory.py). Opening settings
-      // with a null variant would key the saved config to `repo::` while the
-      // loader reads `repo::Q4_K_M`, so the settings would silently never apply
-      // and the server mirror would be keyed wrong too. Resolve the quant the
-      // same way the on-device card does before opening.
+      // Cached repo rows never carry a quant (cache_inventory.py emits one row per
+      // repo with format_variant null). Opening with a null variant keys the config
+      // to `repo::` while the loader reads `repo::Q4_K_M`, so it never applies and
+      // the server mirror is wrong too. Resolve it as the on-device card does.
       let ggufVariant = row.formatVariant?.trim() || null;
       if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
         const repoId = row.kind === "cache" ? row.repoId : (row.repoId ?? null);
@@ -1287,10 +1283,10 @@ export function ModelsPage() {
             });
             const downloaded = res.variants.filter((v) => v.downloaded);
             ggufVariant =
-              // Prefer the loaded quant, then the repo default, then whatever is
-              // on disk, mirroring LocalOnDeviceCard's selectedQuant. Only when
-              // this row is the loaded model: Q4_K_M exists in most repos, so an
-              // unguarded match would target the wrong quant of the wrong model.
+              // Loaded quant, then the repo default, then whatever is on disk,
+              // mirroring LocalOnDeviceCard's selectedQuant. Only for the loaded
+              // row: Q4_K_M exists in most repos, so an unguarded match would
+              // target the wrong quant of the wrong model.
               (rowIsActive
                 ? downloaded.find((v) =>
                     ggufVariantsMatch(v.quant, activeGgufVariant),
@@ -1307,9 +1303,8 @@ export function ModelsPage() {
         }
         if (!ggufVariant) {
           // A model that needs a quant cannot be configured without one: the
-          // picker matches variants exactly and would never find the saved
-          // config, while the API falls back to the bare key and would apply it.
-          // Opening the editor here would quietly create that mismatch.
+          // picker matches variants exactly and would never find the config,
+          // while the API's bare-key fallback would apply it.
           toast.error("Couldn't determine which quant to configure.", {
             description:
               "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
@@ -1317,13 +1312,13 @@ export function ModelsPage() {
           return;
         }
       }
-      // The variant lookup above is async, so a second row opened while it was
-      // pending would otherwise be overwritten by whichever call finished last.
+      // The variant lookup is async, so without this a second row opened while it
+      // was pending would be overwritten by whichever call finished last.
       if (settingsOpenSeq.current !== openSeq) {
         return;
       }
       // A repo in a previous cache loads by snapshot path, so `id` ends in the
-      // revision hash; name the row by what the user calls it.
+      // revision hash; name the row by what the user calls it instead.
       const configId = row.kind === "cache" ? row.repoId : id;
       const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
       setSettingsTarget({
@@ -1340,20 +1335,19 @@ export function ModelsPage() {
           isLora: row.modelFormat === "adapter",
           ggufVariant: ggufVariant ?? undefined,
           isGguf: row.isGguf,
-          // Partial downloads still open settings, but must not claim to be
-          // complete or the loader skips its download-progress reporting.
+          // A partial download opens settings too, but claiming complete would skip
+          // the loader's download-progress reporting.
           isDownloaded: !row.partial,
-          // Not carried on inventory rows; ModelConfigPage reads the GGUF header
-          // itself to size the context slider.
+          // Not on inventory rows; ModelConfigPage reads the GGUF header itself.
           contextLength: null,
         },
       });
     },
     [activeCheckpoint, activeGgufVariant, hfToken],
   );
-  // Applying from the settings page loads the model with exactly those settings.
-  // ModelConfigPage has already persisted them (locally and, when "remember" is
-  // on, to the server), so an API request for this model gets the same load.
+  // Applying loads the model with exactly these settings. ModelConfigPage has
+  // already persisted them locally and, when "remember" is on, to the server, so
+  // an API request for this model gets the same load.
   const runSettingsTarget = useCallback(
     (config: PerModelConfig) => {
       const target = settingsTarget;
@@ -1386,16 +1380,14 @@ export function ModelsPage() {
   const handleTrain = useCallback(() => {
     // Hub → train integration ships in a later PR.
   }, []);
-  // Settings opened from the detail view's on-device card. The card resolves
-  // which quant it is showing, so it passes that in rather than re-deriving it.
+  // Opened from the detail view's on-device card, which passes in the quant it
+  // resolved rather than making this re-derive it.
   const openSelectedModelSettings = useCallback(
     (ggufVariant: string | null) => {
       if (!selectedModel) return;
-      // The card passes null while its own variant lookup is pending or after it
-      // failed, so this needs the same guard openModelSettings applies: a model
-      // that needs a quant cannot be configured without one, because the picker
-      // matches variants exactly and would never find the saved config while the
-      // API falls back to the bare key and would apply it.
+      // The card passes null while its variant lookup is pending or after it failed,
+      // so this needs the same guard openModelSettings applies: a model that needs a
+      // quant cannot be configured without one.
       if (
         !ggufVariant &&
         selectedModel.isGguf &&
@@ -1407,8 +1399,8 @@ export function ModelsPage() {
         });
         return;
       }
-      // Share the sequence with openModelSettings: a row's variant lookup may
-      // still be pending, and it must not land on top of this one.
+      // Share the sequence with openModelSettings: a pending variant lookup for
+      // another row must not land on top of this one.
       settingsOpenSeq.current += 1;
       const id = selectedModel.resource.runId;
       const configId = modelConfigIdentity(
@@ -1736,9 +1728,8 @@ export function ModelsPage() {
 
   const detailOpen = urlModel !== null;
   const splitMode = allModelsView === "split";
-  // The catalog is unreachable when an opaque overlay sits on top of it: the
-  // detail view (full-page layout only, since split renders it alongside) or the
-  // settings page (always full-bleed).
+  // The catalog is unreachable under an opaque overlay: the detail view (full-page
+  // layout only, since split renders it alongside) or the settings page.
   const catalogCovered = (detailOpen && !splitMode) || settingsTarget !== null;
 
   return (
@@ -1796,10 +1787,8 @@ export function ModelsPage() {
               ? "flex-1 lg:w-[460px] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
               : "flex-1",
             // The settings page is a full-bleed opaque overlay in every layout,
-            // including split, so it always takes the catalog out of the tab
-            // order. Without this, tabbing out of the settings form walks into
-            // the virtualized rows hidden behind it and screen readers announce
-            // the whole model list underneath.
+            // so it always takes the catalog out of the tab order. Without this,
+            // tabbing out of the form walks into the virtualized rows behind it.
             catalogCovered && "pointer-events-none",
           )}
           aria-hidden={catalogCovered || undefined}
@@ -1858,9 +1847,8 @@ export function ModelsPage() {
           )
         )}
 
-        {/* Sits above the detail overlay (z-30): opening settings from a row
-            while a model preview is open should show the settings, not stack
-            behind it. */}
+        {/* Above the detail overlay (z-30): opening settings while a model
+            preview is open should show the settings, not stack behind it. */}
         {settingsTarget && (
           <div className="hub-canvas absolute inset-0 z-30 flex min-h-0 flex-col">
             <HubModelSettingsView

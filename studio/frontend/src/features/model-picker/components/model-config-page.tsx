@@ -582,9 +582,8 @@ interface ModelConfigPageProps {
   initialConfig?: PerModelConfig | null;
   variant?: "page" | "sidebar";
   /**
-   * Page variant only: render the built-in "Run settings" title block. A host
-   * that already shows the model name as its own page heading (the Hub's
-   * settings page) turns this off so the name is not printed twice.
+   * Page variant only: render the built-in "Run settings" title block. A host that
+   * already shows the model name as its page heading turns this off.
    */
   showHeader?: boolean;
 }
@@ -611,9 +610,9 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
-  // What the settings are stored under, which is not always what loads: see
-  // ModelPickTarget.configId. Every read, write and mirror below uses it; the
-  // probes keep target.id, since they have to open the model.
+  // What the settings are stored under, which is not always what loads (see
+  // ModelPickTarget.configId). Every read, write and mirror uses it; the probes
+  // keep target.id, since they have to open the model.
   const configId = target.configId ?? target.id;
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -885,18 +884,14 @@ export function ModelConfigPage({
     } else {
       saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
     }
-    // Mirror to the server so an OpenAI-compatible API request that loads this
-    // model gets these exact settings, not app defaults. Best-effort and
-    // non-blocking: the localStorage write above already governs this browser.
-    // Forgetting clears the server entry too, so the two never disagree.
+    // Mirror to the server so an API request that loads this model gets these exact
+    // settings, not app defaults. Best-effort and non-blocking: the localStorage
+    // write above already governs this browser, and forgetting clears both.
     //
-    // Skipped when the local write failed (quota, a future-schema entry): the
-    // browser and the server would otherwise permanently disagree about this
-    // model, with no way for the user to tell which one the next load used.
-    // Auto-switch reach, not just GGUF-ness: the resolver indexes GGUFs and
-    // skips Ollama's scanner, so mirroring either a safetensors config or an
-    // Ollama one would advertise settings on the monitor's "applied on API load"
-    // list that no API request can ever apply.
+    // Skipped when the local write failed (quota, a future-schema entry), or the
+    // two would permanently disagree with no way to tell which the next load used.
+    // Gated on auto-switch reach, not just GGUF-ness: the resolver indexes GGUFs and
+    // skips Ollama, so mirroring either would advertise a load that cannot happen.
     if (!saveFailed && (target.apiLoadable ?? target.isGguf)) {
       syncModelOverride(
         configId,
@@ -904,9 +899,8 @@ export function ModelConfigPage({
         remember ? effectiveRuntimeConfig : null,
       );
     }
-    // Saving can push the local map over budget and silently drop other models.
-    // Their server entries would otherwise keep being applied by API loads with
-    // nothing left in the UI showing them or able to forget them.
+    // Saving can push the local map over budget and drop other models, whose server
+    // entries would keep being applied with nothing in the UI able to forget them.
     for (const dropped of evicted) {
       syncModelOverride(dropped.modelId, dropped.ggufVariant, null);
     }

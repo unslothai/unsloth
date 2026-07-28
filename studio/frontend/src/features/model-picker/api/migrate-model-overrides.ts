@@ -4,9 +4,8 @@
 // One-time backfill of per-model settings into the server override map.
 //
 // Settings used to live only in this browser, so on upgrade the server knows
-// nothing about models the user already configured. Without this they keep
-// showing as remembered in the UI while an API load quietly uses app defaults,
-// which is the exact bug the server-side map exists to fix.
+// nothing about models already configured: they still show as remembered while an
+// API load uses app defaults, the exact bug the server-side map exists to fix.
 
 import {
   normalizeGgufVariantIdentity,
@@ -44,13 +43,12 @@ function markRan(): void {
 /**
  * A server key under the same identity this browser stores.
  *
- * `app_settings` has no schema version and holds whatever id was current when
- * the row was written, so an install that predates identity normalization has
- * keys like `Unsloth/Repo-GGUF:Q4_K_M` while this browser only ever produces
- * the folded form. The backend resolves the two to one model, so an exact
- * property lookup would report "not on the server" for a row that is, and the
- * backfill would overwrite it. Variants never contain a colon, so the last one
- * splits the key; a repo id folds and a POSIX path deliberately does not.
+ * `app_settings` has no schema version and holds whatever id was current when the
+ * row was written, so an old install has keys like `Unsloth/Repo-GGUF:Q4_K_M` while
+ * this browser only produces the folded form. The backend resolves both to one
+ * model, so an exact lookup would report "not on the server" and let the backfill
+ * overwrite it. Variants never contain a colon, so the last one splits the key; a
+ * repo id folds and a POSIX path deliberately does not.
  */
 function normalizedOverrideKey(key: string): string {
   const separator = key.lastIndexOf(":");
@@ -64,21 +62,19 @@ function normalizedOverrideKey(key: string): string {
 }
 
 /**
- * Push local configs the server has never seen. Never deletes and never
- * overwrites: an entry already on the server is the newer authority, and losing
- * a setting here would be worse than leaving one unmigrated.
+ * Push local configs the server has never seen. Never deletes and never overwrites:
+ * an entry already there is the newer authority, and losing a setting would be
+ * worse than leaving one unmigrated.
  */
 export async function backfillModelOverrides(): Promise<void> {
   if (alreadyRan()) {
     return;
   }
   const local = listPerModelConfigs().filter(
-    // A quant means it is a GGUF, which is the only thing API auto-switch
-    // resolves. Backfilling a safetensors config would claim an API behaviour
-    // that does not exist. A standalone .gguf picked directly carries no quant
-    // to select between, so it is stored with a null variant and would fail
-    // that test despite being exactly what auto-switch does resolve; the flag
-    // is then set and its settings stay browser-only for good.
+    // A quant means GGUF, the only thing API auto-switch resolves, so backfilling a
+    // safetensors config would claim behaviour that does not exist. A standalone
+    // .gguf has no quant to select between and is stored with a null variant, so it
+    // needs the extra test or its settings stay browser-only for good.
     (entry) =>
       (entry.ggufVariant != null ||
         entry.modelId.toLowerCase().endsWith(".gguf")) &&
@@ -94,7 +90,7 @@ export async function backfillModelOverrides(): Promise<void> {
     existing = await fetchModelOverrides();
   } catch {
     // Offline or not authenticated yet. Leave the flag unset so the next start
-    // tries again rather than silently skipping the migration forever.
+    // retries rather than skipping the migration forever.
     return;
   }
 
@@ -102,20 +98,17 @@ export async function backfillModelOverrides(): Promise<void> {
 
   let failed = false;
   for (const entry of local) {
-    // Folded on this side too: a v2 storage key already holds the normalized
-    // identity, but the older `id::variant` keys this browser still reads back
-    // hold whatever casing was typed.
+    // Folded here too: a v2 storage key holds the normalized identity, but the
+    // older `id::variant` keys this browser still reads hold the typed casing.
     const key = normalizedOverrideKey(
       modelOverrideKey(entry.modelId, entry.ggufVariant),
     );
     if (known.has(key)) {
       continue;
     }
-    // Re-read rather than trusting the snapshot taken before the fetch above.
-    // A save or a forget during that round trip would otherwise be undone by
-    // this write, since it is queued behind the interactive one and commits
-    // last: the browser would show the new settings while an API load applied
-    // the old ones.
+    // Re-read rather than trusting the snapshot from before the fetch: this write
+    // is queued behind the interactive one and commits last, so a save or forget
+    // during the round trip would be undone by it.
     const current = listPerModelConfigs().find(
       (candidate) =>
         normalizedOverrideKey(

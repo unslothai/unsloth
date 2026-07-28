@@ -97,7 +97,7 @@ interface LocalOnDeviceCardProps {
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
-  /** Open this model's full settings page for the shown quant. */
+  /** Open settings for the quant this card is showing. */
   onOpenSettings?: (ggufVariant: string | null) => void;
 }
 
@@ -556,8 +556,8 @@ export function LocalOnDeviceCard({
               {onOpenSettings && (
                 <CardSettingsButton
                   label={`Settings for ${repoId}`}
-                  // Hand over the quant this card resolved, so the settings page
-                  // edits the variant the user is looking at rather than the repo.
+                  // Pass the quant this card resolved, so the settings page edits the
+                  // variant on screen rather than the repo.
                   onClick={() => onOpenSettings(selectedQuant ?? null)}
                 />
               )}

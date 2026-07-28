@@ -12,9 +12,8 @@ const ApiMonitorPage = lazyRouteComponent(
 
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
-  // Not "/api": the backend owns that prefix (and "/v1"), and its SPA fallback
-  // deliberately 404s those paths so API clients get an API-shaped error rather
-  // than an HTML page. A deep link to /api would never reach the router.
+  // Not "/api": the backend owns that prefix (and "/v1") and its SPA fallback 404s
+  // those paths, so a deep link to /api would never reach the router.
   path: "/api-monitor",
   staticData: { title: "API" },
   beforeLoad: () => requireAuth(),

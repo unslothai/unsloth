@@ -5,8 +5,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.tsx"
-# The monitor moved out of the settings dialog and onto its own page; Settings
-# now links to it. The shrink contract still applies to both surfaces.
+# The monitor moved onto its own page and Settings links to it; the shrink
+# contract still applies to both surfaces.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
@@ -21,11 +21,10 @@ def test_dialog_content_can_shrink_inside_the_dialog_grid():
 def test_api_monitor_entries_and_expanded_text_can_shrink():
     source = API_MONITOR_PAGE.read_text(encoding = "utf-8")
     # Rows and the detail pane sit in flex parents, so they need min-w-0 or a long
-    # model id or endpoint pushes the layout wider than the viewport.
+    # model id pushes the layout wider than the viewport.
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
-    # Prompt and reply are unbounded user text: they must be height-capped,
-    # scrollable, and wrap rather than stretch the pane.
+    # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped.
     assert "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50" in source
     # A model id or path has no spaces to wrap on, so it needs break-all.
     assert 'className="min-w-0 break-all font-mono' in source
@@ -34,8 +33,7 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
 def test_settings_monitor_link_can_shrink():
     source = MONITOR_LINK.read_text(encoding = "utf-8")
     assert "flex w-full min-w-0 items-center gap-3" in source
-    # The summary line carries a model id, so it truncates instead of widening
-    # the settings dialog.
+    # The summary line carries a model id, so it truncates instead of widening.
     assert '<span className="truncate text-xs text-muted-foreground">' in source
 
 

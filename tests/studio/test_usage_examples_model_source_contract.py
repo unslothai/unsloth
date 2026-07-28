@@ -132,21 +132,19 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     assert "<ModelAutoSwitchSection />" in tab
 
 
-# The monitor moved out of the settings dialog onto its own page. Settings keeps
-# configuration and links across; these contracts follow the behaviour, not the
-# old file.
+# The monitor moved onto its own page; Settings keeps configuration and links
+# across. These contracts follow the behaviour, not the old file.
 API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 # The lifecycle labels live in their own module: the overlay is mounted from
-# __root.tsx, so importing them from the page pulled the whole page into the
-# eager bundle and undid the route's lazyRouteComponent.
+# __root.tsx, so importing them from the page pulled it into the eager bundle.
 API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
 def test_api_monitor_history_does_not_reorder_under_the_reader():
-    # The backend retains 50 terminal entries and moves an entry to the front when
-    # it finishes. The console froze ids while paging; the full page pauses the
-    # poll instead, which holds the whole list still while a payload is read.
+    # The backend keeps 50 terminal entries and moves one to the front as it
+    # finishes. The console froze ids while paging; the page pauses the poll instead,
+    # holding the whole list still while a payload is read.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
     assert "paused" in src
     assert "setPaused" in src
@@ -169,8 +167,8 @@ def test_api_monitor_renders_lifecycle_rows():
 
 def test_auto_switch_section_sits_above_the_usage_examples():
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    # The console became a link out to the monitor page; ordering still puts
-    # configuration ahead of the examples that depend on it.
+    # The console became a link out; ordering still puts configuration ahead of the
+    # examples that depend on it.
     assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
     assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
 

@@ -74,7 +74,7 @@ interface ModelRowMenuCachePath {
   variant?: string;
 }
 
-/** Opens the model's own settings page (load config + what the API will apply). */
+/** The model's settings page: load config plus what the API will apply. */
 interface ModelRowMenuSettings {
   onOpen: () => void;
 }
@@ -94,7 +94,6 @@ export function ModelRowMenu({
   iconClassName?: string;
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
-  /** Opens this model's full settings page. */
   settings?: ModelRowMenuSettings;
   pin?: ModelRowMenuPin;
   update?: ModelRowMenuUpdate;
