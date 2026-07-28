@@ -123,7 +123,19 @@ def _install_device_type_stub(name: str) -> None:
     sys.modules[name] = stub
 
 
+def _preimport_bitsandbytes() -> None:
+    """Import bitsandbytes on the real CPU path, before anything mocks
+    torch.cuda.is_available(). Under the mock its __init__ enters the CUDA branch
+    on CPU-only torch and raises, leaving a half-imported package in sys.modules
+    that no later import can repair."""
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:
+        pass
+
+
 if not _has_real_accelerator():
+    _preimport_bitsandbytes()
     if not _preload_device_type("unsloth_zoo", prereqs = ("utils",)):
         _install_device_type_stub("unsloth_zoo.device_type")
     if not _preload_device_type("unsloth"):
