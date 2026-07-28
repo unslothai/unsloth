@@ -747,6 +747,16 @@ def test_ollama_cuda_runtime_requires_valid_prebuilt_marker(tmp_path):
     assert _linux_ollama_cuda_runtime_dirs(binary_dir, tmp_path / "ollama") == []
 
 
+@pytest.mark.parametrize("metadata", [None, [], "cuda13"])
+def test_ollama_cuda_runtime_ignores_non_object_marker(tmp_path, metadata):
+    binary_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    binary_dir.mkdir(parents = True)
+    marker = binary_dir.parent.parent / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(json.dumps(metadata))
+
+    assert _linux_ollama_cuda_runtime_dirs(binary_dir, tmp_path / "ollama") == []
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason = "LD_LIBRARY_PATH is POSIX-only")
 def test_llama_server_env_includes_selected_ollama_runtime(tmp_path, monkeypatch):
     binary_dir, runtime_dir = _make_ollama_cuda_runtime(tmp_path)

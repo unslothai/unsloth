@@ -2118,6 +2118,9 @@ def _linux_ollama_cuda_runtime_dirs(
     except (OSError, UnicodeError, json.JSONDecodeError):
         return []
 
+    if not isinstance(metadata, dict):
+        return []
+
     runtime_line = metadata.get("runtime_line")
     match = re.fullmatch(r"cuda(\d+)", runtime_line if isinstance(runtime_line, str) else "")
     if match is None:
