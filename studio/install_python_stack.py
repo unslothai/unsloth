@@ -424,6 +424,16 @@ def _bnb_rocm_prerelease_url() -> str | None:
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
 
 
+def _bnb_rocm_arch_has_binary() -> bool:
+    """False on aarch64: bitsandbytes ships no ROCm kernels there at any version.
+    The PyPI 0.50.0 and continuous-release_main aarch64 wheels both carry only
+    libbitsandbytes_cpu.so plus CUDA variants, so neither install path gives
+    aarch64 a 4-bit backend and neither message may claim one.
+    """
+    arch = platform.machine().lower()
+    return {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch) != "aarch64"
+
+
 def _amd_smi_env() -> dict[str, str] | None:
     """On Windows, env with __COMPAT_LAYER=RunAsInvoker; None elsewhere.
     NB: RunAsInvoker doesn't stop amd-smi's runtime elevation (its manifest is
@@ -2021,10 +2031,15 @@ def _ensure_rocm_torch() -> None:
                 force_pip = True,
             )
             if not _bnb_installed:
+                _fallback_note = (
+                    ", which carries the ROCm 4-bit fix"
+                    if _bnb_rocm_arch_has_binary()
+                    else ""
+                )
                 print(
                     _red(
                         "   bnb pre-release install failed; falling back to PyPI "
-                        f"{_BNB_ROCM_PYPI_FALLBACK}, which carries the ROCm 4-bit fix"
+                        f"{_BNB_ROCM_PYPI_FALLBACK}{_fallback_note}"
                     )
                 )
         if not _bnb_installed:
@@ -2035,6 +2050,14 @@ def _ensure_rocm_torch() -> None:
                 "--no-deps",
                 _BNB_ROCM_PYPI_FALLBACK,
                 constrain = False,
+            )
+        if not _bnb_rocm_arch_has_binary():
+            print(
+                _red(
+                    "   aarch64: bitsandbytes ships no ROCm kernels on this arch; "
+                    "4-bit QLoRA needs a source build -- "
+                    "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                )
             )
 
 
