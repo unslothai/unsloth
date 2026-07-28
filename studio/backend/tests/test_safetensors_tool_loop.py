@@ -3690,6 +3690,11 @@ class TestGGUFSafetensorsHealingParity:
             "First, it is 42",
             "First, my answer is 42",
             "The first line is blank.",
+            # Ordinal prose, not a plan.
+            "First place went to Alice",
+            "First class is available",
+            # Advice to the user about their next move, not work for this turn.
+            "First, install the package.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
@@ -3732,6 +3737,36 @@ class TestGGUFSafetensorsHealingParity:
         after = "I will search the web for the latest CUDA version 12.5 driver release notes"
         assert not is_reprompt_repeat(after, before)
         assert is_reprompt_repeat(before, before)
+
+    def test_reprompt_repeat_keeps_standalone_operator_tokens(self):
+        # A token made only of marks stripped down to nothing and vanished, so a
+        # bounded correction compared equal to the unbounded original.
+        from core.inference.tool_call_parser import is_reprompt_repeat, is_reprompt_restatement
+
+        loose = "Now I think the value is 5"
+        bounded = "Now I think the value is < 5"
+        assert not is_reprompt_repeat(bounded, loose)
+        assert not is_reprompt_restatement(bounded, loose)
+
+    def test_reprompt_repeat_keeps_a_changed_token_in_a_long_plan(self):
+        # Every similarity ratio is length-dependent: one changed token scored
+        # 0.98 across 54 tokens, so long corrected plans lost their nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        words = [f"token{index}" for index in range(54)]
+        corrected = list(words)
+        corrected[20] = "revised"
+        assert not is_reprompt_repeat(" ".join(corrected), " ".join(words))
+        assert is_reprompt_repeat(" ".join(words), " ".join(words))
+
+    def test_reprompt_repeat_ignores_filler_drift(self):
+        # Rewording that changes no content word is still the same attempt.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        assert is_reprompt_repeat(
+            "I will now summarize the findings",
+            "I will summarize the findings now",
+        )
 
     def test_reprompt_repeat_detects_restated_answers(self):
         # A nudge answered with the same text again has not worked; stop there.

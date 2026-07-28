@@ -26,7 +26,6 @@ Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 from __future__ import annotations
 
 import json
-import difflib
 import re
 from typing import Any, Optional
 
@@ -167,6 +166,14 @@ RAG_SEARCH_CAP_NUDGE = (
 
 
 # ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
+# Verbs that name work this turn rather than advice to the user. Deliberately
+# narrow: "install", "add", "open" and friends belong to instructions we must
+# not re-prompt.
+_ACTION_VERB = (
+    r"(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e"
+    r"|review|inspect|read|gather|examine|retrieve|browse|consult|verify"
+    r"|confirm|compute|calculate|determine|identify|render)"
+)
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
     r"(?im)("
@@ -178,12 +185,14 @@ INTENT_SIGNAL = re.compile(
     r"|"
     # Step/plan framing: "First, I ...", "The first step is to ...", "Step 1:",
     # "Here's my plan". "first" must open a sentence ("The first line is blank."
-    # is prose) and not be followed by a determiner, which is how factual
-    # openings read ("First, the answer is 42").
+    # is prose) and be followed by a plan: a pronoun, "my/our plan", or an
+    # investigative verb. Anything else reads as prose ("First place went to
+    # Alice", "First, the answer is 42") or as advice to the user rather than
+    # an action this turn ("First, install the package").
     r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
-    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+"
-    r"(?!(?:the|a|an|this|that|it|there|my|your|our|his|her|their)\b)\w+"
+    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
+    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+" + _ACTION_VERB + r"\b"
     r"|"
     r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"
@@ -205,17 +214,21 @@ def is_short_intent_without_action(text: str) -> bool:
 # stripping all non-word chars would collapse "C++" and "C#" to the same token.
 _REPEAT_TRAIL_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
 _REPEAT_LEAD_PUNCT = "\"'`([{‘“"
-# At 0.85 one changed token in a 15-word plan still scored ~0.87, so a corrected
-# query ("CUDA 12.4" -> "12.5") read as a repeat and cost the model its nudge.
-REPROMPT_REPEAT_SIMILARITY = 0.95
+# Wording that can drift between two attempts without the attempt changing.
+_REPEAT_FILLER = frozenset(
+    {"a", "an", "the", "now", "then", "just", "so", "ok", "okay", "please", "also", "again"}
+)
 
 
 def _normalize_for_repeat(text: str) -> str:
-    return " ".join(
-        stripped
-        for word in text.lower().split()
-        if (stripped := word.rstrip(_REPEAT_TRAIL_PUNCT).lstrip(_REPEAT_LEAD_PUNCT))
-    )
+    words = []
+    for word in text.lower().split():
+        stripped = word.rstrip(_REPEAT_TRAIL_PUNCT).lstrip(_REPEAT_LEAD_PUNCT)
+        # A token made only of marks carries its own meaning, so keep it rather
+        # than drop it: "the value is 5" and "the value is < 5" are not the same
+        # answer, and discarding the "<" threw the corrected one away.
+        words.append(stripped or word)
+    return " ".join(words)
 
 
 # A nudge that just gets the same answer back has not worked, so stop there.
@@ -227,12 +240,15 @@ def is_reprompt_repeat(text: str, previous: str) -> bool:
         return False
     if a == b:
         return True
-    ta, tb = a.split(), b.split()
+    ta = [word for word in a.split() if word not in _REPEAT_FILLER]
+    tb = [word for word in b.split() if word not in _REPEAT_FILLER]
     if len(ta) < 4 or len(tb) < 4:
         return False  # too short for overlap to mean anything
-    # Order-sensitive: a set ratio scores "cats not dogs" and "dogs not cats" as
-    # identical, and no threshold can tell those apart.
-    return difflib.SequenceMatcher(None, ta, tb).ratio() >= REPROMPT_REPEAT_SIMILARITY
+    # Compared as an ordered sequence of content words, not a similarity ratio:
+    # any ratio is length-dependent, so one corrected token in a 50-word plan
+    # still scored 0.98 and read as a repeat. Order matters too, since "cats not
+    # dogs" and "dogs not cats" share every word.
+    return ta == tb
 
 
 # Stricter sibling of ``is_reprompt_repeat``: exact equality, because this decides
