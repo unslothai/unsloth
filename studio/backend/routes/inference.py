@@ -3338,10 +3338,18 @@ def _request_matches_loaded_settings(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
-    # The diffusion runner is mode-agnostic (it always reports "auto" and ignores
-    # the layer/MoE/split knobs), so a standing manual preference in the request
-    # must not force a needless reload -- only the GPU pick matters.
-    if not llama_backend.is_diffusion:
+    # The diffusion runner takes the layer split but ignores the MoE/split knobs,
+    # so only the GPU pick and the effective --ngl matter for it.
+    if llama_backend.is_diffusion:
+        # Compare the EFFECTIVE split, not the raw mode: the UI keeps a manual
+        # preference standing across a diffusion load, so comparing modes would
+        # reload forever, while comparing raw gpu_layers would miss that Auto(-1)
+        # and Unsloth mode both mean "runner default".
+        from core.inference.llama_cpp import _diffusion_manual_ngl
+        loaded_ngl = llama_backend.gpu_layers if llama_backend.gpu_layers >= 0 else None
+        if _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers) != loaded_ngl:
+            return False
+    else:
         if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
             return False
         # Manual: a layer-count change always reloads; MoE/split only matter with

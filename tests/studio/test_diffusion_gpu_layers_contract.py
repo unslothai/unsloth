@@ -17,26 +17,42 @@
 
 Studio used to accept a manual GPU-layers setting, drop it on the diffusion path, and launch
 the visual server with every layer pinned to GPU, so a GGUF larger than VRAM OOMed in
-cudaMalloc with no way out. Source-level contract, matching test_llama_cpp_wall_clock_cap.py:
-importing the backend module pulls in the whole studio stack.
+cudaMalloc with no way out.
+
+The pure helpers are exercised directly; the wiring is checked at source level in the style of
+test_llama_cpp_wall_clock_cap.py, since importing the backend pulls in the whole studio stack.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
+import sys
 from pathlib import Path
 
+import pytest
 
-SOURCE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "studio"
-    / "backend"
-    / "core"
-    / "inference"
-    / "llama_cpp.py"
-)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_PATH = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+ROUTE_PATH = REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
 SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
+
+
+@pytest.fixture(scope = "module")
+def llama_cpp():
+    """Import the backend module directly; skip if the studio deps aren't installed."""
+    backend = str(REPO_ROOT / "studio" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    spec = importlib.util.spec_from_file_location("_llama_cpp_under_test", SOURCE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # missing optional studio dep on a bare checkout
+        pytest.skip(f"llama_cpp not importable here: {exc}")
+    return module
 
 
 def _function(name: str) -> ast.FunctionDef:
@@ -46,32 +62,76 @@ def _function(name: str) -> ast.FunctionDef:
     raise AssertionError(f"{name} missing")
 
 
-def _kwonly_names(fn: ast.FunctionDef) -> set[str]:
-    return {a.arg for a in fn.args.kwonlyargs} | {a.arg for a in fn.args.args}
+def _body(name: str) -> str:
+    return ast.get_source_segment(SRC, _function(name)) or ""
+
+
+# ── the split the child actually launches with ──
+
+
+@pytest.mark.parametrize(
+    ("mode", "layers", "expected"),
+    [
+        ("manual", 8, 8),
+        ("manual", 0, 0),  # CPU-only is a real request, not "unset"
+        ("manual", -1, None),  # Auto slider defers to the runner
+        ("auto", 8, None),  # Unsloth mode ignores a stale layer count
+        ("auto", -1, None),
+    ],
+)
+def test_effective_ngl(llama_cpp, mode, layers, expected):
+    assert llama_cpp._diffusion_manual_ngl(mode, layers) == expected
+
+
+def test_zero_layers_is_not_swallowed_as_falsy(llama_cpp):
+    """The exact case in the report: GPU layers set to 0 must reach the child."""
+    assert llama_cpp._diffusion_manual_ngl("manual", 0) == 0
+
+
+# ── shim capability probe ──
+
+
+def test_shim_without_ngl_is_detected(llama_cpp, tmp_path):
+    shim = tmp_path / "shim.py"
+    shim.write_text('ap.add_argument("--maxtok", type=int)\n', encoding = "utf-8")
+    assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is False
+
+
+def test_shim_with_ngl_is_detected(llama_cpp, tmp_path):
+    shim = tmp_path / "shim.py"
+    shim.write_text('ap.add_argument("--ngl", type=int)\n', encoding = "utf-8")
+    assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
+
+
+def test_missing_shim_file_does_not_raise(llama_cpp, tmp_path):
+    assert llama_cpp._shim_supports_ngl(["python", str(tmp_path / "gone.py")]) is False
+
+
+# ── wiring ──
 
 
 def test_diffusion_server_accepts_the_layer_split():
     fn = _function("_start_diffusion_server")
-    assert {"gpu_memory_mode", "gpu_layers"} <= _kwonly_names(fn)
+    names = {a.arg for a in fn.args.kwonlyargs} | {a.arg for a in fn.args.args}
+    assert {"gpu_memory_mode", "gpu_layers"} <= names
 
 
-def test_diffusion_server_forwards_ngl_to_the_shim():
-    fn = _function("_start_diffusion_server")
-    body = ast.get_source_segment(SRC, fn) or ""
+def test_diffusion_server_forwards_ngl_and_gates_it_on_shim_support():
+    body = _body("_start_diffusion_server")
     assert '"--ngl"' in body
+    assert "_shim_supports_ngl" in body
 
 
-def test_manual_zero_layers_is_not_swallowed_as_falsy():
-    """gpu_layers = 0 (CPU-only) is the exact case the bug report hit; it must stay a real
-    request rather than collapsing into the all-layers default."""
-    fn = _function("_start_diffusion_server")
-    body = ast.get_source_segment(SRC, fn) or ""
-    assert "gpu_layers >= 0" in body
+def test_zero_layers_masks_the_child_devices():
+    """gpu_layers=0 must CUDA-mask the child, else _gpu_offload_active=False lies to the
+    training VRAM coordinator and a GPU-resident runner survives into a training run."""
+    body = _body("_start_diffusion_server")
+    assert "manual_ngl == 0" in body
+    assert "self._gpu_offload_active = not cpu_only" in body
 
 
 def test_diffusion_load_passes_the_users_split_through():
-    fn = _function("load_model")
-    body = ast.get_source_segment(SRC, fn) or ""
+    body = _body("load_model")
     start = body.index("_start_diffusion_server(")
     call = body[start : body.index(")", body.index("gpu_ids = gpu_ids", start))]
     assert "gpu_memory_mode = gpu_memory_mode" in call
@@ -79,7 +139,27 @@ def test_diffusion_load_passes_the_users_split_through():
 
 
 def test_diffusion_no_longer_hardcodes_auto_over_the_users_choice():
-    fn = _function("_start_diffusion_server")
-    body = ast.get_source_segment(SRC, fn) or ""
+    body = _body("_start_diffusion_server")
     assert 'self._gpu_memory_mode = "auto"' not in body
     assert "self._gpu_layers = -1" not in body
+
+
+# ── dedup guards must see a split change ──
+
+
+def test_backend_dedup_compares_the_effective_split():
+    """Without this, changing a loaded diffusion model from 10 layers to 8 dedupes to
+    'already loaded' and no new shim is started."""
+    body = _body("_already_in_target_state")
+    assert "_diffusion_manual_ngl" in body
+
+
+def test_route_dedup_compares_the_effective_split():
+    route_src = ROUTE_PATH.read_text(encoding = "utf-8")
+    route_tree = ast.parse(route_src)
+    for node in ast.walk(route_tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_request_matches_loaded_settings":
+            body = ast.get_source_segment(route_src, node) or ""
+            assert "_diffusion_manual_ngl" in body
+            return
+    raise AssertionError("_request_matches_loaded_settings missing")
