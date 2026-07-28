@@ -400,6 +400,33 @@ def _split_marker_boundary(text: str, ahead: str, markers) -> bool:
     return False
 
 
+def _rendered_lookahead(texts: list, index: int, limit: int) -> str:
+    """The first ``limit`` chars the template renders after ``texts[index]``.
+
+    Adjacent text parts are concatenated with no separator and each is trimmed
+    (``gemma-4.jinja:333-340``), so a marker can be split across THREE or more
+    of them (``</`` + ``thi`` + ``nk>``). Reading only the next part missed
+    those and rendered a raw sentinel, which is the injection this pass exists
+    to stop; the OpenAI schema allows any number of text parts per message
+    (#7334).
+    """
+    if limit <= 0:
+        return ""
+    out: list[str] = []
+    total = 0
+    for text in texts[index + 1 :]:
+        if not isinstance(text, str):
+            continue
+        chunk = text.strip()
+        if not chunk:
+            continue
+        out.append(chunk)
+        total += len(chunk)
+        if total >= limit:
+            break
+    return "".join(out)
+
+
 def neutralize_message_content_for_role(role: Optional[str], content):
     """Apply control-markup neutralization to message content.
 
@@ -423,22 +450,22 @@ def neutralize_message_content_for_role(role: Optional[str], content):
             else _NON_ASSISTANT_CONTROL_MARKERS
         )
         # Text of each part as the template will render it, so a marker cut
-        # across two parts can be spotted before the parts are rewritten.
+        # across parts can be spotted before the parts are rewritten.
         texts = [
             part if isinstance(part, str) else part.get("text") if isinstance(part, dict) else None
             for part in content
         ]
+        # The whole marker may straddle the seam, so that many chars of what
+        # follows are enough to recognize it.
+        lookahead = max((len(src) for src, _ in markers), default = 0)
         changed = False
         out = []
         for index, part in enumerate(content):
-            # A marker only completed by the next part is broken by a neutral
+            # A marker only completed by what follows is broken by a neutral
             # char at the seam, which leaves both parts' own text intact.
             seam = ""
             if isinstance(texts[index], str):
-                ahead = next(
-                    (t for t in texts[index + 1 :] if isinstance(t, str) and t.strip()),
-                    "",
-                )
+                ahead = _rendered_lookahead(texts, index, lookahead)
                 if _split_marker_boundary(texts[index], ahead, markers):
                     seam = _THINK_NEUTRAL_ZW
             if isinstance(part, str):

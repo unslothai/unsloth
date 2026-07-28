@@ -1494,6 +1494,36 @@ def test_a_marker_split_across_adjacent_parts_is_broken():
     assert neutralize_message_content_for_role("user", mixed) is mixed
 
 
+def test_a_marker_split_across_three_or_more_parts_is_broken():
+    """The template joins EVERY text part, so two is not the limit.
+
+    ``gemma-4.jinja:333-340`` loops over the whole content array, and the OpenAI
+    schema puts no cap on how many ``text`` parts a message carries, so a marker
+    cut into three (``</`` + ``thi`` + ``nk>``) survived a look-ahead that only
+    ever compared a part with ONE follower and rendered a raw sentinel - the
+    injection this pass exists to stop (#7334).
+    """
+    for role, parts, forbidden in (
+        ("user", ["</", "thi", "nk>"], "</think>"),
+        ("user", ["<", "/", "thi", "nk>"], "</think>"),
+        ("user", ["<|im", "_st", "art|>"], "<|im_start|>"),
+        # A blank part between the halves is dropped by trim(), so the pieces
+        # still meet; the look-ahead has to skip it the same way.
+        ("user", ["</th", "   ", "ink>"], "</think>"),
+        ("assistant", ["<|e", "ot", "_id|>"], "<|eot_id|>"),
+    ):
+        content = [{"type": "text", "text": text} for text in parts]
+        out = neutralize_message_content_for_role(role, content)
+        rendered = "".join(part["text"].strip() for part in out)
+        assert forbidden not in rendered, (role, parts, rendered)
+        # Only the seam is padded, so no visible character is dropped.
+        assert rendered.replace(_ZW, "") == "".join(part.strip() for part in parts)
+
+    # A plain multi-part message assembles no marker, so it stays byte-identical.
+    plain = [{"type": "text", "text": t} for t in ("one ", "two ", "three")]
+    assert neutralize_message_content_for_role("user", plain) is plain
+
+
 def test_an_executed_tool_result_keeps_its_id_paired_with_the_call():
     """The generated call and its result take the same rewrite, or they stop
     matching and the template falls back to rendering the raw result name.
@@ -1590,6 +1620,69 @@ def test_a_held_marker_prefix_is_released_before_a_tool_call_opens():
         ("function_call", "get_weather"),
         ("text", '"</thi'),
     ]
+
+
+def test_a_deferred_close_is_resolved_when_a_tool_call_opens():
+    """A held close tag must not turn the visible preface into reasoning.
+
+    ``<think>...```</think>Let me check.`` holds the close tag: the ``` fence
+    has not closed, so the verdict waits for more bytes. A Responses item
+    boundary is one-way -- the reasoning item keeps a lower ``output_index``
+    than the call that just opened -- so once a tool-call delta arrives the
+    decision cannot wait either. ``finish()`` already resolves that buffer as
+    the structural close and returns the preface as visible text; the tool-call
+    path emitted the whole ``</think>Let me check.`` tail as reasoning instead,
+    hiding the preface in the thinking drawer and leaking a raw delimiter into
+    the reasoning item (#7334).
+    """
+
+    def transcript(tool_call: bool) -> list:
+        extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
+        out: list = []
+
+        def emit(reasoning: str, visible: str) -> None:
+            if reasoning:
+                out.append(("reasoning", reasoning))
+            if visible:
+                out.append(("text", visible))
+
+        for delta in ("<think>I will look it up. Example: ```", "</think>", "Let me check."):
+            emit(*extractor.feed(delta, None))
+        if tool_call:
+            emit(*extractor.flush_pending())
+            out.append(("function_call", "get_weather"))
+        emit(*extractor.finish())
+        return out
+
+    assert transcript(True) == [
+        ("reasoning", "I will look it up. Example: ```"),
+        ("text", "Let me check."),
+        ("function_call", "get_weather"),
+    ]
+    # End of stream reaches the same verdict on the same buffer, just later.
+    assert transcript(False) == [
+        ("reasoning", "I will look it up. Example: ```"),
+        ("text", "Let me check."),
+    ]
+
+
+def test_a_held_quoted_close_is_not_flushed_raw_into_the_reasoning_item():
+    """The quoted-close holdback carries a COMPLETE tag, so it needs resolving.
+
+    ``<think>echo "</think>`` is held waiting for the quote that would close the
+    mention. When a tool call opens instead, no such quote can arrive, which is
+    exactly the verdict ``finish()`` reaches: the tag was the structural close.
+    Emitting the holdback verbatim put a raw ``</think>`` inside the reasoning
+    item and left the extractor inside the block, so the whole answer after the
+    call stayed in the thinking drawer too (#7334).
+    """
+    extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
+    assert extractor.feed('<think>echo "</think>', None) == ("echo ", "")
+    reasoning, visible = extractor.flush_pending()
+    assert _RESPONSES_THINK_CLOSE not in reasoning
+    assert (reasoning, visible) == ('"', "")
+    # The block ended, so what follows the call is the ANSWER, not more thought.
+    assert extractor.feed("All done.", None) == ("", "All done.")
 
 
 def test_the_tool_call_branch_releases_both_holdbacks():

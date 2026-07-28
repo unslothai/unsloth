@@ -12473,6 +12473,58 @@ class _ResponsesReasoningExtractor:
         )
         return tail
 
+    def _resolve_held_reasoning(self, remaining: str) -> tuple[str, str, bool]:
+        """Resolve held close tags when no further bytes can classify them.
+
+        Returns ``(reasoning, visible, closed)``. A tag ending the held text has
+        no trailing quote, so a quoted thought ending in a structural close
+        parses as the block end (not raw text), and a tag inside a ``` fence
+        that never closed falls back to structural so an unclosed fence cannot
+        swallow the answer (#7066). ``closed`` reports whether a structural
+        close was reached, which is what ends the reasoning block.
+        """
+        reasoning_parts: list[str] = []
+        visible_parts: list[str] = []
+        closed = False
+        buf = remaining
+        while buf:
+            close_idx = buf.find(_RESPONSES_THINK_CLOSE)
+            if close_idx == -1:
+                reasoning_parts.append(buf.replace(_RESPONSES_THINK_OPEN, ""))
+                self._add_to_span(buf)
+                break
+            literal = self._think_close_is_literal(buf, close_idx)
+            if literal and self._fence_unresolved_at_close(buf, close_idx):
+                # Fence fallback: the close is inside a ``` fence that never
+                # closed, so no more bytes can resolve it. Treat it as the
+                # structural block end rather than swallowing the answer as
+                # reasoning (#7066).
+                literal = False
+            if literal:
+                from core.inference.chat_template_helpers import (
+                    neutralize_think_markup,
+                )
+
+                reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
+                reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
+                consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
+                self._add_to_span(buf[:consumed])
+                buf = buf[consumed:]
+                continue
+            reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
+            # Strip the OPEN marker too. feed() consumes it by switching
+            # back into reasoning, but this tail is emitted as-is, so a
+            # `<think>` after the structural close reached the answer body
+            # raw -- the one place the extractor leaked markup (#7334).
+            visible_parts.append(
+                buf[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                .replace(_RESPONSES_THINK_CLOSE, "")
+                .replace(_RESPONSES_THINK_OPEN, "")
+            )
+            closed = True
+            break
+        return "".join(reasoning_parts), "".join(visible_parts), closed
+
     def flush_pending(self) -> tuple[str, str]:
         """Finalize the raw marker holdback as ``(reasoning, visible)``.
 
@@ -12480,13 +12532,26 @@ class _ResponsesReasoningExtractor:
         so whatever the holdback kept is ordinary text. Left in the buffer it is
         emitted by :meth:`finish` instead, landing after the item that opened in
         the meantime and reversing the model's own output order (#7334).
+
+        The holdback can also be a COMPLETE close tag whose verdict was deferred
+        (an unresolved ``` fence, or a quote flank that has not arrived). A
+        Responses item boundary is one-way -- the reasoning item keeps a lower
+        ``output_index`` than the call that just opened -- so the decision
+        cannot wait either. Resolve it exactly as :meth:`finish` would; treating
+        the whole tail as reasoning instead swallowed the visible preface before
+        the call and emitted a raw ``</think>`` inside the reasoning item.
         """
         held, self._buffer = self._buffer, ""
         if not held:
             return "", ""
+        # The buffer is gone, so look-ahead cursors into it no longer apply.
+        self._rebase_scan_cursors(len(held))
         if self._in_reasoning:
-            self._add_to_span(held)
-            return held.replace(_RESPONSES_THINK_OPEN, ""), ""
+            reasoning, visible, closed = self._resolve_held_reasoning(held)
+            if closed:
+                self._in_reasoning = False
+                self._reset_span()
+            return reasoning, visible
         return "", held
 
     def finish(self) -> tuple[str, str]:
@@ -12505,49 +12570,11 @@ class _ResponsesReasoningExtractor:
         if not self._parse_think_markers:
             return structured_tail, remaining
         if self._in_reasoning:
-            # No more bytes are coming: resolve any held close tags now. A tag
-            # at buffer end has no trailing quote, so a quoted thought ending
-            # in a structural close parses as the block end (not raw text).
-            reasoning_parts: list[str] = [structured_tail]
-            visible_parts: list[str] = []
-            buf = remaining
-            while buf:
-                close_idx = buf.find(_RESPONSES_THINK_CLOSE)
-                if close_idx == -1:
-                    reasoning_parts.append(buf.replace(_RESPONSES_THINK_OPEN, ""))
-                    break
-                literal = self._think_close_is_literal(buf, close_idx)
-                if literal and self._fence_unresolved_at_close(buf, close_idx):
-                    # EOF fence fallback: the close is inside a ``` fence that
-                    # never closed, so no more bytes can resolve it. Treat it as
-                    # the structural block end rather than swallowing the answer
-                    # as reasoning (#7066).
-                    literal = False
-                if literal:
-                    from core.inference.chat_template_helpers import (
-                        neutralize_think_markup,
-                    )
-
-                    reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
-                    reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
-                    consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
-                    self._add_to_span(buf[:consumed])
-                    buf = buf[consumed:]
-                    continue
-                reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
-                # Strip the OPEN marker too. feed() consumes it by switching
-                # back into reasoning, but this tail is emitted as-is, so a
-                # `<think>` after the structural close reached the answer body
-                # raw -- the one place the extractor leaked markup (#7334).
-                visible_parts.append(
-                    buf[close_idx + len(_RESPONSES_THINK_CLOSE) :]
-                    .replace(_RESPONSES_THINK_CLOSE, "")
-                    .replace(_RESPONSES_THINK_OPEN, "")
-                )
-                break
+            # No more bytes are coming: resolve any held close tags now.
+            reasoning, visible, _closed = self._resolve_held_reasoning(remaining)
             self._in_reasoning = False
             self._reset_span()
-            return "".join(reasoning_parts), "".join(visible_parts)
+            return structured_tail + reasoning, visible
         return structured_tail, remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
 
