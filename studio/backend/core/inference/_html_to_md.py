@@ -212,18 +212,21 @@ class _HeaderFrame:
         "heading_parts",
         "text_chars",
         "link_chars",
-        "outer_in_cell",
+        "outer_in_link",
+        "outer_cell_seq",
         "outer_in_pre",
         "outer_bq_depth",
     )
 
-    def __init__(self, depth: int, in_cell: bool, in_pre: bool, bq_depth: int):
+    def __init__(self, depth: int, in_link: bool, cell_seq: int, in_pre: bool, bq_depth: int):
         self.depth = depth
         self.parts: list[str] = []
         # Heading output, teed so a heading routed through a nested buffer survives.
         self.heading_parts: list[str] = []
         # Side buffers open at this point enclose the frame; later ones are nested.
-        self.outer_in_cell = in_cell
+        # The cell is held by sequence number, so a nested table's cells differ.
+        self.outer_in_link = in_link
+        self.outer_cell_seq = cell_seq
         self.outer_in_pre = in_pre
         self.outer_bq_depth = bq_depth
         # Both exclude heading text (never dropped, so it must not vote on dropping
@@ -309,6 +312,7 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row: list[str] = []
         self._cell_parts: list[str] = []
         self._in_cell: bool = False
+        self._cell_seq: int = 0
         self._header_row_done: bool = False
         self._row_has_th: bool = False
         self._is_first_row: bool = False
@@ -328,8 +332,8 @@ class _MarkdownRenderer(HTMLParser):
         Such a buffer emits into the frame when it closes; an enclosing one
         (already open at ``<header>``) must not capture it."""
         return (
-            self._in_link
-            or (self._in_cell and not frame.outer_in_cell)
+            (self._in_link and not frame.outer_in_link)
+            or (self._in_cell and self._cell_seq != frame.outer_cell_seq)
             or (self._in_pre and not frame.outer_in_pre)
             or len(self._bq_stack) > frame.outer_bq_depth
         )
@@ -400,6 +404,7 @@ class _MarkdownRenderer(HTMLParser):
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
         href = self._link_href or ""
         self._in_link = False
+        self._link_text_parts = []
         # Recovery paths reach here without </a>, so drop the uncredited tally.
         self._link_header_chars = 0
         if href and text:
@@ -465,12 +470,12 @@ class _MarkdownRenderer(HTMLParser):
 
         Their content is the header's, so it has to land in the frame before the
         strip is judged; otherwise it is emitted afterwards and escapes."""
-        if self._in_link:
+        if self._in_link and not frame.outer_in_link:
             self._finish_link()
         if self._in_inline_code:
             self._in_inline_code = False
             self._emit("`")
-        if self._in_cell and not frame.outer_in_cell:
+        if self._in_cell and self._cell_seq != frame.outer_cell_seq:
             self._finish_cell()
             self._finish_row()
         if self._in_pre and not frame.outer_in_pre:
@@ -485,6 +490,7 @@ class _MarkdownRenderer(HTMLParser):
     def _flush_header_frames(self) -> None:
         """Emit every open header unchanged, abandoning the strip."""
         while self._header_stack:
+            self._finalize_nested_buffers(self._header_stack[-1])
             self._emit("".join(self._header_stack.pop().parts))
 
     def _count_header_text(self, text: str) -> None:
@@ -512,7 +518,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack.append(
                     _HeaderFrame(
                         len(self._open_tags) - 1,
-                        self._in_cell,
+                        self._in_link,
+                        self._cell_seq if self._in_cell else -1,
                         self._in_pre,
                         len(self._bq_stack),
                     )
@@ -543,6 +550,11 @@ class _MarkdownRenderer(HTMLParser):
         suppressed = bool(self._hidden_marks) or (
             self._scope_tags is not None and self._scope_depth == 0
         )
+        # An element that is itself the heading (e.g. <a role="heading">) emits
+        # its text when its buffer closes, which happens after the mark below is
+        # popped, so flush it here while the tee still recognises it.
+        if self._in_link and tag == "a" and self._heading_marks:
+            self._finish_link()
         if tag not in _VOID_TAGS:
             # Pop to the innermost matching open tag (recovers omitted closes).
             for i in range(len(self._open_tags) - 1, -1, -1):
@@ -658,6 +670,7 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_cell()  # handles omitted </td>/</th>
             self._cell_parts = []
             self._in_cell = True
+            self._cell_seq += 1
             if tag == "th":
                 self._row_has_th = True
 
@@ -794,6 +807,10 @@ class _MarkdownRenderer(HTMLParser):
             block = "```\n" + raw + "\n```"
             self._emit("\n\n" + block + "\n\n")
 
+        # Headers first: a buffer nested in one belongs to it, so flushing the
+        # buffer on its own would emit that content ahead of the header text.
+        self._flush_header_frames()
+
         # Flatten any open blockquote buffers (innermost first).
         while self._bq_stack:
             content = "".join(self._bq_stack.pop())
@@ -804,9 +821,6 @@ class _MarkdownRenderer(HTMLParser):
                 self._bq_stack[-1].append("\n\n" + prefixed + "\n\n")
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
-
-        # An unclosed <header> adopts the page body, so emit it unchanged.
-        self._flush_header_frames()
 
         # A scope left open by truncated HTML never reached _exit_tag, so its output
         # never joined scope_segments and would score 0. Flush the still-open segment
@@ -940,18 +954,26 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     unrelated siblings (related cards, comment threads) out of the output.
 
     Candidates are sized with their dropped header furniture added back, so the
-    strip never costs an article the size gate or a sibling comparison."""
+    strip never costs an article the size gate or a sibling comparison. A
+    candidate that retained nothing is all furniture, and gets no such credit."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
     dropped = renderer.scope_dropped
     best_len = 0
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        size = len(rendered) + dropped[i]
+        credit = dropped[i] if len(rendered) >= _MIN_RETAINED_CHARS else 0
+        size = len(rendered) + credit
         if size > best_len:
             best_len = size
             best_render = rendered
     return best_len, best_render
+
+
+# Removed furniture only counts toward a candidate's size once it retained more
+# than a bare heading line, so a scope holding nothing else cannot qualify on
+# what was deleted from it.
+_MIN_RETAINED_CHARS = 50
 
 
 # A scoped conversion below this size is judged not to be the page's main

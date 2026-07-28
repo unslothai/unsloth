@@ -1596,3 +1596,47 @@ def test_a_preserved_heading_is_terminated():
     assert "# TitleArticle" not in out
     assert out.startswith("# Title")
     assert "Article body text here." in out
+
+
+def test_scope_holding_only_furniture_does_not_win_or_blank_the_page():
+    # Removed furniture must not make an empty candidate eligible, or the
+    # fetch returns nothing at all.
+    body = "<main><header><ul>%s</ul></header></main><p>%s</p>" % (
+        _interlanguage_list(300),
+        "Real page body prose. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Real page body prose." in out
+
+
+def test_header_inside_an_enclosing_link_renders_once():
+    body = "<main><a href='/x'><header><h1>T</h1></header></a><p>%s</p></main>" % (
+        "Article body. " * 30
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("[# T](/x)") == 1
+
+
+def test_heading_that_is_itself_a_buffered_element_is_kept():
+    body = (
+        "<main><header><a role='heading' href='/title'>Page Title</a><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Lang0" not in out
+
+
+def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
+    html = "<table><tr><td><header><table><tr><td>x</td></tr></table></header></td></tr></table>"
+    assert html_to_markdown(f"<body>{html}</body>", main_content = True) == html_to_markdown(
+        f"<body>{html}</body>"
+    )
+
+
+def test_truncated_header_and_blockquote_keep_source_order():
+    out = html_to_markdown("<body><main><header><h1>Title</h1><blockquote>Quote", main_content = True)
+    assert out.index("Title") < out.index("Quote")
