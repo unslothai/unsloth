@@ -163,9 +163,7 @@ def test_inline_style_display_none_important_is_dropped():
 
 
 def test_inline_style_display_none_among_other_declarations():
-    html = (
-        "<body><p>keep</p>" '<div style="color: red; display : none ; margin:0">gone</div></body>'
-    )
+    html = '<body><p>keep</p><div style="color: red; display : none ; margin:0">gone</div></body>'
     out = html_to_markdown(html)
     assert "keep" in out
     assert "gone" not in out
@@ -216,8 +214,7 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
     # HTML5 optional end tags: a sibling <p> start tag implicitly closes an open
     # <p hidden>, so the hidden region ends there instead of swallowing siblings.
     html = (
-        "<body><div><p hidden>secret"
-        "<p>visible one</p><p>visible two</p></div><p>after</p></body>"
+        "<body><div><p hidden>secret<p>visible one</p><p>visible two</p></div><p>after</p></body>"
     )
     out = html_to_markdown(html)
     assert "secret" not in out
@@ -1330,3 +1327,37 @@ def test_header_kept_in_unscoped_conversion():
     out = html_to_markdown(f"<body>{body}</body>")
     assert "Nav link" in out
     assert "Text." in out
+
+
+def test_unclosed_header_in_truncated_scope_keeps_body():
+    # A capped fetch ends before </main>, so the segment is flushed, not closed.
+    # Headings survive the strip and alone clear the size gate, so the flushed
+    # segment must carry its dropped-prose count or the body is lost.
+    sections = "".join(
+        f"<h2>Section {i} of the article</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12)
+    )
+    out = html_to_markdown(
+        f"<body><main><header><h1>T</h1>{sections}",
+        main_content = True,
+    )
+    assert "Body prose here." in out
+    assert "Section 0 of the article" in out
+
+
+def test_sibling_card_does_not_beat_an_article_with_a_swallowed_body():
+    real = "<article><header><h1>Real</h1><p>%s</p></article>" % ("Real article body. " * 40)
+    card = "<article><p>%s</p></article>" % ("Related card teaser. " * 12)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "Real article body." in out
+    assert "Related card teaser." not in out
+
+
+def test_closed_header_banner_stays_dropped_when_longer_than_the_body():
+    body = "<main><header><h1>Title</h1><p>%s</p></header><p>%s</p></main>" % (
+        "Cookie banner notice text. " * 30,
+        "The real body prose. " * 20,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "The real body prose." in out
+    assert "Cookie banner notice text." not in out
+    assert "# Title" in out

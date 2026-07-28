@@ -223,6 +223,7 @@ class _MarkdownRenderer(HTMLParser):
         self._header_marks: list[int] = []
         self._header_heading_marks: list[int] = []
         self._header_prose_total: int = 0
+        self._open_header_prose: int = 0
         self._seg_header_start: int = 0
         self.scope_header_prose: list[int] = []
 
@@ -345,7 +346,16 @@ class _MarkdownRenderer(HTMLParser):
                 self._hidden_marks.pop()
             self._unwind_header_marks(close_at)
 
-    def _unwind_header_marks(self, depth: int) -> None:
+    def _unwind_header_marks(
+        self,
+        depth: int,
+        closed_header: bool = False,
+    ) -> None:
+        if self._header_marks and self._header_marks[0] >= depth:
+            # A matching </header> proves it never adopted the body: refund.
+            if closed_header:
+                self._header_prose_total -= self._open_header_prose
+            self._open_header_prose = 0
         while self._header_marks and self._header_marks[-1] >= depth:
             self._header_marks.pop()
         while self._header_heading_marks and self._header_heading_marks[-1] >= depth:
@@ -398,7 +408,7 @@ class _MarkdownRenderer(HTMLParser):
                     del self._open_tags[i:]
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
-                    self._unwind_header_marks(i)
+                    self._unwind_header_marks(i, closed_header = tag == "header")
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
@@ -595,7 +605,9 @@ class _MarkdownRenderer(HTMLParser):
                 and not (self._scope_tags is not None and self._scope_depth == 0)
                 and "a" not in self._open_tags[self._header_marks[0] :]
             ):
-                self._header_prose_total += len(data.strip())
+                dropped = len(data.strip())
+                self._header_prose_total += dropped
+                self._open_header_prose += dropped
             return
         if self._in_pre:
             self._pre_parts.append(data)
@@ -657,6 +669,7 @@ class _MarkdownRenderer(HTMLParser):
         # here (after the side-buffers) so a truncated main-content page is scored.
         if self._scope_seg_start is not None:
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
+            self.scope_header_prose.append(self._header_prose_total - self._seg_header_start)
             self._scope_seg_start = None
             self._scope_depth = 0
 
@@ -771,42 +784,53 @@ def _render(
     return _cleanup(raw), renderer._header_prose_total
 
 
-def _select_main_scope_render(
-    source_html: str,
-    tag: str,
-    strip_header: bool = False,
-) -> tuple[int, str, int]:
-    """Length, boilerplate-stripped render, and dropped-prose count of the
-    largest single ``<tag>`` subtree. Sizing candidates one at a time stops many
-    tiny sibling cards from clearing the threshold together, and returning that
-    one subtree keeps unrelated siblings (related cards, comment threads) out."""
+# An unclosed <header> adopts the body (as browsers parse it). Size cannot tell
+# that apart from furniture removal, but link density can: a real header holds
+# a title and links, so only non-anchor prose from a header that no </header>
+# ever closed counts as a swallowed body.
+def _header_strip_backfired(kept_chars: int, header_prose_chars: int) -> bool:
+    return header_prose_chars > kept_chars
+
+
+def _scope_segments(source_html: str, tag: str, strip_header: bool) -> tuple[list[str], list[int]]:
     renderer = _MarkdownRenderer(scope_tags = frozenset({tag}), strip_header = strip_header)
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
+    return renderer.scope_segments, renderer.scope_header_prose
+
+
+def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
+    """Length and boilerplate-stripped render of the largest single ``<tag>``
+    subtree. Sizing candidates one at a time stops many tiny sibling cards from
+    clearing the threshold together, and returning that one subtree keeps
+    unrelated siblings (related cards, comment threads) out of the output.
+
+    Header stripping is judged per candidate, before the sizing comparison, so
+    an article whose body an unclosed ``<header>`` swallowed is restored to its
+    real size instead of losing the comparison to a sibling card."""
+    segments, header_prose = _scope_segments(source_html, tag, strip_header = True)
+    unstripped: list[str] | None = None
     best_len = 0
     best_render = ""
-    best_header_prose = 0
-    header_prose = renderer.scope_header_prose
-    for i, seg in enumerate(renderer.scope_segments):
+    for i, seg in enumerate(segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
+        dropped = header_prose[i] if i < len(header_prose) else 0
+        if _header_strip_backfired(len(rendered), dropped):
+            if unstripped is None:
+                # Scope bookkeeping ignores header state, so the indices line up.
+                unstripped = _scope_segments(source_html, tag, strip_header = False)[0]
+            if i < len(unstripped):
+                rendered = _strip_boilerplate_lines(_cleanup(unstripped[i]))
         if len(rendered) > best_len:
             best_len = len(rendered)
             best_render = rendered
-            best_header_prose = header_prose[i] if i < len(header_prose) else 0
-    return best_len, best_render, best_header_prose
+    return best_len, best_render
 
 
 # A scoped conversion below this size is judged not to be the page's main
 # content (e.g. an empty <article> stub) and the next candidate is tried.
 _MIN_MAIN_CONTENT_CHARS = 200
-
-
-# An unclosed <header> adopts the body (as browsers parse it). Size cannot tell
-# that apart from furniture removal, but link density can: a real header holds
-# a title and links, so only non-anchor prose counts as a swallowed body.
-def _header_strip_backfired(kept_chars: int, header_prose_chars: int) -> bool:
-    return header_prose_chars > kept_chars
 
 
 # Public API
@@ -828,13 +852,7 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
         for scope_tag in ("article", "main"):
             # Render only the chosen subtree so sibling <article>/<main>
             # elements do not leak in once the largest passes the size gate.
-            length, rendered, header_prose = _select_main_scope_render(
-                source_html,
-                scope_tag,
-                strip_header = True,
-            )
-            if _header_strip_backfired(length, header_prose):
-                length, rendered, _ = _select_main_scope_render(source_html, scope_tag)
+            length, rendered = _select_main_scope_render(source_html, scope_tag)
             if length >= _MIN_MAIN_CONTENT_CHARS:
                 return rendered
         rendered, header_prose = _render(source_html, None, strip_header = True)
