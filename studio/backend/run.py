@@ -744,7 +744,35 @@ def _find_free_port(
 
 from utils.paths.storage_roots import studio_root as _studio_root
 
+# Legacy single-instance file; still read so `stop` finds an older build's server.
 _PID_FILE = _studio_root() / "studio.pid"
+PID_FILE_GLOB = "studio-*.pid"
+
+
+def _pid_file_for_port(port: int) -> Path:
+    return _studio_root() / f"studio-{port}.pid"
+
+
+def _blocker_is_own_studio(blocker: "tuple[int, str] | None") -> bool:
+    """True when the process holding the port is a server we recorded."""
+    return bool(blocker) and blocker[0] in _recorded_studio_pids()
+
+
+def _recorded_studio_pids() -> "set[int]":
+    """PIDs recorded under this STUDIO_HOME."""
+    pids: "set[int]" = set()
+    try:
+        paths = list(_studio_root().glob(PID_FILE_GLOB)) + [_PID_FILE]
+    except OSError:
+        return pids
+    for path in paths:
+        try:
+            text = path.read_text(encoding = "utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if text.isdigit():
+            pids.add(int(text))
+    return pids
 
 # Direct backend launches bypass the CLI's env re-export; do it here for
 # real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
@@ -770,22 +798,30 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
-def _write_pid_file():
-    """Write the current process PID to the studio PID file."""
+_OWN_PID_FILE: "Path | None" = None
+
+
+def _write_pid_file(port: int):
+    """Record this PID under its own port so `stop` can find every server."""
+    global _OWN_PID_FILE
+    path = _pid_file_for_port(port)
     try:
-        _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
-        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
-        pass
+        return
+    _OWN_PID_FILE = path
 
 
 def _remove_pid_file():
     """Remove the PID file if it belongs to this process."""
+    if _OWN_PID_FILE is None:
+        return
     try:
-        if _PID_FILE.is_file():
-            stored = _PID_FILE.read_text(encoding = "utf-8").strip()
+        if _OWN_PID_FILE.is_file():
+            stored = _OWN_PID_FILE.read_text(encoding = "utf-8").strip()
             if stored == str(os.getpid()):
-                _PID_FILE.unlink(missing_ok = True)
+                _OWN_PID_FILE.unlink(missing_ok = True)
     except (OSError, UnicodeDecodeError):
         pass
 
@@ -1533,6 +1569,16 @@ def run_server(
     if not _is_port_free(host, port):
         original_port = port
         blocker = _get_pid_on_port(port)
+        # Falling back past our own server is what creates the orphan.
+        if _blocker_is_own_studio(blocker):
+            print(
+                f"Error: Unsloth Studio is already running on port {port} "
+                f"(PID {blocker[0]}). Run `unsloth studio stop` first, or start this "
+                "one on a different --port.",
+                file = sys.stderr,
+                flush = True,
+            )
+            sys.exit(1)
         port = _find_free_port(host, port + 1)
         if not silent:
             print("")
@@ -1731,7 +1777,7 @@ def run_server(
         (time.perf_counter() - boot_started) * 1000,
     )
 
-    _write_pid_file()
+    _write_pid_file(port)
     import atexit
 
     atexit.register(_remove_pid_file)

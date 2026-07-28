@@ -2394,6 +2394,7 @@ def run(
 # ── unsloth studio stop ───────────────────────────────────────────────
 
 _PID_FILE = STUDIO_HOME / "studio.pid"
+PID_FILE_GLOB = "studio-*.pid"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -2423,58 +2424,93 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-@studio_app.command()
-def stop():
-    """Stop a running Unsloth Studio server.
+def _pid_file_entries() -> "list[tuple[Path, int]]":
+    """(path, pid) per recorded server, including the legacy studio.pid."""
+    entries = []
+    try:
+        paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
+    except OSError:
+        paths = [_PID_FILE]
+    seen = set()
+    for path in paths:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding = "utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if text.isdigit():
+            entries.append((path, int(text)))
+        else:
+            typer.echo(f"Ignoring invalid PID file {path.name}: {text}")
+            path.unlink(missing_ok = True)
+    return entries
 
-    Reads the PID from ~/.unsloth/studio/studio.pid and sends SIGTERM
-    (or TerminateProcess on Windows) to shut it down gracefully.
-    """
+
+def _signal_stop(pid: int) -> "str | None":
+    """SIGTERM (or taskkill) the pid. Returns an error string, or None on success."""
     import signal as _signal
 
-    if not _PID_FILE.is_file():
-        typer.echo("No running Unsloth server found (no PID file).")
-        raise typer.Exit(0)
-
-    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
-    if not pid_text.isdigit():
-        typer.echo(f"Invalid PID file contents: {pid_text}")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(1)
-
-    pid = int(pid_text)
-
-    # Check if still alive (os.kill(pid, 0) is invalid on Windows -- see _pid_alive).
-    if not _pid_alive(pid):
-        typer.echo(f"Unsloth server (PID {pid}) is not running. Cleaning up stale PID file.")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(0)
-
-    # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
     try:
         if sys.platform == "win32":
             # /T also stops llama-server children, which otherwise keep GPU and port.
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check = True)
         else:
             os.kill(pid, _signal.SIGTERM)
-        typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
     except ProcessLookupError:
-        typer.echo(f"Unsloth server (PID {pid}) already exited.")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(0)
+        return None
     except Exception as e:
-        typer.echo(f"Failed to stop Unsloth server (PID {pid}): {e}", err = True)
-        raise typer.Exit(1)
+        return str(e)
+    return None
 
-    # Wait briefly for the process to exit and clean up.
-    for _ in range(10):
-        time.sleep(0.5)
+
+@studio_app.command()
+def stop():
+    """Stop every running Unsloth Studio server for this STUDIO_HOME.
+
+    The port fallback can leave more than one running, so stop them all.
+    """
+    entries = _pid_file_entries()
+    if not entries:
+        typer.echo("No running Unsloth server found (no PID file).")
+        raise typer.Exit(0)
+
+    signalled, failed = [], []
+    for path, pid in entries:
         if not _pid_alive(pid):
-            _PID_FILE.unlink(missing_ok = True)
-            typer.echo("Unsloth server stopped.")
-            raise typer.Exit(0)
+            path.unlink(missing_ok = True)
+            continue
+        error = _signal_stop(pid)
+        if error is not None:
+            failed.append((pid, error))
+            typer.echo(f"Failed to stop Unsloth server (PID {pid}): {error}", err = True)
+            continue
+        typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
+        signalled.append((path, pid))
 
-    typer.echo("Unsloth server is shutting down (may take a few seconds).")
+    if not signalled and not failed:
+        typer.echo("No running Unsloth server found (cleaned up stale PID files).")
+        raise typer.Exit(0)
+
+    pending = list(signalled)
+    for _ in range(10):
+        if not pending:
+            break
+        time.sleep(0.5)
+        for entry in list(pending):
+            path, pid = entry
+            if not _pid_alive(pid):
+                path.unlink(missing_ok = True)
+                pending.remove(entry)
+
+    stopped = len(signalled) - len(pending)
+    if stopped:
+        typer.echo(f"Unsloth server{'s' if stopped > 1 else ''} stopped ({stopped}).")
+    for _path, pid in pending:
+        typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
+    if failed:
+        raise typer.Exit(1)
 
 
 # ── unsloth studio setup / update ─────────────────────────────────────
