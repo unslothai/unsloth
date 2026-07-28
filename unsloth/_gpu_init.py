@@ -303,6 +303,7 @@ if DEVICE_TYPE == "cuda":
     # Try loading bitsandbytes and triton
     try:
         import bitsandbytes as bnb
+
         # Bind the submodule by name: a half-imported bitsandbytes leaves the parent
         # without a `functional` attribute, which would otherwise be misreported below
         # as a CUDA linking failure. See unsloth/kernels/utils.py.

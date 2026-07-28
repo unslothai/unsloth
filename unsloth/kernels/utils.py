@@ -135,6 +135,7 @@ def calculate_settings(
 HAS_CUDA_STREAM = False
 try:
     import bitsandbytes as bnb
+
     # If an earlier `import bitsandbytes` died inside __init__, CPython evicts only
     # the parent from sys.modules and keeps its submodules, so this retry re-executes
     # __init__ without rebinding `bnb.functional`. `import x.y as z` reads sys.modules
