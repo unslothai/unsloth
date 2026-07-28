@@ -17,8 +17,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 STUDIO_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
 
-# Imported at module scope by the studio.backend chain every CLI command walks.
-CORE_RUNTIME_PACKAGES = ("structlog",)
+# Imported at module scope by the chain every CLI command walks: structlog via
+# studio.backend, click via unsloth_cli/commands/start.py.
+CORE_RUNTIME_PACKAGES = ("structlog", "click")
 
 
 def _load_pyproject() -> dict:
