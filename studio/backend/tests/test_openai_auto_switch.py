@@ -4763,9 +4763,7 @@ def test_save_updates_the_existing_case_variant_instead_of_forking_it(monkeypatc
     _mock_override_store(monkeypatch)
     settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
     settings_route.update_openai_auto_switch_override(
-        settings_route.ModelOverridePayload(
-            model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
-        ),
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096),
         "tester",
     )
     assert list(settings.get_model_overrides()) == ["unsloth/b-gguf:q4_k_m"]

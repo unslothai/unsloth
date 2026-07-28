@@ -314,6 +314,8 @@ def test_api_monitor_records_whether_the_caller_used_an_api_key():
     by_id = {entry["id"]: entry for entry in monitor.snapshot(subject = "u")}
     assert by_id[ui]["via_api_key"] is False
     assert by_id[api]["via_api_key"] is True
+
+
 def test_api_monitor_disabled_is_noop():
     monitor = ApiMonitor(max_entries = 3, enabled = False)
 

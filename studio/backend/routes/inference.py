@@ -4371,7 +4371,6 @@ async def _maybe_auto_switch_model(
                         file_variant = None
                         if not variant and target_id.lower().endswith(".gguf"):
                             from hub.utils.gguf import extract_quant_label
-
                             file_variant = extract_quant_label(os.path.basename(target_id))
                         override = {}
                         for override_key in (
