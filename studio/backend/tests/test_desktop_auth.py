@@ -646,7 +646,7 @@ def test_update_password_clears_desktop_secret():
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
     changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
-    assert changed is True
+    assert changed
     assert storage.validate_desktop_secret(raw) is None
 
 
@@ -655,7 +655,7 @@ def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
     raw = storage.create_desktop_secret()
 
     changed = storage.update_password("not-a-user", "irrelevant")
-    assert changed is False
+    assert not changed
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
 

@@ -161,6 +161,36 @@ def test_api_key_creation_under_the_current_credential_still_works(admin):
     assert storage.validate_api_key(raw_key) == admin
 
 
+def test_change_password_tokens_are_bound_to_its_own_write(admin):
+    # The tokens returned to a successful change-password must be signed with the
+    # secret that write produced, not whatever a later reset put in the DB.
+    _salt, verified_hash, _secret, _must = storage.get_user_and_secret(admin)
+    new_secret = storage.update_password(
+        admin, "chosen-by-the-user", revoke_refresh_tokens = True,
+        expect_password_hash = verified_hash,
+    )
+    assert new_secret is not None
+
+    storage.update_password(admin, "reset-by-the-cli-789", revoke_refresh_tokens = True)
+    access = create_access_token(subject = admin, secret = new_secret)
+    refresh = create_refresh_token(subject = admin, secret = new_secret)
+
+    with pytest.raises(jwt.InvalidTokenError):
+        jwt.decode(access, storage.get_jwt_secret(admin), algorithms = [ALGORITHM])
+    assert storage.verify_refresh_token(refresh) is None
+
+
+def test_internal_api_key_minting_honours_the_request_generation(admin):
+    generation = storage.credential_generation(_verified_secret(admin))
+    storage.update_password(admin, "new-password-456", revoke_refresh_tokens = True)
+
+    with pytest.raises(storage.CredentialRotated):
+        storage.create_api_key(
+            username = admin, name = "data-recipe workflow",
+            internal = True, expect_gen = generation,
+        )
+
+
 def test_unstamped_legacy_tokens_still_verify(admin):
     # Rows written before the secret_gen column existed must not log users out.
     token = secrets.token_urlsafe(48)

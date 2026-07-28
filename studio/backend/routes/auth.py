@@ -515,12 +515,13 @@ async def change_password(
     # password commit, leaving pre-change tokens able to mint access tokens.
     # Conditional on the hash just verified: a reset-password that landed while
     # this request was in flight must not be overwritten by it.
-    if not storage.update_password(
+    new_secret = storage.update_password(
         current_subject,
         payload.new_password,
         revoke_refresh_tokens = True,
         expect_password_hash = pwd_hash,
-    ):
+    )
+    if new_secret is None:
         raise HTTPException(
             status_code = status.HTTP_409_CONFLICT,
             detail = "The password changed while this request was in flight. Sign in again.",
@@ -529,8 +530,8 @@ async def change_password(
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    access_token = create_access_token(subject = current_subject)
-    refresh_token = create_refresh_token(subject = current_subject)
+    access_token = create_access_token(subject = current_subject, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, secret = new_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,

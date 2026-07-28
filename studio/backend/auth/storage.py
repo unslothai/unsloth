@@ -616,8 +616,12 @@ def update_password(
     *,
     revoke_refresh_tokens: bool = False,
     expect_password_hash: Optional[str] = None,
-) -> bool:
+) -> Optional[str]:
     """Update password, clear first-login requirement, rotate JWT secret.
+
+    Returns the new JWT secret, or None when nothing was updated. Callers that
+    mint tokens for the caller must sign with the returned secret: re-reading it
+    would pick up a reset that landed between this commit and the mint.
 
     ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME
     transaction: a separate delete could fail after the password commit and
@@ -658,7 +662,8 @@ def update_password(
         if cursor.rowcount > 0:
             clear_bootstrap_password()
             clear_desktop_secret()
-        return cursor.rowcount > 0
+            return jwt_secret
+        return None
     finally:
         conn.close()
 
