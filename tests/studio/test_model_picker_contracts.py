@@ -86,10 +86,12 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert auto_load.count("updateAutoLoadToast(") >= 4
     assert "duration: Number.POSITIVE_INFINITY" in auto_load
     assert "closeButton: true" in auto_load
+    assert "icon: createLoadingToastIcon()" in auto_load
     assert "onDismiss:" in auto_load
     # Terminal success uses a fresh finite toast after manual progress dismissal.
     assert "showAutoLoadSuccess" in auto_load
     assert "description: undefined" in auto_load
+    assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
     assert auto_load.count("toast.dismiss(toastId)") >= 4
@@ -108,9 +110,18 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
     assert "toast.message(" in model_load
     assert "duration: Number.POSITIVE_INFINITY" in model_load
     assert "closeButton: true" in model_load
+    assert "icon: createLoadingToastIcon()" in model_load
     assert "onDismiss:" in model_load
     assert "description: undefined" in model_load
+    assert "icon: undefined" in model_load
     assert "duration: 2000" in model_load
+
+    toast_lib = _read("lib/toast.ts")
+    assert "createElement(Spinner" in toast_lib
+    assert 'className: "size-4 text-muted-foreground"' in toast_lib
+
+    sonner = _read("components/ui/sonner.tsx")
+    assert "loading: createLoadingToastIcon()" in sonner
 
 
 def test_rollback_restores_native_lease_expiry_with_token():

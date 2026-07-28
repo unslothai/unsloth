@@ -6,7 +6,7 @@ import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
-import { toast } from "@/lib/toast";
+import { createLoadingToastIcon, toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -1483,6 +1483,7 @@ async function autoLoadSmallestModel(): Promise<{
       : "Auto-selecting the smallest downloaded model.",
     duration: Number.POSITIVE_INFINITY,
     closeButton: true,
+    icon: createLoadingToastIcon(),
     onDismiss: () => {
       autoLoadToastDismissed = true;
     },
@@ -1496,7 +1497,11 @@ async function autoLoadSmallestModel(): Promise<{
     });
   };
   const showAutoLoadSuccess = (message: string): void => {
-    const options = { description: undefined, duration: 5000 };
+    const options = {
+      description: undefined,
+      duration: 5000,
+      icon: undefined,
+    };
     if (autoLoadToastDismissed) {
       toast.success(message, options);
       return;

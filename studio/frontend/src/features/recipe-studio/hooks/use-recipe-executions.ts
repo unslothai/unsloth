@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus, loadModel } from "@/features/chat";
-import { toast } from "@/lib/toast";
+import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -243,6 +243,7 @@ async function loadLocalModelSelection(
     description: "Starting the local inference server for this recipe.",
     duration: Number.POSITIVE_INFINITY,
     closeButton: true,
+    icon: createLoadingToastIcon(),
     onDismiss: () => {
       loadToastDismissed = true;
     },
@@ -273,7 +274,11 @@ async function loadLocalModelSelection(
       // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
-    const successOptions = { description: undefined, duration: 2000 };
+    const successOptions = {
+      description: undefined,
+      duration: 2000,
+      icon: undefined,
+    };
     if (loadToastDismissed) {
       toast.success(`Loaded ${modelLabel}`, successOptions);
     } else {
