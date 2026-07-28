@@ -77,7 +77,19 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let generatedTokens = 0;
   let generatedDurationMs = 0;
 
+  let requests = 0;
+
   for (const entry of entries) {
+    // A model load, unload or download is not an HTTP call. It shows as
+    // "running" for as long as the load takes, so counting it would report an
+    // in-flight request with no client waiting and fold a multi-minute download
+    // into "Avg latency". The backend already leaves these out of
+    // active_count for the same reason, so counting them here would also make
+    // the page disagree with the number the API itself reports.
+    if (entry.kind === "lifecycle") {
+      continue;
+    }
+    requests += 1;
     totalTokens += entryTokens(entry);
     if (entry.status === "running") {
       active += 1;
@@ -106,7 +118,7 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   const finished = completed + errors + cancelled;
   return {
     active,
-    total: entries.length,
+    total: requests,
     completed,
     errors,
     cancelled,

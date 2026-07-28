@@ -702,3 +702,34 @@ def test_backfill_compares_server_keys_by_normalized_identity():
     assert 'key.lastIndexOf(":")' in src
     # Repo ids fold and POSIX paths do not, which is exactly what these do.
     assert "normalizeModelIdentity(" in src and "normalizeGgufVariantIdentity(" in src
+
+
+def test_monitor_stats_exclude_model_lifecycle_rows():
+    """A load, unload or download is recorded as a monitor entry but is not an
+    HTTP call. It reads as "running" for as long as the load takes, so counting
+    it reports an in-flight request with no client waiting and folds a
+    multi-minute download into "Avg latency". The backend already leaves these
+    out of active_count, so counting them here also makes the page disagree with
+    the number the API itself reports.
+    """
+    src = " ".join(_read("features/api-monitor/use-api-monitor.ts").split())
+    assert 'if (entry.kind === "lifecycle") { continue; }' in src
+    # "Requests" is a request count too, so it cannot stay entries.length.
+    assert "total: requests," in src
+    assert "total: entries.length" not in src
+
+    backend = (
+        WORKDIR / "studio" / "backend" / "core" / "inference" / "api_monitor.py"
+    ).read_text(encoding = "utf-8")
+    assert 'entry.kind != "lifecycle"' in backend, "the rule this mirrors"
+
+
+def test_api_reach_copy_is_limited_to_gguf_models():
+    """The Hub opens this page for every downloaded model, but ModelConfigPage
+    mirrors settings to the server only when target.isGguf, because API
+    auto-switch indexes GGUFs only. Telling a safetensors user the settings
+    apply to an API request describes a load that cannot happen.
+    """
+    src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
+    assert "{target.isGguf ?" in src
+    assert "Saved settings apply everywhere Studio loads this model." in src

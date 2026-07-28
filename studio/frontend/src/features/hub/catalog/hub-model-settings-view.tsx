@@ -109,8 +109,13 @@ export function HubModelSettingsView({
               />
             </span>
             <p className="min-w-0 text-ui-12 leading-[1.5] text-muted-foreground">
-              Saved settings apply everywhere this model loads, including when an
-              OpenAI-compatible API request asks for it. Turn on{" "}
+              {/* Only a GGUF is mirrored to the server, because API auto-switch
+                  indexes GGUFs only, so promising the API case for anything
+                  else describes a load that cannot happen. */}
+              {target.isGguf
+                ? "Saved settings apply everywhere this model loads, including when an OpenAI-compatible API request asks for it."
+                : "Saved settings apply everywhere Studio loads this model."}{" "}
+              Turn on{" "}
               <span className="font-medium text-foreground">
                 Remember for this model
               </span>{" "}
