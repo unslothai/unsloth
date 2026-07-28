@@ -8,9 +8,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import textwrap
-import tomllib
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = pytest.importorskip("tomli")
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -179,4 +183,6 @@ def test_tauri_registers_only_the_unsloth_scheme() -> None:
     assert 'target_os = "linux"' in main
     desktop_template = TAURI / "linux/unsloth.desktop"
     assert config["bundle"]["linux"]["deb"]["desktopTemplate"] == "./linux/unsloth.desktop"
-    assert "Exec={{exec}} %u" in desktop_template.read_text(encoding = "utf-8")
+    desktop = desktop_template.read_text(encoding = "utf-8")
+    assert "Exec={{exec}} %u" in desktop
+    assert "MimeType=x-scheme-handler/unsloth;" in desktop

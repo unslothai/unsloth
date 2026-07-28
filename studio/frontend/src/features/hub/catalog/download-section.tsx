@@ -52,7 +52,7 @@ export function DownloadSection({
   onTrain?: () => void;
   onChange?: () => void;
 }) {
-  if (isGguf) {
+  if (isGguf || preferredGgufFile) {
     return (
       <GgufDownloadCard
         repoId={repoId}
