@@ -95,8 +95,8 @@
       "file": "fastapi/routing.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L592:                                 while True: sha256:84283c09277ded3296998b2a6a838744457b606829cf5ab5d0da6f222ff020a0",
-      "evidence_hash": "a7295004315e26a8f3c64fb837521e9fdd7268219bb43e000fb0236ab0259223"
+      "evidence": "L587:                                 while True: sha256:06c2c7f15d73bf192e5e3272c5ff5fcaeff7f6774fef5f4eca6ef473ae50e2b3",
+      "evidence_hash": "57acd497f404c203e4450d0580ad85aa8a33406e8d64ad06fbac6cf47d97b24d"
     },
     {
       "package": "fastapi",
