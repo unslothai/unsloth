@@ -105,7 +105,11 @@ def profile_imports(python: str, top: int = 15) -> dict:
     }
 
 
-def profile_launch(bin_path: str, port: int, timeout_s: int = 300) -> dict:
+def profile_launch(
+    bin_path: str,
+    port: int,
+    timeout_s: int = 300,
+) -> dict:
     """Spawn the backend the way the desktop app does and time it to first 200."""
     log_lines: list[str] = []
     t0 = time.perf_counter()
@@ -127,7 +131,10 @@ def profile_launch(bin_path: str, port: int, timeout_s: int = 300) -> dict:
             # Drain whatever is available without blocking the health polling; a
             # full readline() would stall until the backend happens to log.
             if t_healthz is None:
-                for url in (f"http://127.0.0.1:{port}/api/health", f"http://127.0.0.1:{port}/healthz"):
+                for url in (
+                    f"http://127.0.0.1:{port}/api/health",
+                    f"http://127.0.0.1:{port}/healthz",
+                ):
                     try:
                         with urllib.request.urlopen(url, timeout = 2) as r:
                             if r.status == 200:
@@ -178,17 +185,31 @@ def find_bin() -> str | None:
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description = __doc__,
-                                 formatter_class = argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--repeats", type = int, default = 1,
-                    help = "launch repeats; the median is reported (imports are measured once)")
-    ap.add_argument("--python", default = sys.executable,
-                    help = "interpreter used for the import profile (default: this one)")
+    ap = argparse.ArgumentParser(
+        description = __doc__, formatter_class = argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--repeats",
+        type = int,
+        default = 1,
+        help = "launch repeats; the median is reported (imports are measured once)",
+    )
+    ap.add_argument(
+        "--python",
+        default = sys.executable,
+        help = "interpreter used for the import profile (default: this one)",
+    )
     ap.add_argument("--bin", help = "path to the unsloth CLI (default: autodetect)")
-    ap.add_argument("--import-only", action = "store_true",
-                    help = "skip the server phases (no install needed beyond the deps)")
-    ap.add_argument("--max-healthz-seconds", type = float,
-                    help = "fail if the median time to a healthy port exceeds this")
+    ap.add_argument(
+        "--import-only",
+        action = "store_true",
+        help = "skip the server phases (no install needed beyond the deps)",
+    )
+    ap.add_argument(
+        "--max-healthz-seconds",
+        type = float,
+        help = "fail if the median time to a healthy port exceeds this",
+    )
     ap.add_argument("--json", help = "write the full report here")
     a = ap.parse_args(argv)
 
@@ -215,8 +236,10 @@ def main(argv: list[str]) -> int:
     if not a.import_only:
         bin_path = a.bin or find_bin()
         if not bin_path:
-            print("== launch == skipped: no unsloth CLI found "
-                  "(set UNSLOTH_STUDIO_HOME or pass --bin)")
+            print(
+                "== launch == skipped: no unsloth CLI found "
+                "(set UNSLOTH_STUDIO_HOME or pass --bin)"
+            )
             report["launch"] = {"skipped": "no unsloth CLI found"}
         else:
             print(f"== launch == {bin_path}")
@@ -224,8 +247,10 @@ def main(argv: list[str]) -> int:
             for i in range(a.repeats):
                 r = profile_launch(bin_path, _free_port())
                 runs.append(r)
-                print(f"  run {i + 1}: healthz={r['healthz_seconds']}s "
-                      f"lifespan={r['lifespan_ms']}ms reached={r['reached_healthz']}")
+                print(
+                    f"  run {i + 1}: healthz={r['healthz_seconds']}s "
+                    f"lifespan={r['lifespan_ms']}ms reached={r['reached_healthz']}"
+                )
             got = [r["healthz_seconds"] for r in runs if r["healthz_seconds"] is not None]
             report["launch"] = {
                 "runs": runs,
@@ -233,7 +258,9 @@ def main(argv: list[str]) -> int:
                 "healthz_max_seconds": round(max(got), 3) if got else None,
             }
             if got:
-                print(f"  median time to healthy port: {report['launch']['healthz_median_seconds']}s")
+                print(
+                    f"  median time to healthy port: {report['launch']['healthz_median_seconds']}s"
+                )
 
     if a.json:
         Path(a.json).write_text(json.dumps(report, indent = 2), encoding = "utf-8")
@@ -244,8 +271,10 @@ def main(argv: list[str]) -> int:
         if med is None:
             print("::warning::no healthz measurement; not enforcing the budget")
         elif med > a.max_healthz_seconds:
-            print(f"::error::startup regression: {med}s median to a healthy port "
-                  f"exceeds the {a.max_healthz_seconds}s budget")
+            print(
+                f"::error::startup regression: {med}s median to a healthy port "
+                f"exceeds the {a.max_healthz_seconds}s budget"
+            )
             return 1
     return 0
 
