@@ -162,9 +162,9 @@ def test_probe_survives_a_fetched_mapper_without_the_fp8_tables(monkeypatch):
 
     int_to_float, float_to_int, map_to_16bit = namespace["_get_new_mapper"]()[:3]
 
-    assert int_to_float and float_to_int and map_to_16bit, (
-        "a fetched mapper.py without the fp8 tables must not take the 4bit upgrade check down"
-    )
+    assert (
+        int_to_float and float_to_int and map_to_16bit
+    ), "a fetched mapper.py without the fp8 tables must not take the 4bit upgrade check down"
 
 
 def test_fbgemm_prefers_the_row_table_over_the_block_one(monkeypatch):
