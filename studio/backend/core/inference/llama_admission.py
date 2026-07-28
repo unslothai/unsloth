@@ -56,6 +56,8 @@ DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
 # load downshifted to fit VRAM) keeps the depth it had before scaling existed
 # rather than dropping to 16 and rejecting callers that used to queue.
 DEFAULT_ADMISSION_MIN_QUEUE = 64
+
+
 def _executor_workers() -> int:
     """Threads asyncio's default executor runs to_thread work on.
 
