@@ -182,12 +182,8 @@ class TestEmbeddedDraftKv:
     def test_unaligned_context_follows_runtime_stream_padding(self):
         b = _make_backend()
         bytes_per_cell = b._mtp_draft_kv_bytes(256) // 256
-        unified = b._mtp_draft_kv_bytes(
-            5000, n_parallel = 3, kv_unified = True
-        )
-        separate = b._mtp_draft_kv_bytes(
-            5000, n_parallel = 3, kv_unified = False
-        )
+        unified = b._mtp_draft_kv_bytes(5000, n_parallel = 3, kv_unified = True)
+        separate = b._mtp_draft_kv_bytes(5000, n_parallel = 3, kv_unified = False)
         assert unified == 5120 * bytes_per_cell
         assert separate == 5376 * bytes_per_cell
 
@@ -222,10 +218,7 @@ class TestEmbeddedDraftKv:
         b._kv_value_length_swa = 2048
         ctx = 4096
         expected_per_cell = 4 * 256 * 2 + 1 * 2048 * 2
-        assert b._mtp_draft_kv_bytes(
-            ctx,
-            flash_attn = False,
-        ) == ctx * expected_per_cell
+        assert b._mtp_draft_kv_bytes(ctx, flash_attn = False) == ctx * expected_per_cell
 
     def test_none_when_dims_missing(self):
         assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None

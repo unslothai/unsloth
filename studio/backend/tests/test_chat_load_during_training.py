@@ -1033,9 +1033,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             # Full SWA mode follows the same pass-through args as the launcher.
             r._estimate_gguf_kv_gb("m", 4096, ["--swa_full"])
             self.assertTrue(seen["swa_full"])
-            r._estimate_gguf_kv_gb(
-                "m", 4096, ["--kv_unified", "--ubatch_size", "256"]
-            )
+            r._estimate_gguf_kv_gb("m", 4096, ["--kv_unified", "--ubatch_size", "256"])
             self.assertTrue(seen["kv_unified"])
             self.assertEqual(seen["n_ubatch"], 256)
 

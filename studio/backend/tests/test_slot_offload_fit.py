@@ -44,7 +44,12 @@ def _backend(
     b._vocab_size = vocab
     b._embedding_length = embd
     b._key_length_mla = None
-    def estimate(ctx, t = None, **kwargs):
+
+    def estimate(
+        ctx,
+        t = None,
+        **kwargs,
+    ):
         if kv_calls is not None:
             kv_calls.append(kwargs)
         return kv_fixed_mib * MIB

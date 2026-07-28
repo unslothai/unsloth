@@ -180,18 +180,8 @@ def test_kv_unified_detects_disable_aliases(flag):
 
 def test_kv_unified_uses_environment_before_cli():
     assert _kv_unified_from_args([], env = {"LLAMA_ARG_KV_UNIFIED": "true"}) is True
-    assert (
-        _kv_unified_from_args(
-            [], default = True, env = {"LLAMA_ARG_KV_UNIFIED": "false"}
-        )
-        is True
-    )
-    assert (
-        _kv_unified_from_args(
-            ["--kv-unified"], env = {"LLAMA_ARG_KV_UNIFIED": "false"}
-        )
-        is True
-    )
+    assert _kv_unified_from_args([], default = True, env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
+    assert _kv_unified_from_args(["--kv-unified"], env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
 
 
 def test_is_mtp_model_name_detects_marker_in_filename(tmp_path):

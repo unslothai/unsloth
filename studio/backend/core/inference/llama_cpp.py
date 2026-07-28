@@ -1513,22 +1513,14 @@ def _pad_kv_cells(cells: int) -> int:
     return ((cells + 255) // 256) * 256
 
 
-def _kv_cache_cell_layout(
-    n_ctx: int,
-    n_parallel: int,
-    kv_unified: bool,
-) -> tuple[int, int, int]:
+def _kv_cache_cell_layout(n_ctx: int, n_parallel: int, kv_unified: bool) -> tuple[int, int, int]:
     """Return llama.cpp's slot count, stream count, and cells per stream."""
     slots = max(1, n_parallel)
     padded_ctx = _pad_kv_cells(n_ctx)
     streams = 1 if kv_unified else slots
     if padded_ctx <= 0:
         return slots, streams, 0
-    cells_per_stream = (
-        padded_ctx
-        if kv_unified
-        else _pad_kv_cells(padded_ctx // slots)
-    )
+    cells_per_stream = padded_ctx if kv_unified else _pad_kv_cells(padded_ctx // slots)
     return slots, streams, cells_per_stream
 
 
@@ -1623,8 +1615,7 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
 
 
 def _swa_full_from_args_or_env(
-    extra_args: Optional[Iterable[str]],
-    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
     """Whether llama.cpp receives the enable-only full-size SWA option."""
     if _extra_args_set_any_flag(extra_args, {"--swa-full"}):
@@ -1658,10 +1649,7 @@ def _kv_unified_from_args(
     return enabled
 
 
-def _flash_attn_enabled_from_args(
-    args: Optional[Iterable[str]],
-    default: bool = True,
-) -> bool:
+def _flash_attn_enabled_from_args(args: Optional[Iterable[str]], default: bool = True) -> bool:
     """Resolve llama.cpp's last-wins flash-attention CLI setting."""
     enabled = default
     values = [str(arg) for arg in args] if args else []
@@ -4190,8 +4178,7 @@ class LlamaCppBackend:
         if self._sliding_window_pattern is None:
             max_len = max(default_len, swa_len or default_len)
             return max(
-                self._kv_heads_for_layer(layer_idx, n_kv) * max_len
-                for layer_idx in range(n_layers)
+                self._kv_heads_for_layer(layer_idx, n_kv) * max_len for layer_idx in range(n_layers)
             )
         return max(
             self._kv_heads_for_layer(layer_idx, n_kv)
@@ -4251,15 +4238,9 @@ class LlamaCppBackend:
         bpe_k = _kv_bytes_per_elem(cache_type_kv)
         # The automatic FA-off retry rewrites an invalid quantized V cache to
         # f16. Pricing that viable retry here avoids under-reserving it.
-        bpe_v = (
-            bpe_k
-            if flash_attn
-            else max(bpe_k, _kv_bytes_per_elem("f16"))
-        )
+        bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
 
-        slots, streams, cells_per_stream = _kv_cache_cell_layout(
-            n_ctx, n_parallel, kv_unified
-        )
+        slots, streams, cells_per_stream = _kv_cache_cell_layout(n_ctx, n_parallel, kv_unified)
         total_cells = cells_per_stream * streams
         ubatch = max(
             0,
@@ -4286,16 +4267,8 @@ class LlamaCppBackend:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
             if key_len is not None and val_len is not None:
-                v_width = (
-                    n_kv * val_len
-                    if flash_attn
-                    else self._max_kv_value_width(val_len)
-                )
-                return int(
-                    n_attn
-                    * total_cells
-                    * (n_kv * key_len * bpe_k + v_width * bpe_v)
-                )
+                v_width = n_kv * val_len if flash_attn else self._max_kv_value_width(val_len)
+                return int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
             head_dim = self._legacy_head_dim()
             return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k)
 
@@ -4322,11 +4295,7 @@ class LlamaCppBackend:
                 swa_cells_total = swa_cells_per_stream * streams
             key_len_swa = self._kv_key_length_swa or key_len
             val_len_swa = self._kv_value_length_swa or val_len
-            padded_v_width = (
-                None
-                if flash_attn
-                else self._max_kv_value_width(val_len, val_len_swa)
-            )
+            padded_v_width = None if flash_attn else self._max_kv_value_width(val_len, val_len_swa)
             if self._sliding_window_pattern is not None:
                 global_bytes = 0.0
                 swa_bytes = 0.0
@@ -4339,9 +4308,7 @@ class LlamaCppBackend:
                         layer_idx < len(self._sliding_window_pattern)
                         and self._sliding_window_pattern[layer_idx]
                     )
-                    layer_key_bytes = layer_n_kv * (
-                        key_len_swa if is_swa else key_len
-                    ) * bpe_k
+                    layer_key_bytes = layer_n_kv * (key_len_swa if is_swa else key_len) * bpe_k
                     layer_value_bytes = (
                         layer_n_kv * (val_len_swa if is_swa else val_len)
                         if padded_v_width is None
@@ -4351,9 +4318,7 @@ class LlamaCppBackend:
                     if is_swa:
                         swa_bytes += swa_cells_total * layer_kv_bytes
                         if ctx_checkpoints > 0 and not swa_full:
-                            checkpoint_extra_per_slot += (
-                                ctx_checkpoints * swa * layer_kv_bytes
-                            )
+                            checkpoint_extra_per_slot += ctx_checkpoints * swa * layer_kv_bytes
                     else:
                         global_bytes += total_cells * layer_kv_bytes
                 return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
@@ -4374,9 +4339,7 @@ class LlamaCppBackend:
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
-            padded_v_width = (
-                None if flash_attn else self._max_kv_value_width(val_len)
-            )
+            padded_v_width = None if flash_attn else self._max_kv_value_width(val_len)
             bytes_per_cell = 0.0
             for layer_idx in range(n_layers_kv):
                 layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
@@ -4481,21 +4444,14 @@ class LlamaCppBackend:
         f16_bpe = _kv_bytes_per_elem("f16")
         bpe_k = max(bpe_k, f16_bpe)
         bpe_v = max(bpe_v, f16_bpe)
-        _, streams, cells_per_stream = _kv_cache_cell_layout(
-            n_ctx, n_parallel, kv_unified
-        )
+        _, streams, cells_per_stream = _kv_cache_cell_layout(n_ctx, n_parallel, kv_unified)
         v_width = n_kv * v_len
         if not flash_attn:
             v_width = self._max_kv_value_width(
                 v_len,
                 self._kv_value_length_swa,
             )
-        return int(
-            nextn
-            * (n_kv * k_len * bpe_k + v_width * bpe_v)
-            * cells_per_stream
-            * streams
-        )
+        return int(nextn * (n_kv * k_len * bpe_k + v_width * bpe_v) * cells_per_stream * streams)
 
     def _estimate_mtp_overhead_bytes(
         self,
@@ -7002,11 +6958,7 @@ class LlamaCppBackend:
                 swa_full = _swa_full_from_args_or_env(extra_args)
                 _effective_ubatch = _extra_args_n_ubatch(
                     extra_args,
-                    n_ctx = (
-                        requested_ctx
-                        if requested_ctx > 0
-                        else self._context_length
-                    ),
+                    n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
                 )
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
@@ -7968,10 +7920,7 @@ class LlamaCppBackend:
                                 total_mib = None,
                             )
                             _cap_footprint_mib = (
-                                model_size_fit
-                                + _kv_bytes(cap)
-                                + _mtp_bytes(cap)
-                                + _cc_bytes(cap)
+                                model_size_fit + _kv_bytes(cap) + _mtp_bytes(cap) + _cc_bytes(cap)
                             ) / (1024 * 1024)
                             # Fit returns the request unchanged when it fits OR weights
                             # exceed budget; only the latter over-commits, so floor to 4096.
@@ -9012,15 +8961,10 @@ class LlamaCppBackend:
                 self._kv_cache_unified = kv_cache_unified
                 self._n_ubatch = max(
                     0,
-                    int(
-                        self._DEFAULT_N_UBATCH
-                        if _effective_ubatch is None
-                        else _effective_ubatch
-                    ),
+                    int(self._DEFAULT_N_UBATCH if _effective_ubatch is None else _effective_ubatch),
                 )
                 self._flash_attn_enabled = (
-                    _flash_attn_enabled_from_args(_last_spawn_cmd)
-                    and self._architecture != "grok"
+                    _flash_attn_enabled_from_args(_last_spawn_cmd) and self._architecture != "grok"
                 )
                 self._kv_cache_context_total = effective_ctx if effective_ctx > 0 else None
 

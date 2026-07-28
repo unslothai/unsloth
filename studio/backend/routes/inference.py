@@ -3295,9 +3295,8 @@ def _request_matches_loaded_settings(
             strip_offload = request.gpu_memory_mode == "manual",
         )
     )
-    if (
-        not llama_backend.is_diffusion
-        and llama_backend.swa_full != _swa_full_from_args_or_env(effective_extra)
+    if not llama_backend.is_diffusion and llama_backend.swa_full != _swa_full_from_args_or_env(
+        effective_extra
     ):
         return False
     if not _tensor_parallel_matches_loaded(

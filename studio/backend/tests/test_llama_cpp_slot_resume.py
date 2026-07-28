@@ -489,17 +489,17 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
     assert backend.save_slots_for_resume() is not None
     assert calls == [
         (
-                32768,
-                None,
-                {
-                    "n_parallel": 4,
-                    "swa_full": True,
-                    "kv_unified": False,
-                    "n_ubatch": 512,
-                    "flash_attn": False,
-                },
-            )
-        ]
+            32768,
+            None,
+            {
+                "n_parallel": 4,
+                "swa_full": True,
+                "kv_unified": False,
+                "n_ubatch": 512,
+                "flash_attn": False,
+            },
+        )
+    ]
 
 
 def test_compact_swa_slots_are_still_saved(monkeypatch, tmp_path):
