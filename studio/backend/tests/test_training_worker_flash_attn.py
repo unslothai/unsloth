@@ -9,7 +9,18 @@ import sys
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from core.training import worker
+
+# The runtime install only ever runs on Linux, as the threshold test below
+# asserts, so the two tests that drive it past that gate cannot pass anywhere
+# else: the call returns before it reports a status. They were written on
+# Linux and only fail once the suite is actually run on Windows or macOS.
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason = "the runtime flash-attn install is gated to Linux",
+)
 
 
 def _missing_flash_attn_import():
@@ -55,6 +66,7 @@ def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     assert worker._should_try_runtime_flash_attn_install(32768) is False
 
 
+@linux_only
 def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
     statuses: list[str] = []
 
@@ -82,6 +94,7 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
     assert statuses == ["Installing flash-attn for faster training..."]
 
 
+@linux_only
 def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     calls: list[list[str]] = []
     statuses: list[str] = []
