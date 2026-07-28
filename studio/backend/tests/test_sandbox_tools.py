@@ -920,6 +920,65 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("/usr/bin/fin[d] . -exec rm {} \\;")
         assert "rm" in self._find()("fd -x rm -rf x")
 
+    def test_redirection_standing_where_an_option_value_goes(self):
+        # The shell removes a redirection wherever it sits, so an `-e` whose
+        # value looks like one takes the word BEHIND it as the script:
+        # `sed -n -e >out '1e touch MARKER' input` really runs the payload.
+        assert "rm" in self._find()("sed -n -e >out '1e rm -f victim' input")
+        assert "rm" in self._find()("sed -n -e > out '1e rm -f victim' input")
+        # ...and the target itself may look like an option or a quoted operator,
+        # since the shell hands it to open() rather than to sed. Both of these
+        # execute for real.
+        assert "rm" in self._find()("sed > --sandbox '1e rm -f victim' input")
+        assert "rm" in self._find()("sed > ';' '1e rm -f victim' input")
+        assert "rm" in self._find()("sed > -n '1e rm -f victim' input")
+
+    def test_late_program_flag_and_the_positional_are_alternatives(self):
+        # Which of the two sed compiles depends on permutation, so they are
+        # alternatives rather than one program. Joining them let an unterminated
+        # command in the one swallow the other: `safe` is `s` with delimiter `a`
+        # and no closing one, and it ate the positional payload behind it while
+        # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input -e safe` really runs.
+        assert "rm" in self._find()("sed '1e rm -f victim' input -e safe")
+        assert "rm" in self._find()("sed '1e rm -f victim' input -e p")
+
+    def test_find_batches_only_at_a_real_plus_terminator(self):
+        # find closes the batched form at `{} +` only, so a `+` anywhere else is
+        # an argument it hands the child: `find . -exec sed -n '+' -e
+        # '1e touch MARKER' {} +` really runs the payload, while the `;` twin
+        # does not, because a quoted `';'` reaches find as the same word `\\;`
+        # does and find stops at either.
+        assert "rm" in self._find()("find . -type f -exec sed -n '+' -e '1e rm -f victim' {} +")
+        assert self._find()("find . -exec sed -n ';' -e '1e rm -f victim' {} \\;") == set()
+        # A real terminator still ends the action, so the next predicate's `-e`
+        # does not replace the script of the sed in the first one.
+        assert self._find()("find . -exec sed -n '1,3p' {} + -exec grep -e safe {} +") == set()
+        assert "rm" in self._find()("find . -exec sed '1e rm -f victim' {} + -exec grep -e s {} +")
+
+    def test_sed_program_read_from_a_stream_fails_closed(self):
+        # An `-f` naming a stream takes the script off stdin, which the command
+        # text may carry itself: `sed -f - input <<EOF ... 1e touch MARKER ...
+        # EOF` really runs the payload while the screen found no program at all.
+        assert "sed" in self._find()("sed -f - input")
+        assert "sed" in self._find()("sed -f/dev/stdin input")
+        assert "sed" in self._find()("sed --file=/dev/stdin input")
+        assert "sed" in self._find()("sed -f /dev/fd/0 input")
+        # A named file is unreadable in a different way and stays as it was.
+        assert self._find()("sed -f prog.sed input") == set()
+
+    def test_glob_in_the_sed_program_position_fails_closed(self):
+        # bash expands the word after this scan, so in a directory holding a
+        # file named `1e rm -f victim` the program of `sed *` is that filename
+        # and rm really runs, while the screen saw only the literal `*`.
+        assert "sed" in self._find()("sed *")
+        assert "sed" in self._find()("sed * input")
+        assert "sed" in self._find()("sed -e *.sed input")
+        # A quoted program expands nothing, and a glob among the FILE operands
+        # is not the program at all.
+        assert self._find()("sed 's/a*/b/' f") == set()
+        assert self._find()("sed -n '1,3p' *.txt") == set()
+        assert self._find()("sed -i 's/x*/y/g' src/*.py") == set()
+
     def test_fd_exec_flags_reach_the_child_command(self):
         # fd runs its `-x` / `-X` / `--exec` / `--exec-batch` child directly,
         # exactly as find runs an `-exec` one, but only find's own spellings

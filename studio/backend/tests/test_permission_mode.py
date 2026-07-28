@@ -1213,6 +1213,33 @@ def test_terminal_classifier(command, unsafe):
         ("""p='1e rm -f victim'; false && p='1,3p'; sed "$p" input""", True),
         # --- run: a real later assignment still wins ---
         ("""p='1e rm -f victim'; p='1,3p'; sed "$p" input""", False),
+        # --- prompt: the shell removes a redirection wherever it sits, so an
+        # -e whose value looks like one takes the word BEHIND it as the script,
+        # and the target itself may look like an option or a quoted operator ---
+        ("sed -n -e >out '1e rm -f victim' input", True),
+        ("sed > --sandbox '1e rm -f victim' input", True),
+        ("sed > ';' '1e rm -f victim' input", True),
+        # --- prompt: a late program flag and the positional are ALTERNATIVES,
+        # so an unterminated command in one no longer swallows the other ---
+        ("sed '1e rm -f victim' input -e safe", True),
+        # --- prompt: find batches only at a real `{} +`, so a `+` elsewhere is
+        # an argument it hands the child ---
+        ("find . -type f -exec sed -n '+' -e '1e rm -f victim' {} +", True),
+        # --- run: the `;` twin really does end the action, however spelled ---
+        ("find . -exec sed -n ';' -e '1e rm -f victim' {} \\;", False),
+        # --- prompt: an -f naming a stream takes the script off stdin ---
+        ("sed -f - input", True),
+        ("sed --file=/dev/stdin input", True),
+        # --- run: a named program file is unreadable in a different way ---
+        ("sed -f prog.sed input", False),
+        # --- prompt: bash expands the program word before sed is started ---
+        ("sed *", True),
+        ("sed -e *.sed input", True),
+        # --- run: a quoted program expands nothing, and a glob among the FILE
+        # operands is not the program ---
+        ("sed 's/a*/b/' f", False),
+        ("sed -n '1,3p' *.txt", False),
+        ("sed -i 's/x*/y/g' src/*.py", False),
         # --- prompt: fd runs its -x / -X / --exec / --exec-batch child
         # directly, the same way find runs an -exec one ---
         ("fd -x sed '1e rm -f victim' {}", True),
