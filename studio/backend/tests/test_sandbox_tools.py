@@ -740,12 +740,10 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("sed -e '1e rm -f victim' input --sandbox")
         assert "rm" in self._find()("sed --expression='1e rm -f victim' --sandbox input")
         assert "rm" in self._find()("sed -e '1e rm -f victim' --sandbox -e '2d' input")
-        # A flag after the POSITIONAL script suppresses only because getopt
-        # PERMUTES, which POSIXLY_CORRECT turns off -- verified:
-        # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input --sandbox` creates
-        # MARKER, sed having taken --sandbox for an input file. That variable
-        # can reach sed from outside the text being screened, so a later flag
-        # never counts.
+        # One after the POSITIONAL script suppresses only while getopt permutes,
+        # which POSIXLY_CORRECT turns off from outside the text being screened,
+        # so a later flag never counts: `POSIXLY_CORRECT=1
+        # sed '1e touch MARKER' input --sandbox` creates MARKER.
         assert "rm" in self._find()("sed '1e rm -f victim' input --sandbox")
         assert "rm" in self._find()("sed '1e rm -f victim' --sandbox input")
         assert "rm" in self._find()("sed '1e rm -f victim' input --posix")
@@ -784,12 +782,10 @@ class TestBashBlocklistPosition:
         assert self._find()("find . -exec sed -n '1,3p' {} + -exec grep -e safe {} +") == set()
 
     def test_quoted_separator_operand_does_not_end_the_sed_scan(self):
-        # shlex strips the quoting, so a sed FILE operand spelled `';'` or `'+'`
-        # arrives as the very token a separator does, and stopping there threw
-        # away the `-e` script behind it. Verified on GNU sed 4.9 with a
-        # `touch MARKER` payload: `sed -n ';' -e '1e touch MARKER' input`
-        # creates MARKER (sed reports the unreadable file, permutes the options
-        # and runs the script anyway), and the `'+'` twin does the same.
+        # shlex strips the quoting, so a sed FILE operand spelled `';'` arrives
+        # as the token a separator does, and stopping there threw away the `-e`
+        # behind it: `sed -n ';' -e '1e touch MARKER' input` creates MARKER, and
+        # the `'+'` twin does the same.
         assert "rm" in self._find()("sed -n ';' -e '1e rm -f victim' input")
         assert "rm" in self._find()("sed -n '+' -e '1e rm -f victim' input")
         assert "rm" in self._find()("sed ';' -e '1e rm -f victim' input")
@@ -850,12 +846,10 @@ class TestBashBlocklistPosition:
         assert self._find()("grep -r pattern . |& head -5") == set()
 
     def test_script_file_source_ends_a_continuation(self):
-        # sed joins its -e/-f sources with newlines, but a source BOUNDARY also
-        # closes any continuation open across it. Reading every -e as one
-        # uninterrupted text let an unreadable -f in the middle hide a payload:
-        # verified on GNU sed 4.9 that `sed -e '1a\' -f /dev/null -e 'e touch
-        # MARKER' input` creates MARKER while the same line without the -f does
-        # not, and the screen came back empty for both.
+        # A source BOUNDARY closes any continuation open across it, so reading
+        # every -e as one uninterrupted text let an unreadable -f in the middle
+        # hide a payload: `sed -e '1a\' -f /dev/null -e 'e touch MARKER' input`
+        # creates MARKER while the same line without the -f does not.
         assert "rm" in self._find()(r"sed -e '1a\' -f /dev/null -e 'e rm -f victim' input")
         assert "rm" in self._find()(r"sed -e '1a\' -f/dev/null -e 'e rm -f victim' input")
         assert "rm" in self._find()(r"sed -e '1a\' --file=/dev/null -e 'e rm -f victim' input")
@@ -864,11 +858,9 @@ class TestBashBlocklistPosition:
 
     def test_program_flag_behind_the_positional_script(self):
         # A program flag AHEAD of the positional makes that word an input file.
-        # One BEHIND it does so only while getopt permutes, and POSIXLY_CORRECT
-        # turns permutation off from outside the command text, so the positional
-        # is still the script: verified that `POSIXLY_CORRECT=1 sed
-        # '1e touch MARKER' input -f /dev/null` creates MARKER, as does the
-        # `-e p` twin, while both came back empty.
+        # One BEHIND it does so only while getopt permutes, so the positional is
+        # still the script: `POSIXLY_CORRECT=1 sed '1e touch MARKER' input
+        # -f /dev/null` creates MARKER, as does the `-e p` twin.
         assert "rm" in self._find()("sed '1e rm -f victim' input -f /dev/null")
         assert "rm" in self._find()("sed '1e rm -f victim' input -e p")
         # A flag written FIRST really does demote the positional to a file.
@@ -1102,13 +1094,9 @@ class TestBashBlocklistPosition:
         assert self._find()("fd . -x wc -l {}") == set()
 
     def test_exec_wrapper_chain_past_the_hop_budget_fails_closed(self):
-        # The wrapper hop is bounded so `-exec env -exec env ...` cannot make
-        # this quadratic, but running out of budget was reported as "no child"
-        # -- which reads as safe. Verified: `find . -exec` + 33 `env` +
-        # `rm -f input ;` deletes the file, and the same chain in front of
-        # `sed '1e touch MARKER' {} +` creates MARKER, while the screen came
-        # back empty for both. Block the chain instead, the way an unread sed
-        # program blocks the sed.
+        # The wrapper hop is bounded, but running out of budget was reported as
+        # "no child", which reads as safe: `find . -exec` + 33 `env` +
+        # `rm -f input ;` deletes the file for real. Block the chain instead.
         assert self._find()("find . -exec " + "env " * 33 + "rm -f victim ;")
         assert self._find()("find . -exec " + "env " * 33 + "sed '1e rm -f victim' {} +")
         # A chain inside the budget still resolves to the real child.
