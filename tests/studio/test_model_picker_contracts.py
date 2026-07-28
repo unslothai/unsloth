@@ -623,12 +623,12 @@ def test_compare_classifies_gguf_before_reconciling_gpu_ids():
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():
-    src = (WORKDIR / "studio" / "backend" / "main.py").read_text()
+    src = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
     assert "and not LlamaCppBackend._backend_lacks_gpu_lib()" in src
 
 
 def test_vulkan_gguf_devices_do_not_replace_global_gpu_info():
-    backend = (WORKDIR / "studio" / "backend" / "main.py").read_text()
+    backend = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
     assert '"gguf_devices": gguf_devices' in backend
     assert "gguf_devices = LlamaCppBackend._get_vulkan_gpu_info()" in backend
     assert "enriched_devices = LlamaCppBackend._get_vulkan_gpu_info()" not in backend
