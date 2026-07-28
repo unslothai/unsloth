@@ -41,10 +41,25 @@ foreach ($dir in @($env:UNSLOTH_STUDIO_HOME, (Join-Path $HOME '.unsloth\studio')
   } catch { Write-Host "[interrupt] could not seed install marker in ${dir}: $_" }
 }
 
-# Run the installer in its own pwsh so stdout can be redirected to the log while we poll.
-$argList = @('-NoProfile', '-NonInteractive', '-File', 'install.ps1')
+# Run the installer in its own host so stdout can be redirected to the log while we
+# poll. That host is WINDOWS PowerShell, not pwsh: the desktop app spawns the bundled
+# install.ps1 as `powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden
+# -ExecutionPolicy Bypass -File` (install.rs:325-339), so 5.1 with those flags is the
+# only host a real desktop install ever uses. Every other Windows job in .github runs
+# install.ps1 under the runner's pwsh 7, which leaves the installer's behaviour on 5.1
+# -- .NET Framework rather than .NET, OEM/ANSI console encoding rather than UTF-8,
+# different native-command and OSArchitecture reporting -- covered by nothing. An
+# interruption test that runs a different interpreter than the app cannot claim to
+# reproduce what the app does. The driver itself stays under pwsh; only the installer
+# child and the repair re-run change.
+$argList = @(
+  '-NoLogo', '-NoProfile', '-NonInteractive',
+  '-WindowStyle', 'Hidden',
+  '-ExecutionPolicy', 'Bypass',
+  '-File', 'install.ps1'
+)
 if ($InstallArgs) { $argList += $InstallArgs.Split(' ') }
-$proc = Start-Process -FilePath 'pwsh' -ArgumentList $argList `
+$proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList `
   -RedirectStandardOutput $LogPath -RedirectStandardError "$LogPath.err" `
   -PassThru -NoNewWindow
 Write-Host "[interrupt] installer pid=$($proc.Id) marker='$Marker' deadline=${KillAtSeconds}s"

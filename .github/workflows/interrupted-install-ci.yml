@@ -293,7 +293,12 @@ jobs:
         if: always() && steps.probe.outputs.verdict != 'HEALTHY'
         shell: pwsh
         run: |
-          pwsh -NoProfile -NonInteractive -File install.ps1 ${{ matrix.installArgs }} *>&1 |
+          # powershell.exe with install.rs:325-339's flags, matching the interrupted
+          # run: the desktop repairs by re-running the same bundled script in Windows
+          # PowerShell 5.1, so a repair that only works under pwsh 7 would pass here
+          # and still strand the user.
+          powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden `
+            -ExecutionPolicy Bypass -File install.ps1 ${{ matrix.installArgs }} *>&1 |
             Tee-Object -FilePath logs/repair.log
           $bin = Join-Path $env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\unsloth.exe'
           if (-not (Test-Path $bin)) {

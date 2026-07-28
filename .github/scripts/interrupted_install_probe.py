@@ -95,18 +95,33 @@ def main(argv: list[str]) -> int:
         print(f"[probe] {k:28} = {v}")
 
     # ── the two probes Tauri preflight actually runs ─────────────────────────
-    r = run([binp, "-h"], timeout = 180)
+    # Both under the DESKTOP's deadline, not a generous CI one. preflight wraps each
+    # call in a 10 second tokio timeout (managed.rs:337 for `-h`, managed.rs:390 for
+    # desktop-capabilities) and on expiry kills the child and reports Stale --
+    # "cli_unusable" or "desktop_capability_probe_failed" (managed.rs:471, :521). A
+    # torn venv whose CLI still answers, but only after 30 seconds of import retries,
+    # is therefore an install the app sends to repair; waiting three minutes for it
+    # here would call the same install HEALTHY and skip the re-run assertion. run()
+    # reports a timeout as a non-zero rc, which lands in the same REPAIRABLE arm the
+    # desktop's Stale maps to.
+    PREFLIGHT_TIMEOUT = 10
+
+    t0 = time.time()
+    r = run([binp, "-h"], timeout = PREFLIGHT_TIMEOUT)
     (out / "cli-h.log").write_text(merged(r), encoding = "utf-8", errors = "replace")
     say("cli_h_ok", r[0] == 0)
+    say("cli_h_seconds", round(time.time() - t0, 2))
 
+    t0 = time.time()
     caps_rc, caps_out, caps_err = run(
-        [binp, "studio", "desktop-capabilities", "--json"], timeout = 180
+        [binp, "studio", "desktop-capabilities", "--json"], timeout = PREFLIGHT_TIMEOUT
     )
     (out / "desktop-capabilities.json").write_text(caps_out, encoding = "utf-8", errors = "replace")
     (out / "desktop-capabilities.stderr.log").write_text(
         caps_err, encoding = "utf-8", errors = "replace"
     )
     say("capabilities_ok", caps_rc == 0)
+    say("capabilities_seconds", round(time.time() - t0, 2))
 
     # Parse EXACTLY as the desktop does: managed.rs:414 hands the whole stdout buffer
     # to serde_json, which rejects any leading or trailing non-JSON, and stderr was
