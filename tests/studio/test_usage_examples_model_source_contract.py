@@ -139,9 +139,7 @@ API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-p
 # The lifecycle labels live in their own module: the overlay is mounted from
 # __root.tsx, so importing them from the page pulled the whole page into the
 # eager bundle and undid the route's lazyRouteComponent.
-API_MONITOR_LIFECYCLE_TS = (
-    REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
-)
+API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
