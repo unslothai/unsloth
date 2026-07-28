@@ -4068,6 +4068,38 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     fi
 fi
 
+# ── CI only: overlay a source checkout over the package just installed ──
+# Not a consumer knob: no command-line flag, absent from --help, and ignored
+# unless UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a pyproject.toml.
+#
+# Why it exists: the clean-machine legs run THIS script from a branch, but the
+# script installs unsloth from PyPI, which is the consumer path and must stay
+# that way. Everything Python-side is then read out of the released wheel --
+# studio/setup.sh, studio/setup.ps1, studio/install_python_stack.py, and every
+# requirements/constraints file it resolves through Path(__file__) -- so a
+# branch could not be validated by the very workflow that exists to validate
+# it. Overlaying the checkout as an editable install re-points import studio at
+# the working tree, and the existing importlib.resources lookup below then
+# finds the branch's setup.sh with no further change.
+#
+# --local is deliberately NOT used for this: it also installs
+# `unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo`, which genuinely
+# requires git, and git absence is exactly what these legs prove. This overlay
+# is editable + --no-deps only. It resolves no dependencies, clones nothing,
+# and builds only unsloth's own pure-Python metadata, so it still works with
+# git, cmake and the C/C++ compilers all missing.
+if [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; then
+    if [ ! -f "$UNSLOTH_CI_SOURCE_OVERLAY/pyproject.toml" ]; then
+        echo "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$UNSLOTH_CI_SOURCE_OVERLAY' but there is no pyproject.toml there." >&2
+        exit 1
+    fi
+    substep "CI: overlaying source checkout (editable, no deps): $UNSLOTH_CI_SOURCE_OVERLAY"
+    # Retry: the editable build downloads its pinned build backend from PyPI, so
+    # it carries the same transient-network risk as every other install step.
+    run_install_cmd_retry "overlay CI source checkout" uv pip install --python "$_VENV_PY" \
+        --no-deps -e "$UNSLOTH_CI_SOURCE_OVERLAY"
+fi
+
 # ── Run studio setup ──
 tauri_log "STEP" "Running Unsloth setup"
 # When --local, use the repo's own setup.sh directly.

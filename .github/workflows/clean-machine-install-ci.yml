@@ -13,6 +13,39 @@
 #   mask  -> the toolchain is genuinely unusable; does the install still work?
 #   trace -> the toolchain works but is logged; does the installer ever call it?
 # Linux is the exception: containers are genuinely clean.
+#
+# ── What each leg actually puts under test ────────────────────────────────────
+# install.sh / install.ps1 come from this ref, but they install unsloth FROM PyPI,
+# because that is the consumer path and it has to stay that way. Everything
+# Python-side is therefore read out of the RELEASED wheel: studio/setup.sh,
+# studio/setup.ps1, studio/install_python_stack.py, and every requirements and
+# constraints file those resolve through Path(__file__). Left alone, this workflow
+# can only ever validate the two shell installers, and a branch that changes
+# constraints.txt or setup.ps1 gets a green run that proves nothing about the
+# change. The `Assert the Fedora outcome is a known one` step below was already
+# carrying a hand-written workaround for exactly this.
+#
+# So legs with `overlay: true` re-point the venv at this ref before studio setup
+# runs, via UNSLOTH_CI_SOURCE_OVERLAY (install.sh / install.ps1, just above their
+# "Run studio setup" section): a `--no-deps` editable install of the checkout.
+# That makes `import studio` resolve to the working tree, so the existing
+# setup-script lookup finds this ref's setup.sh / setup.ps1 and install_python_stack
+# reads this ref's constraints. It is deliberately NOT `install.sh --local`:
+# --local also installs `unsloth-zoo @ git+https://...`, which genuinely needs git,
+# and git absence is the whole point of the masked legs. The overlay resolves no
+# dependencies and clones nothing, so it still works with git, cmake and the
+# compilers all gone.
+#
+# Legs left on `overlay: false`, and why:
+#   mac */mask/pipe        the `curl | sh` shape a user runs. Kept end-to-end on the
+#                          released package so a broken PyPI release still shows up.
+#   mac macos-14/trace     `notools` asserts the installer never reaches for git, and
+#                          the editable build itself calls `git rev-parse` /
+#                          `git archive` through setuptools-scm's file finder. An
+#                          overlay here would answer the leg's own question for it.
+#   linux ubuntu2404-nonroot  dies at the elevation gate before a venv exists.
+#   wsl                    only install.sh is copied into the distro; there is no
+#                          source tree inside WSL to overlay from.
 
 name: Clean machine install
 
@@ -70,23 +103,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `overlay` decides whether this ref's Python code is put under test at all;
+          # see the header. The pipe legs stay on the released package on purpose.
+          #
           # The reported failure, in the shape users run it. Default install (with
           # torch) because that is what a consumer actually gets.
-          - {os: macos-14, mode: mask,  delivery: pipe,  flags: '',           experimental: false}
-          - {os: macos-14, mode: mask,  delivery: file,  flags: '',           experimental: false}
+          - {os: macos-14, mode: mask,  delivery: pipe,  flags: '',           experimental: false, overlay: false}
+          - {os: macos-14, mode: mask,  delivery: file,  flags: '',           experimental: false, overlay: true}
           # What the desktop app runs: no tty, stdin closed, TAURI markers on.
-          - {os: macos-14, mode: mask,  delivery: tauri, flags: '',           experimental: false}
+          - {os: macos-14, mode: mask,  delivery: tauri, flags: '',           experimental: false, overlay: true}
           # Toolchain present but logged: does the installer ever reach for it?
-          - {os: macos-14, mode: trace, delivery: file,  flags: '',           experimental: false}
+          # No overlay: the editable build calls git itself (setuptools-scm), which
+          # would plant the very evidence `notools` exists to look for.
+          - {os: macos-14, mode: trace, delivery: file,  flags: '',           experimental: false, overlay: false}
           # --no-torch is the one macOS path that can still want a compiler
           # (sentencepiece has no guaranteed cp313 arm64 wheel), so probe it apart
           # from the default path instead of letting it hide the gate under test.
-          - {os: macos-14, mode: mask,  delivery: file,  flags: '--no-torch', experimental: true}
-          - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false}
-          - {os: macos-26, mode: mask,  delivery: file,  flags: '',           experimental: true}
+          - {os: macos-14, mode: mask,  delivery: file,  flags: '--no-torch', experimental: true,  overlay: true}
+          - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false, overlay: false}
+          - {os: macos-26, mode: mask,  delivery: file,  flags: '',           experimental: true,  overlay: true}
           # Intel pins python 3.12 and its /usr/bin/git is not CLT-provided, so it
           # survives masking. Informational only.
-          - {os: macos-15-intel, mode: mask, delivery: file, flags: '',       experimental: true, allow_working: 'git'}
+          - {os: macos-15-intel, mode: mask, delivery: file, flags: '',       experimental: true,  overlay: true, allow_working: 'git'}
 
     steps:
       # checkout FIRST: it needs a working git, which masking then takes away.
@@ -148,6 +186,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+          # Empty, and therefore ignored by install.sh, on the non-overlay legs.
+          # Also empty for `installer_source: published`, where the script under test
+          # is production's and has no such hook: overlaying this ref's Python onto it
+          # would report on neither one honestly.
+          UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           set -a; . ./clean-machine.env; set +a
           set -o pipefail
@@ -196,6 +239,18 @@ jobs:
             echo "::warning::curl reported a broken pipe -- an early exit killed the reader"
           fi
           exit "$rc"
+
+      # Without this the gap comes back silently: install.sh ignores an unset
+      # UNSLOTH_CI_SOURCE_OVERLAY, so a typo in the matrix or the expression would
+      # put every leg back on the released wheel and nothing in the run would say so.
+      - name: Assert this ref's Python was really put under test
+        if: matrix.overlay && inputs.installer_source != 'published' && steps.install.outcome == 'success'
+        run: |
+          grep -q "CI: overlaying source checkout" logs/install.log || {
+            echo "::error::this leg is marked overlay: true but the installer never overlaid the checkout, so it only tested the released package"
+            exit 1
+          }
+          echo "overlay applied; this leg exercised this ref's Python"
 
       - name: Assert no source build and no toolchain use
         if: always() && steps.install.outcome == 'success'
@@ -266,23 +321,28 @@ jobs:
             image: ubuntu:24.04
             runner: ubuntu-latest
             experimental: false
+            overlay: true
           - label: ubuntu2404-arm-root
             image: ubuntu:24.04
             runner: ubuntu-24.04-arm
             experimental: false
+            overlay: true
           # No elevation: today this hard-fails at install.sh:856-861. Expected
           # failure; the point is to pin the message and prove it is actionable
-          # rather than a bare `curl: (56)`.
+          # rather than a bare `curl: (56)`. No overlay: it never gets as far as a
+          # venv, so there would be nothing to overlay into.
           - label: ubuntu2404-nonroot
             image: ubuntu:24.04
             runner: ubuntu-latest
             experimental: true
+            overlay: false
           # Non-apt: today this hard-fails at install.sh:2034. Expected failure;
           # forces the decision on whether dnf/pacman/zypper get supported.
           - label: fedora41
             image: fedora:41
             runner: ubuntu-latest
             experimental: true
+            overlay: true
 
     steps:
       - name: Describe the container's starting state
@@ -296,10 +356,17 @@ jobs:
       # Everything else stays absent.
       - name: Provision only the bootstrap transport
         run: |
+          # tar and gzip ride along on the overlay legs: with no actions/checkout here
+          # (it needs git) the only way to get this ref's source into the container is
+          # to fetch and unpack an archive over the same transport. Neither is a
+          # compiler, git or cmake, so the clean-machine premise is untouched. Both
+          # are usually already in the base image; naming them just makes it certain.
+          pkgs="ca-certificates curl"
+          if [ "${{ matrix.overlay }}" = "true" ]; then pkgs="$pkgs tar gzip"; fi
           if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends $pkgs
           elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y -q ca-certificates curl
+            dnf install -y -q $pkgs
           fi
 
       # No actions/checkout on purpose: it needs git, and a container with git
@@ -321,6 +388,19 @@ jobs:
           fi
           wc -l install.sh
 
+      # The overlay needs a source tree, and these legs deliberately have no
+      # actions/checkout. codeload serves the same commit as a tarball over plain
+      # HTTPS, so this ref's Python code gets in without a git client.
+      - name: Fetch this ref's source tree for the overlay
+        if: matrix.overlay && inputs.installer_source != 'published'
+        run: |
+          set -e
+          mkdir -p ci-source
+          curl -fsSL "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            | tar -xz -C ci-source --strip-components=1
+          [ -f ci-source/pyproject.toml ] || { echo "::error::source tarball for ${GITHUB_SHA} unpacked without a pyproject.toml"; ls -la ci-source; exit 1; }
+          echo "overlay source: $(pwd)/ci-source"
+
       - name: Create an unprivileged user
         if: matrix.label == 'ubuntu2404-nonroot'
         run: |
@@ -339,6 +419,13 @@ jobs:
         if: matrix.label != 'ubuntu2404-nonroot'
         run: |
           set -o pipefail
+          # Resolved here rather than in `env:` so it tracks the step's real working
+          # directory: a container job remaps the workspace and github.workspace is
+          # not something this needs to depend on.
+          if [ -d ci-source ]; then
+            export UNSLOTH_CI_SOURCE_OVERLAY="$PWD/ci-source"
+            echo "overlaying this ref's source from $UNSLOTH_CI_SOURCE_OVERLAY"
+          fi
           rc=0
           # Piped: the advertised command, and the shape that turns an early exit
           # into curl:(56).
@@ -379,26 +466,41 @@ jobs:
             # The gate no longer hard-stops on a non-apt distro: it warns that the
             # optional build tools are absent and carries on. Reaching this warning is
             # what proves the Linux gate did not stop the install.
-            # Past that point the only accepted failure is release lag: install.sh is
-            # taken from this ref but unsloth is installed from PyPI, and the released
+            # Past that point the accepted failure used to be release lag: install.sh
+            # came from this ref but unsloth from PyPI, and the released
             # studio/install_python_stack.py has no "skip the triton kernels when git
-            # is missing" guard, so it still fetches the git+https triton_kernels
-            # requirement on a machine that has no git. Once a release carries that
-            # guard this whole step retires to a plain success assertion.
-            if ! grep -q "Installing triton kernels (pip) failed" logs/install.log; then
-              echo "::error::fedora got past the dependency warning then failed for a new reason, not the known triton/git release lag"
+            # is missing" guard, so it fetched the git+https triton_kernels
+            # requirement on a machine with no git. This leg is now overlaid with this
+            # ref's Python (see the header), so that guard is this ref's own code and
+            # the triton failure must NOT come back. Accepting it here would be
+            # accepting a regression in the guard as if it were release lag.
+            if grep -q "Installing triton kernels (pip) failed" logs/install.log; then
+              echo "::error::triton kernels still failed with this ref's install_python_stack.py overlaid, so its no-git skip did not hold"
               exit 1
             fi
-            echo "::warning::fedora fails only on triton_kernels (git+https) from the released unsloth; drop this step once a release ships the no-git skip"
-            exit 0
+            # Nothing past the dependency warning is acceptable any more: the one
+            # tolerated failure was the released package lagging this ref, and the
+            # overlay removes that difference. A failure here is this ref's own.
+            echo "::error::fedora got past the dependency warning and still failed, with this ref's Python overlaid; there is no known-good outcome left to accept"
+            exit 1
           fi
           # This ref still hard-exits on a non-apt package manager. Pin that message so
           # a bootstrap outage or an unrelated early exit is not tolerated as if it
           # were the intentional diagnostic.
           if ! grep -qiE "Automatic system package installation is supported on apt-based|Fedora/RHEL: sudo dnf install" logs/install.log; then
-            echo "::error::fedora leg failed neither at the unsupported-package-manager gate nor at the known triton/git release lag"
+            echo "::error::fedora leg failed neither at the unsupported-package-manager gate nor past the dependency warning"
             exit 1
           fi
+
+      # See the macOS job: proves the leg is testing what its matrix row claims.
+      - name: Assert this ref's Python was really put under test
+        if: matrix.overlay && inputs.installer_source != 'published' && steps.install_root.outcome == 'success'
+        run: |
+          grep -q "CI: overlaying source checkout" logs/install.log || {
+            echo "::error::this leg is marked overlay: true but the installer never overlaid the checkout, so it only tested the released package"
+            exit 1
+          }
+          echo "overlay applied; this leg exercised this ref's Python"
 
       # nobuild only reads the log, so an installer that exits 0 having done nothing
       # satisfies it. These required Linux rows had no check that the install
@@ -557,16 +659,29 @@ jobs:
           - os: windows-latest
             winget: 'visible'
             experimental: false
+            overlay: true
           # The no-winget path (LTSC / Server / managed corporate machines) falls back
           # to python.org + astral.sh and is untested today. It is also where
           # Ensure-VCRedist silently does not run, leaving torch unable to load --
           # hence the explicit `import torch` assert below.
+          #
+          # This leg fails at studio/setup.ps1:1652-1670, the unconditional
+          # "Git is required but could not be installed automatically" gate: no winget
+          # means no way to fetch git, and setup.ps1 refuses to continue without it.
+          # Before the overlay that failure came out of the RELEASED setup.ps1 and said
+          # nothing about this ref. It now comes out of this ref's own copy, which
+          # still carries the same gate, so the leg is red for a real and currently
+          # unfixed reason rather than for an untestable one. Relaxing that gate to
+          # `--local` and llama.cpp source builds is what turns it green, and this
+          # overlay is what will let this workflow see it happen.
           - os: windows-latest
             winget: 'masked'
             experimental: false
+            overlay: true
           - os: windows-11-arm
             winget: 'visible'
             experimental: true
+            overlay: true
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -723,6 +838,9 @@ jobs:
       - name: Install
         id: install
         shell: pwsh
+        env:
+          # Empty, and therefore ignored by install.ps1, on the non-overlay legs.
+          UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           $ErrorActionPreference = 'Continue'
           # No -SkipTorch: install.ps1 has no param block and its parser matches
@@ -733,6 +851,17 @@ jobs:
           $rc = $LASTEXITCODE
           Write-Host "installer exit code: $rc"
           exit $rc
+
+      # See the macOS job: proves the leg is testing what its matrix row claims.
+      - name: Assert this ref's Python was really put under test
+        if: matrix.overlay && inputs.installer_source != 'published' && steps.install.outcome == 'success'
+        shell: pwsh
+        run: |
+          if (-not (Select-String -Path logs/install.log -Pattern 'CI: overlaying source checkout' -SimpleMatch -Quiet)) {
+            Write-Host '::error::this leg is marked overlay: true but the installer never overlaid the checkout, so it only tested the released package'
+            exit 1
+          }
+          Write-Host "overlay applied; this leg exercised this ref's Python"
 
       - name: Assert torch loads, and record what that does and does not prove
         if: steps.install.outcome == 'success'

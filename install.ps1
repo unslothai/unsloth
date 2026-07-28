@@ -2623,6 +2623,44 @@ exit 0
         }
     }
 
+    # ── CI only: overlay a source checkout over the package just installed ──
+    # Mirrors the same block in install.sh. Not a consumer knob: no command-line
+    # switch, absent from the usage text, and ignored unless
+    # UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a pyproject.toml.
+    #
+    # Why it exists: the clean-machine legs run THIS script from a branch, but
+    # the script installs unsloth from PyPI, which is the consumer path and must
+    # stay that way. Everything Python-side is then read out of the released
+    # wheel -- studio/setup.ps1, studio/install_python_stack.py, and every
+    # requirements/constraints file resolved through Path(__file__) -- so a
+    # branch could not be validated by the very workflow that exists to validate
+    # it. The `& $UnslothExe studio setup` call below goes through the CLI, and
+    # an editable overlay makes _PACKAGE_ROOT in unsloth_cli/commands/studio.py
+    # resolve to the working tree by PEP 660 __file__, exactly as the --local
+    # note on the Tauri overlay above describes, so setup.ps1 comes from the
+    # branch with no further change here.
+    #
+    # --local is deliberately NOT used for this: it also installs
+    # `unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo`, which
+    # genuinely requires git, and git absence is exactly what the masked leg
+    # proves. This overlay is editable + --no-deps only. It resolves no
+    # dependencies, clones nothing, and builds only unsloth's own pure-Python
+    # metadata, so it still works with git, cmake and MSVC all missing.
+    if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
+        $CiOverlayRoot = $env:UNSLOTH_CI_SOURCE_OVERLAY
+        if (-not (Test-Path -LiteralPath (Join-Path $CiOverlayRoot "pyproject.toml"))) {
+            Write-Host "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$CiOverlayRoot' but there is no pyproject.toml there." -ForegroundColor Red
+            return (Exit-InstallFailure "UNSLOTH_CI_SOURCE_OVERLAY has no pyproject.toml: $CiOverlayRoot")
+        }
+        substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
+        # Retry: the editable build downloads its pinned build backend from PyPI,
+        # so it carries the same transient-network risk as every other step.
+        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { uv pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
+        if ($CiOverlayExit -ne 0) {
+            return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)
+        }
+    }
+
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, and other dependencies automatically via winget. Node.js is

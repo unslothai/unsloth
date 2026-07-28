@@ -109,8 +109,17 @@ for check in "$@"; do
         # every uv source build. Match both spellings. Requiring `==` or ` @ ` after
         # the name keeps this off the installer's own lowercase "building frontend..."
         # progress text. Strip ANSI first so a coloured run (FORCE_COLOR) parses.
+        #
+        # `Building <name> @ file://...` is dropped before the names are read: a
+        # local-path build is something the caller pointed at (install.sh --local,
+        # or the UNSLOTH_CI_SOURCE_OVERLAY editable overlay the CI legs use to put
+        # the branch's Python code under test), never a dependency that resolution
+        # chose. Dependencies from an index always print `<name>==<version>`, so
+        # this drops no real signal -- a genuine sdist pulled from PyPI is still
+        # caught, including one named unsloth.
         _esc=$(printf '\033')
         _built="$(sed -E "s/${_esc}\[[0-9;]*[A-Za-z]//g" "$LOG" 2>/dev/null \
+                  | grep -viE "building [a-z0-9._-]+ @ file://" \
                   | grep -oiE "building wheel for [a-z0-9._-]+|building [a-z0-9._-]+(==| @ )" \
                   | tr 'A-Z' 'a-z' \
                   | sed -E -e 's/^building wheel for //' -e 's/^building //' -e 's/(==| @ )$//' \
