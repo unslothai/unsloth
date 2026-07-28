@@ -849,6 +849,77 @@ class TestBashBlocklistPosition:
         assert self._find()("sed -n '1,3p' input |& grep -e safe") == set()
         assert self._find()("grep -r pattern . |& head -5") == set()
 
+    def test_script_file_source_ends_a_continuation(self):
+        # sed joins its -e/-f sources with newlines, but a source BOUNDARY also
+        # closes any continuation open across it. Reading every -e as one
+        # uninterrupted text let an unreadable -f in the middle hide a payload:
+        # verified on GNU sed 4.9 that `sed -e '1a\' -f /dev/null -e 'e touch
+        # MARKER' input` creates MARKER while the same line without the -f does
+        # not, and the screen came back empty for both.
+        assert "rm" in self._find()(r"sed -e '1a\' -f /dev/null -e 'e rm -f victim' input")
+        assert "rm" in self._find()(r"sed -e '1a\' -f/dev/null -e 'e rm -f victim' input")
+        assert "rm" in self._find()(r"sed -e '1a\' --file=/dev/null -e 'e rm -f victim' input")
+        # ...and with no source boundary the continuation still swallows it.
+        assert self._find()(r"sed -e '1a\' -e 'e rm -f victim' input") == set()
+
+    def test_program_flag_behind_the_positional_script(self):
+        # A program flag AHEAD of the positional makes that word an input file.
+        # One BEHIND it does so only while getopt permutes, and POSIXLY_CORRECT
+        # turns permutation off from outside the command text, so the positional
+        # is still the script: verified that `POSIXLY_CORRECT=1 sed
+        # '1e touch MARKER' input -f /dev/null` creates MARKER, as does the
+        # `-e p` twin, while both came back empty.
+        assert "rm" in self._find()("sed '1e rm -f victim' input -f /dev/null")
+        assert "rm" in self._find()("sed '1e rm -f victim' input -e p")
+        # A flag written FIRST really does demote the positional to a file.
+        assert self._find()("sed -e p '1e rm -f victim' input") == set()
+        assert self._find()("sed -f /dev/null '1e rm -f victim' input") == set()
+        # An ordinary positional read as an extra script yields no payload.
+        assert self._find()("sed p data.txt -e q") == set()
+
+    def test_xargs_supplied_sed_program_fails_closed(self):
+        # xargs appends what it reads on stdin to the command it builds, and
+        # with -I substitutes it into the words already there, so the program
+        # need not be in the text at all. Both of these run rm for real:
+        # `printf '1e rm -f victim\0input\0' | xargs -0 sed` and
+        # `printf '1e rm -f victim\n' | xargs -I{} sed '{}' input`.
+        assert "sed" in self._find()(r"printf '1e rm -f victim\0input\0' | xargs -0 sed")
+        assert "sed" in self._find()(r"printf '1e rm -f victim\n' | xargs -I{} sed '{}' input")
+        assert "sed" in self._find()(r"printf 'x\n' | xargs -I R sed 'R' input")
+        assert "sed" in self._find()(r"printf 'x\n' | xargs --replace=R sed 'R' input")
+        # The ordinary idioms carry their program and put the placeholder where
+        # the FILE goes, so they keep running.
+        assert self._find()("find . -name '*.py' | xargs sed -i 's/a/b/g'") == set()
+        assert self._find()("find . -name '*.py' | xargs -I{} sed -i 's/a/b/' {}") == set()
+        assert self._find()("ls | xargs sed -n '1,3p'") == set()
+
+    def test_only_a_real_assignment_rebinds_a_sed_program(self):
+        # An assignment-shaped word that is not a shell-state assignment leaves
+        # `$p` exactly as it was, and recording it overwrote a payload with an
+        # innocent value bash never assigned. All four of these run rm for real.
+        payload = "p='1e rm -f victim'"
+        assert "rm" in self._find()(f"""{payload}; echo p='1,3p'; sed "$p" input""")
+        assert "rm" in self._find()(f"""{payload}; (p='1,3p'); sed "$p" input""")
+        assert "rm" in self._find()(f"""{payload}; env p='1,3p' sed "$p" input""")
+        # A real later assignment still wins, in both orders.
+        assert self._find()(f"""{payload}; p='1,3p'; sed "$p" input""") == set()
+        assert "rm" in self._find()("""p='1,3p'; p='1e rm -f victim'; sed "$p" input""")
+
+    def test_exec_flags_only_forward_from_a_command_word(self):
+        # Any token spelled `fd` or `find` used to turn on exec-flag
+        # forwarding, so a `-x` or `-exec` in the text after it was read as an
+        # exec flag and its neighbour hard-blocked. These lines run nothing.
+        assert self._find()("echo fd -x rm") == set()
+        assert self._find()("grep fd -x rm file") == set()
+        assert self._find()("printf '%s' find -exec sed '1e rm -f victim' {} +") == set()
+        assert self._find()("echo run: find . -exec rm {} \\;") == set()
+        # A find/fd the shell really runs still forwards, including through a
+        # wrapper and under a command-position glob bash resolves to one.
+        assert "rm" in self._find()("find . -exec rm {} \\;")
+        assert "rm" in self._find()("sudo find . -exec rm {} \\;")
+        assert "rm" in self._find()("/usr/bin/fin[d] . -exec rm {} \\;")
+        assert "rm" in self._find()("fd -x rm -rf x")
+
     def test_fd_exec_flags_reach_the_child_command(self):
         # fd runs its `-x` / `-X` / `--exec` / `--exec-batch` child directly,
         # exactly as find runs an `-exec` one, but only find's own spellings

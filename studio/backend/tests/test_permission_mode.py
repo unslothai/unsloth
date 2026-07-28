@@ -1180,6 +1180,39 @@ def test_terminal_classifier(command, unsafe):
         # --- run: benign pipelines through the same operator ---
         ("sed -n '1,3p' input |& grep -e safe", False),
         ("grep -r pattern . |& head -5", False),
+        # --- prompt: a -f script SOURCE closes any continuation open across it,
+        # so an unreadable one in the middle no longer hides the piece behind it
+        # (verified: with the -f the payload runs, without it it does not) ---
+        (r"sed -e '1a\' -f /dev/null -e 'e rm -f victim' input", True),
+        (r"sed -e '1a\' --file=/dev/null -e 'e rm -f victim' input", True),
+        (r"sed -e '1a\' -e 'e rm -f victim' input", False),
+        # --- prompt: a program flag written BEHIND the positional script only
+        # demotes it while getopt permutes, and POSIXLY_CORRECT turns that off
+        # from outside the command text ---
+        ("sed '1e rm -f victim' input -f /dev/null", True),
+        ("sed '1e rm -f victim' input -e p", True),
+        # --- run: a flag written FIRST really does make the positional a file ---
+        ("sed -e p '1e rm -f victim' input", False),
+        ("sed -f /dev/null '1e rm -f victim' input", False),
+        ("sed p data.txt -e q", False),
+        # --- prompt: xargs builds the argv from stdin or an -I placeholder, so
+        # the sed program need not be in the text at all ---
+        (r"printf '1e rm -f victim\0input\0' | xargs -0 sed", True),
+        (r"printf '1e rm -f victim\n' | xargs -I{} sed '{}' input", True),
+        (r"printf 'x\n' | xargs --replace=R sed 'R' input", True),
+        # --- run: the ordinary idioms carry their program, and the placeholder
+        # stands where the FILE goes ---
+        ("find . -name '*.py' | xargs sed -i 's/a/b/g'", False),
+        ("find . -name '*.py' | xargs -I{} sed -i 's/a/b/' {}", False),
+        ("ls | xargs sed -n '1,3p'", False),
+        # --- prompt: only a word that really changes SHELL state rebinds a sed
+        # program; an argument, a subshell or an env prefix leaves it alone ---
+        ("""p='1e rm -f victim'; echo p='1,3p'; sed "$p" input""", True),
+        ("""p='1e rm -f victim'; (p='1,3p'); sed "$p" input""", True),
+        ("""p='1e rm -f victim'; env p='1,3p' sed "$p" input""", True),
+        ("""p='1e rm -f victim'; false && p='1,3p'; sed "$p" input""", True),
+        # --- run: a real later assignment still wins ---
+        ("""p='1e rm -f victim'; p='1,3p'; sed "$p" input""", False),
         # --- prompt: fd runs its -x / -X / --exec / --exec-batch child
         # directly, the same way find runs an -exec one ---
         ("fd -x sed '1e rm -f victim' {}", True),

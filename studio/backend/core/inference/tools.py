@@ -568,6 +568,22 @@ def _sed_scan_limit(sed_words: int) -> int:
     return max(_MAX_SED_ARG_SCAN, _SED_SCAN_BUDGET // sed_words)
 
 
+def _end_program_source(programs: "list[str]", exec_disabled: bool) -> None:
+    """Close the script source the pieces collected so far belong to.
+
+    sed joins its -e/-f sources with newlines, but a source BOUNDARY also ends
+    any line continuation open across it: `a\\` at the end of one source appends
+    a blank line rather than swallowing the next source's first line. Reading
+    every -e as one uninterrupted text let an unreadable -f in the middle hide a
+    payload -- verified on GNU sed 4.9 that
+    `sed -e '1a\\' -f /dev/null -e 'e touch MARKER' input` creates the file while
+    the same line without the -f does not, and the screen came back empty for
+    both. An empty piece supplies the blank line the join needs.
+    """
+    if programs and programs[-1] and not exec_disabled:
+        programs.append("")
+
+
 def _sed_invocation(
     tokens: "list[str]",
     start: int,
@@ -638,7 +654,13 @@ def _sed_invocation(
     programs: "list[str]" = []
     first_positional = ""
     positional_disabled = False  # a mode flag preceded the positional script
-    has_program_flag = False
+    # A program flag AHEAD of the positional word makes that word an input FILE.
+    # One BEHIND it does so only while getopt permutes, and POSIXLY_CORRECT
+    # turns permutation off from outside the command text (see below), so the
+    # positional is still read as a script then: verified on GNU sed 4.9 that
+    # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input -f /dev/null` creates the
+    # file, as does the `-e p` twin, while both came back empty.
+    program_flag_before_positional = False
     # A mode flag has been seen, so every script COMPILED after it is inert.
     # Monotone by construction, which is what makes dropping those scripts safe
     # for the `-e '1a\' -e 'e rm -rf x'` continuation shape: the live pieces are
@@ -673,7 +695,10 @@ def _sed_invocation(
             if not letter:
                 continue
             # -l only matters so its operand is not mistaken for the script.
-            has_program_flag = has_program_flag or letter in "ef"
+            if letter in "ef" and not first_positional:
+                program_flag_before_positional = True
+            if letter == "f":
+                _end_program_source(programs, exec_disabled)
             if not sep:
                 value_pending = letter
             elif letter == "e" and not exec_disabled:
@@ -689,7 +714,10 @@ def _sed_invocation(
                 # -i's suffix is the rest of the token; it never takes the next
                 # one, so the script is still the positional ahead.
                 continue
-            has_program_flag = has_program_flag or letter in "ef"
+            if letter in "ef" and not first_positional:
+                program_flag_before_positional = True
+            if letter == "f":
+                _end_program_source(programs, exec_disabled)
             if not attached:
                 value_pending = letter
             elif letter == "e" and not exec_disabled:
@@ -698,7 +726,10 @@ def _sed_invocation(
         if not first_positional:
             first_positional = token
             positional_disabled = exec_disabled
-    if not has_program_flag and first_positional and not positional_disabled:
+    if first_positional and not positional_disabled and not program_flag_before_positional:
+        # Its own script source, so a `-e '1a\'` continuation ahead of it cannot
+        # swallow the positional the way it would swallow a following -e piece.
+        _end_program_source(programs, exec_disabled)
         programs.append(first_positional)
     # Complete when a separator closed the invocation, or when the window
     # already covered every remaining argument.
@@ -845,7 +876,9 @@ def _sed_exec_payloads(program: str) -> "list[str]":
     return payloads
 
 
-def _assignment_bindings(tokens: "list[str]") -> "list[tuple[int, str, str | None]]":
+def _assignment_bindings(
+    tokens: "list[str]", quoted: "frozenset[int]" = frozenset()
+) -> "list[tuple[int, str, str | None]]":
     """Every `NAME=value` word as ``(token index, name, value)``, in the order
     the shell performs the assignments.
 
@@ -869,12 +902,45 @@ def _assignment_bindings(tokens: "list[str]") -> "list[tuple[int, str, str | Non
     is the case that matters -- the lexer splits that word at the `(`, leaving
     the binding `p` -> `$` -- and leaving `$p` unresolved is the truth, which is
     what makes _sed_program_unresolved ask.
+
+    Only a word that really changes SHELL state counts. An assignment-shaped
+    word elsewhere leaves `$p` exactly as it was, and recording it overwrote a
+    payload with an innocent value that bash never assigned. All four of these
+    run rm for real while the screen came back empty:
+        p='1e rm -f victim'; echo p='1,3p'; sed "$p" input   (an argument)
+        p='1e rm -f victim'; (p='1,3p'); sed "$p" input      (a subshell)
+        p='1e rm -f victim'; env p='1,3p' sed "$p" input     (an env prefix)
+        p='1e rm -f victim'; false && p='1,3p'; sed "$p" input
+    The first three are simply not bindings and are skipped, which is exact in
+    both directions. The last one may or may not run, so it is recorded as
+    UNRESOLVED rather than guessed at, and the sed then fails closed.
     """
     bindings: "list[tuple[int, str, str | None]]" = []
+    pending: "list[tuple[int, str, str | None]]" = []  # the run at this position
+    at_command = True  # an assignment here is a prefix, not an argument
+    depth = 0  # inside ( ... ), where an assignment does not escape
+    conditional = False  # after && / || : the assignment may never run
     for index, token in enumerate(tokens):
-        if _ASSIGNMENT_RE.match(token):
-            name, _, value = token.partition("=")
-            bindings.append((index, name, None if "$" in value or "`" in value else value))
+        if _looks_like_separator(token) and index not in quoted:
+            # Nothing followed the run, so it changed the shell's own state.
+            bindings.extend(pending)
+            pending = []
+            depth = max(0, depth + token.count("(") - token.count(")"))
+            conditional = "&&" in token or "||" in token
+            at_command = True
+            continue
+        if at_command and _ASSIGNMENT_RE.match(token):
+            if depth == 0:
+                name, _, value = token.partition("=")
+                literal = None if "$" in value or "`" in value else value
+                pending.append((index, name, None if conditional else literal))
+            continue
+        if at_command:
+            # A command word: the run in front of it is that command's
+            # ENVIRONMENT, which bash hands the CHILD and not itself.
+            pending = []
+            at_command = False
+    bindings.extend(pending)
     return bindings
 
 
@@ -1004,6 +1070,65 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     )
 
 
+def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
+    """The placeholder the xargs word at ``start`` substitutes into the command
+    words behind it, or "" when it replaces nothing.
+
+    GNU xargs takes the string attached (`-I{}`), as the next word (`-I {}`) or
+    after an `=` (`--replace={}`); `-i` and a bare `--replace` default to `{}`.
+    """
+    index = start + 1
+    while index < end:
+        token = tokens[index]
+        name, sep, value = token.partition("=")
+        if name in {"--replace", "--replace-str"}:
+            return value if sep and value else "{}"
+        if token.startswith("-I"):
+            if len(token) > 2:
+                return token[2:]
+            return tokens[index + 1] if index + 1 < end else "{}"
+        if token.startswith("-i") and len(token.rstrip()) >= 2:
+            return token[2:] or "{}"
+        index += 1
+    return ""
+
+
+def _xargs_hides_sed_program(tokens: "list[str]", xargs: int, sed: int, program: str) -> bool:
+    """Whether an xargs is the one deciding what program its sed runs.
+
+    xargs appends the words it reads on stdin to the command it builds, and with
+    -I it substitutes them into the words already there, so the program need not
+    be in the command TEXT at all. Both of these run rm for real while the
+    screen came back empty, because one held no program to read and the other
+    held only the placeholder:
+        printf '1e rm -f victim\\0input\\0' | xargs -0 sed
+        printf '1e rm -f victim\\n' | xargs -I{} sed '{}' input
+    Reading either as "no payload found" is ignorance rather than safety, so the
+    sed is failed closed the way an unread one past the scan budget is.
+
+    The ordinary idioms are untouched, since their program is right there and
+    the placeholder stands where the FILE goes:
+        find . -name '*.py' | xargs sed -i 's/a/b/g'
+        find . -name '*.py' | xargs -I{} sed -i 's/a/b/' {}
+    """
+    if not program.strip():
+        return True
+    placeholder = _xargs_replacement(tokens, xargs, sed)
+    return bool(placeholder) and placeholder in program
+
+
+def _forwards_exec_flags(base: str) -> bool:
+    """Whether a command word runs a tool whose `-exec` / `-x` options hand the
+    words behind them to a child command. Exact names, plus any command-position
+    GLOB that could expand to one, so `/usr/bin/fin[d] . -exec rm {} \\;` -- which
+    bash resolves to find and really runs -- is not read as an ordinary word."""
+    if base in _EXEC_FLAG_FORWARDING_COMMANDS:
+        return True
+    return _is_unresolved_command_glob(base) and any(
+        fnmatch.fnmatchcase(name, base) for name in _EXEC_FLAG_FORWARDING_COMMANDS
+    )
+
+
 def _exec_scan_layout(
     tokens: "list[str]", quoted: "frozenset[int]"
 ) -> "tuple[frozenset[int], frozenset[int], frozenset[int]]":
@@ -1041,6 +1166,7 @@ def _exec_scan_layout(
     redirects: "set[int]" = set()
     forwarding = False  # a find/fd command word is in scope
     in_action = False  # inside its `-exec CMD ...` action
+    at_command = True  # the next ordinary word is one the shell RUNS
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -1054,20 +1180,30 @@ def _exec_scan_layout(
         if _looks_like_separator(token) and here not in quoted:
             stops.add(here)
             forwarding = in_action = False
+            at_command = True
             continue
         if in_action and token in _FIND_EXEC_TERMINATORS:
             stops.add(here)
             in_action = False
             continue
         flag = token.split("=", 1)[0]
-        if flag in _FIND_EXEC_FLAGS or (
-            forwarding and not in_action and flag in _EXEC_FORWARD_FLAGS
+        if forwarding and (
+            flag in _FIND_EXEC_FLAGS or (not in_action and flag in _EXEC_FORWARD_FLAGS)
         ):
             exec_flags.add(here)
             in_action = True
             continue
-        if os.path.basename(token.strip(";&|()`{}")).lower() in _EXEC_FLAG_FORWARDING_COMMANDS:
+        if token.startswith("-") or _ASSIGNMENT_RE.match(token):
+            continue  # an option or an assignment prefix, never a command word
+        if at_command and _forwards_exec_flags(os.path.basename(token.strip(";&|()`{}")).lower()):
+            # Only a find/fd the shell really RUNS forwards its exec flags. Any
+            # token spelled `fd` or `find` used to turn one on, so a `-x` or an
+            # `-exec` in the text AFTER it was read as an exec flag and the
+            # neighbouring word hard-blocked: `echo fd -x rm`,
+            # `grep fd -x rm file` and `printf '%s' find -exec sed '1e rm' {} +`
+            # all came back with rm, refusing entirely harmless lines.
             forwarding = True
+        at_command = at_command and os.path.basename(token).lower() in _COMMAND_PREFIXES
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
 
@@ -1181,6 +1317,8 @@ def _find_blocked_commands(command: str) -> set[str]:
     prefix_command = ""  # which wrapper that was, for its own value-taking options
     skip_operand = False  # consume a wrapper/conditional operand, not the command
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
+    sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
+    xargs_index = -1  # an xargs awaiting the command it wraps
     for token_index, token in enumerate(tokens):
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand
@@ -1205,6 +1343,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             expect_command = True
             prefix_pending = False
             prefix_command = ""
+            xargs_index = -1
             continue
         if token.startswith("-"):
             # A wrapper option whose value is a SEPARATE token precedes that
@@ -1237,6 +1376,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         base = _token_basename(token)
         if _is_sed_command(base):
             sed_indexes.append(token_index)
+            if xargs_index >= 0:
+                sed_xargs[token_index] = xargs_index
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
         else:
@@ -1244,12 +1385,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
+            if base == "xargs" and xargs_index < 0:
+                xargs_index = token_index
             prefix_pending = True
             prefix_command = base
             continue
         expect_command = False
         prefix_pending = False
         prefix_command = ""
+        xargs_index = -1
 
     # `alias zap='rm -rf'` stores a command bash runs when the alias is invoked,
     # so the body is scanned as a command in its own right.
@@ -1376,6 +1520,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `e rm -rf ~` ride in behind enough padding options.
             blocked.add(_token_basename(tokens[i]))
             continue
+        if i in sed_xargs and _xargs_hides_sed_program(tokens, sed_xargs[i], i, program):
+            # The program comes off stdin or out of an -I placeholder, so it is
+            # not in the text to read at all (see _xargs_hides_sed_program).
+            blocked.add(_token_basename(tokens[i]))
+            continue
         if "$" in program:
             # A program held in a variable (p='...e rm -f victim'; sed "$p" f)
             # only shows its `e` once the reference is resolved. shlex kept the
@@ -1384,7 +1533,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             # of them wins, which is the pair that `p='1,3p';
             # p='1e rm -f victim'; sed "$p" input` turns on.
             if sed_bindings is None:
-                sed_bindings = _assignment_bindings(tokens)
+                sed_bindings = _assignment_bindings(tokens, quoted_separators)
                 sed_vars = {}
             sed_cursor = _bindings_before(sed_bindings, sed_cursor, i, sed_vars)
         for variant in _sed_program_variants(program, sed_vars or {}):
@@ -5126,6 +5275,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         # for the quote walk it needs (_quoted_separator_indexes).
         sed_stops: "frozenset[int] | None" = None
         sed_skips: "frozenset[int]" = frozenset()
+        sed_quoted: "frozenset[int]" = frozenset()
         if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
             return True
         # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a
@@ -5156,6 +5306,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_config_alias_pending = False  # `git config alias.x` precedes its body
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
+        xargs_index = -1  # an xargs awaiting the command whose argv it builds
         for _tok_idx, token in enumerate(tokens):
             if (
                 token in _SHELL_SEPARATORS
@@ -5164,6 +5315,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             ):
                 expect_command = True
                 prefix_pending = False
+                xargs_index = -1
                 # A dangling wrapper option (env -u ; rm ...) must not consume
                 # the next segment's command word.
                 wrapper_value_pending = False
@@ -5474,6 +5626,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 ):
                     return True
                 if base in _HIGH_RISK_FORWARDING_COMMANDS:
+                    if base == "xargs" and xargs_index < 0:
+                        # It builds the argv of whatever follows, so a sed there
+                        # may be handed a program this scan cannot see.
+                        xargs_index = _tok_idx
                     # find/fd only run a child at -exec/-ok; forwarding from the
                     # command itself would make `find . -name rm` prompt.
                     if base in _EXEC_FLAG_FORWARDING_COMMANDS:
@@ -5506,9 +5662,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         # `-e` script behind it (`sed -n ';' -e '1e rm -f
                         # victim' input` really runs rm). A redirection is the
                         # other way round: those words never reach sed at all.
-                        _flags, sed_stops, sed_skips = _exec_scan_layout(
-                            tokens, _quoted_separator_indexes(text, tokens, ";&|()")
-                        )
+                        sed_quoted = _quoted_separator_indexes(text, tokens, ";&|()")
+                        _flags, sed_stops, sed_skips = _exec_scan_layout(tokens, sed_quoted)
                     sed_program, sed_overflowed = _sed_invocation(
                         tokens, _tok_idx, sed_scan_limit, sed_stops, sed_skips
                     )
@@ -5516,6 +5671,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         # The script was pushed past the scan window by padding
                         # options, so "no payload found" only means "not looked
                         # at": ask instead of falling through to safe.
+                        return True
+                    if xargs_index >= 0 and _xargs_hides_sed_program(
+                        tokens, xargs_index, _tok_idx, sed_program
+                    ):
+                        # xargs builds the argv from stdin or an -I placeholder,
+                        # so the program is not in the text to read at all.
                         return True
                     if "$" in sed_program:
                         # A program held in a variable (p='# note<newline>e CMD';
@@ -5526,7 +5687,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         # assignments ahead of this sed can reach it, and the
                         # last of them is the one bash uses.
                         if sed_bindings is None:
-                            sed_bindings = _assignment_bindings(tokens)
+                            sed_bindings = _assignment_bindings(tokens, sed_quoted)
                             sed_vars = {}
                         sed_cursor = _bindings_before(sed_bindings, sed_cursor, _tok_idx, sed_vars)
                     sed_variants = _sed_program_variants(sed_program, sed_vars or {})
