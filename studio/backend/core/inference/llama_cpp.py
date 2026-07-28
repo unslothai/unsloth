@@ -354,7 +354,15 @@ _FORCED_PLAN_INTENT = re.compile(
     re.I | re.M,
 )
 _FINAL_ANSWER_SIGNAL = re.compile(
-    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",
+    r"\b(?:final\s+answer|answer\s*:|(?:the\s+)?answer\s+is|here\s+is|here's"
+    r"|in\s+summary|to\s+summari[sz]e|result\s*:)\b",
+    re.I,
+)
+# A plan that pivots ("I should call web_search, but Tokyo is the capital") has an
+# answer attached, so the turn must survive. Leaking a plan sentence is cosmetic;
+# dropping an answer is not, so the doubtful case keeps the output.
+_ANSWER_PIVOT = re.compile(
+    r"\b(?:but|however|although|though|that\s+said|in\s+the\s+meantime|meanwhile)\b",
     re.I,
 )
 
@@ -457,8 +465,11 @@ def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> boo
         return False
     if _FINAL_ANSWER_SIGNAL.search(stripped):
         return False
-    if _FORCED_PLAN_INTENT.search(stripped) is not None:
-        return True
+    plan = _FORCED_PLAN_INTENT.search(stripped)
+    if plan is not None:
+        # Only the plan itself is safe to drop; anything the turn pivots to after it
+        # is the answer the user is waiting for.
+        return _ANSWER_PIVOT.search(stripped[plan.end() :]) is None
     if not _is_short_intent_without_action(stripped):
         return False
     # INTENT_SIGNAL also fires on lead-ins to a real answer ("Now I have the results.

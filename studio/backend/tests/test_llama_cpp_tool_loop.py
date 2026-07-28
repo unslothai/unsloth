@@ -1743,6 +1743,11 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         # Second person is the user's obligation, not the model's plan.
         "You must call your bank about the charge.",
         "I must admit the square is red.",
+        # A plan that pivots to an answer must ship the answer with it.
+        "I should call web_search, but the answer is Tokyo.",
+        "I need to call web_search. The answer is Tokyo.",
+        "I should call web_search to confirm, but Tokyo is the capital of Japan.",
+        "I must run the search, however the result is already known: 42.",
     ):
         assert not suppress(answer), f"dropped {answer!r}"
 
