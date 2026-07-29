@@ -4102,7 +4102,7 @@ async def _reject_unservable_model(
             return
         if not (
             get_llama_cpp_backend().is_loaded
-            or getattr(get_inference_backend(), "active_model_name", None)
+            or getattr(await asyncio.to_thread(get_inference_backend), "active_model_name", None)
         ):
             return
         # Refresh in the background and read the index as-is: scanning here would stall the
@@ -4273,7 +4273,9 @@ async def _maybe_auto_switch_model(
             if (
                 not last
                 or get_llama_cpp_backend().is_loaded
-                or getattr(get_inference_backend(), "active_model_name", None)
+                or getattr(
+                    await asyncio.to_thread(get_inference_backend), "active_model_name", None
+                )
             ):
                 return
             if len(last) == 3:
@@ -5316,7 +5318,7 @@ async def _load_model_impl(
         )
 
         # ── Already-loaded check: skip reload if the exact model is active ──
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         llama_backend = get_llama_cpp_backend()
 
         # Resolve the slot count once (per-load field, else the server-wide
@@ -5550,7 +5552,7 @@ async def _load_model_impl(
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
-            unsloth_backend = get_inference_backend()
+            unsloth_backend = await asyncio.to_thread(get_inference_backend)
 
             if config.gguf_hf_repo:
                 from core.inference.llama_cpp import gguf_load_in_flight
@@ -5819,7 +5821,7 @@ async def _load_model_impl(
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
 
         # Same sidecar rejection as GGUF: fast path ahead of the drain, rechecked after.
         _raise_if_sidecar_swap_in_progress()
@@ -6467,7 +6469,7 @@ async def install_latest_transformers_route(
         # before_swap, only once the staged install succeeded: a failed pip/compat check
         # must not leave the user with their model gone. GGUF stays loaded (llama-server
         # never imports transformers).
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         export_backend = get_export_backend()
 
         unloaded_chat = {"v": False}
@@ -6611,7 +6613,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
         # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
         # active-generation refusal below, which it can never need (see there).
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         loading = getattr(backend, "get_loading_model", lambda: None)()
         if (
             loading is not None
@@ -6710,7 +6712,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
-            backend = get_inference_backend()
+            backend = await asyncio.to_thread(get_inference_backend)
             if _unload_evicts_standard_backend(backend, request.model_path):
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
@@ -6835,7 +6837,7 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
-    backend = get_inference_backend()
+    backend = await asyncio.to_thread(get_inference_backend)
 
     if not backend.active_model_name:
         raise HTTPException(
@@ -7242,7 +7244,7 @@ async def generate_audio(
             cancel_event = _audio_cancel,
         )
     else:
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         if not backend.active_model_name:
             raise HTTPException(status_code = 400, detail = "No model loaded.")
         model_info = backend.models.get(backend.active_model_name, {})
@@ -8905,7 +8907,7 @@ async def openai_chat_completions(
                 context_length = llama_backend.context_length,
             )
     else:
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         if not backend.active_model_name:
             _status, _detail = await _no_model_loaded_error(
                 "No model loaded. Call POST /inference/load first.",
@@ -11945,7 +11947,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # path, so public_model_id(path) would miss the advertised entry and 404 a
     # model that is in fact loaded.
     llama_backend = get_llama_cpp_backend()
-    backend = get_inference_backend()
+    backend = await asyncio.to_thread(get_inference_backend)
     raw_to_public: list[tuple[str, Optional[str]]] = []
     if llama_backend.is_loaded and llama_backend.model_identifier:
         raw_to_public.append(
