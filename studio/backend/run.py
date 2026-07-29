@@ -10,7 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import NoReturn, Optional, Sequence, Tuple
 
 
 def _fix_torch_cuda_ld_path():
@@ -798,8 +798,8 @@ def _pid_alive(pid: int) -> bool:
     except ImportError:
         pass
     if sys.platform == "win32":
-        # os.kill(pid, 0) raises OSError for every pid on Windows, so a stale record
-        # would look alive forever and block this port. Unconfirmed means prune.
+        # os.kill(pid, 0) raises OSError for every pid on Windows, so tasklist is
+        # the only usable probe here.
         import subprocess
         try:
             out = subprocess.run(
@@ -809,7 +809,11 @@ def _pid_alive(pid: int) -> bool:
                 timeout = 10,
             ).stdout
         except Exception:
-            return False
+            # Unconfirmed means keep, matching the CLI's _pid_alive. Pruning a
+            # live server's record is what lets the next launch fall back past it
+            # and strand it, which is the bug this file exists to fix. A stale
+            # record instead costs one clear "already running" message.
+            return True
         return f'"{int(pid)}"' in out
     try:
         os.kill(pid, 0)
@@ -836,7 +840,11 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None
         return None
     if not lines or not lines[0].strip().isdigit():
         return None
-    pid = int(lines[0].strip())
+    try:
+        # isdigit() is not enough: a superscript two passes it but int() rejects it.
+        pid = int(lines[0].strip())
+    except ValueError:
+        return None
     # kill(0) signals our whole process group; kill(1) is init. Never either.
     if pid < 2:
         return None
@@ -883,7 +891,11 @@ def _own_studio_on_port(port: int, host: str) -> "int | None":
             continue
         pid, created, address = record
         if not _pid_alive(pid):
-            path.unlink(missing_ok = True)
+            # Pruning is a courtesy; an undeletable record must not abort startup.
+            try:
+                path.unlink(missing_ok = True)
+            except OSError:
+                pass
             continue
         if not _addresses_collide(address, host, port):
             continue
@@ -923,6 +935,23 @@ def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
         return [_read_pid_record(p) for p in _studio_root().glob(PID_FILE_GLOB)]
     except OSError:
         return []
+
+
+def _resolve_port(host: str, port: int, avoid_own_studio: bool = True) -> int:
+    """The requested port, or the next free one.
+
+    With ``avoid_own_studio`` this aborts rather than falling back past one of our
+    own servers, on *port* itself or anywhere in the fallback range: skipping one
+    is what strands it. Callers that read the bound port back pass False and keep
+    the plain fallback.
+    """
+    if _is_port_free(host, port):
+        return port
+    if avoid_own_studio:
+        own = _own_studio_on_port(port, host)
+        if own is not None:
+            _abort_already_running(own, port)
+    return _find_free_port(host, port + 1, avoid_own_studio = avoid_own_studio)
 
 
 def _abort_already_running(pid: int, port: int) -> "NoReturn":
@@ -968,24 +997,44 @@ def _write_pid_file(port: int, host: str = ""):
     path = _pid_file_for_port(port)
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
+    except OSError:
+        pass
+    try:
         # Start time pins the record to this process; the bind address tells a
         # later launch whether this server would actually block it.
         created = _process_create_time(os.getpid())
         address = ",".join(sorted(_bind_addresses(host, port))) if host else ""
         body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}"
-        path.write_text(body, encoding = "utf-8")
-        # An older CLI's `stop` only reads this one, and expects a bare PID.
+        # Write-then-rename: `stop` reads these concurrently, and a reader that
+        # catches the truncate window sees a corrupt record and deletes it.
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(body, encoding = "utf-8")
+            os.replace(tmp, path)
+        finally:
+            # A failed replace would otherwise leave the scratch file behind. It
+            # does not end in .pid, so no glob picks it up either way.
+            tmp.unlink(missing_ok = True)
+    except OSError:
+        pass
+    else:
+        _OWN_PID_FILE = path
+    # An older CLI's `stop` only reads this one, and expects a bare PID. Written
+    # independently of the per-port record: if that one failed, this is the only
+    # thing keeping the server stoppable at all.
+    try:
         _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
-        return
-    _OWN_PID_FILE = path
+        pass
 
 
 def _remove_pid_file():
-    """Remove the PID files that belong to this process."""
-    if _OWN_PID_FILE is None:
-        return
-    for path in (_OWN_PID_FILE, _PID_FILE):
+    """Remove the PID files that belong to this process.
+
+    _PID_FILE is checked even when the per-port record was never written, since
+    _write_pid_file writes the two independently.
+    """
+    for path in ([_OWN_PID_FILE] if _OWN_PID_FILE is not None else []) + [_PID_FILE]:
         record = _read_pid_record(path) if path.is_file() else None
         if record is not None and record[0] == os.getpid():
             try:
@@ -1736,14 +1785,14 @@ def run_server(
     )
 
     # Auto-find a free port if the requested one is in use.
-    if not _is_port_free(host, port):
-        original_port = port
-        blocker = _get_pid_on_port(port)
-        # Falling back past our own server is what creates the orphan.
-        own = _own_studio_on_port(port, host)
-        if own is not None:
-            _abort_already_running(own, port)
-        port = _find_free_port(host, port + 1, avoid_own_studio = True)
+    original_port = port
+    # api-only callers read the bound port back (TAURI_PORT for the desktop app,
+    # app.state.server_port for `studio run`), so a fallback there is harmless and
+    # is what the desktop app's 8888-8908 range expects. The interactive path
+    # prints the requested port, so falling back is what strands a server.
+    port = _resolve_port(host, port, avoid_own_studio = not api_only)
+    if port != original_port:
+        blocker = _get_pid_on_port(original_port)
         if not silent:
             print("")
             print("=" * 50)

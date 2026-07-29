@@ -122,7 +122,10 @@ def test_windows_liveness_does_not_call_every_pid_alive(monkeypatch):
     assert run._pid_alive(9999) is False
 
 
-def test_windows_liveness_prunes_when_tasklist_fails(monkeypatch):
+def test_windows_liveness_keeps_the_record_when_tasklist_fails(monkeypatch):
+    # Unconfirmed must mean keep, matching the CLI's _pid_alive. Pruning a live
+    # server's record lets the next launch fall back past it and strand it, which
+    # is the bug this file exists to fix; a stale record costs one clear abort.
     import subprocess
 
     def _boom(*a, **k):
@@ -133,7 +136,7 @@ def test_windows_liveness_prunes_when_tasklist_fails(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(subprocess, "run", _boom)
 
-    assert run._pid_alive(8550) is False
+    assert run._pid_alive(8550) is True
 
 
 def test_read_pid_record_parses_pid_time_and_address(tmp_path):
@@ -410,3 +413,96 @@ def test_fallback_still_skips_foreign_processes(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_is_port_free", lambda host, p: p >= 8890)
 
     assert run._find_free_port("127.0.0.1", 8889, avoid_own_studio = True) == 8890
+
+
+def test_the_requested_port_is_kept_when_it_is_free(monkeypatch):
+    monkeypatch.setattr(run, "_is_port_free", lambda host, p: True)
+
+    assert run._resolve_port("127.0.0.1", 8888) == 8888
+
+
+def test_our_own_server_on_the_requested_port_aborts_rather_than_falling_back(
+    tmp_path, monkeypatch
+):
+    # The reported bug: 8888 is ours, so falling back to 8889 is the duplicate
+    # that leaves 8888 serving with nothing recording it.
+    monkeypatch.setattr(run, "_is_port_free", lambda host, p: p != 8888)
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        run._resolve_port("127.0.0.1", 8888)
+
+    assert excinfo.value.code == 1
+
+
+def test_a_foreign_process_on_the_requested_port_still_falls_back(monkeypatch):
+    # jupyter-lab on 8888 must not stop Unsloth starting on 8889.
+    monkeypatch.setattr(run, "_is_port_free", lambda host, p: p != 8888)
+
+    assert run._resolve_port("127.0.0.1", 8888) == 8889
+
+
+def test_a_caller_that_reads_the_port_back_keeps_the_plain_fallback(tmp_path, monkeypatch):
+    # api-only callers (the desktop app via TAURI_PORT, `studio run` via
+    # app.state.server_port) follow us to the new port, so aborting there only
+    # turns a working launch into a crash the desktop app reports as "stopped
+    # unexpectedly". Both servers are still recorded, so `stop` finds them.
+    monkeypatch.setattr(run, "_is_port_free", lambda host, p: p != 8888)
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run._resolve_port("127.0.0.1", 8888, avoid_own_studio = False) == 8889
+
+
+def test_the_recorded_address_is_every_address_the_bind_resolves_to(tmp_path):
+    # The only test that runs the writer with a real host. Recording `host`
+    # verbatim, or dropping the line, passes every other test here and silently
+    # stops matching a launch that spells the same interface differently.
+    run._write_pid_file(8901, "localhost")
+
+    record = run._read_pid_record(tmp_path / f"studio-8901-{os.getpid()}.pid")
+
+    assert record[2] is not None, "no bind address recorded"
+    assert set(record[2].split(",")) == run._bind_addresses("localhost", 8901)
+
+
+def test_a_server_started_on_a_hostname_is_found_again_by_ip(tmp_path):
+    run._write_pid_file(8901, "localhost")
+
+    for literal in run._bind_addresses("localhost", 8901):
+        assert run._own_studio_on_port(8901, literal) == os.getpid()
+
+
+def test_bind_addresses_keeps_every_family_a_hostname_resolves_to(monkeypatch):
+    # Independent oracle: the sibling test derives its expectation from this
+    # function's own output, so dropping a family would pass it.
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8889)),
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8889, 0, 0)),
+    ])
+
+    assert run._bind_addresses("localhost", 8889) == {"127.0.0.1", "::1"}
+
+
+def test_the_legacy_file_is_written_even_when_the_per_port_record_fails(tmp_path, monkeypatch):
+    # A studio root that cannot take a new entry used to leave the server
+    # recorded nowhere at all, so the CLI could not stop it. studio.pid is an
+    # overwrite of an existing path, so it can still succeed and must be tried.
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding = "utf-8")
+    monkeypatch.setattr(run, "_pid_file_for_port",
+                        lambda port: blocked / f"studio-{port}-{os.getpid()}.pid")
+
+    run._write_pid_file(8901, "127.0.0.1")
+
+    assert (tmp_path / "studio.pid").read_text(encoding = "utf-8") == str(os.getpid())
+    assert run._OWN_PID_FILE is None
+
+
+def test_a_record_whose_pid_is_not_ascii_digits_is_discarded(tmp_path):
+    # A superscript two passes isdigit() but int() rejects it, so that gate alone
+    # let a ValueError escape into every caller of _read_pid_record.
+    (tmp_path / "r.pid").write_text("²", encoding = "utf-8")
+
+    assert run._read_pid_record(tmp_path / "r.pid") is None

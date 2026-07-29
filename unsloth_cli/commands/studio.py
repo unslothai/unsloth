@@ -2426,15 +2426,16 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
-    """Parse ``pid`` / optional ``create_time`` from a PID file."""
-    try:
-        lines = path.read_text(encoding = "utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
-        return None
+def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from PID file contents."""
+    lines = text.splitlines()
     if not lines or not lines[0].strip().isdigit():
         return None
-    pid = int(lines[0].strip())
+    try:
+        # isdigit() is not enough: "²".isdigit() is True but int() rejects it.
+        pid = int(lines[0].strip())
+    except ValueError:
+        return None
     # kill(0) signals our whole process group; kill(1) is init. Never either.
     if pid < 2:
         return None
@@ -2445,6 +2446,27 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
         except ValueError:
             created = None
     return pid, created
+
+
+def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from a PID file."""
+    try:
+        text = path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return _parse_pid_record(text)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Drop a record without letting one bad file end the loop.
+
+    An undeletable record must not stop us reaching the other servers -- that is
+    the orphan this command exists to prevent.
+    """
+    try:
+        path.unlink(missing_ok = True)
+    except OSError as e:
+        typer.echo(f"Could not remove PID file {path.name}: {e}", err = True)
 
 
 def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
@@ -2465,10 +2487,18 @@ def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
         if path in seen or not path.is_file():
             continue
         seen.add(path)
-        record = _read_pid_record(path)
+        try:
+            text = path.read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # Unreadable is not the same as invalid. A root-owned record, or one
+            # caught mid-write, still belongs to a live server, and deleting it
+            # strands that server -- the bug this command exists to fix.
+            typer.echo(f"Cannot read PID file {path.name}: {e}", err = True)
+            continue
+        record = _parse_pid_record(text)
         if record is None:
             typer.echo(f"Ignoring invalid PID file {path.name}")
-            path.unlink(missing_ok = True)
+            _unlink_quietly(path)
             continue
         pid, created = record
         created_times, files = by_pid.setdefault(pid, ([], []))
@@ -2481,13 +2511,19 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
     """False only when a recorded start time proves this PID is a different process.
 
     Any recorded time matching is enough -- a stale record must not veto a live
-    server that reused the PID. Untimed records (legacy studio.pid, or a server
-    started without psutil) cannot be checked, so they are trusted: the old `stop`
-    signalled with no checks at all, and skipping a live server is the orphan bug
-    this exists to fix.
+    server that reused the PID. Records with no time at all (a legacy studio.pid,
+    or a server started without psutil) cannot be checked, so they are trusted:
+    the old `stop` signalled with no checks at all, and skipping a live server is
+    the orphan bug this exists to fix.
+
+    An untimed record sitting *alongside* a timed one carries no information, so
+    it must not cancel the timed one either. Every current server writes both a
+    timed per-port record and an untimed studio.pid, so letting the untimed half
+    win made this check inert exactly where it matters and let `stop` SIGTERM an
+    unrelated process that had inherited the PID.
     """
     known = [c for c in created_times if c is not None]
-    if not known or len(known) < len(created_times):
+    if not known:
         return True
     try:
         import psutil
@@ -2531,7 +2567,7 @@ def stop():
     for pid, created_times, paths in entries:
         if not _pid_alive(pid) or not _pid_is_studio_server(pid, created_times):
             for path in paths:
-                path.unlink(missing_ok = True)
+                _unlink_quietly(path)
             continue
         error = _signal_stop(pid)
         if error is not None:
@@ -2554,7 +2590,7 @@ def stop():
             pid, paths = entry
             if not _pid_alive(pid):
                 for path in paths:
-                    path.unlink(missing_ok = True)
+                    _unlink_quietly(path)
                 pending.remove(entry)
 
     stopped = len(signalled) - len(pending)
