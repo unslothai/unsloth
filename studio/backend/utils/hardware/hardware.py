@@ -108,11 +108,22 @@ def is_apple_silicon() -> bool:
 
 
 def _has_torch() -> bool:
-    """True if PyTorch is importable."""
+    """True if PyTorch is importable.
+
+    Any failure counts as "no torch", not just ImportError. A wheel whose CUDA
+    libs don't resolve raises OSError from `import torch`, and that used to
+    escape into detect_hardware(). It mattered less when detection ran once in
+    the lifespan; now that ensure_hardware_detected() re-runs while DEVICE is
+    None, an escaping error would make every request retry the import -- and a
+    retry after a partial import is the zombie-module case: CPython evicts the
+    parent from sys.modules but keeps the submodules it already loaded, so
+    torch/__init__ re-executes with its own `from .x import y` served from
+    cache. Treat a broken torch like an absent one and take the CPU path.
+    """
     try:
         import torch
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
@@ -202,10 +213,24 @@ def ensure_hardware_detected() -> DeviceType:
     """Detect once, from any thread. Callers that only need the result (rather
     than a forced re-detect) should use this: it collapses the startup warm
     thread and an early request into a single detection, and a caller arriving
-    mid-detection waits for it instead of starting a second one."""
+    mid-detection waits for it instead of starting a second one.
+
+    Never raises. Detection used to run in the lifespan, where a failure killed
+    startup loudly; it now runs on the warm thread, where a raise would be
+    swallowed and leave DEVICE None -- so every later request would retry the
+    same failing import and /api/health, which waits on this, would 500. Record
+    the failure as CPU + chat-only with a reason instead, so the UI can explain
+    the greyed-out Train/Export and the retry never happens."""
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON
     with _DETECT_LOCK:
         if DEVICE is None:
-            _detect_hardware_locked()
+            try:
+                _detect_hardware_locked()
+            except BaseException as exc:  # noqa: BLE001 - degrade, never 500 the health check
+                logger.error("Hardware detection failed; falling back to CPU: %r", exc)
+                DEVICE = DeviceType.CPU
+                CHAT_ONLY = True
+                CHAT_ONLY_REASON = "detection_failed"
         return DEVICE
 
 

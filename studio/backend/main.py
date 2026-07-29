@@ -1420,7 +1420,10 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
 @app.get("/api/system/gpu-visibility")
 async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)):
-    return get_backend_visible_gpu_info()
+    # Off-loop: this reaches get_device(), which blocks on hardware detection
+    # while the startup warm is still importing torch. Called inline it would
+    # stall every other request for the length of that import.
+    return await asyncio.to_thread(get_backend_visible_gpu_info)
 
 
 @app.get("/api/system/hardware")

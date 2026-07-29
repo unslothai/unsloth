@@ -1743,7 +1743,11 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        inference_backend = get_inference_backend()
+        # Off-loop: constructing the orchestrator singleton reads the default
+        # model list, which calls get_device(). The frontend fetches this route
+        # on load, so before the startup warm finishes an inline call would
+        # freeze the whole server for the length of the torch import.
+        inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models
 

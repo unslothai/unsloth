@@ -6793,7 +6793,12 @@ async def confirm_tool_call(
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
-    active_model = _monitor_active_model()
+    # Both helpers reach get_inference_backend(), whose first call waits on
+    # hardware detection. This route is polled from first paint, so keep it off
+    # the event loop until the startup warm has torch loaded.
+    active_model, context_length = await asyncio.to_thread(
+        lambda: (_monitor_active_model(), _monitor_context_length())
+    )
     active_requests = api_monitor.active_count(subject = current_subject)
     if active_requests:
         operating_status = "generating"
@@ -6804,7 +6809,7 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     return {
         "status": operating_status,
         "active_model": active_model,
-        "context_length": _monitor_context_length(),
+        "context_length": context_length,
         "active_requests": active_requests,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
@@ -7060,8 +7065,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_latest_tag = _latest_tag,
             )
 
-        # Otherwise, report Unsloth backend status
-        backend = get_inference_backend()
+        # Otherwise, report Unsloth backend status. Off-loop: the first call
+        # builds the orchestrator singleton, which reads the default model list
+        # and so waits on hardware detection; the chat UI polls this route from
+        # first paint, before the startup warm has finished importing torch.
+        backend = await asyncio.to_thread(get_inference_backend)
 
         is_vision = False
         is_audio = False

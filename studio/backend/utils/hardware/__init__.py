@@ -99,9 +99,6 @@ __all__ = [
     "estimate_training_vram",
 ]
 
-# Bind the re-export so the import-hoist verifier counts it as used.
-_ = ensure_hardware_detected
-
 
 def __getattr__(name: str):
     """Resolve IS_ROCM lazily so callers see the live value detect_hardware()

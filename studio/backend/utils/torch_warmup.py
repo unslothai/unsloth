@@ -8,9 +8,11 @@ effect of `import main`, so the port could not bind until it finished. Those
 imports are deferred now, which would only move the cost to the first request
 that needs them -- this module pays it concurrently instead.
 
-Start it as early as main.py can (after the env setup that must precede any
-torch import, before the route imports), so the warm overlaps the rest of
-startup rather than following it.
+Started from the last line of main.py's lifespan, deliberately: everything
+above it in the lifespan is on the critical path to binding the socket, and a
+warm thread started earlier would compete with that work for the GIL. Uvicorn
+binds as soon as the lifespan returns, so the warm overlaps the serving window
+instead of the boot.
 
 Contract:
   * idempotent -- repeat calls are no-ops, one thread per process
@@ -20,6 +22,11 @@ Contract:
     the cache (utils.hardware, model_config), all of which cache under a lock
     and only on success, so a request racing the warm waits rather than
     duplicating or observing a partial result
+
+What this does NOT do: make the endpoints that need torch cheap while it runs.
+Anything reaching get_device() blocks until the hardware stage finishes, so
+`async def` handlers on that path must go through asyncio.to_thread or they
+stall the event loop for the whole import (see main.py's /api/health).
 """
 
 from __future__ import annotations
