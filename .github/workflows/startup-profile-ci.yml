@@ -37,6 +37,13 @@ on:
       - 'studio/src-tauri/src/preflight**'
       - 'scripts/profile_startup.py'
       - '.github/workflows/startup-profile-ci.yml'
+      # The job profiles whatever `install.sh --local` built: the installers pick
+      # the venv's Python (install.sh:1759-1761, install.ps1:169) and the literal
+      # dependency specs, and pyproject's include list is what makes --local
+      # overlay studio.backend* instead of leaving the published backend in place.
+      - 'install.sh'
+      - 'install.ps1'
+      - 'pyproject.toml'
   workflow_dispatch:
     inputs:
       repeats:

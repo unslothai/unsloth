@@ -9,6 +9,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,83 +24,126 @@ def _load():
     return mod
 
 
+def _no_subprocesses(mod, monkeypatch):
+    # Keeps the gate tests off the real interpreter and the real CLI, which also
+    # keeps them honest against the pre-fix script instead of shelling out.
+    monkeypatch.setattr(mod, "find_bin", lambda: None)
+    monkeypatch.setattr(mod, "profile_imports", lambda python, top = 15: {"ok": False, "error": ""})
+    monkeypatch.setattr(mod, "python_version_of", lambda python: "3.13.0")
+
+
+class _Proc:
+    """Stand-in for a still-running Popen."""
+
+    def __init__(self):
+        self.pid = 4321
+        self.terminated = False
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminated = True
+
+
+def _nt(mod, monkeypatch, returncode):
+    calls: list[list[str]] = []
+
+    def _run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, "", "")
+
+    # Swap the module's own references rather than mutating the real os and
+    # subprocess modules, which the rest of the test session shares.
+    monkeypatch.setattr(mod, "os", SimpleNamespace(name = "nt"))
+    monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run = _run))
+    return calls
+
+
 def test_budget_fails_when_no_launch_was_measured(capsys, monkeypatch):
     """A requested budget must not pass just because the CLI was never found."""
     mod = _load()
-    monkeypatch.setattr(mod, "find_bin", lambda: None)
-    monkeypatch.setattr(mod, "profile_imports", lambda python, top = 15: {"ok": False, "error": ""})
+    _no_subprocesses(mod, monkeypatch)
     rc = mod.main(["--max-healthz-seconds", "30"])
+    out = capsys.readouterr().out
     assert rc == 1
-    assert "no healthz measurement" in capsys.readouterr().out
+    assert "::error::" in out and "no healthz measurement" in out
+    assert "no unsloth CLI found" in out
 
 
-def test_budget_rejects_import_only():
+def test_budget_still_passes_when_a_launch_was_measured(monkeypatch):
+    """The fail-closed branch must not swallow a genuinely healthy run."""
+    mod = _load()
+    _no_subprocesses(mod, monkeypatch)
+    monkeypatch.setattr(mod, "find_bin", lambda: "unsloth")
+    monkeypatch.setattr(
+        mod,
+        "profile_launch",
+        lambda bin_path, port, **kw: {
+            "spawn_seconds": 0.1,
+            "healthz_seconds": 1.5,
+            "lifespan_ms": 100.0,
+            "reached_healthz": True,
+            "log_tail": [],
+        },
+    )
+    assert mod.main(["--max-healthz-seconds", "30"]) == 0
+    assert mod.main(["--max-healthz-seconds", "1"]) == 1
+
+
+def test_budget_rejects_import_only(capsys):
+    """--import-only launches nothing, so a budget on it could only ever pass."""
     mod = _load()
     with pytest.raises(SystemExit) as exc:
         mod.main(["--import-only", "--max-healthz-seconds", "30"])
     assert exc.value.code == 2
+    assert "--import-only" in capsys.readouterr().err
 
 
 def test_terminate_tree_falls_back_when_taskkill_fails(monkeypatch):
     """A nonzero taskkill must still reach terminate(), not return silently."""
     mod = _load()
-    monkeypatch.setattr(mod.os, "name", "nt")
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 1, "", "ERROR"),
-    )
+    calls = _nt(mod, monkeypatch, returncode = 1)
+    proc = _Proc()
+    mod._terminate_tree(proc)
+    assert calls == [["taskkill", "/PID", "4321", "/T", "/F"]]
+    assert proc.terminated
 
-    class _Proc:
-        pid = 4321
-        terminated = False
 
-        def poll(self):
-            return None
+def test_terminate_tree_falls_back_when_taskkill_raises(monkeypatch):
+    """A missing or hung taskkill must reach terminate() too."""
+    mod = _load()
+    monkeypatch.setattr(mod, "os", SimpleNamespace(name = "nt"))
 
-        def terminate(self):
-            type(self).terminated = True
+    def _boom(argv, **kwargs):
+        raise FileNotFoundError(argv)
 
-    mod._terminate_tree(_Proc())
-    assert _Proc.terminated
+    monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run = _boom))
+    proc = _Proc()
+    mod._terminate_tree(proc)
+    assert proc.terminated
 
 
 def test_terminate_tree_returns_on_successful_taskkill(monkeypatch):
     mod = _load()
-    monkeypatch.setattr(mod.os, "name", "nt")
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0, "", ""),
-    )
+    _nt(mod, monkeypatch, returncode = 0)
+    proc = _Proc()
+    mod._terminate_tree(proc)
+    assert not proc.terminated
 
-    class _Proc:
-        pid = 4321
-        terminated = False
 
-        def poll(self):
-            return None
-
-        def terminate(self):
-            type(self).terminated = True
-
-    mod._terminate_tree(_Proc())
-    assert not _Proc.terminated
+def test_terminate_tree_skips_an_exited_process(monkeypatch):
+    mod = _load()
+    calls = _nt(mod, monkeypatch, returncode = 0)
+    proc = _Proc()
+    proc.poll = lambda: 0
+    mod._terminate_tree(proc)
+    assert calls == [] and not proc.terminated
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix branch")
-def test_terminate_tree_posix_uses_terminate(monkeypatch):
+def test_terminate_tree_posix_uses_terminate():
     mod = _load()
-
-    class _Proc:
-        pid = 1
-        terminated = False
-
-        def poll(self):
-            return None
-
-        def terminate(self):
-            type(self).terminated = True
-
-    mod._terminate_tree(_Proc())
-    assert _Proc.terminated
+    proc = _Proc()
+    mod._terminate_tree(proc)
+    assert proc.terminated
