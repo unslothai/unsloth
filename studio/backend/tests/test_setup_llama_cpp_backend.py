@@ -300,15 +300,15 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
 
 
 def _run_ps1(value: str | None) -> str:
-    # The override is normalized (assign + warn) at the top of the prebuilt block and
-    # applied to $prebuiltArgs lower down; compose both real snippets.
+    # One snippet, not two: NORMALIZE already spans the whole if/elseif chain up to
+    # and including the "Ignoring UNSLOTH_LLAMA_CPP_BACKEND" warn, so the --force-cpu
+    # append is inside it. Composing the apply snippet on top of it made the harness
+    # emit the flag twice while setup.ps1 appends it once.
     normalize = _ps1_search(
         r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
         re.DOTALL,
     )
-    apply_flag = _ps1_search(
-        r'if \(\$llamaBackend -eq "cpu"\) \{\s*\$prebuiltArgs \+= "--force-cpu"\s*\}'
-    )
+    assert normalize.count('$prebuiltArgs += "--force-cpu"') == 1, normalize
     env = {
         k: v
         for k, v in os.environ.items()
@@ -320,7 +320,7 @@ def _run_ps1(value: str | None) -> str:
         "$prebuiltArgs = @()\n"
         '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()\n'
         '$sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()\n'
-        f'{normalize}\n{apply_flag}\n"ARGS:" + ($prebuiltArgs -join ",")'
+        f'{normalize}\n"ARGS:" + ($prebuiltArgs -join ",")'
     )
     out = subprocess.run(
         ["pwsh", "-NoProfile", "-Command", harness],
@@ -336,8 +336,10 @@ def _run_ps1(value: str | None) -> str:
 @pytest.mark.parametrize("value", ["cpu", "CPU", "Cpu", " cpu ", "CPU\t"])
 def test_ps1_backend_cpu_appends_flag(value):
     out = _run_ps1(value)
-    assert "--force-cpu" in out
-    assert "Ignoring" not in out
+    # The whole argv, not a substring: an `in` check passed while the harness was
+    # emitting --force-cpu twice. setup.ps1 appends it exactly once, and nothing
+    # else, for a cpu override.
+    assert out.strip() == "ARGS:--force-cpu"
 
 
 @_SKIP_NO_PWSH

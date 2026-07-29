@@ -759,21 +759,26 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
 @pytest.mark.parametrize("backend", ["hip", "rocm", "cpu"])
 def test_non_vulkan_backend_suppresses_intel_auto_route(monkeypatch, backend, via):
     # The selector suppresses the Intel auto-route the same way whether it arrives
-    # from the environment or from --llama-backend.
+    # from the environment or from --llama-backend. Pinned to Linux ARM64, the one
+    # host where the suppression shows up in a returned VALUE: without it the Intel
+    # auto-route fires, falls through to the ARM64 fork -> upstream reroute and
+    # hands back UPSTREAM with the fork pin dropped. On x86_64 the auto-route
+    # rewrites neither host nor repo, so only a log line differs and the same case
+    # there cannot fail.
     kwargs = {}
     if via == "env":
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", backend)
     else:
         kwargs["llama_backend"] = backend
-    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+    host = _linux_arm64_vulkan_host()
 
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "b9596-mix-abc", force_cpu = False, **kwargs
     )
 
     assert routed is host
-    assert repo == FORK
-    assert tag == "b9596-mix-abc"
+    assert repo == FORK, repo
+    assert tag == "b9596-mix-abc", tag
     assert persist is None
 
 
