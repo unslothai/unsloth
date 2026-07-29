@@ -51,7 +51,9 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  # Drafts are listed only to a token with push access, and every desktop-v* release in
+  # this repo is a draft, so `contents: read` cannot see the bundle under test at all.
+  contents: write
 
 env:
   # release-desktop.yml publishes into github.repository, so a nightly aimed anywhere
@@ -60,7 +62,11 @@ env:
   REL_REPO: ${{ inputs.release_repo || github.repository }}
   # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against
   # it could never catch a newly published broken bundle. Each download step resolves
-  # the newest desktop-v* release when this is empty.
+  # the newest desktop-v* release when this is empty -- drafts included, because that is
+  # how every desktop-v* release here is cut (desktop-v0.1.50-beta, desktop-v0.1.471-beta
+  # are both drafts), so --exclude-drafts matched nothing and every leg died resolving.
+  # A draft has no tag ref and releases/tags/<tag> 404s for one, but gh looks drafts up
+  # over GraphQL, so `gh release download <tag>` still fetches their assets.
   REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
@@ -90,14 +96,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest"), so the
-          # newest desktop-v* tag has to be resolved explicitly.
+          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so
+          # the newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
+            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
               --json tagName,createdAt \
               --jq '[.[] | select(.tagName | startswith("desktop-v"))]
                     | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            [ -n "$REL_TAG" ] || { echo "::error::no desktop-v* release in $REL_REPO"; exit 1; }
+            # Loud on purpose: there is no bundle to test, so passing would prove nothing.
+            [ -n "$REL_TAG" ] || {
+              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+              exit 1
+            }
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
@@ -227,7 +237,15 @@ jobs:
 
       - name: Restore the runner
         if: always()
-        run: bash .clean-machine/restore.sh || true
+        # `|| true` swallowed everything, including a restore that genuinely broke. The
+        # file only exists once the strip step ran, and an earlier step can fail before
+        # that, so skip explicitly when it is absent and let a real failure surface.
+        run: |
+          if [ -f .clean-machine/restore.sh ]; then
+            bash .clean-machine/restore.sh
+          else
+            echo "no .clean-machine/restore.sh: the toolchain was never stripped, nothing to restore"
+          fi
 
       - name: Upload logs
         if: always()
@@ -261,14 +279,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest"), so the
-          # newest desktop-v* tag has to be resolved explicitly.
+          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so
+          # the newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
+            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
               --json tagName,createdAt \
               --jq '[.[] | select(.tagName | startswith("desktop-v"))]
                     | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            [ -n "$REL_TAG" ] || { echo "::error::no desktop-v* release in $REL_REPO"; exit 1; }
+            # Loud on purpose: there is no bundle to test, so passing would prove nothing.
+            [ -n "$REL_TAG" ] || {
+              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+              exit 1
+            }
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
@@ -383,7 +405,15 @@ jobs:
 
       - name: Restore the runner
         if: always()
-        run: bash .clean-machine/restore.sh || true
+        # `|| true` swallowed everything, including a restore that genuinely broke. The
+        # file only exists once the strip step ran, and an earlier step can fail before
+        # that, so skip explicitly when it is absent and let a real failure surface.
+        run: |
+          if [ -f .clean-machine/restore.sh ]; then
+            bash .clean-machine/restore.sh
+          else
+            echo "no .clean-machine/restore.sh: the toolchain was never stripped, nothing to restore"
+          fi
 
       - name: Upload logs
         if: always()
@@ -413,14 +443,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest"), so the
-          # newest desktop-v* tag has to be resolved explicitly.
+          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so
+          # the newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
+            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
               --json tagName,createdAt \
               --jq '[.[] | select(.tagName | startswith("desktop-v"))]
                     | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            [ -n "$REL_TAG" ] || { echo "::error::no desktop-v* release in $REL_REPO"; exit 1; }
+            # Loud on purpose: there is no bundle to test, so passing would prove nothing.
+            [ -n "$REL_TAG" ] || {
+              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+              exit 1
+            }
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi

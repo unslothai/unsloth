@@ -307,7 +307,15 @@ jobs:
 
       - name: Restore the runner
         if: always()
-        run: bash .clean-machine/restore.sh || true
+        # `|| true` swallowed everything, including a restore that genuinely broke. The
+        # file only exists once the strip step ran, and an earlier step can fail before
+        # that, so skip explicitly when it is absent and let a real failure surface.
+        run: |
+          if [ -f .clean-machine/restore.sh ]; then
+            bash .clean-machine/restore.sh
+          else
+            echo "no .clean-machine/restore.sh: the toolchain was never stripped, nothing to restore"
+          fi
 
       - name: Upload logs
         if: always()
