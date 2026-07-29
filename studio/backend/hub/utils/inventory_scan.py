@@ -801,6 +801,33 @@ def _snapshot_cannot_serve_its_payload(snapshot_dir: Optional[Path]) -> bool:
     return _snapshot_lacks_a_complete_weight_family(snapshot_dir)
 
 
+def _recovered_snapshot_cannot_serve(
+    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
+) -> bool:
+    """Partial signal for a snapshot the dangling-ref recovery put back on a row.
+
+    A repo whose ``refs/main`` names an absent commit is one ``scan_cache_dir``
+    drops outright, so before the recovery no row described it at all. The
+    recovery restores the row, and the interrupted attempt that wrote the ref may
+    have left nothing else behind: no manifest, no cancel marker, no
+    ``.incomplete`` blob and no broken symlink. The other three signals then all
+    read false and a snapshot holding half a shard set was advertised runnable,
+    so auto-load pointed at a payload provably short a file.
+
+    The snapshot's own contents are the only evidence left, which is what
+    ``_snapshot_cannot_serve_its_payload`` reads -- the same predicate that
+    decides above whether the repo-wide signals attach here, now also answering
+    for itself. Scoped to the dangling case on purpose: where the ref resolves,
+    the row is one upstream already publishes and judging it on this walk would
+    change answers the recovery has nothing to do with.
+    """
+    if repo_cache_dir is None or snapshot_dir is None:
+        return False
+    if not _default_ref_names_an_absent_snapshot(repo_cache_dir):
+        return False
+    return _snapshot_cannot_serve_its_payload(snapshot_dir)
+
+
 def snapshot_variants_all_complete(snapshot: str) -> bool:
     """True when every quant the lister would advertise from *snapshot* is on disk.
 
@@ -952,10 +979,12 @@ def is_snapshot_partial(
     """Repo-row partial flag for snapshot-style downloads (full-snapshot
     models — safetensors/adapter/checkpoint — and all datasets).
 
-    Composes three signals, cheapest first:
+    Composes four signals, cheapest first:
       1. Cancel marker (single stat), charged to the newest snapshot.
       2. Snapshot-attributed legacy .incomplete blob / broken-symlink check.
       3. Manifest walk (stat per expected file under the latest snapshot).
+      4. A recovered snapshot whose own contents are short a shard, for the
+         dangling-ref rows the first three have no evidence about.
 
     A manifest without a resolvable snapshot is partial: the worker got
     far enough to record expectations but did not leave a usable snapshot.
@@ -989,6 +1018,7 @@ def is_snapshot_partial(
             snapshot_dir,
             repo_cache_dir,
         ),
+        lambda: _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir),
     )
 
 

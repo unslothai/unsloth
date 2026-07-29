@@ -1169,6 +1169,110 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
     assert (rows[0].get("capabilities") or {}).get("can_chat") is not partial
 
 
+@pytest.mark.parametrize(
+    "older_files, partial",
+    [
+        # Half a sharded set and NO other trace at all. The interrupted attempt
+        # left no manifest, no cancel marker, no ``.incomplete`` blob and no
+        # broken symlink, which is what a cancelled fetch that cleaned its blobs
+        # up, or a cache copied off another machine, looks like. The snapshot's
+        # own contents are then the only evidence, and the row advertised a
+        # payload short a shard until they were read.
+        pytest.param(
+            {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 32},
+            True,
+            id = "half-a-sharded-set-and-no-other-trace",
+        ),
+        # Negative side, and #7374's own shape: the payload is whole, so the
+        # recovered row must load from disk rather than refetch.
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "model-00002-of-00002.safetensors": b"\0" * 32,
+            },
+            False,
+            id = "a-whole-sharded-set-and-no-other-trace",
+        ),
+        # Nothing names a total, so nothing proves breakage and the row loads.
+        pytest.param(
+            {"config.json": b"{}", "model.safetensors": b"\0" * 32},
+            False,
+            id = "an-unsharded-payload-and-no-other-trace",
+        ),
+        # One whole family beside a torn one still loads, exactly as it does
+        # when an ``.incomplete`` blob is present.
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model.safetensors": b"\0" * 32,
+                "pytorch_model-00001-of-00002.bin": b"\0" * 32,
+            },
+            False,
+            id = "a-whole-family-beside-a-torn-one-and-no-other-trace",
+        ),
+        # A complete auxiliary set does not vouch for torn base shards here
+        # either.
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "adapter_model-00001-of-00002.safetensors": b"\0" * 8,
+                "adapter_model-00002-of-00002.safetensors": b"\0" * 8,
+            },
+            True,
+            id = "half-a-base-set-beside-a-whole-adapter-and-no-other-trace",
+        ),
+    ],
+)
+def test_a_recovered_snapshot_short_a_shard_is_partial_with_no_other_signal(
+    older_files, partial, tmp_path, monkeypatch
+):
+    """The recovery is what puts this row on screen at all -- ``scan_cache_dir``
+    drops the repo -- so a snapshot it restores must be judged on its own
+    contents when the interrupted attempt left nothing else behind. Reading them
+    only to decide whether the *other* signals attach meant a row with none of
+    them advertised ``can_chat`` for a payload provably missing a shard, and
+    auto-load then pinned that absolute snapshot and failed."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = older_files,
+        newer_files = {"config.json": b"{}"},
+        ref = UPSTREAM_HEAD,
+    )
+    # No .incomplete blob, no marker, no manifest: the point of this case.
+    assert not any((repo_dir / "blobs").iterdir())
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("partial") is partial
+    assert (rows[0].get("capabilities") or {}).get("can_chat") is not partial
+
+
+def test_a_resolving_ref_is_not_judged_on_the_recovery_walk(tmp_path, monkeypatch):
+    """The new signal is scoped to the rows the recovery adds. With ``refs/main``
+    naming a snapshot on disk the repo is one ``scan_cache_dir`` already returns,
+    and its answer is left exactly as it was."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {
+            "config.json": b"{}",
+            "model-00001-of-00002.safetensors": b"\0" * 32,
+        },
+        newer_files = {"config.json": b"{}"},
+        ref = OLDER,
+    )
+
+    assert inventory_scan.default_ref_resolves_on_disk(repo_dir) is True
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    # The ref resolves, so the load id stays the repo id and the row keeps the
+    # answer it had before the recovery branch existed.
+    assert rows[0]["load_id"] == "Org/Model"
+    assert rows[0].get("partial") is False
+
+
 @pytest.mark.parametrize("signal", ["marker", "manifest"])
 def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
     signal, tmp_path, monkeypatch
