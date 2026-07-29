@@ -156,7 +156,6 @@ def test_override_mirror_matches_shared_bounds():
     # The API auto-switch override map mirrors the bounds rather than importing them:
     # llama_server_args owns the extra-args allow-list that module stays out of.
     from utils.openai_auto_switch_settings import PARALLEL_SLOTS_MAX, PARALLEL_SLOTS_MIN
-
     assert (PARALLEL_SLOTS_MIN, PARALLEL_SLOTS_MAX) == (PARALLEL_MIN, PARALLEL_MAX)
 
 

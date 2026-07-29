@@ -174,9 +174,7 @@ class ModelOverridePayload(BaseModel):
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only like the picker.
     # None follows the server-wide default set at launch.
-    n_parallel: Optional[int] = Field(
-        default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX
-    )
+    n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
     tensor_parallel: bool = False
     # Validated in bytes below, not by max_length: pydantic counts characters, so a
     # multi-byte template would pass here and be dropped by the UTF-8 normalizer.

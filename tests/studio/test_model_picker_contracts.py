@@ -715,9 +715,9 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
     route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
     assert "n_parallel: Optional[int] = Field(" in route
     assert "n_parallel = payload.n_parallel," in route
-    store = (
-        WORKDIR / "studio" / "backend" / "utils" / "openai_auto_switch_settings.py"
-    ).read_text(encoding = "utf-8")
+    store = (WORKDIR / "studio" / "backend" / "utils" / "openai_auto_switch_settings.py").read_text(
+        encoding = "utf-8"
+    )
     assert 'entry["n_parallel"] = n_parallel' in store
     # GGUF-only, like the picker: a safetensors load has no llama-server slots.
     gguf_block = store.split("    if is_gguf:", 1)[1]
