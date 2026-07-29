@@ -710,6 +710,7 @@ def _snapshot_offers_only_broken_gguf(snapshot_dir: Optional[Path]) -> bool:
     if snapshot_dir is None:
         return False
     from hub.utils.gguf import list_local_gguf_variants
+
     try:
         variants, _ = list_local_gguf_variants(str(snapshot_dir))
         offered = {v.quant for v in variants if getattr(v, "quant", None)}
