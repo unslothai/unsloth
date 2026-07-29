@@ -40,6 +40,7 @@ def _script() -> str:
     return f"""
 $DefaultLlamaPrForce = "0"
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
+$DefaultLlamaTag = "latest"
 {_git_gate_block()}
 Write-Output $gitNeeded
 """
@@ -76,6 +77,11 @@ pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShel
         ({"UNSLOTH_LLAMA_PR_FORCE": "0"}, False),
         ({"UNSLOTH_LLAMA_PR_FORCE": "not-a-number"}, False),
         ({"UNSLOTH_LLAMA_PR_FORCE": "1234"}, True),
+        # "master" is a branch with no release, so Phase 4 always builds it from source.
+        ({"UNSLOTH_LLAMA_TAG": "master"}, True),
+        # A release tag resolves to a prebuilt bundle.
+        ({"UNSLOTH_LLAMA_TAG": "latest"}, False),
+        ({"UNSLOTH_LLAMA_TAG": "b8635"}, False),
     ],
 )
 def test_git_is_required_only_for_local_and_source_builds(env, expected):

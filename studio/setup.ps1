@@ -1712,6 +1712,10 @@ if (-not $HasGit) {
     if (-not $_localLlamaBuilt) {
         $_prForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
         $_llamaSrc = $DefaultLlamaSource -replace '\.git$', ''
+        # Same tag resolution as Phase 4. "master" is a branch, never a release, so the
+        # prebuilt lookup always misses and Phase 4 rebuilds it from source.
+        $_llamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
+        if ($_llamaTag -eq "master") { $gitNeeded = $true }
         if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq '1') { $gitNeeded = $true }
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_LLAMA_PR)) { $gitNeeded = $true }
         # Same positive-integer predicate as the PR_FORCE promotion below: 0 or non-numeric
