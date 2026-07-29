@@ -310,7 +310,11 @@ def _transport_dead(session) -> bool:
     return False
 
 
-def _session_responsive(session, budget: Optional[float] = None, cancel_event = None) -> bool:
+def _session_responsive(
+    session,
+    budget: Optional[float] = None,
+    cancel_event = None,
+) -> bool:
     """Whether a session left dirty by an abandoned call can be reused. Only a
     completed ping round-trip proves the server is no longer working on that
     call, so anything short of one -- an error, a wedge, or no budget left to
