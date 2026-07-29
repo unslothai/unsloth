@@ -49,7 +49,9 @@ def _as_float(value: Any) -> Optional[float]:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value) if value == value and value not in (float("inf"), float("-inf")) else None
+        return (
+            float(value) if value == value and value not in (float("inf"), float("-inf")) else None
+        )
     return None
 
 
@@ -114,7 +116,12 @@ class _MessageFold:
         self.tool_calls = 0
         self.attachments = 0
         self.session_seconds = 0.0
-        self.longest_chat: dict[str, Any] = {"threadId": None, "title": None, "seconds": 0.0, "messages": 0}
+        self.longest_chat: dict[str, Any] = {
+            "threadId": None,
+            "title": None,
+            "seconds": 0.0,
+            "messages": 0,
+        }
         self.by_day: dict[date, dict[str, Any]] = {}
         self.by_hour = [0] * 24
         self.by_weekday = [0] * 7
@@ -301,9 +308,7 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    tokens = conn.execute(
-        "SELECT COALESCE(SUM(num_tokens), 0) FROM training_metrics"
-    ).fetchone()[0]
+    tokens = conn.execute("SELECT COALESCE(SUM(num_tokens), 0) FROM training_metrics").fetchone()[0]
 
     recent = conn.execute(
         """
@@ -375,9 +380,7 @@ def compute_profile_stats(days: int = MAX_DAILY_DAYS) -> dict[str, Any]:
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 
-        peak_day = max(
-            fold.by_day.items(), key = lambda item: item[1]["tokens"], default = None
-        )
+        peak_day = max(fold.by_day.items(), key = lambda item: item[1]["tokens"], default = None)
         models = sorted(
             fold.models.values(), key = lambda item: (item["tokens"], item["messages"]), reverse = True
         )[:TOP_MODELS]

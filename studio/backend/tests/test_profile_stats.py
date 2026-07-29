@@ -60,7 +60,13 @@ def _seed_thread(conn, thread_id: str, model_id: str, turns: list[tuple[datetime
         )
 
 
-def _metadata(prompt: int, completion: int, *, speed: float = 40.0, tools: int = 0) -> dict:
+def _metadata(
+    prompt: int,
+    completion: int,
+    *,
+    speed: float = 40.0,
+    tools: int = 0,
+) -> dict:
     return {
         "contextUsage": {
             "promptTokens": prompt,
