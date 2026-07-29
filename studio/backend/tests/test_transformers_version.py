@@ -2527,6 +2527,21 @@ class TestOfflineCacheNotPoisoned:
 
 
 class TestHfEndpointUnreachable:
+    @pytest.fixture(autouse = True)
+    def _direct_probe(self, monkeypatch):
+        """These tests patch urlopen, so ambient proxies must not select an opener."""
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising = False)
+
     def test_reachable_returns_false(self, monkeypatch):
         class _Resp:
             def __enter__(self):

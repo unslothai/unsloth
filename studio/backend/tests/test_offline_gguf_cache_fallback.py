@@ -144,6 +144,22 @@ def clean_offline_env(monkeypatch):
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
+@pytest.fixture
+def clean_proxy_env(monkeypatch):
+    """Keep direct-urlopen probe tests independent of the runner's proxy settings."""
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising = False)
+
+
 class TestGgufVariantFileResolution:
     def test_prefers_exact_unknown_variant_over_big_endian_sibling(self):
         files = [
@@ -1143,6 +1159,22 @@ class TestAllProxyIsHonoured:
         monkeypatch.setenv("NO_PROXY", "huggingface.co")
         assert hf_proxy_for_endpoint() is None
 
+    def test_no_proxy_cidr_matches_requests(self, monkeypatch):
+        """The probe and Hub client must both bypass a proxy for an IP in a CIDR."""
+        from utils.utils import hf_proxy_for_endpoint
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("NO_PROXY", "10.0.0.0/8")
+        assert hf_proxy_for_endpoint("https://10.23.4.5") is None
+
+    def test_no_proxy_host_with_port_matches_requests(self, monkeypatch):
+        """requests includes an explicit endpoint port when matching NO_PROXY."""
+        from utils.utils import hf_proxy_for_endpoint
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("NO_PROXY", "huggingface.co:443")
+        assert hf_proxy_for_endpoint("https://huggingface.co:443") is None
+
     def test_direct_egress_resolves_to_none(self):
         from utils.utils import hf_proxy_for_endpoint
         assert hf_proxy_for_endpoint() is None
@@ -1260,6 +1292,10 @@ class TestSlowLinkIsNotOffline:
     """A slow but reachable endpoint must not be quarantined: that would fail an uncached
     load that would otherwise merely be slow. A blackholed route must still be offline."""
 
+    @pytest.fixture(autouse = True)
+    def _direct_probe(self, clean_proxy_env):
+        pass
+
     def _probe_raising(self, monkeypatch, exc):
         import urllib.request
 
@@ -1354,9 +1390,117 @@ class TestConcurrentGuardsHoldTheirOwnReference:
             assert engaged is False
         assert os.environ["HF_HUB_OFFLINE"] == "1"
 
+    def test_guard_ownership_cannot_race_the_environment_check(
+        self, monkeypatch, clean_offline_env
+    ):
+        """A guard that starts just before another sets the env must retain its window."""
+        import threading
+
+        import core.inference.llama_cpp as lc
+        import utils.utils as uu
+
+        monkeypatch.setattr(lc, "_hf_unreachable", lambda: True)
+        original_active = uu.force_hf_offline_active
+        original_state = uu.force_hf_offline_state
+        owner_entered = threading.Event()
+        release_owner = threading.Event()
+        owner_thread = None
+
+        def owner():
+            with uu.force_hf_offline():
+                owner_entered.set()
+                release_owner.wait(5)
+
+        def start_owner_after(snapshot):
+            nonlocal owner_thread
+            if threading.current_thread() is threading.main_thread() and owner_thread is None:
+                owner_thread = threading.Thread(target = owner)
+                owner_thread.start()
+                assert owner_entered.wait(5)
+            return snapshot
+
+        def stale_active_read():
+            # Old implementation: depth is read before the owner sets the env.
+            return start_owner_after(original_active())
+
+        def atomic_state_then_owner_enters():
+            # New implementation: ownership + env are one consistent snapshot. Even if
+            # another owner enters immediately after it, hf_env_offline catches that and
+            # this guard takes a reference instead of treating the env as user-owned.
+            return start_owner_after(original_state())
+
+        monkeypatch.setattr(uu, "force_hf_offline_active", stale_active_read)
+        monkeypatch.setattr(uu, "force_hf_offline_state", atomic_state_then_owner_enters)
+        try:
+            with lc._hf_offline_if_unreachable() as engaged:
+                assert engaged is True
+        finally:
+            release_owner.set()
+            if owner_thread is not None:
+                owner_thread.join(10)
+        assert owner_thread is not None
+
+
+class TestSpawnEnvironmentDoesNotInheritScopedOffline:
+    """A scoped parent guard must not permanently quarantine a newly spawned worker."""
+
+    def test_multiprocessing_spawn_window_uses_pre_guard_values(
+        self, monkeypatch, clean_offline_env
+    ):
+        from utils.hf_cache_settings import child_environment_for_spawn
+        from utils.utils import force_hf_offline
+
+        with force_hf_offline():
+            assert os.environ.get("HF_HUB_OFFLINE") == "1"
+            with child_environment_for_spawn({}):
+                assert "HF_HUB_OFFLINE" not in os.environ
+                assert "TRANSFORMERS_OFFLINE" not in os.environ
+            assert os.environ.get("HF_HUB_OFFLINE") == "1"
+            assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+
+    def test_explicit_subprocess_environment_uses_pre_guard_values(
+        self, monkeypatch, clean_offline_env, tmp_path
+    ):
+        from utils.hf_cache_settings import HuggingFaceCachePaths
+        from utils.utils import force_hf_offline
+
+        paths = HuggingFaceCachePaths(tmp_path, tmp_path / "hub", tmp_path / "xet", "studio")
+        with force_hf_offline():
+            child_env = paths.child_env()
+        assert "HF_HUB_OFFLINE" not in child_env
+        assert "TRANSFORMERS_OFFLINE" not in child_env
+
+    def test_nested_spawn_contexts_remain_reentrant(self, monkeypatch, clean_offline_env):
+        from utils.hf_cache_settings import child_environment_for_spawn
+        from utils.utils import force_hf_offline
+
+        with force_hf_offline():
+            with child_environment_for_spawn({}):
+                with child_environment_for_spawn({}):
+                    assert "HF_HUB_OFFLINE" not in os.environ
+            assert os.environ.get("HF_HUB_OFFLINE") == "1"
+
+    def test_user_transformers_offline_keeps_child_hub_offline(
+        self, monkeypatch, clean_offline_env
+    ):
+        from utils.hf_cache_settings import child_environment_for_spawn
+        from utils.utils import force_hf_offline
+
+        monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+        with force_hf_offline():
+            with child_environment_for_spawn({}):
+                assert os.environ.get("HF_HUB_OFFLINE") == "1"
+                assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+        assert "HF_HUB_OFFLINE" not in os.environ
+        assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+
 
 class TestProxyTimeoutIsNotExcused:
     """A live proxy proves the proxy is up, not that it can reach the hub."""
+
+    @pytest.fixture(autouse = True)
+    def _direct_probe(self, clean_proxy_env):
+        pass
 
     def _probe_timing_out(self, monkeypatch):
         import urllib.error
@@ -1388,6 +1532,10 @@ class TestProxyTimeoutIsNotExcused:
 class TestEndpointNormalisation:
     """An empty or whitespace HF_ENDPOINT must fall back to the default hub in BOTH the
     DNS shortcut and the HTTP probe, or the two stages disagree."""
+
+    @pytest.fixture(autouse = True)
+    def _direct_probe(self, clean_proxy_env):
+        pass
 
     @pytest.mark.parametrize("value", ["", "   ", "\t"])
     def test_blank_endpoint_falls_back(self, monkeypatch, value):
@@ -1448,6 +1596,10 @@ class TestGuardSkipsLocalPaths:
 
 class TestGatewayErrorsAreNotConnectionFailures:
     """Lifetime offline flags must not be set by a momentary 502/503/504."""
+
+    @pytest.fixture(autouse = True)
+    def _direct_probe(self, clean_proxy_env):
+        pass
 
     def _probe_with(self, monkeypatch, exc):
         import urllib.request

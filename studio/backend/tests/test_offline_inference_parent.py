@@ -220,7 +220,13 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
         )
         # The probe now lives in the shared helper (endpoint- and proxy-aware), so the
         # worker must delegate to it rather than resolve a hardcoded host itself.
+        assert "hf_env_offline" in block, (
+            "training worker must honor TRANSFORMERS_OFFLINE before probing"
+        )
         assert "hf_dns_dead" in block, "training worker must use the shared DNS helper"
+        assert block.index("hf_env_offline()") < block.index("hf_dns_dead()"), (
+            "training worker must check explicit offline env before DNS/network probes"
+        )
         assert 'gethostbyname("huggingface.co")' not in block, (
             "training worker must not hardcode huggingface.co; a reachable HF_ENDPOINT "
             "mirror would be declared offline"

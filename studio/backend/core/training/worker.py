@@ -2348,11 +2348,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if "HF_HUB_OFFLINE" not in os.environ:
         _offline = False
         try:
-            from utils.utils import hf_dns_dead, hf_probe_disabled
+            from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
 
+            # Hub ignores TRANSFORMERS_OFFLINE, so translate it before probing.
+            _offline = hf_env_offline()
             # hf_dns_dead follows HF_ENDPOINT and stands down when a proxy is configured,
             # so a reachable mirror (or proxy-only egress) is never called offline.
-            _offline = hf_dns_dead()
+            if not _offline:
+                _offline = hf_dns_dead()
             if not _offline and not hf_probe_disabled():
                 # DNS answers even without egress (WAN down, captive portal). These flags
                 # last the whole job, so only a connection failure counts: a momentary

@@ -53,28 +53,12 @@ def hf_endpoint_host() -> str:
 
 
 def hf_proxy_for_endpoint(endpoint: Optional[str] = None) -> Optional[str]:
-    """Proxy URL that applies to the endpoint, or None for direct egress.
-
-    Resolves like requests' select_proxy (the Hub client): scheme-specific first, then the
-    all_proxy catch-all, and None when NO_PROXY covers the host. urllib only honours the
-    scheme-specific ones, so callers must apply this rather than rely on urlopen's default.
-    """
+    """Return the Hub client's proxy choice, including ALL_PROXY and NO_PROXY rules."""
     try:
-        import urllib.request
-        from urllib.parse import urlparse
+        from requests.utils import get_environ_proxies, select_proxy
 
-        parsed = urlparse(endpoint or hf_endpoint_url())
-        proxies = urllib.request.getproxies()
-        proxy = proxies.get(parsed.scheme or "https") or proxies.get("all")
-        if not proxy:
-            return None
-        host = parsed.hostname or ""
-        try:
-            if host and urllib.request.proxy_bypass(host):
-                return None
-        except Exception:
-            pass
-        return proxy
+        url = endpoint or hf_endpoint_url()
+        return select_proxy(url, get_environ_proxies(url))
     except Exception:
         return None
 
@@ -244,7 +228,8 @@ def _reset_hf_sessions() -> None:
 _force_offline_depth = 0
 _force_offline_saved: list = []
 _force_offline_saved_env: dict = {}
-_force_offline_lock = threading.Lock()
+# Spawn contexts can nest while holding this lock through Process.start().
+_force_offline_lock = threading.RLock()
 
 _OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
 _OFFLINE_CONSTANTS = (
@@ -262,6 +247,62 @@ def force_hf_offline_active() -> bool:
     """
     with _force_offline_lock:
         return _force_offline_depth > 0
+
+
+def force_hf_offline_state() -> tuple[bool, bool]:
+    """Return guard ownership and env presence under one lock."""
+    with _force_offline_lock:
+        return _force_offline_depth > 0, "HF_HUB_OFFLINE" in os.environ
+
+
+def _restore_saved_offline_env(environment) -> None:
+    """Apply the user's pre-guard offline intent to a child environment mapping."""
+    for key in _OFFLINE_ENV_KEYS:
+        value = _force_offline_saved_env.get(key)
+        if value is None:
+            environment.pop(key, None)
+        else:
+            environment[key] = value
+    # Hub ignores TRANSFORMERS_OFFLINE, so preserve that user intent in children.
+    if (
+        "HF_HUB_OFFLINE" not in environment
+        and str(environment.get("TRANSFORMERS_OFFLINE", "")).strip().lower()
+        in _HF_OFFLINE_TRUE_VALUES
+    ):
+        environment["HF_HUB_OFFLINE"] = "1"
+
+
+def hf_environment_for_spawn() -> dict[str, str]:
+    """Copy the environment without scoped offline values."""
+    with _force_offline_lock:
+        environment = dict(os.environ)
+        if _force_offline_depth > 0:
+            _restore_saved_offline_env(environment)
+        return environment
+
+
+@contextmanager
+def hf_environment_restored_for_spawn():
+    """Restore user offline values while multiprocessing snapshots ``os.environ``."""
+    with _force_offline_lock:
+        if _force_offline_depth == 0:
+            yield
+            return
+
+        missing = object()
+        forced_environment = {
+            key: os.environ.get(key, missing)
+            for key in _OFFLINE_ENV_KEYS
+        }
+        _restore_saved_offline_env(os.environ)
+        try:
+            yield
+        finally:
+            for key, value in forced_environment.items():
+                if value is missing:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 @contextmanager
