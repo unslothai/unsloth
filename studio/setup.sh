@@ -987,14 +987,21 @@ _setup_http_get() {
 }
 
 # Same, with a deadline, for the checks that must not hang the install.
-# wget's --timeout is per operation and it retries 20 times by default, so a
-# server that accepts the request and then stalls drags a "5 second" check out
-# to minutes; --tries=1 keeps it to the single attempt curl's --max-time gives.
+# wget has no equivalent of curl's total-transfer --max-time: --timeout is per
+# operation and it retries 20 times by default, so a stalled server dragged this
+# check out to minutes and a slow drip never ended it at all. --tries=1 plus an
+# outer `timeout` gives the same 5 second ceiling; without coreutils timeout
+# (curl-less macOS would be the case, and macOS ships curl) we keep the
+# per-operation bound rather than skipping the check.
 _setup_http_get_timed() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --max-time 5 "$1"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO- --timeout=5 --tries=1 "$1"
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 wget -qO- --timeout=5 --tries=1 "$1"
+        else
+            wget -qO- --timeout=5 --tries=1 "$1"
+        fi
     else
         return 1
     fi

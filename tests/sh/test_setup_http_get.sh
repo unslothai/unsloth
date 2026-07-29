@@ -58,7 +58,7 @@ EOF
 # that command -v still finds).
 _run() {
     _have="$1"; _call="$2"
-    rm -f "$_MOCK"/curl "$_MOCK"/wget "$_LOG"
+    rm -f "$_MOCK"/curl "$_MOCK"/wget "$_MOCK"/timeout "$_LOG"
     for _t in $_have; do _make_shim "$_t"; done
     ( PATH="$_MOCK"; export PATH; . "$_FN_FILE"; $_call "https://example.invalid/x" ) 2>/dev/null
 }
@@ -89,6 +89,12 @@ assert_contains "wget sets the timeout" "$(_argv)" "--timeout=5"
 # wget's --timeout is per operation and it retries 20 times by default, so
 # without --tries=1 a stalling server turns this bounded check into minutes.
 assert_contains "wget limited to one attempt" "$(_argv)" "--tries=1"
+
+# --timeout is per operation, so a drip response never ends the transfer; the
+# outer timeout is what actually matches curl's --max-time.
+assert_eq "timeout wraps wget when available" "timeout-body" "$(_run 'wget timeout' _setup_http_get_timed)"
+assert_contains "wall clock deadline on wget" "$(_argv)" "timeout 5 wget -qO- --timeout=5 --tries=1"
+assert_eq "no timeout binary: wget still runs" "wget-body" "$(_run 'wget' _setup_http_get_timed)"
 
 _rc=0; _run '' _setup_http_get_timed >/dev/null 2>&1 || _rc=$?
 assert_eq "no transport: non-zero exit" "1" "$_rc"
