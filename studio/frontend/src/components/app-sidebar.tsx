@@ -1183,7 +1183,11 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       variant="sidebar"
-      className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+      className={cn(
+        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background",
+        usesNativeMacTitlebar &&
+          "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+      )}
     >
       <SidebarHeader
         className={cn(
@@ -1205,6 +1209,7 @@ export function AppSidebar() {
               />
             )}
             <div
+              data-tauri-drag-region={usesNativeMacTitlebar || undefined}
               className={cn(
                 "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 showCompactMacBrand &&

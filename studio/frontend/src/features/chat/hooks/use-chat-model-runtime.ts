@@ -817,6 +817,8 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              cache_type_kv: loadKvCacheDtype,
+              tensor_parallel: loadTensorParallel,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
             });
