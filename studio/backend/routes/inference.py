@@ -3855,6 +3855,7 @@ async def _maybe_auto_download_model(
     fastapi_request: Optional[Request],
     *,
     require_vision: bool = False,
+    current_subject: Optional[str] = None,
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
@@ -3877,6 +3878,10 @@ async def _maybe_auto_download_model(
             requested_model,
             hf_token = _auto_download_hf_token(fastapi_request),
             require_vision = require_vision,
+            subject = current_subject,
+            # These /v1 endpoints also serve Studio's own chat on a session JWT,
+            # so only mark the download row as API traffic when it really is.
+            via_api_key = _request_used_api_key(fastapi_request),
         )
     except Exception as exc:
         # Never turn a servable request into a 500 over the download attempt.
@@ -4246,7 +4251,10 @@ async def _maybe_auto_switch_model(
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
                 await _maybe_auto_download_model(
-                    requested_model, fastapi_request, require_vision = require_vision
+                    requested_model,
+                    fastapi_request,
+                    require_vision = require_vision,
+                    current_subject = current_subject,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
@@ -5324,6 +5332,9 @@ async def _load_model_impl(
         # Auto-switch loads run before the endpoint opens its request row, so a
         # load that fails there leaves this as the only trace of API traffic.
         via_api_key = _request_used_api_key(fastapi_request),
+        # The row is shared, so every subject reads it. Name the caller it belongs
+        # to or the overlay pops open in browsers that did not cause the traffic.
+        subject = current_subject,
     )
 
     native_grant_backed = False

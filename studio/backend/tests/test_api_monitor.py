@@ -542,3 +542,48 @@ def test_an_api_triggered_lifecycle_row_carries_the_attribution():
     after = {e["id"]: e for e in monitor.snapshot()}
     assert after[api_load]["via_api_key"] is True
     assert after[api_load]["status"] == "error"
+
+
+def test_an_api_lifecycle_row_pops_the_overlay_only_for_its_own_caller():
+    """A lifecycle row is shared so it appears in every monitor list, and it also
+    carries via_api_key, which is what the floating panel auto-opens on. Reported
+    to everyone, the panel springs open in a browser that had nothing to do with
+    the traffic. The row stays visible to all; only the attribution is scoped."""
+    monitor = ApiMonitor(max_entries = 5)
+
+    row = monitor.record_lifecycle(
+        event = "load",
+        model = "org/Repo-GGUF",
+        running = True,
+        via_api_key = True,
+        subject = "alice",
+    )
+
+    mine = {e["id"]: e for e in monitor.snapshot(subject = "alice")}
+    theirs = {e["id"]: e for e in monitor.snapshot(subject = "bob")}
+    # Shared visibility is deliberate and must survive: bob still sees the load.
+    assert row in mine and row in theirs
+    assert mine[row]["via_api_key"] is True
+    assert theirs[row]["via_api_key"] is False
+
+    # The details read is scoped the same way, so the panel cannot re-derive it.
+    assert monitor.get(row, subject = "alice")["via_api_key"] is True
+    assert monitor.get(row, subject = "bob")["via_api_key"] is False
+    # An unscoped read (internal callers) still sees the row's own flag.
+    assert monitor.get(row)["via_api_key"] is True
+
+
+def test_clearing_hides_a_shared_row_this_caller_owns_rather_than_deleting_it():
+    """An API-key load now owns its shared row. A subject-scoped clear drops that
+    subject's rows, so without this the owner's Clear would delete a row every
+    other caller can still see and wipe it out of their history too."""
+    monitor = ApiMonitor(max_entries = 10)
+    row = monitor.record_lifecycle(
+        event = "unload", model = "org/Repo-GGUF", via_api_key = True, subject = "alice"
+    )
+
+    monitor.clear(subject = "alice")
+
+    assert monitor.snapshot(subject = "alice") == []
+    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {row}
+    assert monitor.get(row, subject = "bob") is not None

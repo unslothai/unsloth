@@ -49,6 +49,8 @@ class ApiMonitorEntry:
     status: str
     started_at: float
     updated_at: float
+    # Who this row belongs to. On a shared lifecycle row it does not restrict
+    # visibility (see _visible); it names the caller the row is attributed to.
     subject: Optional[str] = None
     # True for sk-unsloth key callers, not UI sessions. The floating panel only
     # auto-opens for these, so Studio's own chat does not pop it mid-chat.
@@ -72,7 +74,12 @@ class ApiMonitorEntry:
     # 0-100 for a running download row; None when not applicable.
     progress: Optional[float] = None
 
-    def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
+    def snapshot(
+        self,
+        *,
+        include_details: bool = True,
+        attributed: bool = True,
+    ) -> dict[str, Any]:
         duration_ms = None
         if self.finished_monotonic is not None:
             duration_ms = max(
@@ -89,7 +96,10 @@ class ApiMonitorEntry:
             "endpoint": self.endpoint,
             "method": self.method,
             "model": self.model,
-            "via_api_key": self.via_api_key,
+            # A lifecycle row is shared, so it reaches subjects that had nothing to
+            # do with it. The overlay auto-opens on this flag, so report it only to
+            # the caller the row is attributed to; everyone else still sees the row.
+            "via_api_key": self.via_api_key and attributed,
             "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
             "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
             "prompt_truncated": len(self.prompt) > _PREVIEW_CHARS,
@@ -174,12 +184,17 @@ class ApiMonitor:
         reason: Optional[str] = None,
         running: bool = False,
         via_api_key: bool = False,
+        subject: Optional[str] = None,
     ) -> str:
         """Record a model load/unload alongside the request traffic that caused it.
 
         ``running=True`` opens the row for the caller to close with :meth:`finish` /
         :meth:`fail`; an unload is terminal on arrival. Rows are shared (visible to
         every subject) and share the request retention budget.
+
+        ``subject`` names the caller whose request drove this, which is what
+        ``via_api_key`` is reported to; it does not narrow who sees the row. Pass it
+        whenever ``via_api_key`` is set, or the attribution reaches nobody.
         """
         if not self._enabled:
             return ""
@@ -205,6 +220,9 @@ class ApiMonitor:
             # trace of it, and without the attribution the monitor stayed shut on
             # exactly the failures it exists to surface.
             via_api_key = via_api_key,
+            # Shared rows are read by every subject, so the attribution needs an
+            # owner or the pop-open lands in browsers that did not cause it.
+            subject = subject,
         )
         with self._lock:
             self._entries.appendleft(entry)
@@ -371,7 +389,10 @@ class ApiMonitor:
     ) -> list[dict[str, Any]]:
         with self._lock:
             return [
-                entry.snapshot(include_details = include_details)
+                entry.snapshot(
+                    include_details = include_details,
+                    attributed = self._attributed(entry, subject),
+                )
                 for entry in self._entries
                 if self._visible(entry, subject)
             ]
@@ -388,7 +409,10 @@ class ApiMonitor:
                 return None
             if not self._visible(entry, subject):
                 return None
-            return entry.snapshot(include_details = True)
+            return entry.snapshot(
+                include_details = True,
+                attributed = self._attributed(entry, subject),
+            )
 
     def active_count(self, *, subject: Optional[str] = None) -> int:
         # Lifecycle rows show as "running" while loading but are not in-flight API requests.
@@ -416,18 +440,35 @@ class ApiMonitor:
             # A running shared row is a load in progress, not history, so it stays.
             hidden = self._hidden_shared.setdefault(subject, set())
             for entry in self._entries:
-                if entry.shared and entry.subject != subject and entry.status != "running":
+                if entry.shared and entry.status != "running":
                     hidden.add(entry.id)
-            self._entries = deque(entry for entry in self._entries if entry.subject != subject)
+            # Shared rows are hidden, never dropped, even when this subject owns
+            # one: they are another caller's history too, and an owned shared row
+            # is exactly what an API-key load produces.
+            self._entries = deque(
+                entry
+                for entry in self._entries
+                if entry.shared or entry.subject != subject
+            )
 
     def _visible(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
         if subject is None:
             return True
-        if entry.subject == subject:
+        if entry.shared:
+            # Shared rows reach every subject, minus the ones this one cleared.
+            # Checked before ownership so clearing hides a subject's own rows too.
+            return entry.id not in self._hidden_shared.get(subject, ())
+        return entry.subject == subject
+
+    def _attributed(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
+        """Whether *subject* is the caller this row's API traffic belongs to.
+
+        Only they should have the overlay pop open for it. An unscoped read (no
+        subject: internal callers and tests) sees the row's own flag.
+        """
+        if subject is None:
             return True
-        if not entry.shared:
-            return False
-        return entry.id not in self._hidden_shared.get(subject, ())
+        return entry.subject == subject
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:

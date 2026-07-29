@@ -448,6 +448,8 @@ async def maybe_auto_download(
     *,
     hf_token: Optional[str] = None,
     require_vision: bool = False,
+    subject: Optional[str] = None,
+    via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
     """Start (or report on) a background fetch of *requested_model*.
 
@@ -457,6 +459,10 @@ async def maybe_auto_download(
     ``require_vision`` refuses a target with no mmproj companion rather than spend
     gigabytes on weights that cannot answer the request; the local capability guard
     only ever sees an already-downloaded model.
+
+    ``subject`` and ``via_api_key`` describe the caller for the monitor row this
+    opens: the same /v1 endpoints serve Studio's own chat on a session JWT, so the
+    download is not API-key traffic unless the request that asked for it was.
     """
     global _active
 
@@ -529,7 +535,14 @@ async def maybe_auto_download(
 
     try:
         return await _admit_and_start(
-            repo_id, wanted_variant, requested_model, hf_token, provisional, require_vision
+            repo_id,
+            wanted_variant,
+            requested_model,
+            hf_token,
+            provisional,
+            require_vision,
+            subject = subject,
+            via_api_key = via_api_key,
         )
     except BaseException:
         # Not `except Exception`: a cancel mid-probe would otherwise wedge the provisional slot.
@@ -544,6 +557,9 @@ async def _admit_and_start(
     hf_token: Optional[str],
     active: _Active,
     require_vision: bool = False,
+    *,
+    subject: Optional[str] = None,
+    via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
     from hub.utils.hf_errors import hf_error_status
 
@@ -690,7 +706,16 @@ async def _admit_and_start(
             ),
         )
 
-    return await _dispatch(repo_id, variant, expected_bytes, requested_model, hf_token, active)
+    return await _dispatch(
+        repo_id,
+        variant,
+        expected_bytes,
+        requested_model,
+        hf_token,
+        active,
+        subject = subject,
+        via_api_key = via_api_key,
+    )
 
 
 def preferred_quant(labels) -> Optional[str]:
@@ -737,6 +762,9 @@ async def _dispatch(
     requested_model: str,
     hf_token: Optional[str],
     active: _Active,
+    *,
+    subject: Optional[str] = None,
+    via_api_key: bool = False,
 ) -> AutoDownloadRefusal:
     global _active
 
@@ -777,12 +805,18 @@ async def _dispatch(
         return busy
 
     monitor_id = api_monitor.record_lifecycle(
-        # Only an API request reaches auto-download, hence reason "api".
+        # Reason "api" because only a /v1 request reaches auto-download. That is not
+        # the same as API-key traffic though: Studio's own chat calls those same
+        # endpoints with a session JWT, and marking its download as API traffic pops
+        # the overlay mid-chat, which via_api_key exists to prevent. So take the
+        # attribution from the request, and name the caller it belongs to, since the
+        # row is shared with every other subject.
         event = "download",
         model = label,
         reason = "api",
         running = True,
-        via_api_key = True,
+        via_api_key = via_api_key,
+        subject = subject,
     )
     with _lock:
         if _active is active:
