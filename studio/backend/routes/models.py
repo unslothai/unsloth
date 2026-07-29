@@ -2869,20 +2869,15 @@ async def get_gguf_download_progress(
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
     """Pick the most useful on-disk path for a HF cache repo.
 
-    Prefers the most-recent snapshot dir (what ``from_pretrained`` uses),
-    falling back to the cache repo root. Returns the resolved realpath so
-    snapshot symlinks follow back to blobs/.
+    Delegates to the Hub scanner's function of the same name so this route and
+    ``/api/hub/local-models`` name one directory. Both preferred the most-recent
+    snapshot dir (what ``from_pretrained`` uses), but this copy resolved equal
+    mtimes by ``iterdir()`` order while that one resolves them by
+    ``snapshot_selection_key``, so two endpoints handed out two different
+    absolute snapshots for the same repo.
     """
-    try:
-        snapshots_dir = repo_dir / "snapshots"
-        if snapshots_dir.is_dir():
-            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
-            if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
-                return str(latest.resolve())
-        return str(repo_dir.resolve())
-    except Exception:
-        return None
+    from hub.utils import inventory_scan as hf_cache_scan
+    return hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
 
 
 @router.get("/download-progress")
@@ -3069,6 +3064,8 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     hub cache that does not resolve by id. ``None`` when the id works or no
     snapshot is recorded, since the repo dir itself is not loadable.
     """
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
     repo_path = getattr(repo_info, "repo_path", None)
     if repo_path is None or active_root is None:
         return None
@@ -3077,23 +3074,23 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
             return None
     except (OSError, RuntimeError, ValueError):
         pass
-    # Order by snapshot directory mtime, matching hub.utils.gguf.iter_hf_cache_snapshots,
-    # which is what variant discovery reads. Blob mtimes would disagree with it whenever
-    # Hugging Face reuses an older blob in a newer snapshot, and the command would then
-    # name a snapshot that does not hold the quant the picker offered.
-    candidates: List[tuple[float, str]] = []
-    for revision in repo_info.revisions:
-        snapshot = getattr(revision, "snapshot_path", None)
-        if snapshot is None:
-            continue
-        if not any(_is_main_gguf_filename(f.file_name) for f in revision.files):
-            continue
-        try:
-            mtime = Path(snapshot).stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        candidates.append((mtime, str(snapshot)))
-    candidates.sort(key = lambda c: c[0], reverse = True)
+    # Ordered by snapshot_selection_key, the one key every selector shares, which
+    # is what hub.utils.gguf.iter_hf_cache_snapshots behind /gguf-variants sorts
+    # by. Its mtime half is the signal itself -- blob mtimes would disagree with
+    # it whenever Hugging Face reuses an older blob in a newer snapshot -- and
+    # its resolved-path half settles the ties mtime alone leaves. Sorting on
+    # mtime alone left equal timestamps (a coarse filesystem, a restored cache)
+    # to repo_info.revisions iteration order, a frozenset, so the id this route
+    # published moved with the interpreter's hash seed while variant discovery
+    # kept naming the other snapshot; picking a quant only that one holds then
+    # sent an absolute path with no such file to the loader.
+    candidates = [
+        Path(snapshot)
+        for revision in repo_info.revisions
+        if (snapshot := getattr(revision, "snapshot_path", None)) is not None
+        and any(_is_main_gguf_filename(f.file_name) for f in revision.files)
+    ]
+    candidates.sort(key = snapshot_selection_key, reverse = True)
     # Newest first, but skip one holding no whole quant at all: an interrupted
     # download would otherwise beat an older snapshot that can still load. One
     # whole quant is enough, matching _repo_gguf_payload_snapshots and the lister
@@ -3101,9 +3098,9 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     # demanding the whole directory pinned an older revision while the variants
     # route advertised a quant only the newer one holds. Scanning stops at the
     # first usable snapshot, so the usual case walks one directory.
-    for _, snapshot in candidates:
-        if snapshot_has_complete_variants(snapshot):
-            return snapshot
+    for snapshot in candidates:
+        if snapshot_has_complete_variants(str(snapshot)):
+            return str(snapshot)
     # Nothing complete anywhere: publishing a half-downloaded snapshot would put that
     # path in the copied command and fail on load. Drop the id so the repo id is used,
     # which fetches the missing shards instead.

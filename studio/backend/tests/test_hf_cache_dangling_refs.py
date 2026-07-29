@@ -1545,6 +1545,19 @@ _MTIME_READERS = {
     "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
     # Mirrors what huggingface_hub records per revision; it selects nothing.
     "hub/utils/inventory_scan.py": frozenset({"_recover_repo_hidden_by_dangling_refs"}),
+    # The compatibility routes. Listed because leaving them out is how the two
+    # snapshot selectors here kept their own mtime reads for a round after the
+    # shared key landed: _repo_gguf_load_id ordered candidates by mtime alone
+    # and _resolve_hf_cache_realpath took max() over iterdir(). The four named
+    # functions rank plain directories (./models, LM Studio, Ollama) or read a
+    # repo dir's mtime for an "updated at" column; none of them picks a snapshot.
+    "routes/models.py": frozenset({
+        "_blob_mtime",
+        "_scan_hf_cache",
+        "_scan_lmstudio_dir",
+        "_scan_models_dir",
+        "_scan_ollama_dir",
+    }),
 }
 
 

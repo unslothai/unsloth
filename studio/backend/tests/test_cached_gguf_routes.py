@@ -7,6 +7,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 # Keep this test runnable without optional logging deps.
 if "structlog" not in sys.modules:
 
@@ -194,6 +196,59 @@ def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_pa
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
     assert rows[0]["load_id"] == str(newer)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
+    reverse, monkeypatch, tmp_path
+):
+    """Equal snapshot mtimes must not leave the load id to iteration order.
+
+    ``repo_info.revisions`` is a ``frozenset`` both in huggingface_hub's scan and
+    in the dangling-ref recovery, so on a coarse-timestamp filesystem or a
+    restored cache this route published whichever snapshot the hash seed reached
+    first, while ``/api/models/gguf-variants`` kept naming the one
+    ``snapshot_selection_key`` picks. Selecting a quant only that snapshot holds
+    then sent an absolute path with no such file to the loader. Both revision
+    orders are driven here because that is what the seed varies.
+    """
+    import os
+
+    from hub.utils.gguf import iter_hf_cache_snapshots
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    active = tmp_path / "active"
+    legacy = tmp_path / "legacy"
+    repo_dir = legacy / "models--Org--Tied"
+    low, high = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (low, high):
+        path.mkdir(parents = True)
+    (low / "Model-Q4_K_M.gguf").write_bytes(b"\0")
+    (high / "Model-Q5_K_M.gguf").write_bytes(b"\0")
+    # One timestamp for both, which is the whole point of the case.
+    for path in (low, high):
+        os.utime(path, (1_700_000_000, 1_700_000_000))
+
+    revisions = [
+        SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 5_000)], snapshot_path = low),
+        SimpleNamespace(files = [_file("Model-Q5_K_M.gguf", 6_000)], snapshot_path = high),
+    ]
+    repo = _repo("Org/Tied", [], repo_dir, revisions = revisions[::-1] if reverse else revisions)
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_roots", lambda: [legacy], raising = False
+    )
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    # The shared key's answer, and the directory variant discovery walks first.
+    expected = max((low, high), key = snapshot_selection_key)
+    assert rows[0].get("load_id") == str(expected)
+    assert next(iter(iter_hf_cache_snapshots("Org/Tied"))) == expected
 
 
 def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_path):
