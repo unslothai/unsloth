@@ -2655,7 +2655,6 @@ def run_mlx_training_process(
     transformers_activated: bool = False,
 ) -> None:
     """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
-    model_name = config["model_name"]
     model_load_target = _resolve_cached_model_load_name(config)
 
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -3357,6 +3356,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         model_load_name = _resolve_cached_model_load_name(config)
         model_local_only = _model_local_files_only(config)
         dataset_local_only = _dataset_local_files_only(config)
+        eval_steps = config.get("eval_steps", 0.00)
 
         hf_dataset = config.get("hf_dataset", "")
         training_type = config.get("training_type", "LoRA/QLoRA")
@@ -3373,7 +3373,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 train_split = config.get("train_split", "train"),
                 eval_split = config.get("eval_split"),
                 dataset_streaming = config.get("dataset_streaming", False),
-                eval_steps = config.get("eval_steps", 0.00),
+                eval_steps = eval_steps,
                 dataset_slice_start = config.get("dataset_slice_start"),
                 dataset_slice_end = config.get("dataset_slice_end"),
                 is_cpt = is_cpt_for_dataset,
@@ -3390,8 +3390,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             else:
                 loaded_dataset = result
                 loaded_eval_dataset = None
-            eval_steps_value = config.get("eval_steps", 0.00)
-            if eval_steps_value is not None and float(eval_steps_value) <= 0:
+            if eval_steps is not None and float(eval_steps) <= 0:
                 loaded_eval_dataset = None
             return loaded_dataset, loaded_eval_dataset
 

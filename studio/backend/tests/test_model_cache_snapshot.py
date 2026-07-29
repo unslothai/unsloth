@@ -117,7 +117,7 @@ def test_refs_main_preferred_over_newer_mtime(tmp_path):
 
 def test_refs_main_skipped_without_metadata_or_missing_target(tmp_path):
     repo_root = _model_repo(tmp_path, "Org/Model")
-    pinned = _snapshot(repo_root, "commit-pinned")
+    _snapshot(repo_root, "commit-pinned")
     fallback = _snapshot(repo_root, "commit-fallback", ("config.json",))
     refs = repo_root / "refs"
     refs.mkdir()
