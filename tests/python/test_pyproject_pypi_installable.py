@@ -93,9 +93,9 @@ class TestAmdExtraIsInstallableFromPyPI:
         specs = [d for d in extras["amd"] if d.lower().startswith("bitsandbytes")]
         assert specs, "the amd extra must constrain bitsandbytes"
         for spec in specs:
-            assert spec.startswith("bitsandbytes>=0.50.0"), (
-                f"bitsandbytes <= 0.49.2 NaNs at 4-bit decode on ROCm; got {spec!r}"
-            )
+            assert spec.startswith(
+                "bitsandbytes>=0.50.0"
+            ), f"bitsandbytes <= 0.49.2 NaNs at 4-bit decode on ROCm; got {spec!r}"
 
     def test_amd_extra_pulls_the_torch_free_runtime(self):
         extras = _load()["project"].get("optional-dependencies", {})
