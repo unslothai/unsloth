@@ -62,6 +62,9 @@ def test_the_legacy_file_stays_a_bare_pid_an_older_cli_can_parse(tmp_path, monke
         "_pid_file_for_port": lambda port: _backend_pid_path(tmp_path, port),
         "_process_create_time": lambda pid: None,
         "_bind_addresses": lambda host, port: {host},
+        # _write_pid_file consults these before taking over studio.pid.
+        "_read_pid_record": lambda path: None,
+        "_pid_alive": lambda pid: False,
         "_OWN_PID_FILE": None,
     }
     exec(_func_source(_RUN_SRC, "_write_pid_file"), ns)

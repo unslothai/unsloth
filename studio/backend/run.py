@@ -867,7 +867,7 @@ def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = (
     the command line rejected real servers.
     """
     known = [c for c in created_times if c is not None]
-    if not known or len(known) < len(created_times):
+    if not known:
         return True
     actual = _process_create_time(pid)
     if actual is None:
@@ -1027,7 +1027,12 @@ def _write_pid_file(port: int, host: str = ""):
     # independently of the per-port record: if that one failed, this is the only
     # thing keeping the server stoppable at all.
     try:
-        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
+        # Never take it from a server that is still running. A pre-upgrade server
+        # is recorded here and nowhere else, so overwriting its entry is exactly
+        # what strands it -- the orphan this file exists to prevent.
+        prior = _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
+        if prior is None or prior[0] == os.getpid() or not _pid_alive(prior[0]):
+            _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         pass
 
@@ -1659,6 +1664,7 @@ def run_server(
     enable_tools: "Optional[bool]" = None,
     password: "Optional[str]" = None,
     emit_tauri_port: bool = True,
+    abort_if_own_studio: "Optional[bool]" = None,
 ):
     """
     Start the FastAPI server.
@@ -1793,11 +1799,13 @@ def run_server(
 
     # Auto-find a free port if the requested one is in use.
     original_port = port
-    # api-only callers read the bound port back (TAURI_PORT for the desktop app,
-    # app.state.server_port for `studio run`), so a fallback there is harmless and
-    # is what the desktop app's 8888-8908 range expects. The interactive path
-    # prints the requested port, so falling back is what strands a server.
-    port = _resolve_port(host, port, avoid_own_studio = not api_only)
+    # Refusing rather than falling back is for callers that cannot follow us to
+    # the new port. `studio run` reads app.state.server_port back and the desktop
+    # app reads TAURI_PORT, so both should keep the plain fallback; only the
+    # bare launch, which has nothing but the banner, benefits from the refusal.
+    if abort_if_own_studio is None:
+        abort_if_own_studio = not api_only
+    port = _resolve_port(host, port, avoid_own_studio = abort_if_own_studio)
     if port != original_port:
         blocker = _get_pid_on_port(original_port)
         if not silent:

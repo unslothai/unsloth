@@ -286,7 +286,17 @@ def test_an_untimed_legacy_record_is_trusted(monkeypatch):
 
     assert run._pid_is_studio_backend(8550) is True
     assert run._pid_is_studio_backend(8550, [None]) is True
-    assert run._pid_is_studio_backend(8550, [111.5, None]) is True
+
+
+def test_the_untimed_legacy_record_does_not_cancel_a_timed_one(monkeypatch):
+    # Mirrors _pid_is_studio_server in the CLI. An untimed record carries no
+    # information, so it must not overrule a start time that says "not ours" --
+    # every current server writes one of each, which made the check inert.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+
+    assert run._pid_is_studio_backend(8550, [111.5, None]) is False
+    assert run._pid_is_studio_backend(8550, [111.5, 999.0]) is True
 
 
 def test_a_legacy_server_on_the_port_is_recognised(tmp_path, monkeypatch):
@@ -510,3 +520,26 @@ def test_a_record_whose_pid_is_not_ascii_digits_is_discarded(tmp_path):
     (tmp_path / "r.pid").write_text("²", encoding = "utf-8")
 
     assert run._read_pid_record(tmp_path / "r.pid") is None
+
+
+def test_the_legacy_file_is_not_taken_from_a_live_server(tmp_path):
+    # A pre-upgrade server is recorded in studio.pid and nowhere else, so a
+    # second launch overwriting it is exactly what strands it. That is the
+    # orphan this file exists to prevent, reached from the other direction.
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    run._write_pid_file(8902, "127.0.0.1")
+
+    assert (tmp_path / "studio.pid").read_text(encoding = "utf-8") == "8550"
+    assert (tmp_path / f"studio-8902-{os.getpid()}.pid").exists()
+
+
+def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch):
+    # A stale record must not keep the pointer forever, or an older CLI could
+    # never stop anything again.
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    run._write_pid_file(8902, "127.0.0.1")
+
+    assert (tmp_path / "studio.pid").read_text(encoding = "utf-8") == str(os.getpid())

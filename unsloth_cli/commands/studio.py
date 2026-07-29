@@ -2237,6 +2237,9 @@ def run(
         # Headless serving prints its own URL/API-key banner; the Tauri-only
         # TAURI_PORT line would corrupt that machine-parseable output.
         emit_tauri_port = False,
+        # We read the bound port back below, so a fallback past another Studio is
+        # safe here and keeps side-by-side model runs working.
+        abort_if_own_studio = False,
     )
     # Forward the frontend validated before the gate (in-venv path).
     if resolved_frontend is not None:
