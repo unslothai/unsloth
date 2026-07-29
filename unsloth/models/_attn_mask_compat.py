@@ -188,7 +188,10 @@ class AttentionMaskConverter:
 
         expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
 
-        inverted_mask = 1.0 - expanded_mask
+        # 0-dim tensor, not a Python float: a float literal lowers to an fp32
+        # scalar and breaks ExecuTorch edge-dialect export on fp16/bf16 masks.
+        # Matches upstream from 4.53.0 (huggingface/transformers#38637).
+        inverted_mask = torch.tensor(1.0, dtype = dtype) - expanded_mask
 
         return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
