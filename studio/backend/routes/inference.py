@@ -527,13 +527,15 @@ def _counted_message(msg: dict, rendered: bool) -> dict:
 def _estimate_messages_tokens(messages: list, preserve_thinking: bool = False) -> int:
     return sum(
         _estimate_message_tokens(_counted_message(msg, rendered))
-        for msg, rendered in zip(
-            messages, _reasoning_rendered_flags(messages, preserve_thinking)
-        )
+        for msg, rendered in zip(messages, _reasoning_rendered_flags(messages, preserve_thinking))
     )
 
 
-def _truncate_middle_messages(messages: list, keep_ratio: float, preserve_thinking: bool = False):
+def _truncate_middle_messages(
+    messages: list,
+    keep_ratio: float,
+    preserve_thinking: bool = False,
+):
     """Drop whole turn-groups from the middle of an OpenAI message list.
 
     Always kept: leading system message(s), the first group (task anchor),
@@ -570,9 +572,7 @@ def _truncate_middle_messages(messages: list, keep_ratio: float, preserve_thinki
     # otherwise be undroppable weight and force the whole middle out to hit the target.
     est_of = {
         id(msg): _estimate_message_tokens(_counted_message(msg, rendered))
-        for msg, rendered in zip(
-            messages, _reasoning_rendered_flags(messages, preserve_thinking)
-        )
+        for msg, rendered in zip(messages, _reasoning_rendered_flags(messages, preserve_thinking))
     }
     total_est = sum(est_of.values())
     target_est = int(total_est * keep_ratio)
@@ -606,7 +606,11 @@ _CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
 _CLIP_KEEP_CHARS = (1500, 400)
 
 
-def _clip_long_contents(messages: list, target_est: int, preserve_thinking: bool = False) -> int:
+def _clip_long_contents(
+    messages: list,
+    target_est: int,
+    preserve_thinking: bool = False,
+) -> int:
     """Clip oversized string contents middle-out until ``target_est`` is met.
 
     Assistant ``reasoning_content`` is clipped first (longest and most
@@ -675,9 +679,7 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
         body["messages"] = new_messages
     clipped = 0
     if _estimate_messages_tokens(body.get("messages") or [], preserve_thinking) > target_est:
-        clipped = _clip_long_contents(
-            body.get("messages") or [], target_est, preserve_thinking
-        )
+        clipped = _clip_long_contents(body.get("messages") or [], target_est, preserve_thinking)
     if not dropped and not clipped:
         return False
     if n_ctx:
