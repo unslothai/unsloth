@@ -560,6 +560,74 @@ def test_deleting_the_source_thread_keeps_the_forks_copies(stats_db):
     assert stats["totals"]["messages"] == 1
 
 
+def test_sibling_forks_do_not_multiply_a_deleted_source(stats_db):
+    """Two forks of one thread must not both re-count the shared ancestry."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    older = now - timedelta(hours = 3)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "root", "m", [(older, _metadata(100, 50))])
+        for fork_id in ("forkA", "forkB"):
+            conn.execute(
+                "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, "
+                "updated_at, forked_from_thread_id, forked_from_message_id) "
+                "VALUES (?, 'fork', 'base', 'm', ?, ?, 'root', 'root-a0')",
+                (fork_id, _ms(now), _ms(now)),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, thread_id, role, content_json, "
+                "metadata_json, created_at) VALUES (?, ?, 'assistant', '[]', ?, ?)",
+                (f"{fork_id}-a0", fork_id, json.dumps(_metadata(100, 50)), _ms(older)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert compute_profile_stats(days = 7)["totals"]["totalTokens"] == 150
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DELETE FROM chat_threads WHERE id = 'root'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    invalidate_profile_stats_cache()
+    stats = compute_profile_stats(days = 7)
+
+    # Exactly one surviving copy is counted, not one per sibling fork.
+    assert stats["totals"]["totalTokens"] == 150
+    assert stats["totals"]["messages"] == 1
+
+
+def test_comparison_panes_count_as_one_chat(stats_db):
+    """Compare mode stores a thread per pane; the sidebar shows one chat."""
+    now = datetime.now()
+    conn = studio_db.get_connection()
+    try:
+        for pane in ("left", "right"):
+            conn.execute(
+                "INSERT INTO chat_threads (id, title, model_type, model_id, pair_id, "
+                "created_at, updated_at) VALUES (?, 'compare', 'base', 'm', 'pair-1', ?, ?)",
+                (pane, _ms(now), _ms(now)),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, thread_id, role, content_json, "
+                "metadata_json, created_at) VALUES (?, ?, 'assistant', '[]', ?, ?)",
+                (f"{pane}-a0", pane, json.dumps(_metadata(100, 50)), _ms(now)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = compute_profile_stats(days = 7)
+
+    assert stats["totals"]["threads"] == 1
+    # Both panes still contribute their own messages and tokens.
+    assert stats["totals"]["messages"] == 2
+    assert stats["totals"]["totalTokens"] == 300
+
+
 def test_deleting_a_continuation_restores_its_source(stats_db):
     """delete_run leaves resume_blocked set, so supersession needs a live tail."""
     conn = studio_db.get_connection()

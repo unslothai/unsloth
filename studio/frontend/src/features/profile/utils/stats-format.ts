@@ -99,7 +99,9 @@ export type ActivityMode = "daily" | "weekly" | "cumulative";
 /**
  * Recast the dense daily series for the selected mode. Weekly sums each
  * calendar week onto its days so the grid shows week-level intensity;
- * cumulative shows the running lifetime total, which only ever grows.
+ * cumulative is the running total across the displayed window, not lifetime,
+ * since the backend caps the series and seeding it with everything older would
+ * flatten every bar against a baseline the grid cannot show.
  */
 export function seriesForMode(
   daily: Array<{ date: string; tokens: number }>,
