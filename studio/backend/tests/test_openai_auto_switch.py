@@ -4818,6 +4818,34 @@ def test_forget_clears_the_filename_derived_key_a_load_still_reads(override_stor
     assert settings.get_model_overrides() == {}
 
 
+def test_forget_clears_every_spelling_of_one_model(override_store):
+    # A build that stored the literal id could leave two spellings of one repo in
+    # the map. Clearing only the one named makes the survivor the sole fold match,
+    # so the very next load applies the settings that were just forgotten.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_overrides() == {}
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+
+
+def test_forget_of_one_windows_spelling_clears_the_other(override_store):
+    # Windows paths fold, so two spellings are one file and both have to go.
+    settings.set_model_override(r"C:\Models\x.gguf", max_seq_length = 8192)
+    settings.set_model_override("c:/models/X.gguf", max_seq_length = 4096)
+    _put(r"C:\Models\x.gguf", remove = True)
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_of_a_posix_path_still_spares_its_case_sibling(override_store):
+    # POSIX paths do not fold: two casings are two files, and forgetting one must
+    # not take the other's settings with it.
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192)
+    settings.set_model_override("/models/Foo.gguf", max_seq_length = 4096)
+    _put("/models/foo.gguf", remove = True)
+    assert list(settings.get_model_overrides()) == ["/models/Foo.gguf"]
+
+
 def test_forget_leaves_another_file_own_derived_key_alone(override_store):
     # The derived key is built from the forgotten file's own path and its own
     # label, so a neighbour that happens to share a quant keeps its settings.

@@ -48,6 +48,7 @@ from utils.openai_auto_switch_settings import (
     get_model_overrides,
     get_openai_auto_switch_enabled,
     resolve_model_override_key,
+    resolve_model_override_keys,
     get_stored_auto_unload_idle_seconds,
     get_stored_openai_auto_download_enabled,
     set_model_override,
@@ -477,15 +478,22 @@ def update_openai_auto_switch_override(
             # An explicit remove wins over any other field in the payload. Remove the
             # key a load resolves to, not the literal one sent: the browser normalizes
             # casing before storing, so a stale entry would survive forgetting.
-            target_id = resolve_model_override_key(payload.model_id) or payload.model_id
-            set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
+            # All of them, not just the one a load happens to resolve to: an
+            # install upgraded from a build that stored the literal id can hold two
+            # spellings of one model, and clearing one leaves the survivor as the
+            # sole fold match, so the next load applies what was just forgotten.
+            target_ids = resolve_model_override_keys(payload.model_id) or [
+                payload.model_id,
+            ]
+            for target_id in target_ids:
+                set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
             # A standalone .gguf is keyed by its bare path now, but a load also
             # reads the filename-derived <path>:LABEL entry an upgraded install
             # still holds. Clearing only what the resolver sees leaves that one
             # applying to every later API load, with the settings gone from the
             # UI and no way left to reach them.
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
-            if legacy_id and legacy_id != target_id:
+            if legacy_id and legacy_id not in target_ids:
                 set_model_override(
                     legacy_id,
                     llama_extra_args = [],

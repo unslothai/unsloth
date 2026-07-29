@@ -38,12 +38,6 @@ export interface ResidentAdoptionActions {
   /** Re-pin ``params.checkpoint`` onto the resident model. */
   setCheckpoint: (checkpointId: string, ggufVariant: string | null) => void;
   /**
-   * Drop a local checkpoint the server no longer has.
-   *
-   * Optional so a caller that only wants the pinning half can leave it out.
-   */
-  clearCheckpoint?: () => void;
-  /**
    * Apply the rest of the status. Receives the store values from BEFORE
    * ``setCheckpoint`` ran, which is what applyActiveModelStatusToStore needs to
    * tell a hydration from steady state.
@@ -68,8 +62,7 @@ export function adoptResidentModelStatus(
   const { checkpointId } = status;
   // An external-provider selection has no local mirror, so stamping the resident
   // GGUF's capabilities and launch settings onto it would describe a model the
-  // user is not talking to. It also owns the store, so an empty status must not
-  // clear it: clearCheckpoint drops the persisted external pick as well.
+  // user is not talking to.
   if (state.checkpointIsExternal) {
     return false;
   }
@@ -79,14 +72,13 @@ export function adoptResidentModelStatus(
     return false;
   }
   if (!checkpointId) {
-    // The server has nothing loaded, so neither should we. Unloading from another
-    // tab, from the monitor or over the API leaves this store pinned otherwise,
-    // and the settings page goes on treating that row as resident and seeding the
-    // editor from a launch config nothing is running.
-    if (state.checkpoint) {
-      actions.clearCheckpoint?.();
-      return true;
-    }
+    // Nothing resident to mirror, and an empty status is not the same as a model
+    // going away: with idle unload on, the server frees the model and keeps a
+    // stash that the next request reloads, while /status reports nothing and
+    // carries no field that tells the two apart. The store is what names the
+    // model meanwhile, for the usage examples and for that reload, so this
+    // leaves it pinned, as the chat runtime does. Clearing belongs to whatever
+    // performed the unload, not to an observation of one.
     return false;
   }
   const previous = {

@@ -424,9 +424,6 @@ export function ModelsPage() {
             setCheckpoint: (checkpointId, ggufVariant) => {
               store.setCheckpoint(checkpointId, ggufVariant);
             },
-            clearCheckpoint: () => {
-              store.clearCheckpoint();
-            },
             // Landing here is the one entry point that has applied no status yet,
             // so the settings page would read this model's live config off a store
             // still holding defaults. Same call the chat runtime's refresh makes.
@@ -1328,11 +1325,18 @@ export function ModelsPage() {
   const openModelSettings = useCallback(
     async (row: CachedInventoryRow | LocalInventoryRow) => {
       const openSeq = ++settingsOpenSeq.current;
+      // Before anything reads the store. The effect that re-reads status watches
+      // settingsTarget, so it cannot run until the target exists, and the Hub has
+      // no polling timer: it re-reads on focus and visibility only. Every path out
+      // of here seeds the editor from the store, whether from the live config of a
+      // model it believes resident or from a saved one, and Apply reloads with what
+      // it seeded, so a target built on a pre-switch read can persist and launch the
+      // wrong settings if it is applied before the read lands.
+      await refreshResidentModelStatus();
+      if (settingsOpenSeq.current !== openSeq) return;
       // loadId is what the loader accepts; repoId is only a display/API alias.
       const id = row.loadId;
-      // Every name this row answers to. Residency is judged against the store
-      // AFTER the variant lookup settles, not here, because that lookup and the
-      // status refresh this same click starts are in flight together.
+      // Every name this row answers to.
       const rowAliases =
         row.kind === "local"
           ? [id, row.repoId, row.path]
@@ -1353,27 +1357,15 @@ export function ModelsPage() {
           row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);
         if (repoId) {
           try {
-            const [res] = await Promise.all([
-              listGgufVariants(repoId, hfApiToken(hfToken), {
-                preferLocalCache: true,
-                localPath:
-                  row.kind === "local" ? row.path : (row.cachePath ?? null),
-              }),
-              // Read status as part of this click. The effect above cannot help
-              // here, because it does not run until the target it watches exists,
-              // and the Hub has no polling timer: it re-reads on focus and
-              // visibility only. So a window that has kept focus since the last
-              // read holds a checkpoint from before any API-driven switch, for
-              // however long the user has been sitting on the page. Alongside the
-              // variant lookup rather than before it, since that one usually hits
-              // the network while this is a loopback call.
-              refreshResidentModelStatus(),
-            ]);
+            const res = await listGgufVariants(repoId, hfApiToken(hfToken), {
+              preferLocalCache: true,
+              localPath:
+                row.kind === "local" ? row.path : (row.cachePath ?? null),
+            });
             const downloaded = res.variants.filter((v) => v.downloaded);
-            // Read residency after the awaits, never from the values closed over
-            // above: the status read that just settled is what knows which model
-            // is resident now, and the loaded-quant branch below would otherwise
-            // silently pick the quant of whichever model it displaced.
+            // Re-read after this await too: the lookup usually hits the network,
+            // and a switch during it would leave the loaded-quant branch below
+            // picking the quant of whichever model it displaced.
             const settled = useChatRuntimeStore.getState();
             const settledCheckpoint =
               settled.params.checkpoint &&
@@ -1489,15 +1481,15 @@ export function ModelsPage() {
       // Share the sequence with openModelSettings: a pending variant lookup for
       // another row must not land on top of this one.
       const openSeq = ++settingsOpenSeq.current;
+      // Unconditional, as in openModelSettings: whatever quant this ends up on,
+      // the editor is seeded from the store and Apply reloads with what it seeded.
+      await refreshResidentModelStatus();
+      if (settingsOpenSeq.current !== openSeq) return;
       let variant = ggufVariant;
-      // The card derived this quant from the store's active variant, and nothing
-      // re-reads status while this window keeps focus, so an API-driven switch
-      // since the last focus event leaves it naming the model that switch
-      // displaced. A quant the user chose in the card is theirs and stands; a
-      // derived one defers to whatever a fresh read says is actually loaded.
+      // The card derived this quant from the store's active variant, which the
+      // read above has now settled. A quant the user chose in the card is theirs
+      // and stands; a derived one defers to whatever is actually loaded.
       if (!quantIsUserPicked) {
-        await refreshResidentModelStatus();
-        if (settingsOpenSeq.current !== openSeq) return;
         const settled = useChatRuntimeStore.getState();
         const settledCheckpoint =
           settled.params.checkpoint &&

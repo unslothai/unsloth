@@ -586,17 +586,13 @@ def get_model_override(model_id: str) -> dict:
     return override if isinstance(override, dict) else {}
 
 
-def resolve_model_override_key(model_id: str) -> Optional[str]:
-    """The stored key an override lookup for ``model_id`` would actually hit.
+def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
+    """Stored keys naming the same model as ``model_id``, by the folding rules.
 
-    Shared by read and remove so "what a load applies" and "what forgetting this
-    model clears" can never disagree.
+    One rule, so a reader and a remover can never fold differently.
     """
-    overrides = get_model_overrides()
-    if isinstance(overrides.get(model_id), dict):
-        return model_id
     if not isinstance(model_id, str):
-        return None
+        return []
     # A POSIX path is case-sensitive, so folding "/models/Foo.gguf" onto
     # "/models/foo.gguf" would replay another model's settings. Windows drive, UNC
     # and WSL paths are not, and the browser folds exactly those before storing, so
@@ -625,12 +621,42 @@ def resolve_model_override_key(model_id: str) -> Optional[str]:
             # A path never folds onto a repo id: the shapes cannot collide.
             return None if _looks_like_filesystem_path(key) else key.casefold()
 
-    matches = [
+    return [
         key
         for key, value in overrides.items()
         if isinstance(key, str) and fold(key) == folded and isinstance(value, dict)
     ]
+
+
+def resolve_model_override_key(model_id: str) -> Optional[str]:
+    """The stored key an override lookup for ``model_id`` would actually hit.
+
+    Shared by read and remove so "what a load applies" and "what forgetting this
+    model clears" can never disagree. None when two keys fold together, since
+    guessing between them applies one model's settings to another.
+    """
+    overrides = get_model_overrides()
+    if isinstance(overrides.get(model_id), dict):
+        return model_id
+    matches = _folded_override_matches(model_id, overrides)
     return matches[0] if len(matches) == 1 else None
+
+
+def resolve_model_override_keys(model_id: str) -> list[str]:
+    """Every stored key naming the same model, for a caller clearing all of them.
+
+    A lookup stops at one key, but forgetting cannot: an install upgraded from a
+    build whose setter stored the literal id can hold two spellings of one model,
+    and clearing only the one named leaves the survivor as the sole fold match, so
+    the next load applies the settings that were just forgotten. POSIX paths still
+    stand alone, so two files never clear each other.
+    """
+    overrides = get_model_overrides()
+    keys = [model_id] if isinstance(overrides.get(model_id), dict) else []
+    keys.extend(
+        key for key in _folded_override_matches(model_id, overrides) if key not in keys
+    )
+    return keys
 
 
 def set_model_override(

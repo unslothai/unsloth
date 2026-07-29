@@ -1385,8 +1385,11 @@ def test_settings_open_reads_status_before_resolving_the_quant():
     active variant."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
     assert "const refreshResidentModelStatus = useCallback((): Promise<void> => {" in page
-    assert "const [res] = await Promise.all([ listGgufVariants(" in page
-    assert "refreshResidentModelStatus(), ]);" in page
+    assert (
+        "await refreshResidentModelStatus(); if (settingsOpenSeq.current !== openSeq) return;"
+        in page
+    )
+    assert page.count("await refreshResidentModelStatus();") == 2
 
 
 def test_a_local_quant_folder_resolves_its_variants_by_path():
@@ -1412,6 +1415,23 @@ def test_a_local_quant_folder_resolves_its_variants_by_path():
     assert "_is_valid_repo_id(repo_id)" in scan[1], "the branch has to come first"
 
 
+def test_no_settings_target_is_built_on_an_unread_store():
+    """Every path out of both handlers seeds the editor from the store, and Apply
+    reloads with what it seeded, so a target built before the status read lands can
+    persist and launch the settings of the model an API switch displaced."""
+    page = " ".join(_read("features/hub/hub-page.tsx").split())
+    # Both handlers read first and drop the open if a newer one started meanwhile.
+    assert page.count("await refreshResidentModelStatus();") == 2
+    assert (
+        page.count(
+            "await refreshResidentModelStatus(); if (settingsOpenSeq.current !== openSeq) return;"
+        )
+        == 2
+    )
+    # Nothing may build a target off a concurrent read instead of an awaited one.
+    assert "Promise.all([ listGgufVariants(" not in page
+
+
 def test_cached_repo_settings_key_follows_the_row_not_the_view():
     """A repo in an inactive HF cache loads by snapshot path while its settings are keyed
     by repo id."""
@@ -1425,6 +1445,6 @@ def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():
     that quant naming the model it displaced."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
     card = " ".join(_read("features/hub/catalog/local-on-device-card.tsx").split())
-    assert "if (!quantIsUserPicked) { await refreshResidentModelStatus();" in page
+    assert "if (!quantIsUserPicked) { const settled = useChatRuntimeStore.getState();" in page
     assert "variant = settled.activeGgufVariant;" in page
     assert "onOpenSettings(selectedQuant ?? null, quantIsUserPicked)" in card

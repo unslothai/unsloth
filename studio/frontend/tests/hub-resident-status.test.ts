@@ -23,7 +23,6 @@ const RESIDENT = {
  */
 function refusing(messages: {
   setCheckpoint?: string;
-  clearCheckpoint?: string;
   applyStatus?: string;
 }) {
   const refuse = (message = "unreachable") => {
@@ -33,7 +32,6 @@ function refusing(messages: {
   };
   return {
     setCheckpoint: refuse(messages.setCheckpoint),
-    clearCheckpoint: refuse(messages.clearCheckpoint),
     applyStatus: refuse(messages.applyStatus),
   };
 }
@@ -140,34 +138,27 @@ test("a load in flight is not fought", () => {
   assert.deepEqual(calls, []);
 });
 
-test("an empty status drops a local checkpoint the server no longer has", () => {
-  // Unloading from another tab, from the API monitor or over the API leaves this
-  // store pinned; the settings page then treats the row as resident and seeds the
-  // editor from a launch config nothing is running.
-  const cleared: string[] = [];
+test("an empty status leaves the checkpoint pinned", () => {
+  // An empty status is not the same as the model going away. With idle unload on,
+  // the server frees it and keeps a stash the next request reloads, while /status
+  // says nothing is loaded and carries no field that tells the two apart. The
+  // store is what names the model meanwhile, for the usage examples and for that
+  // reload, so an observation must not clear it. The chat runtime does the same.
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null },
     emptyStore({
       checkpoint: "/models/llama.gguf",
       activeGgufVariant: "Q4_K_M",
     }),
-    {
-      ...refusing({
-        setCheckpoint: "nothing is resident, so nothing may be pinned",
-        applyStatus: "there is no status to apply",
-      }),
-      clearCheckpoint: () => {
-        cleared.push("cleared");
-      },
-    },
+    refusing({
+      setCheckpoint: "nothing is resident, so nothing may be pinned",
+      applyStatus: "there is no status to apply",
+    }),
   );
-  assert.equal(adopted, true);
-  assert.deepEqual(cleared, ["cleared"]);
+  assert.equal(adopted, false);
 });
 
 test("an empty status leaves an external pick alone", () => {
-  // clearCheckpoint also drops the persisted external selection, so an empty
-  // status must not reach it: the local model is not what the user is talking to.
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null },
     emptyStore({
@@ -175,7 +166,8 @@ test("an empty status leaves an external pick alone", () => {
       checkpointIsExternal: true,
     }),
     refusing({
-      clearCheckpoint: "an external pick must survive an empty status",
+      setCheckpoint: "an external pick is not a local model",
+      applyStatus: "the resident GGUF's status describes another model",
     }),
   );
   assert.equal(adopted, false);
@@ -188,16 +180,7 @@ test("an empty status does not fight a load this tab started", () => {
       checkpoint: "/models/llama.gguf",
       modelLoading: true,
     }),
-    refusing({ clearCheckpoint: "the load owns the store until it settles" }),
-  );
-  assert.equal(adopted, false);
-});
-
-test("an empty status on an already empty store changes nothing", () => {
-  const adopted = adoptResidentModelStatus(
-    { checkpointId: null, ggufVariant: null },
-    emptyStore(),
-    refusing({ clearCheckpoint: "there is nothing to clear" }),
+    refusing({ setCheckpoint: "the load owns the store until it settles" }),
   );
   assert.equal(adopted, false);
 });
