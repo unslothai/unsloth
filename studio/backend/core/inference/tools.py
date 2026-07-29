@@ -2449,7 +2449,7 @@ _PYYAML_UNSAFE_LOADERS = frozenset(
         "UnsafeConstructor",
     }
 )
-_PYYAML_SUBMODULE_NAMES = frozenset({"constructor", "cyaml", "loader"})
+_PYYAML_SUBMODULE_NAMES = frozenset({"_yaml", "constructor", "cyaml", "loader", "yaml"})
 _PYYAML_SAFE_LOADER_MUTATORS = frozenset(
     {
         "add_constructor",
@@ -2903,6 +2903,8 @@ def _pyyaml_loader_is_safe(
             and mro.func.attr == "mro"
             and not mro.args
             and not mro.keywords
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == 0
         ):
             return _pyyaml_loader_is_safe(
                 mro.func.value,
@@ -2911,7 +2913,12 @@ def _pyyaml_loader_is_safe(
                 dynamic_import_aliases,
                 dynamic_namespace_aliases,
             )
-        if isinstance(mro, ast.Attribute) and mro.attr == "__mro__":
+        if (
+            isinstance(mro, ast.Attribute)
+            and mro.attr == "__mro__"
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == 0
+        ):
             return _pyyaml_loader_is_safe(
                 mro.value,
                 yaml_aliases,
@@ -9927,12 +9934,14 @@ def _check_signal_escape_patterns(code: str):
                 for alias in candidate.names:
                     if alias.name == "partial":
                         partial_aliases.add(alias.asname or alias.name)
-        changed = True
-        while changed:
+        assignments = [
+            candidate
+            for candidate in ast.walk(tree)
+            if isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        ]
+        for _ in range(min(64, len(assignments) + 1)):
             changed = False
-            for candidate in ast.walk(tree):
-                if not isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-                    continue
+            for candidate in assignments:
                 targets = (
                     candidate.targets if isinstance(candidate, ast.Assign) else (candidate.target,)
                 )
@@ -10091,6 +10100,102 @@ def _check_signal_escape_patterns(code: str):
 
     import_parameters_by_function = _function_import_parameters()
 
+    def _literal_dynamic_code_payloads():
+        aliases = {"exec", "eval", "compile"}
+        attribute_aliases = {"exec", "eval", "compile"}
+
+        def resolves_to_executor(node):
+            contained = _literal_container_item(node)
+            if contained is not None:
+                return resolves_to_executor(contained)
+            if isinstance(node, ast.Name):
+                return node.id in aliases
+            return isinstance(node, ast.Attribute) and node.attr in attribute_aliases
+
+        changed = True
+        while changed:
+            changed = False
+            for candidate in ast.walk(tree):
+                if not isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                    continue
+                targets = (
+                    candidate.targets if isinstance(candidate, ast.Assign) else (candidate.target,)
+                )
+                if not resolves_to_executor(candidate.value):
+                    continue
+                for target in targets:
+                    for name in (
+                        item.id
+                        for item in ast.walk(target)
+                        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store)
+                    ):
+                        if name not in aliases:
+                            aliases.add(name)
+                            changed = True
+                    for attribute in (
+                        item.attr for item in ast.walk(target) if isinstance(item, ast.Attribute)
+                    ):
+                        if attribute not in attribute_aliases:
+                            attribute_aliases.add(attribute)
+                            changed = True
+            if not changed:
+                break
+        else:
+            # Bound adversarial reverse-ordered alias chains. If the budget is
+            # exhausted, conservatively treat every assignment target as a
+            # possible executor rather than rescan quadratically.
+            for candidate in assignments:
+                targets = (
+                    candidate.targets if isinstance(candidate, ast.Assign) else (candidate.target,)
+                )
+                for target in targets:
+                    aliases.update(
+                        item.id
+                        for item in ast.walk(target)
+                        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store)
+                    )
+                    attribute_aliases.update(
+                        item.attr for item in ast.walk(target) if isinstance(item, ast.Attribute)
+                    )
+
+        payloads = []
+        for candidate in ast.walk(tree):
+            if not (isinstance(candidate, ast.Call) and resolves_to_executor(candidate.func)):
+                continue
+            source = (
+                candidate.args[0]
+                if candidate.args
+                else next(
+                    (
+                        keyword.value
+                        for keyword in candidate.keywords
+                        if keyword.arg in {"source", "object"}
+                    ),
+                    None,
+                )
+            )
+            if not (isinstance(source, ast.Constant) and isinstance(source.value, (str, bytes))):
+                continue
+            payloads.append(
+                source.value.decode("utf-8", "replace")
+                if isinstance(source.value, bytes)
+                else source.value
+            )
+        return payloads
+
+    for dynamic_payload in _literal_dynamic_code_payloads():
+        _inner_safe, inner_details = _check_signal_escape_patterns(dynamic_payload)
+        if inner_details["unsafe_deserializations"]:
+            unsafe_deserializations.append(
+                {
+                    "type": "unsafe_pyyaml_deserialization",
+                    "line": 1,
+                    "description": (
+                        "Unsafe PyYAML deserialization inside literal dynamic-code payload"
+                    ),
+                }
+            )
+
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
@@ -10124,6 +10229,13 @@ def _check_signal_escape_patterns(code: str):
             self.pyyaml_entry_point_module_aliases: set[str] = set()
             self.pyyaml_entry_point_loader_aliases: set[str] = set()
             self.pyyaml_callable_aliases: set[str] = module_pyyaml_imports["callables"].copy()
+            self.pyyaml_stdlib_loader_aliases = {
+                "exec_module",
+                "find_spec",
+                "module_from_spec",
+                "run_module",
+                "run_path",
+            }
             self.function_parameter_aliases: set[str] = set()
             # Direct yaml.load(..., SafeLoader) calls are allowed. References to
             # either callable in any other position fail closed because Python
@@ -10257,6 +10369,10 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name in {"locate", "resolve_name"}:
                         self.pyyaml_resolver_aliases.add(alias.asname or alias.name)
+            elif node.module in {"importlib.util", "runpy"}:
+                for alias in node.names:
+                    if alias.name in self.pyyaml_stdlib_loader_aliases:
+                        self.pyyaml_stdlib_loader_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def _container_holds_pyyaml_loader_state(self, node):
@@ -11391,6 +11507,17 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_Attribute(self, node):
+            if node.attr in {"__mro__", "mro", "__subclasses__"} and _pyyaml_loader_is_safe(
+                node.value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization through loader class reflection",
+                )
             if node.attr in {"__builtins__", "__globals__"} and self._is_pyyaml_callable_reference(
                 node.value
             ):
@@ -11555,6 +11682,42 @@ def _check_signal_escape_patterns(code: str):
             self.visit_With(node)
 
         def visit_Call(self, node):
+            call_arguments = (
+                *node.args,
+                *(keyword.value for keyword in node.keywords),
+            )
+            if any(
+                _is_dynamic_import_callable(
+                    argument,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                    self.dynamic_import_module_aliases,
+                )
+                for argument in call_arguments
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization import callable escapes through call arguments",
+                )
+
+            loader_member = (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else node.func.id
+                if isinstance(node.func, ast.Name)
+                else None
+            )
+            if loader_member in self.pyyaml_stdlib_loader_aliases and node.args:
+                module_name = _extract_string_from_node(node.args[0])
+                if (
+                    loader_member in {"exec_module", "module_from_spec", "run_path"}
+                    or module_name is None
+                    or module_name.split(".", 1)[0] == "yaml"
+                ):
+                    self._record_unsafe_pyyaml(
+                        node,
+                        "Unsafe PyYAML deserialization through standard-library module loader",
+                    )
             reflected = _reflected_member(node)
             reflective_globals_base = (
                 reflected[0]

@@ -1087,6 +1087,41 @@ class TestPyYamlDeserialization:
                 "S.add_constructor('!run', run)\n"
                 "yaml.safe_load('!run x')"
             ),
+            ("run = exec\n" 'run("import yaml\\nyaml.unsafe_load(payload)")'),
+            ('[exec][0]("import yaml\\nyaml.unsafe_load(payload)")'),
+            (
+                "class Parser:\n"
+                "    def parse(self, importer):\n"
+                "        return importer('yaml').unsafe_load(payload)\n"
+                "Parser().parse(__import__)"
+            ),
+            ("(lambda importer: importer('yaml').unsafe_load(payload))(__import__)"),
+            (
+                "import runpy\n"
+                "namespace = runpy.run_module('yaml.loader')\n"
+                "namespace['Loader'](payload).get_single_data()"
+            ),
+            (
+                "from runpy import run_module as load_module\n"
+                "namespace = load_module('yaml.loader')\n"
+                "namespace['Loader'](payload).get_single_data()"
+            ),
+            (
+                "from importlib.util import find_spec, module_from_spec\n"
+                "spec = find_spec('yaml')\n"
+                "module = module_from_spec(spec)\n"
+                "spec.loader.exec_module(module)\n"
+                "module.unsafe_load(payload)"
+            ),
+            ("import yaml\nmodule = yaml._yaml\nmodule.yaml.unsafe_load(payload)"),
+            (
+                "import yaml\n"
+                "Reader = yaml.SafeLoader.__mro__[1]\n"
+                "Loader = next(\n"
+                "    cls for cls in Reader.__subclasses__() if cls.__name__ == 'Loader'\n"
+                ")\n"
+                "Loader(payload).get_single_data()"
+            ),
         ],
     )
     def test_callable_class_factory_and_storage_pyyaml_bypasses_blocked(self, code):
