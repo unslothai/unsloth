@@ -766,9 +766,9 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         total = int(match.group(2))
         if index <= 0 or total <= 0 or index > total:
             continue
-        groups[kind].setdefault(
-            (str(path.parent), path.name[: match.start()], total), set()
-        ).add(index)
+        groups[kind].setdefault((str(path.parent), path.name[: match.start()], total), set()).add(
+            index
+        )
     for kind in ("base", "adapter"):
         if kind in whole:
             return False
