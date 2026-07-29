@@ -41,7 +41,8 @@
 #                          the editable build itself calls `git rev-parse` /
 #                          `git archive` through setuptools-scm's file finder, so an
 #                          overlay would answer the leg's own question for it.
-#   linux ubuntu2404-nonroot  dies at the elevation gate before a venv exists.
+#   linux ubuntu2404-nonroot-notransport  dies at the elevation gate before a venv
+#                          exists.
 #   wsl                    only install.sh is copied into the distro; there is no
 #                          source tree inside WSL to overlay from.
 
@@ -383,14 +384,35 @@ jobs:
             runner: ubuntu-24.04-arm
             experimental: false
             overlay: true
-          # No elevation: today this hard-fails at install.sh:856-861. Expected; the
-          # point is to pin the message and prove it is actionable rather than a bare
-          # `curl: (56)`. No overlay: it never reaches a venv to overlay into.
+          # No elevation, but WITH the transport the advertised one-liner needs: not
+          # root, no sudo anywhere on the image, no toolchain, ca-certificates + curl
+          # and nothing else. Since #7547 the optional set (cmake, git,
+          # build-essential, libcurl4-openssl-dev) never escalates, so this must
+          # install end to end off prebuilt llama.cpp, and until now nothing proved it.
+          #
+          # Gating, and overlay: true for the reason fedora41 is: the RELEASED
+          # install_python_stack.py has no "skip triton kernels when git is missing"
+          # guard, so without the overlay the run reaches the final step and dies there
+          # on pure release lag (staging run 30421021166: venv, frontend, torch and
+          # extras all fine, then `Installing triton kernels (pip) failed`). The
+          # overlay removes that difference, exactly as it does on fedora.
           - label: ubuntu2404-nonroot
             image: ubuntu:24.04
             runner: ubuntu-latest
-            experimental: true
+            experimental: false
+            overlay: true
+            nonroot: true
+          # No elevation AND no transport. apt is the only way to get curl and reaching
+          # apt is what needs elevation, so failing is correct; the point is to pin the
+          # exact message and prove it is actionable rather than a bare `curl: (56)`.
+          # No overlay: it never reaches a venv to overlay into.
+          - label: ubuntu2404-nonroot-notransport
+            image: ubuntu:24.04
+            runner: ubuntu-latest
+            experimental: false
             overlay: false
+            nonroot: true
+            no_transport: true
           # Non-apt: today this hard-fails at install.sh:2034. Expected; forces the
           # decision on whether dnf/pacman/zypper get supported.
           - label: fedora41
@@ -455,22 +477,74 @@ jobs:
           [ -f ci-source/pyproject.toml ] || { echo "::error::source tarball for ${GITHUB_SHA} unpacked without a pyproject.toml"; ls -la ci-source; exit 1; }
           echo "overlay source: $(pwd)/ci-source"
 
+      # curl is what fetched install.sh above, so the no-transport leg cannot simply
+      # never install it. Take it away again afterwards: from the installer's point of
+      # view the machine has no way to download anything, which is the case under test.
+      - name: Take the transport away again
+        if: matrix.no_transport
+        run: |
+          apt-get remove -y -qq curl >/dev/null
+          for t in curl wget; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "::error::$t is still resolvable, so this leg is not the no-transport case"
+              exit 1
+            fi
+          done
+          echo "no curl and no wget: the installer has no transport"
+
       - name: Create an unprivileged user
-        if: matrix.label == 'ubuntu2404-nonroot'
+        if: matrix.nonroot
         run: |
           useradd -m tester
           # Switching user without a login shell keeps the caller's environment, so the
           # workflow-wide UNSLOTH_STUDIO_HOME follows tester in, and install.sh
-          # validates that override in _resolve_studio_destinations (503-559), long
-          # before the elevation gate (840-861). Without a writable target this leg dies
-          # on "cannot be created" rather than "cannot elevate".
+          # validates that override in _resolve_studio_destinations (536-591), long
+          # before the elevation gate (829-905). Without a writable target these legs
+          # die on "cannot be created" rather than on anything they are asking about.
           mkdir -p "$UNSLOTH_STUDIO_HOME"
-          # No sudo installed and not root -> exercises the "cannot elevate" branch.
           chown -R tester logs install.sh "$UNSLOTH_STUDIO_HOME"
+          # The editable overlay writes .egg-info next to the pyproject.toml, so the
+          # source tree has to belong to tester too or the overlay fails on permissions
+          # rather than on anything this leg is asking about.
+          if [ -d ci-source ]; then chown -R tester ci-source; fi
+
+      # Not calling sudo is not the same as not having it: a leg that merely avoided
+      # the call would pass on an image where elevation was available all along, and
+      # the whole claim of these two rows is that there is no elevation to be had.
+      - name: Prove the unprivileged user genuinely cannot elevate
+        if: matrix.nonroot
+        run: |
+          uid="$(su tester -c 'id -u')"
+          echo "tester uid: $uid"
+          if [ "$uid" = "0" ]; then
+            echo "::error::tester resolved to uid 0, so this leg is not unprivileged"
+            exit 1
+          fi
+          # Absent from disk, not merely off PATH: install.sh probes with `command -v`
+          # (install.sh:830), so a binary tester could not reach would still be a lie
+          # about the image.
+          for p in /usr/bin/sudo /bin/sudo /usr/local/bin/sudo /usr/sbin/sudo /sbin/sudo; do
+            if [ -e "$p" ]; then
+              echo "::error::$p exists, so this image is not sudo-free"
+              exit 1
+            fi
+          done
+          if su tester -c 'command -v sudo' >/dev/null 2>&1; then
+            echo "::error::sudo resolves for tester; the no-elevation premise does not hold"
+            exit 1
+          fi
+          # The capability, not just the tool: the escalation install.sh would attempt
+          # writes the dpkg database, so an unwritable one is what actually makes
+          # `apt-get install` impossible for tester.
+          if su tester -c 'test -w /var/lib/dpkg/status'; then
+            echo "::error::tester can write the dpkg database, so it is effectively root"
+            exit 1
+          fi
+          echo "tester is unprivileged, has no sudo on disk, and cannot write dpkg state"
 
       - name: Install (root)
         id: install_root
-        if: matrix.label != 'ubuntu2404-nonroot'
+        if: ${{ !matrix.nonroot }}
         run: |
           set -o pipefail
           # Resolved here, not in `env:`, so it tracks the step's real working
@@ -487,23 +561,71 @@ jobs:
           echo "installer exit code: $rc"
           exit "$rc"
 
-      - name: Install (unprivileged, expected to fail cleanly)
-        if: matrix.label == 'ubuntu2404-nonroot'
+      # The no-elevation case the whole workflow was missing: everything absent AND no
+      # way to become root, but the transport the documented one-liner needs is there.
+      # Gating, and asserted end to end by the same steps the root legs use.
+      - name: Install (unprivileged, no sudo)
+        id: install_nonroot
+        if: ${{ matrix.nonroot && !matrix.no_transport }}
+        run: |
+          set -o pipefail
+          # su without a login shell keeps the environment, so this reaches tester.
+          if [ -d ci-source ]; then
+            export UNSLOTH_CI_SOURCE_OVERLAY="$PWD/ci-source"
+            echo "overlaying this ref's source from $UNSLOTH_CI_SOURCE_OVERLAY"
+          fi
+          rc=0
+          # Piped, like the root legs: the advertised command, and the shape that turns
+          # an early exit into curl:(56).
+          su tester -c 'cat install.sh | sh' 2>&1 | tee logs/install.log || rc=$?
+          echo "installer exit code: $rc"
+          exit "$rc"
+
+      - name: Install (unprivileged and no transport, expected to fail cleanly)
+        id: install_notransport
+        if: matrix.no_transport
+        continue-on-error: true
         run: |
           set -o pipefail
           rc=0
-          su tester -c 'cat install.sh | sh' > logs/install.log 2>&1 || rc=$?
+          su tester -c 'cat install.sh | sh' 2>&1 | tee logs/install.log || rc=$?
           echo "installer exit code: $rc"
-          tail -40 logs/install.log
-          # It may legitimately fail; what must NOT happen is an unexplained exit or a
-          # bare broken-pipe error standing in for a real diagnosis.
-          if [ "$rc" != "0" ] && ! grep -qiE "sudo is not available|apt-get install|missing:|permission" logs/install.log; then
-            echo "::error::unprivileged install failed with no actionable message"
+          exit "$rc"
+
+      # KNOWN OUTCOME PIN. This row is required, and continue-on-error on the step above
+      # would otherwise tolerate a bootstrap outage or an unrelated early exit exactly
+      # like the intended diagnostic, so every branch here that is not the pinned
+      # outcome exits 1.
+      - name: Assert the no-transport outcome is the elevation gate
+        if: always() && matrix.no_transport && steps.install_notransport.outcome != 'skipped'
+        run: |
+          if [ "${{ steps.install_notransport.outcome }}" = "success" ]; then
+            echo "::error::the installer completed with no transport and no way to elevate; that outcome is new, so this pin is stale"
             exit 1
           fi
+          [ -f logs/install.log ] || { echo "::error::the no-transport leg produced no install log"; exit 1; }
+          tail -40 logs/install.log
+          # Both, so a failure anywhere else is still red: it must be the transport that
+          # was missing, and it must be the no-sudo branch of _smart_apt_install
+          # (install.sh:899-903) that stopped it rather than a prompt, a dpkg lock or a
+          # network error.
+          if ! grep -q "missing: curl" logs/install.log; then
+            echo "::error::the installer never reported the transport as missing; it did not reach the elevation gate"
+            exit 1
+          fi
+          if ! grep -q "sudo is not available on this system" logs/install.log; then
+            echo "::error::the installer did not stop at the no-sudo branch of the apt helper; this is a new failure"
+            exit 1
+          fi
+          # Actionable, not a bare `curl: (56)`: the message has to say what to run.
+          if ! grep -q "apt-get install -y curl" logs/install.log; then
+            echo "::error::the elevation gate did not print the command a user should run"
+            exit 1
+          fi
+          echo "::notice::known outcome: no transport and no way to elevate, refused with an actionable message"
 
-      # continue-on-error like the nonroot leg, so without the same check a bootstrap
-      # outage or an unrelated early exit is tolerated like the intended diagnostic.
+      # experimental, so without this check a bootstrap outage or an unrelated early
+      # exit is tolerated like the intended diagnostic.
       - name: Assert the Fedora outcome is a known one
         if: always() && matrix.label == 'fedora41'
         run: |
@@ -545,7 +667,7 @@ jobs:
 
       # See the macOS job: proves the leg is testing what its matrix row claims.
       - name: Assert this ref's Python was really put under test
-        if: matrix.overlay && inputs.installer_source != 'published' && steps.install_root.outcome == 'success'
+        if: matrix.overlay && inputs.installer_source != 'published' && (steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success')
         run: |
           grep -q "CI: overlaying source checkout" logs/install.log || {
             echo "::error::this leg is marked overlay: true but the installer never overlaid the checkout, so it only tested the released package"
@@ -557,24 +679,26 @@ jobs:
       # satisfies it. Unlike WSL and Windows, these required Linux rows had no check
       # that the install produced anything runnable.
       - name: Assert the install is actually usable
-        if: steps.install_root.outcome == 'success'
+        if: steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success'
         run: |
           VENV="$UNSLOTH_STUDIO_HOME/unsloth_studio"
           [ -x "$VENV/bin/python" ] || { echo "::error::installer exited 0 but left no managed Python at $VENV/bin/python"; ls -la "$UNSLOTH_STUDIO_HOME" || true; exit 1; }
           "$VENV/bin/python" -V
           [ -x "$VENV/bin/unsloth" ] || { echo "::error::installer exited 0 but left no unsloth CLI at $VENV/bin/unsloth"; exit 1; }
 
-      - name: Assert the apt-installed toolchain did not compile llama.cpp
-        if: steps.install_root.outcome == 'success'
+      - name: Assert llama.cpp came from the prebuilt bundle
+        if: steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success'
         run: |
-          # HONESTY NOTE: these legs START toolchain-free but do not stay that way.
-          # As root, _smart_apt_install's first `apt-get install` (install.sh:786-788)
-          # succeeds before the _SMART_APT_OPTIONAL guard (805-809) can suppress
+          # HONESTY NOTE: the ROOT legs START toolchain-free but do not stay that way.
+          # As root, _smart_apt_install's first `apt-get install` (install.sh:797-799)
+          # succeeds before the _SMART_APT_OPTIONAL guard (814-821) can suppress
           # anything, so `cmake git build-essential libcurl4-openssl-dev` really are
           # installed mid-run. That is product behaviour on any root Linux install, not
           # a CI artefact. What must still hold is that nothing USED them: `nobuild`
           # reads Python builds only, and llama.cpp is the one thing that silently falls
-          # back to a source compile once a compiler is around.
+          # back to a source compile once a compiler is around. The unprivileged leg
+          # never gets that far -- the optional set cannot escalate -- so there the same
+          # marker proves the prebuilt path won with no compiler on the machine at all.
           for t in cmake git gcc; do
             printf '%-6s %s\n' "$t" "$(command -v "$t" 2>/dev/null || echo ABSENT)"
           done
@@ -590,6 +714,35 @@ jobs:
           fi
           echo "llama.cpp came from the prebuilt bundle:"
           head -c 800 "$META"; echo
+
+      # The claim this leg exists to make: a user with no elevation gets a full install
+      # and the machine is no less clean afterwards. Without it the row would prove only
+      # that SOME install happened, which the root legs already show.
+      - name: Assert the unprivileged install elevated nothing
+        if: steps.install_nonroot.outcome == 'success'
+        run: |
+          left=""
+          for t in sudo cmake git gcc; do
+            p="$(command -v "$t" 2>/dev/null || echo ABSENT)"
+            printf '%-6s %s\n' "$t" "$p"
+            [ "$p" = ABSENT ] || left="$left $t"
+          done
+          if [ -n "$left" ]; then
+            echo "::error::the unprivileged install put system packages on the machine:$left, so something escalated"
+            exit 1
+          fi
+          # And it took the no-toolchain path knowingly rather than by accident.
+          if ! grep -q "using prebuilt llama.cpp (missing:" logs/install.log; then
+            echo "::error::the installer never reported the optional build tools as missing; it did not take the no-toolchain path"
+            grep -n "deps" logs/install.log | tail -20 || true
+            exit 1
+          fi
+          # #7547 is what made the optional set stop escalating. If either prompt comes
+          # back, an unprivileged user is blocked on tools nothing here uses.
+          if grep -qE "We require sudo elevated permissions|No terminal to confirm on" logs/install.log; then
+            echo "::error::the installer tried to elevate for the optional build tools; #7547's no-escalation guard has regressed"
+            exit 1
+          fi
 
       - name: Assert no source build
         if: always()
