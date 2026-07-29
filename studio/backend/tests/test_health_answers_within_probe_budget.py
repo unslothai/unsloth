@@ -125,11 +125,27 @@ started = time.perf_counter()
 response = client.get("/api/health")
 elapsed = time.perf_counter() - started
 body = response.json()
+
+# Same request with a bearer, which is the one config/env.ts caches on.
+# health_check imports get_current_subject inside the function, so patching the
+# module attribute is enough and keeps this test off the real JWT/storage path.
+import auth.authentication as _authmod
+
+async def _subject(_creds):
+    return "tester"
+
+_authmod.get_current_subject = _subject
+authed = client.get("/api/health", headers = {"Authorization": "Bearer probe"}).json()
+
 print("RESULT" + json.dumps({
     "status": response.status_code,
     "elapsed": elapsed,
     "chat_only": body.get("chat_only"),
     "hardware_detecting": body.get("hardware_detecting"),
+    "authed_has_device_type": "device_type" in authed,
+    "authed_has_chat_only_reason": "chat_only_reason" in authed,
+    "authed_hardware_detecting": authed.get("hardware_detecting"),
+    "authed_has_version": "version" in authed,
 }))
 """
 
@@ -209,3 +225,38 @@ def test_health_does_not_await_detection_unbounded():
         "health_check calls ensure_hardware_detected directly again; that wait "
         "is unbounded and the desktop probe gives up at 2s"
     )
+
+
+def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
+    """The provisional reply must not look authoritative to config/env.ts.
+
+    fetchDeviceType() sets ``fetched = data.device_type !== undefined`` and every
+    later non-forced call short-circuits on ``fetched``. So an authenticated
+    health request answered inside the warm window with device_type present
+    pins the provisional chat_only=true for the rest of the SPA session: Train
+    hidden, /studio redirected to /chat, on a GPU host, until a reload. The
+    sidebar's recovery poll does not save it either -- that only runs for
+    chat_only_reason === "mlx_unavailable", and a provisional reply has no
+    reason.
+    """
+    result = _probe(10.0)
+
+    assert result["authed_hardware_detecting"] is True, "expected a provisional reply"
+    assert not result["authed_has_device_type"], (
+        "the provisional authed reply carries device_type, so the frontend caches "
+        "it as authoritative and never re-reads the measured chat_only"
+    )
+    assert not result[
+        "authed_has_chat_only_reason"
+    ], "chat_only_reason is meaningless before detection has run"
+    # The launcher-facing fields are unaffected.
+    assert result["authed_has_version"]
+
+
+def test_a_measured_reply_still_carries_the_authoritative_fields():
+    """The omission is scoped to the provisional case."""
+    result = _probe(0.3)
+
+    assert not result["hardware_detecting"]
+    assert result["authed_has_device_type"]
+    assert result["authed_has_chat_only_reason"]

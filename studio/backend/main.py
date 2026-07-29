@@ -1198,18 +1198,29 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
-    return {
+    authed = {
         **base,
-        # Why chat_only is set. This fingerprints the host, so keep it authed.
-        "chat_only_reason": getattr(_hw_module, "CHAT_ONLY_REASON", None),
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
-        "device_type": device_type,
         # API-screen fields (authed-only; they fingerprint how the host is exposed).
         "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
     }
+    if detected:
+        # Why chat_only is set. This fingerprints the host, so keep it authed.
+        authed["chat_only_reason"] = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+        authed["device_type"] = device_type
+    # Otherwise leave both out. device_type does not come from detection, but the
+    # frontend uses its presence as "this response is authoritative"
+    # (config/env.ts sets fetched = data.device_type !== undefined), and a
+    # cached fetched=true stops every later non-forced fetchDeviceType() from
+    # re-reading. The sidebar's recovery poll only runs for
+    # chat_only_reason === "mlx_unavailable", which a provisional reply does not
+    # have, so a GPU host would stay chat-only -- Train hidden, /studio
+    # redirected to /chat -- for the rest of the SPA session. Omitting it keeps
+    # fetched false, and the next fetch carries the measured values.
+    return authed
 
 
 @app.get("/api/studio/install-source")
