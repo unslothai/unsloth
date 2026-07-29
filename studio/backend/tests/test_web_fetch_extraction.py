@@ -1909,10 +1909,13 @@ def test_anchor_wrapping_a_heading_preserves_only_the_heading():
     # <a><h1>Title</h1>...nav...</a> is furniture carrying a title; teeing the
     # whole anchor returned 14k of navigation ahead of the article.
     bulk = " ".join("NavWord%04d" % i for i in range(1200))
-    body = '<main><header><a href="/home"><h1>Title</h1>%s</a><ul>%s</ul></header><p>%s</p></main>' % (
-        bulk,
-        _interlanguage_list(300),
-        "Article body. " * 30,
+    body = (
+        '<main><header><a href="/home"><h1>Title</h1>%s</a><ul>%s</ul></header><p>%s</p></main>'
+        % (
+            bulk,
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
     )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Title" in out
