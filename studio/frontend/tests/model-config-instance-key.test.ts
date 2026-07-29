@@ -43,9 +43,8 @@ const SAVED: PerModelConfig = {
 };
 
 /**
- * ModelConfigPage reads `loadedConfig` in a useState initializer, so it seeds its
- * editable state once per MOUNTED instance; React keeps that instance for as long
- * as the key is unchanged. This is that rule, and nothing else.
+ * ModelConfigPage reads `loadedConfig` in a useState initializer, so it seeds once per
+ * MOUNTED instance, and React keeps that instance while the key is unchanged.
  */
 function renderEditor(
   previous: { key: string; editing: PerModelConfig } | null,
@@ -59,8 +58,7 @@ function renderEditor(
 }
 
 test("the settings editor re-seeds when the live config arrives after mount", () => {
-  // Opened before /api/inference/status answered, or while the target was still
-  // loading: loadedConfig is null on the first render and live on the next.
+  // Opened before status answered: loadedConfig is null first and live on the next render.
   let editor = renderEditor(
     null,
     modelConfigInstanceKey(MODEL, VARIANT, null),
@@ -73,8 +71,8 @@ test("the settings editor re-seeds when the live config arrives after mount", ()
     modelConfigInstanceKey(MODEL, VARIANT, LIVE),
     LIVE,
   );
-  // Without the live config in the key the editor would still hold SAVED, and
-  // Apply would reload the model with it over what it is running with.
+  // Without the live config in the key the editor would still hold SAVED, and Apply
+  // would reload the model over what it is running with.
   assert.deepEqual(editor.editing, LIVE);
 });
 
@@ -84,8 +82,7 @@ test("a repeated status poll keeps the same editor instance", () => {
     modelConfigInstanceKey(MODEL, VARIANT, LIVE),
     LIVE,
   );
-  // A structurally equal config from the next poll must not remount and throw
-  // away whatever the user has typed since.
+  // An equal config from the next poll must not remount and discard what was typed.
   const again = renderEditor(
     first,
     modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE }),

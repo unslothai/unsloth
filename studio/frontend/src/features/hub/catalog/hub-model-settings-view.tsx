@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Full-page settings for one model, opened from the Hub.
-//
-// The same controls exist in the chat picker's popover, but a popover is a poor
-// place to work through every knob. This gives them a page and says plainly that
-// what is saved here is what an API load uses, mirrored by ModelConfigPage.
+// Full-page settings for one model, opened from the Hub. The same controls exist in the
+// chat picker's popover, but a popover is a poor place to work through every knob.
 
 import {
   ModelConfigPage,
@@ -111,8 +108,7 @@ export function HubModelSettingsView({
               />
             </span>
             <p className="min-w-0 text-ui-12 leading-[1.5] text-muted-foreground">
-              {/* Only what auto-switch can reach is mirrored: it indexes GGUFs and
-                  skips Ollama, so anything else cannot be loaded by the API. */}
+              {/* Only what auto-switch reaches: it indexes GGUFs and skips Ollama. */}
               {(target.apiLoadable ?? target.isGguf)
                 ? "Saved settings apply everywhere this model loads, including when an OpenAI-compatible API request asks for it."
                 : "Saved settings apply everywhere Studio loads this model."}{" "}
@@ -126,13 +122,9 @@ export function HubModelSettingsView({
 
           <div className="rounded-xl border border-border/60 bg-card px-4 py-4">
             <ModelConfigPage
-              // Keyed on the live config too, like the sidebar entry.
-              // ModelConfigPage reads loadedConfig once, in its useState
-              // initializer, so opening this page before /api/inference/status
-              // has hydrated (or while the target is still loading) would
-              // otherwise leave the editor on saved/default values for a model
-              // that is running with something else, and Apply would write them
-              // back over it.
+              // Keyed on the live config too, like the sidebar entry: ModelConfigPage
+              // reads loadedConfig once, so opening before status hydrates would leave
+              // the editor on saved values that Apply then writes back over.
               key={modelConfigInstanceKey(
                 target.id,
                 target.ggufVariant,

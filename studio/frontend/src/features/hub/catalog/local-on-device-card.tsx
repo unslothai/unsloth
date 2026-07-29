@@ -106,11 +106,9 @@ interface LocalOnDeviceCardProps {
   onTrain?: () => void;
   onChange?: () => void;
   /**
-   * Open settings for the quant this card is showing.
-   *
-   * ``quantIsUserPicked`` says whether that quant came from a pick in this
-   * card's selector or was derived from the resident model, which decides
-   * whether a fresher status read may override it.
+   * Open settings for the quant this card is showing. ``quantIsUserPicked`` says whether
+   * it came from this card's selector or was derived from the resident model, which
+   * decides whether a fresher status read may override it.
    */
   onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
 }
@@ -377,8 +375,7 @@ export function LocalOnDeviceCard({
         )?.quant ??
         sortedVariants?.[0]?.quant ??
         null);
-  // Only the first branch above is a choice; the rest are fallbacks that read the
-  // store, and the store can be stale for as long as this window keeps focus.
+  // Only the first branch is a choice; the rest read the store, which can be stale.
   const quantIsUserPicked = Boolean(
     selectedVariantOverride &&
       sortedVariants?.some((variant) =>
@@ -599,8 +596,7 @@ export function LocalOnDeviceCard({
               {onOpenSettings && (
                 <CardSettingsButton
                   label={`Settings for ${repoId}`}
-                  // Pass the quant this card resolved, so the settings page edits the
-                  // variant on screen rather than the repo.
+                  // The quant this card resolved, so settings edits what is on screen.
                   onClick={() =>
                     onOpenSettings(selectedQuant ?? null, quantIsUserPicked)
                   }

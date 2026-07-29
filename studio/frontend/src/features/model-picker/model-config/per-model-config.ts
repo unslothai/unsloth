@@ -494,9 +494,9 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
 }
 
 /**
- * A config in the exact shape storage keeps it in: the UI carries sentinels storage
- * does not, notably Speculative Decoding "auto" which canonicalizes to null, so a
- * config still being edited reads as non-default when it is not.
+ * A config in the exact shape storage keeps it in: the UI carries sentinels storage does
+ * not (Speculative Decoding "auto" canonicalizes to null), so an edited config would
+ * otherwise read as non-default when it is not.
  */
 export function normalizePerModelConfig(raw: unknown): PerModelConfig {
   return normalize(raw);
@@ -651,9 +651,9 @@ export function savePerModelConfig(
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
   /**
-   * Receives models dropped to stay inside the storage budget. Eviction is silent
-   * and still reports success, so without this their server-side overrides would
-   * keep being applied with nothing in the UI able to forget them.
+   * Receives models dropped to stay inside the storage budget. Eviction is silent and
+   * still reports success, so without this their server overrides would keep applying
+   * with nothing in the UI able to forget them.
    */
   evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
@@ -713,9 +713,8 @@ export function listPerModelConfigs(): {
     if (!modelId) {
       continue;
     }
-    // Never report a future-schema record: loadPerModelConfig refuses to apply one
-    // and eviction refuses to drop one, so the backfill would persist this client's
-    // partial reading and let an API load apply what it will not apply locally.
+    // Never report a future-schema record: loadPerModelConfig refuses to apply one, so
+    // the backfill would persist this client's partial reading of it.
     if (storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION) {
       continue;
     }

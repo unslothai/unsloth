@@ -3,9 +3,8 @@
 
 // One-time backfill of per-model settings into the server override map.
 //
-// Settings used to live only in this browser, so on upgrade the server knows
-// nothing about models already configured: they still show as remembered while an
-// API load uses app defaults, the exact bug the server-side map exists to fix.
+// Settings used to live only in this browser, so on upgrade an already-configured model
+// still shows as remembered while an API load uses app defaults.
 
 import {
   isNativeFileLabel,
@@ -48,10 +47,9 @@ function markRan(): void {
 /**
  * A server key under the same identity this browser stores.
  *
- * `app_settings` has no schema version, so an old install holds keys like
- * `Unsloth/Repo-GGUF:Q4_K_M` that the backend resolves to the same model as this
- * browser's folded form; an exact lookup would call it missing and let the backfill
- * overwrite it. The quant-aware split folds repo ids and leaves POSIX paths alone.
+ * `app_settings` has no schema version, so an old install holds keys the backend resolves
+ * to this model while an exact lookup calls them missing and overwrites them. The
+ * quant-aware split folds repo ids and leaves POSIX paths alone.
  */
 function normalizedOverrideKey(key: string): string {
   const split = splitQuantSuffix(key);
@@ -82,28 +80,22 @@ function absentFields(
 }
 
 /**
- * Push local settings the server does not hold. Never deletes and never overwrites:
- * a value already there is the newer authority, and losing a setting would be worse
- * than leaving one unmigrated.
+ * Push local settings the server does not hold. Never deletes and never overwrites: a
+ * value already there is the newer authority.
  *
- * Field by field, not entry by entry. The override map shipped before this browser
- * mirror did, storing only llama_extra_args and max_seq_length, so an upgraded
- * install can hold an entry for a model whose context, KV cache, speculative and GPU
- * settings live only here. Treating the key as done would skip exactly the settings
- * this migration exists to carry and then mark it complete.
+ * Field by field, not entry by entry: a legacy entry holds only llama_extra_args and
+ * max_seq_length, so treating the key as done would skip exactly the settings this
+ * migration exists to carry and then mark it complete.
  */
 export async function backfillModelOverrides(): Promise<void> {
   if (alreadyRan()) {
     return;
   }
   const local = listPerModelConfigs().filter(
-    // A quant means GGUF, the only thing API auto-switch resolves, so backfilling a
-    // safetensors config would claim behaviour that does not exist. A standalone
-    // .gguf has no quant to select between and is stored with a null variant, so it
-    // needs the extra test or its settings stay browser-only for good. An Ollama
-    // blob is GGUF but reached through a link dir the resolver skips, so it is not
-    // auto-switchable either, and a bare file name is a dropped/picked file's label,
-    // which the resolver never keys.
+    // A quant means GGUF, the only thing auto-switch resolves. A standalone .gguf is
+    // stored with a null variant, so it needs the extra test or stays browser-only. An
+    // Ollama blob sits behind a link dir the resolver skips, and a bare file name is a
+    // dropped file's label, which the resolver never keys.
     (entry) =>
       (entry.ggufVariant != null ||
         entry.modelId.toLowerCase().endsWith(".gguf")) &&
@@ -120,8 +112,7 @@ export async function backfillModelOverrides(): Promise<void> {
   try {
     existing = await fetchModelOverrides();
   } catch {
-    // Offline or not authenticated yet. Leave the flag unset so the next start
-    // retries rather than skipping the migration forever.
+    // Offline or not authenticated yet: leave the flag unset so the next start retries.
     return;
   }
 
@@ -132,14 +123,12 @@ export async function backfillModelOverrides(): Promise<void> {
 
   let failed = false;
   for (const entry of local) {
-    // Folded here too: a v2 storage key holds the normalized identity, but the
-    // older `id::variant` keys this browser still reads hold the typed casing.
+    // Folded here too: the older `id::variant` keys hold the casing that was typed.
     const key = normalizedOverrideKey(
       modelOverrideKey(entry.modelId, entry.ggufVariant),
     );
-    // Re-read rather than trusting the snapshot from before the fetch: this write
-    // is queued behind the interactive one and commits last, so a save or forget
-    // during the round trip would be undone by it.
+    // Re-read rather than trusting the pre-fetch snapshot: this write commits last, so a
+    // save or forget during the round trip would be undone by it.
     const current = listPerModelConfigs().find(
       (candidate) =>
         normalizedOverrideKey(
@@ -155,9 +144,8 @@ export async function backfillModelOverrides(): Promise<void> {
       continue;
     }
     try {
-      // Fills the gaps only. `known` is a snapshot from before this loop started, so
-      // a save by another tab during the pass is invisible here; the server reads and
-      // writes together rather than this re-fetching once per model.
+      // Fills the gaps only. `known` predates this loop, so another tab's save is
+      // invisible here; the server reads and writes together instead.
       await putModelOverride(
         current.modelId,
         current.ggufVariant,

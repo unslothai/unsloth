@@ -122,19 +122,14 @@ export function publicModelId(identifier: string): string {
 /**
  * Whether the model the backend reports as loaded is one of *candidates*.
  *
- * A GGUF loaded from an inactive HF cache is loaded by path, but a caller holding
- * only the public id would read an exact comparison against the catalog row's path
- * as "not loaded" and fall back to saved or default values instead of the live
- * launch config. Candidates are compared literally first, then by the public id.
+ * A GGUF from an inactive HF cache loads by path, so a caller holding only the public id
+ * would read an exact comparison as "not loaded". Candidates are compared literally
+ * first, then by the public id.
  *
- * That second pass only accepts an identity that can name one model: an HF cache
- * snapshot collapses onto its repo id, which is globally unique, while every other
- * path collapses onto a filename or directory stem that two models can share
- * (`/models/alpha/model.gguf` and `/models/beta/model.gguf` are both "model").
- * Accepting a stem would mark the wrong row resident, seeding its editor with
- * another model's live config and saving it under this model's key. Callers with
- * the loadable identifier (`/status`'s `model_identifier`) pass it as the active
- * id, and the literal pass answers exactly.
+ * That second pass only accepts an identity that names one model: an HF snapshot
+ * collapses onto its unique repo id, while every other path collapses onto a stem two
+ * models can share. Accepting a stem would mark the wrong row resident and save one
+ * model's live config under another's key.
  */
 export function residentModelIdMatches(
   activeModelId: string | null | undefined,
@@ -159,10 +154,9 @@ export function residentModelIdMatches(
   });
 }
 
-// Ollama's blobs reach the picker through a ".studio_links"/"ollama_links" symlink
-// directory. core/inference/local_model_resolver.py refuses to index anything under
-// those (the scanner that creates them runs off the request path), so the API can
-// never load one and mirroring its settings would advertise a load that cannot happen.
+// Ollama's blobs reach the picker through a symlink dir that local_model_resolver.py
+// refuses to index, so the API can never load one and mirroring its settings would
+// advertise a load that cannot happen.
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
 
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
@@ -175,24 +169,20 @@ export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
     .some((segment) => OLLAMA_LINK_SEGMENTS.has(segment));
 }
 
-// A drag-dropped or file-picked GGUF is the API's second unreachable identity.
-// /api/inference/status reports model_identifier as null for a lease-backed load
-// (routes/inference.py withholds the host path), so the checkpoint the browser
-// keys settings by is the bare file name the backend echoes back. _build_index
-// keys a standalone GGUF by its on-disk path and by its .gguf-stripped stem, so
-// that name is never an index key and no auto-switch load can read an override
-// stored under it. Anything the API can load is keyed by a path or a repo id,
-// both of which carry a separator.
+// A dropped or file-picked GGUF is the API's second unreachable identity: /status
+// withholds the host path for a lease-backed load, so the browser keys settings by the
+// bare file name the backend echoes back. _build_index keys a standalone GGUF by its
+// path and its stem, so that name is never an index key. Anything the API can load is
+// keyed by a path or a repo id, both of which carry a separator.
 const NATIVE_FILE_LABEL_RE = /^[^/\\]+\.gguf$/i;
 
 export function isNativeFileLabel(modelId: string | null | undefined): boolean {
   return modelId != null && NATIVE_FILE_LABEL_RE.test(modelId);
 }
 
-// A scanned standalone .gguf, keyed by its on-disk path. Its settings identity
-// carries no variant: it has no quant to choose between, while the loader and the
-// inventory both label it from its filename, so adopting that label would key one
-// file's config two ways. settings-identity.ts applies the same rule to a Hub row.
+// A scanned standalone .gguf, keyed by its on-disk path with no variant: it has no quant
+// to choose between, and adopting the filename label would key one file's config two
+// ways. settings-identity.ts applies the same rule to a Hub row.
 export function isStandaloneGgufPath(
   modelId: string | null | undefined,
 ): boolean {

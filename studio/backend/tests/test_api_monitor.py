@@ -261,8 +261,7 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
 
 
 def test_api_monitor_clear_is_scoped_to_one_subject():
-    # Every other read is subject-scoped; an unscoped clear from the route would let
-    # one caller erase another's history mid-generation.
+    # Every other read is subject-scoped; an unscoped clear would erase another's history.
     monitor = ApiMonitor(max_entries = 4)
     alice = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -291,8 +290,7 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
 
 
 def test_api_monitor_records_whether_the_caller_used_an_api_key():
-    # Studio's own chat hits these endpoints with a session JWT, and the floating
-    # panel keys its auto-open off this flag, so mislabelling it pops the panel.
+    # Studio's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
     monitor = ApiMonitor(max_entries = 4)
     ui = monitor.start(
         endpoint = "/api/inference/chat",

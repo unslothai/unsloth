@@ -121,7 +121,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const lastNewEntryAtRef = useRef(0);
 
   // One loop for both jobs: panel contents while open, traffic watch while closed.
-  // Stands down on the full page, which polls for itself.
+  // Stands down on the full page, which polls itself.
   useEffect(() => {
     // Opted out and closed: nothing to open or show, so polling is pure load.
     if (onFullPage || (!autoOpen && !isOpen)) {
@@ -131,9 +131,8 @@ export function ApiMonitorOverlay(): ReactElement | null {
     let timer: number | undefined;
     const intervalMs = isOpen ? OPEN_POLL_MS : IDLE_POLL_MS;
 
-    // Anchor the watch here, not at mount: the first snapshot can arrive much
-    // later (a hidden tab skips its poll entirely, an unreachable backend fails
-    // one), and everything terminal in it would otherwise read as history.
+    // Anchor the watch here, not at mount: the first snapshot can arrive much later
+    // (a hidden tab skips its poll), and everything terminal would read as history.
     startWatching(watchRef.current, performance.now());
 
     function schedule(): void {
@@ -194,10 +193,8 @@ export function ApiMonitorOverlay(): ReactElement | null {
     open();
   }, [data, autoOpen, suppressed, isOpen, open]);
 
-  // The backlog built up while the poll was stood down is not new traffic. The
-  // watch re-anchors when the poll stands back up, not here, or the whole stay on
-  // the full page would read as unwatched and the panel would pop with rows the
-  // user has just read.
+  // The backlog built while the poll stood down is not new traffic. The watch re-anchors
+  // when the poll stands back up, not here, or the panel pops with rows just read.
   useEffect(() => {
     if (onFullPage) {
       rearmWatch(watchRef.current);
@@ -237,8 +234,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
             initial={{ opacity: 0, scale: 0.94 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.94 }}
-            /* Panel language from the sidebar's user menu and the model selector:
-               menu-soft-surface, a 20px corner, and the heading font throughout. */
+            /* Panel language from the sidebar menu: soft surface, 20px corner, heading font. */
             className="menu-soft-surface pointer-events-auto fixed bottom-4 right-4 flex w-[400px] max-w-[calc(100vw-2rem)] cursor-default select-none resize flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0"
           >
             <div className="flex items-center justify-between gap-2 px-1.5 pb-2 pt-0.5">

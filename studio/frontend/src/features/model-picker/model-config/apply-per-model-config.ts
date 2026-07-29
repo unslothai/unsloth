@@ -10,8 +10,7 @@ import {
   reconcilePersistedGpuIds,
   useChatRuntimeStore,
 } from "@/features/chat";
-// Lives in its own module so hosts that only need the signature (the editor keys)
-// can import it without pulling the chat runtime store in with it.
+// Its own module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
 import {
   DEFAULT_PER_MODEL_CONFIG,

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Full-page monitor for Unsloth's OpenAI-compatible API server.
-//
-// Replaces the small console buried in the API settings tab. Settings still owns
+// Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
 import { Button } from "@/components/ui/button";
@@ -50,8 +48,7 @@ import {
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
-// Tries per revision for a detail payload. Bounded because the usual failure is
-// an entry aged out of the ring buffer, which never comes back.
+// Bounded because the usual failure is an entry aged out of the ring buffer.
 const DETAIL_FETCH_ATTEMPTS = 3;
 
 const STATUS_FILTERS: { value: MonitorStatusFilter; label: string }[] = [
@@ -240,8 +237,7 @@ function RequestRow({
     entry.reply_preview ||
     entry.prompt_preview ||
     (entry.status === "running" ? "Waiting for output…" : "No preview");
-  // A load, unload or download has no prompt or reply, so it reads as a status
-  // line rather than a request with a payload.
+  // A lifecycle row has no payload, so it reads as a status line.
   if (isLifecycleEntry(entry)) {
     return (
       <div className="flex w-full min-w-0 flex-col gap-1 border-b border-border/50 bg-muted/25 px-4 py-3 last:border-b-0">
@@ -369,8 +365,8 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
-  // The detail fetch is separate, so it can describe an older state of a streaming
-  // entry. Prefer it only once it is as fresh as the list row, or the panel rewinds.
+  // The detail fetch can describe an older state of a streaming entry, so prefer it
+  // only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
     detail.status === entry.status &&
@@ -504,8 +500,8 @@ export function ApiMonitorPage(): ReactElement {
   const [unloading, setUnloading] = useState(false);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
-  // Manual release so VRAM is freed without waiting for the idle timer. /unload
-  // matches on the internal id, which the monitor does not carry, so read status.
+  // Manual release so VRAM frees without the idle timer. /unload matches on the
+  // internal id, which the monitor does not carry, so read status.
   const unloadActiveModel = async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -516,14 +512,11 @@ export function ApiMonitorPage(): ReactElement {
         return;
       }
       await unloadModel({ model_path: checkpoint });
-      // Same as the chat eject flow: the store still holds the freed checkpoint.
-      // Only when that IS the model just unloaded, though. Chat can have an
-      // external provider selected while a local model stays resident, and
-      // clearCheckpoint calls saveLastExternalCheckpoint(null), so clearing
-      // unconditionally would delete a selection this button never touched.
-      // Both spellings: status reports the concrete load path as the identifier
-      // while the store may hold the advertised repo id, so matching only the
-      // path leaves the store pinned to a model this button just freed.
+      // As in the chat eject flow, but only when the store holds the model just
+      // unloaded: chat can have an external provider selected while a local model stays
+      // resident, and clearCheckpoint would delete a selection this button never touched.
+      // Both spellings, since status reports the load path while the store may hold the
+      // advertised repo id.
       const store = useChatRuntimeStore.getState();
       const selected = store.params.checkpoint;
       const unloadedAliases = [checkpoint, status.active_model];
@@ -557,9 +550,8 @@ export function ApiMonitorPage(): ReactElement {
     [visible, selectedId],
   );
 
-  // Refetch the selected entry while it streams so the payload grows with the reply.
-  // Keyed on identity and revision, never on `details`: the fetch rewrites `details`
-  // on every success, so depending on it loops on the detail endpoint.
+  // Refetch the selected entry while it streams. Keyed on identity and revision, never
+  // on `details`: the fetch rewrites it on success, so depending on it loops.
   const selectedId_ = selected?.id ?? null;
   const selectedUpdatedAt = selected?.updated_at ?? null;
   const selectedIsMissing = selectedId_ != null && details[selectedId_] == null;
@@ -575,15 +567,14 @@ export function ApiMonitorPage(): ReactElement {
     if (selectedId_ == null || detailInFlight) {
       return;
     }
-    // `updated_at` advances per poll while streaming and settles when terminal.
-    // A missing payload always retries, covering a fetch that failed late.
+    // `updated_at` advances per poll and settles when terminal; a missing payload
+    // always retries, covering a fetch that failed late.
     const revision = `${selectedId_}@${selectedUpdatedAt ?? ""}`;
     if (!selectedIsMissing && lastFetchedRef.current === revision) {
       return;
     }
-    // A terminal row's revision never advances, so a failed fetch had nothing left to
-    // re-run this effect. `loadingDetails` settling is the trigger; the count bounds
-    // it, since the usual failure is an entry aged out of the ring buffer.
+    // A terminal row's revision never advances, so a failed fetch had nothing to re-run
+    // this effect. `loadingDetails` settling is the trigger; the count bounds it.
     if (attemptsRef.current.revision !== revision) {
       attemptsRef.current = { revision, count: 0 };
     }
@@ -591,14 +582,13 @@ export function ApiMonitorPage(): ReactElement {
       return;
     }
     attemptsRef.current.count += 1;
-    // Only remember the revision when a fetch started: the in-flight guard can
-    // refuse, and recording it anyway skips that revision for good.
+    // Only when a fetch started: the guard can refuse, and recording it anyway skips
+    // that revision for good.
     if (requestDetail(selectedId_)) {
       lastFetchedRef.current = revision;
       setRetryTick(0);
     } else {
-      // Refused because an older fetch is running. No dep changes when it settles, so
-      // without this nudge the rejected revision is never fetched.
+      // Refused: an older fetch is running and no dep changes when it settles.
       const timer = window.setTimeout(() => setRetryTick((n) => n + 1), 250);
       return () => window.clearTimeout(timer);
     }
@@ -611,8 +601,8 @@ export function ApiMonitorPage(): ReactElement {
     detailInFlight,
   ]);
 
-  // The desktop webview's origin is tauri://, not the API server, and the packaged
-  // app picks its port dynamically. Same source as the Agents tab.
+  // The desktop webview's origin is tauri://, and the packaged app picks its port
+  // dynamically. Same source as the Agents tab.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const baseUrl = `${isTauri ? (serverUrl ?? getApiBase()) : origin}/v1`;
   const serverStatus = data?.status ?? "idle";
@@ -721,8 +711,7 @@ export function ApiMonitorPage(): ReactElement {
         </div>
       </header>
 
-      {/* What you check first when a client can't reach the API: the base URL
-          to point it at, and what is loaded. */}
+      {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
       <section className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">

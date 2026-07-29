@@ -136,19 +136,16 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
 
 
-# A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant
-# pattern, not a length heuristic: a POSIX path may hold a colon
-# ("/models/foo:bar.gguf") and would otherwise inherit another model's flags.
+# A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
+# not a length heuristic: a POSIX path may hold a colon and inherit another model's flags.
 _MAX_VARIANT_SUFFIX_LEN = 64
 
-# A local model's id is its path plus an optional quant suffix, and
-# LoadRequest.model_path is unbounded. A limit under PATH_MAX would 422 the server
-# sync while the local save succeeded.
+# A local id is a path plus an optional quant suffix, and LoadRequest.model_path is unbounded.
+# A limit under PATH_MAX would 422 the server sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
 
-# normalize_model_override keeps ids 0..MAX_GPU_ID, so a longer list cannot name a
-# device the normalizer would store; it only makes it walk more duplicates. Bound
-# it here so an oversized array is rejected at the boundary instead of costing CPU.
+# A list longer than MAX_GPU_ID cannot name a device the normalizer would store, so bound it
+# here and reject an oversized array at the boundary instead of walking it.
 MAX_GPU_IDS = MAX_GPU_ID + 1
 
 
@@ -163,38 +160,29 @@ class ModelOverridePayload(BaseModel):
     """
 
     model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
-    # None means "leave the stored value alone": the settings UI has no control for
-    # launch flags and must not wipe them. An explicit [] clears them (forget).
+    # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
-    # ge=1: 0 is not a valid sequence length, and the setter drops a falsy value,
-    # so reject it at the boundary instead of accepting then silently discarding it.
+    # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
     max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
-    # Parallel decode slots (llama-server --parallel), GGUF-only like the picker.
-    # None follows the server-wide default set at launch.
+    # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
     tensor_parallel: bool = False
-    # Validated in bytes below, not by max_length: pydantic counts characters, so a
-    # multi-byte template would pass here and be dropped by the UTF-8 normalizer.
+    # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
-    # Explicit intent: an all-default save carries no fields, which is shape
-    # identical to "forget this model". None keeps the legacy contract.
+    # An all-default save carries no fields, like a forget; None keeps the legacy contract.
     remove: Optional[bool] = None
-    # Fill in, don't replace: the one-time localStorage backfill reads the map once
-    # and then writes each model in turn, so another tab saving during that pass
-    # would be overwritten by this browser's older copy. The server reads and writes
-    # under one transaction, which costs no extra round trip. Field level, because an
-    # install upgraded from a release that stored only llama_extra_args and
-    # max_seq_length holds an entry the browser has the rest of, and skipping the
-    # whole entry would strand exactly the settings this migration exists to carry.
+    # Fill in, don't replace: the backfill reads the map once then writes each model, so another
+    # tab's save was overwritten by this browser's older copy. Field level, not entry level: a
+    # legacy entry holds only some fields, and skipping it would strand the rest.
     fill_absent_fields: bool = False
 
     @field_validator("chat_template_override")
@@ -222,11 +210,9 @@ class ModelOverridePayload(BaseModel):
     )
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
-        # bool subclasses int and pydantic parses non-strictly, so `true` arrives
-        # as 1 and `false` as 0: a payload could pin GPU 1 or set a one-token
-        # context. _bounded_int in the normalizer rejects bools for exactly that
-        # reason, but never sees one, because coercion happens here first. Reject
-        # only bools, so every other lax conversion the field relies on still runs.
+        # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1: a
+        # payload could pin GPU 1 or set a one-token context. _bounded_int rejects bools but
+        # never sees one, since coercion happens here first. Only bools, so lax parsing stays.
         if isinstance(value, bool):
             raise ValueError("Expected a number, got a boolean.")
         if isinstance(value, list) and any(isinstance(item, bool) for item in value):
@@ -394,8 +380,7 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
     from utils.openai_auto_switch_settings import split_quant_suffix
 
-    # Must look like a quant, not just a short path segment. Both a bits-per-weight
-    # modifier ("IQ4_XS-3.53bpw") and a stem fallback label count.
+    # Must look like a quant, not a short path segment; a bpw modifier and stem label both count.
     split = split_quant_suffix(model_id)
     return split[0] if split is not None else None
 
@@ -415,8 +400,7 @@ def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
 
     if not model_id.lower().endswith(".gguf"):
         return None
-    # Already qualified, so the caller named the entry it meant. Mirrors the
-    # loader, which derives a label only when the resolver gave it no variant.
+    # Already qualified, so the caller named the entry it meant, as the loader does.
     if _bare_model_id(model_id) is not None:
         return None
     from hub.utils.gguf import extract_quant_label
@@ -424,8 +408,7 @@ def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
     label = extract_quant_label(os.path.basename(model_id))
     if not label:
         return None
-    # Through the resolver rather than a raw lookup: the browser lowercases the
-    # variant, and an ambiguous fold resolves to nothing rather than guessing.
+    # Through the resolver: the browser lowercases the variant, and an ambiguous fold misses.
     return resolve_model_override_key(f"{model_id}:{label}")
 
 
@@ -438,15 +421,12 @@ def update_openai_auto_switch_override(
 
     try:
         if payload.fill_absent_fields and payload.remove is True:
-            # A fill that is also a delete has no meaning, and silently picking one
-            # would either lose settings or resurrect them.
+            # A fill that is also a delete has no meaning; picking one loses or resurrects.
             raise ValueError("fill_absent_fields cannot be combined with remove.")
-        # Only model_id is the documented "remove". Otherwise omitted launch flags
-        # carry over from the stored entry, since the settings UI cannot express them.
+        # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields is a write mode, not a saved field: leaving it in would
-        # make every payload look non-empty and break the legacy "no fields means
-        # remove".
+        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
+        # every payload look non-empty and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
             exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
             exclude_none = True,
@@ -459,39 +439,31 @@ def update_openai_auto_switch_override(
             }
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
-            # A fill leaves every stored value alone, so an entry that is already
-            # there keeps its flags without this echoing them back through
-            # validation: one accepted when it was saved but denylisted since would
-            # 400 the one-time migration, which then retries on every start.
+            # A fill keeps the stored flags without echoing them back through validation:
+            # one denylisted since it was saved would 400 the one-time migration, which
+            # then retries on every start.
             if not (payload.fill_absent_fields and stored):
                 requested_extra_args = stored.get("llama_extra_args")
                 if requested_extra_args is None:
-                    # First per-quant save for flags stored under the bare repo id.
-                    # Auto-switch prefers the qualified entry, so carry them over.
+                    # First per-quant save for flags under the bare repo id; carry them over.
                     bare_id = _bare_model_id(payload.model_id)
                     if bare_id:
                         requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
-        # Not validated on an explicit remove: nothing is stored, so a 400 would only
-        # leave the override in place. A stale flag must not block forgetting.
+        # Not validated on an explicit remove: a 400 would only leave the override in place.
         extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
         if payload.remove is True:
-            # An explicit remove wins over any other field in the payload. Remove the
-            # key a load resolves to, not the literal one sent: the browser normalizes
-            # casing before storing, so a stale entry would survive forgetting.
-            # All of them, not just the one a load happens to resolve to: an
-            # install upgraded from a build that stored the literal id can hold two
-            # spellings of one model, and clearing one leaves the survivor as the
-            # sole fold match, so the next load applies what was just forgotten.
+            # An explicit remove wins over any other field. Remove the key a load resolves to,
+            # not the literal one sent: the browser normalizes casing, so a stale entry would
+            # survive. And every spelling: clearing one of two leaves the survivor as the sole
+            # fold match, so the next load applies what was just forgotten.
             target_ids = resolve_model_override_keys(payload.model_id) or [
                 payload.model_id,
             ]
             for target_id in target_ids:
                 set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
-            # A standalone .gguf is keyed by its bare path now, but a load also
-            # reads the filename-derived <path>:LABEL entry an upgraded install
-            # still holds. Clearing only what the resolver sees leaves that one
-            # applying to every later API load, with the settings gone from the
-            # UI and no way left to reach them.
+            # A standalone .gguf is keyed by its bare path now, but a load also reads the
+            # filename-derived <path>:LABEL entry an upgraded install still holds. Clearing
+            # only what the resolver sees leaves that one applying to every later API load.
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
             if legacy_id and legacy_id not in target_ids:
                 set_model_override(
@@ -500,9 +472,8 @@ def update_openai_auto_switch_override(
                     max_seq_length = None,
                 )
         else:
-            # Save under the key a load resolves to, as the removal branch does.
-            # Saving the literal id leaves two keys for one model, which makes every
-            # other casing ambiguous and silently loses the settings.
+            # Save under the key a load resolves to, as the removal branch does: the literal
+            # id would leave two keys for one model, making every other casing ambiguous.
             target_id = resolve_model_override_key(payload.model_id) or payload.model_id
             set_model_override(
                 target_id,

@@ -735,9 +735,8 @@ export const InventoryRow = memo(function InventoryRow({
   const rowPinned =
     cacheDeletableRepoId != null &&
     pinnedKeys.includes(pinKey(cacheDeletableRepoId));
-  // Settings applies to any downloaded model, not just deletable ones, so the menu
-  // renders when either action applies and each item gates itself. `deletableRepoId`
-  // (not the boolean) keeps the non-null narrowing the delete closures rely on.
+  // Settings applies to any downloaded model, not just deletable ones, so the menu renders
+  // when either action applies. `deletableRepoId` keeps the delete closures' narrowing.
   const settingsAction =
     !isDataset && onOpenSettings ? { onOpen: () => onOpenSettings(row) } : undefined;
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;

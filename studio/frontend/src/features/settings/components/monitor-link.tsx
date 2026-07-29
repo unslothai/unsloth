@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The monitor moved onto its own page, normally reached from the floating
-// panel; this card is the way in from Settings.
+// The monitor has its own page, normally reached from the floating panel; this card is
+// the way in from Settings.
 
 import { Switch } from "@/components/ui/switch";
-// Direct path, not the barrel: the barrel re-exports the page, which would pull
-// it into this chunk and defeat the route's dynamic import.
+// Direct path, not the barrel: the barrel re-exports the page, defeating its lazy route.
 import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store";
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";

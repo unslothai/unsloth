@@ -5,8 +5,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.tsx"
-# The monitor moved onto its own page and Settings links to it; the shrink
-# contract still applies to both surfaces.
+# The monitor has its own page and Settings links to it; the shrink contract covers both.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
@@ -20,8 +19,7 @@ def test_dialog_content_can_shrink_inside_the_dialog_grid():
 
 def test_api_monitor_entries_and_expanded_text_can_shrink():
     source = API_MONITOR_PAGE.read_text(encoding = "utf-8")
-    # Rows and the detail pane sit in flex parents, so they need min-w-0 or a long
-    # model id pushes the layout wider than the viewport.
+    # Flex parents need min-w-0, or a long model id widens the layout past the viewport.
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
     # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped.

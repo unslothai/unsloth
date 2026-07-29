@@ -20,11 +20,10 @@ export interface WatchedResponse {
 export interface ApiMonitorWatch {
   /** The first snapshot has been folded in and its backlog written off. */
   seeded: boolean;
-  /** Ids already shown. A set, not "the newest id": finishing moves an entry to
-   * the front, so the head flips without any new traffic. */
+  /** Ids already shown. A set, not "the newest id": finishing moves an entry to the
+   * front, so the head flips without any new traffic. */
   seenIds: Set<string>;
-  /** performance.now() when this watch began; monotonic, so a client clock step
-   * mid-session cannot move it. */
+  /** performance.now() when this watch began; monotonic, so a clock step cannot move it. */
   watchStartedAt: number;
   /** This seed follows a stay on the full page rather than starting a session. */
   resumed: boolean;
@@ -40,10 +39,9 @@ export function createWatch(nowMs: number): ApiMonitorWatch {
 }
 
 /**
- * Re-anchor as the poll stands up, and only while still unseeded: the first
- * snapshot can land long after the overlay mounted (a hidden tab issues no
- * fetch, a backend still coming up fails one), and dating the backlog from
- * mount would write that whole gap off as history.
+ * Re-anchor as the poll stands up, and only while unseeded: the first snapshot can land
+ * long after mount (a hidden tab issues no fetch), and dating the backlog from mount
+ * would write that whole gap off as history.
  */
 export function startWatching(watch: ApiMonitorWatch, nowMs: number): void {
   if (!watch.seeded) {
@@ -60,11 +58,9 @@ export function rearmWatch(watch: ApiMonitorWatch): void {
 /**
  * When this watch began, on the server's clock.
  *
- * The server's own ``time.time()`` minus a browser *duration*, never minus a
- * browser timestamp, so a browser clock that disagrees with the server's -- a
- * Studio behind a tunnel, in a container, on a host that has not run NTP --
- * cancels instead of skewing the answer. Null on a backend with no clock field,
- * which keeps the old behaviour.
+ * Server ``time.time()`` minus a browser *duration*, never minus a browser timestamp, so a
+ * browser clock disagreeing with the server's cancels instead of skewing the answer. Null
+ * on a backend with no clock field, which keeps the old behaviour.
  */
 function historyCutoff(
   watch: ApiMonitorWatch,
@@ -79,17 +75,15 @@ function historyCutoff(
 }
 
 function isHistory(entry: WatchedEntry, cutoff: number | null): boolean {
-  // Still running at the first snapshot: it started while Studio was loading, so
-  // it is unseen live traffic.
+  // Still running at the first snapshot: it started while Studio loaded, so it is unseen.
   if (entry.status === "running") {
     return false;
   }
   if (cutoff == null || !Number.isFinite(entry.started_at)) {
     return true;
   }
-  // Finished before the first snapshot is not the same as started before we did:
-  // a call made while the tab was hidden is already terminal when the poll
-  // finally runs, and writing it off is how the panel misses the first request.
+  // Finished before the first snapshot is not the same as started before we did: a call
+  // made while the tab was hidden is already terminal when the poll finally runs.
   return entry.started_at <= cutoff;
 }
 
@@ -107,12 +101,9 @@ export function observeResponse(
     const { resumed } = watch;
     watch.resumed = false;
     const cutoff = historyCutoff(watch, response, nowMs);
-    // A rearm is not a fresh watch. isHistory holds a running row back on
-    // purpose: at a session's first snapshot it started while Studio was still
-    // loading and nobody has seen it. On the way off the full page the opposite
-    // is true -- that page was showing this same feed, running rows included --
-    // so seeding from isHistory alone reopens the overlay on the request the
-    // user was reading when they left. Everything the page could show is read.
+    // A rearm is not a fresh watch. isHistory keeps a running row on purpose: at a first
+    // snapshot nobody has seen it. Off the full page the opposite holds, since that page
+    // was showing this same feed, so mark everything it could show as read.
     watch.seenIds = new Set(
       entries
         .filter((entry) => resumed || isHistory(entry, cutoff))
@@ -120,8 +111,7 @@ export function observeResponse(
     );
   }
   const seen = watch.seenIds;
-  // Only API-key traffic counts: Studio's own chat uses these same endpoints, and
-  // this panel is about serving other clients.
+  // Only API-key traffic counts: Studio's own chat uses these same endpoints.
   const hasNewTraffic = entries.some(
     (entry) => entry.via_api_key && !seen.has(entry.id),
   );

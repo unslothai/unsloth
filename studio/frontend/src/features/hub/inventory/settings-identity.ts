@@ -6,15 +6,11 @@
 import type { CachedInventoryRow, LocalInventoryRow } from "./types";
 
 /**
- * The GGUF variant a settings page should key this row's config by, before any
- * per-repo quant lookup.
+ * The GGUF variant a settings page keys this row's config by, before any per-repo lookup.
  *
- * A standalone `.gguf` has no quant to choose between, but the backend inventory
- * still labels it from its filename (hub/services/models/common.py sets
- * `format_variant` only when the scanned path is a single file). Adopting that
- * label would key its settings to `<path>:Q4_K_M` while the Chat model picker, the
- * detail view's on-device card and the one-time backfill all use the bare path,
- * leaving two surfaces editing two different configs for one file.
+ * A standalone `.gguf` has no quant to choose between, but the inventory still labels it
+ * from its filename. Adopting that label would key its settings to `<path>:Q4_K_M` while
+ * every other surface uses the bare path, leaving two configs for one file.
  */
 export function settingsGgufVariantForRow(
   row: CachedInventoryRow | LocalInventoryRow,

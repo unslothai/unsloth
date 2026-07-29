@@ -47,8 +47,7 @@ function completionTokens(entry: ApiMonitorEntry): number | null {
   if (entry.completion_tokens != null) {
     return entry.completion_tokens;
   }
-  // Some providers report only a total, so subtracting the prompt is the best
-  // estimate of what was generated.
+  // Some providers report only a total, so subtract the prompt to estimate generated.
   if (entry.total_tokens != null && entry.prompt_tokens != null) {
     return Math.max(0, entry.total_tokens - entry.prompt_tokens);
   }
@@ -71,18 +70,16 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let durationSum = 0;
   let durationCount = 0;
   let maxDurationMs: number | null = null;
-  // Total tokens over total time, not the mean of each request's rate: averaging
-  // rates lets one tiny fast request outweigh a long slow one.
+  // Total tokens over total time: averaging rates lets one tiny request outweigh a long one.
   let generatedTokens = 0;
   let generatedDurationMs = 0;
 
   let requests = 0;
 
   for (const entry of entries) {
-    // A load, unload or download is not an HTTP call. It reads as "running" for the
-    // whole load, so counting it reports an in-flight request with no client waiting
-    // and folds a multi-minute download into "Avg latency". The backend leaves these
-    // out of active_count too, so counting them would also disagree with the API.
+    // A load, unload or download is not an HTTP call: it reads as "running" throughout,
+    // so counting it invents an in-flight request and folds a download into "Avg
+    // latency". The backend leaves these out of active_count too.
     if (entry.kind === "lifecycle") {
       continue;
     }
@@ -143,9 +140,8 @@ export function filterEntries(
     if (!needle) {
       return true;
     }
-    // The fields a debugging session keys off: model, endpoint, and the previews and
-    // error text visible in the row. Coerced, not trusted: these arrive over the
-    // network, and one malformed entry throwing here would blank the whole log.
+    // The fields a debugging session keys off. Coerced, not trusted: these arrive over
+    // the network, and one malformed entry throwing here would blank the whole log.
     return [
       entry.model,
       entry.endpoint,
@@ -181,13 +177,10 @@ interface UseApiMonitorResult {
 /**
  * Live view of the server's OpenAI-compatible API traffic.
  *
- * Polls rather than streams because the backing monitor is an in-memory ring buffer
- * with no change feed. Polling self-reschedules (never overlapping), and pausing
- * stops it so reading a stalled payload is not fighting a list that reorders.
- *
- * `intervalMs` lets a caller trade freshness for cost: the full page wants the
- * default live cadence, while the floating overlay slows right down when it is
- * closed and only watching for the traffic that should pop it open.
+ * Polls rather than streams because the backing monitor is a ring buffer with no change
+ * feed. Polling self-reschedules (never overlapping), and pausing stops it so reading a
+ * payload is not fighting a list that reorders. `intervalMs` trades freshness for cost:
+ * the closed overlay slows right down while only watching for traffic to pop it open.
  */
 export function useApiMonitor({
   intervalMs = POLL_INTERVAL_MS,
@@ -201,8 +194,7 @@ export function useApiMonitor({
   const [loadingDetails, setLoadingDetails] = useState<Set<string>>(
     () => new Set(),
   );
-  // Mirrors `loadingDetails` outside React state so the fetch guard sees same-tick
-  // writes; async state updates would let duplicates through.
+  // Mirrors `loadingDetails` outside React state so the guard sees same-tick writes.
   const inFlightDetails = useRef<Set<string>>(new Set());
 
   const load = useCallback(async (): Promise<void> => {
@@ -253,8 +245,8 @@ export function useApiMonitor({
     };
   }, [paused, intervalMs]);
 
-  // Returns whether a fetch started: a caller must not record "fetched revision N"
-  // when the guard refused, or that revision is skipped once updated_at settles.
+  // Returns whether a fetch started: recording "fetched revision N" when the guard
+  // refused would skip that revision once updated_at settles.
   const requestDetail = useCallback((id: string): boolean => {
     if (inFlightDetails.current.has(id)) {
       return false;
@@ -266,8 +258,7 @@ export function useApiMonitor({
         setDetails((prev) => ({ ...prev, [id]: entry }));
       })
       .catch(() => {
-        // Aged out of the ring buffer; drop the stale copy so the UI falls back to
-        // the row previews instead of a frozen payload.
+        // Aged out of the ring buffer: drop the stale copy so the row previews show.
         setDetails((prev) => {
           if (!(id in prev)) return prev;
           const next = { ...prev };

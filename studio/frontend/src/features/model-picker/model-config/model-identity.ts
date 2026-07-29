@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Straight from the module rather than the hub barrel, which also re-exports the
-// download manager and its React components: these are pure string helpers, and
-// pulling the barrel in puts every one of those in the way of loading them.
+// Straight from the module, not the hub barrel: the barrel also re-exports the download
+// manager and its React components, which these pure string helpers do not need.
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
@@ -77,8 +76,7 @@ export function ggufVariantFromStorageKey(key: string): string | null {
 // Mirrors split_quant_suffix in studio/backend/utils/openai_auto_switch_settings.py.
 // The bpw modifier ("IQ4_XS-3.53bpw") is optional: the backend label helpers disagree.
 const BPW_SUFFIX = /-[0-9]+(?:\.[0-9]+)?bpw$/i;
-// One source for the anchored test and the scan below, so they cannot drift apart.
-// Mirrors _GGUF_QUANT_RE in studio/backend/hub/utils/gguf.py.
+// One source for the anchored test and the scan below. Mirrors _GGUF_QUANT_RE in gguf.py.
 const QUANT_TOKEN_SOURCE =
   "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)";
 const KNOWN_QUANT = new RegExp(`^${QUANT_TOKEN_SOURCE}$`, "i");
@@ -87,8 +85,7 @@ const MAX_QUANT_SUFFIX_LEN = 64;
 // Mirrors _GGUF_SPLIT_SUFFIX_RE in studio/backend/hub/utils/gguf.py.
 const GGUF_SPLIT_SUFFIX = /-[0-9]{3,}-of-[0-9]{3,}/gi;
 const BACKSLASHES = /\\/g;
-// A float precision only labels a file when nothing sharper does, matching the
-// backend's _select_quant_match.
+// A float precision labels a file only when nothing sharper does, as _select_quant_match.
 const FLOAT_PRECISION_QUANTS: ReadonlySet<string> = new Set([
   "BF16",
   "F16",
@@ -103,9 +100,8 @@ function ggufStem(filename: string): string {
 }
 
 /**
- * Mirrors extract_quant_label in studio/backend/hub/utils/gguf.py, for a bare
- * filename. The parent-directory pass there cannot fire on a basename, so this
- * is the stem's own quant token or, failing that, the stem itself.
+ * Mirrors extract_quant_label in gguf.py, for a bare filename. The parent-directory pass
+ * cannot fire on a basename, so this is the stem's quant token or the stem itself.
  */
 function ggufQuantLabel(filename: string): string {
   const stem = ggufStem(filename);
@@ -145,15 +141,12 @@ export function splitQuantSuffix(value: string): [string, string] | null {
   ) {
     return [head, tail];
   }
-  // A .gguf with no recognizable quant is labelled by its stem, so
-  // "/models/CustomModel.gguf:custommodel" exists; a non-.gguf head is a plain colon.
+  // A .gguf with no quant is labelled by its stem; a non-.gguf head is a plain colon.
   if (!head.toLowerCase().endsWith(".gguf")) {
     return null;
   }
-  // The suffix has to be that exact label, as the backend requires. A colon is legal
-  // in a POSIX filename, so "/models/llama.gguf:Bar.gguf" and its lowercase sibling
-  // are two real files: reading the suffix as a variant folds them onto one key and
-  // strands one file's settings, since the variant half is stored lowercased.
+  // Exactly that label, as the backend requires: a colon is legal in a POSIX filename,
+  // so reading the suffix as a variant folds two real files onto one lowercased key.
   const filename = head.replace(BACKSLASHES, "/").split("/").pop() ?? head;
   return tail.toLowerCase() === ggufQuantLabel(filename).toLowerCase()
     ? [head, tail]

@@ -3,14 +3,12 @@
 
 // Labels for model load/unload/download rows, shared by the overlay and the page.
 //
-// Their own module because the overlay is mounted from __root.tsx: importing them
-// from the page would pull the whole page into the eager bundle and undo the
-// route's lazyRouteComponent.
+// Their own module because the overlay mounts from __root.tsx: importing them from the
+// page would pull it into the eager bundle and undo the route's lazyRouteComponent.
 
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 
-// A lifecycle row is a model load/unload/download, not an HTTP call: it carries an
-// event and reason instead of a prompt, so there is no payload to expand.
+// A lifecycle row carries an event and reason instead of a prompt, so nothing expands.
 export function isLifecycleEntry(entry: ApiMonitorEntry): boolean {
   return entry.kind === "lifecycle";
 }

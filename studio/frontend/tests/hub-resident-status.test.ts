@@ -18,8 +18,8 @@ const RESIDENT = {
 };
 
 /**
- * Store actions that refuse to be called. The message on each names what must
- * not happen, so a test states its rule by the action it declines to forbid.
+ * Store actions that refuse to be called. Each message names what must not happen, so a
+ * test states its rule by the action it declines to forbid.
  */
 function refusing(messages: {
   setCheckpoint?: string;
@@ -37,10 +37,8 @@ function refusing(messages: {
 }
 
 test("landing on the Hub applies the whole status, not just the checkpoint", () => {
-  // Nothing else on /hub hydrates the runtime store: useChatModelRuntime has no
-  // mount sync and the chat page is a different route. Pinning only the
-  // checkpoint leaves every field useActiveModelConfig reads at its default, so
-  // the settings page offers those defaults as the resident model's live config.
+  // Nothing else on /hub hydrates the runtime store, so pinning only the checkpoint
+  // leaves useActiveModelConfig at its defaults and the settings page offers those.
   const { calls, actions } = spies();
   const adopted = adoptResidentModelStatus(RESIDENT, emptyStore(), actions);
   assert.equal(adopted, true);
@@ -51,8 +49,7 @@ test("landing on the Hub applies the whole status, not just the checkpoint", () 
 });
 
 test("a checkpoint that already matches is still hydrated", () => {
-  // A reload rehydrates params.checkpoint from localStorage on its own, with
-  // none of the fields that say how the model was actually launched.
+  // A reload rehydrates the checkpoint without the fields saying how it launched.
   const { calls, actions } = spies();
   adoptResidentModelStatus(
     RESIDENT,
@@ -80,10 +77,8 @@ test("an API auto-switch under the tab re-pins the model and the quant", () => {
 });
 
 test("the status applied is the one from before the checkpoint moved", () => {
-  // applyActiveModelStatusToStore tells a hydration from steady state by the
-  // previous checkpoint/quant, so it has to be read before setCheckpoint syncs
-  // them, or a variant-only switch reads as steady state and keeps the old
-  // quant's baselines.
+  // applyActiveModelStatusToStore tells a hydration from steady state by the previous
+  // checkpoint/quant, so reading it after setCheckpoint keeps the old quant's baselines.
   const { previouslySeen, actions } = spies();
   adoptResidentModelStatus(
     RESIDENT,
@@ -110,8 +105,7 @@ test("nothing is adopted when no model is loaded", () => {
 });
 
 test("an external-provider selection is left alone", () => {
-  // It has no local mirror, so stamping the resident GGUF's launch settings onto
-  // it would describe a model the user is not talking to.
+  // No local mirror, so the resident GGUF's settings would describe the wrong model.
   const { calls, actions } = spies();
   const adopted = adoptResidentModelStatus(
     RESIDENT,
@@ -126,8 +120,7 @@ test("an external-provider selection is left alone", () => {
 });
 
 test("a load in flight is not fought", () => {
-  // The load applies its own status when it settles, and the load dialog owns
-  // the params meanwhile.
+  // The load applies its own status when it settles, and owns the params meanwhile.
   const { calls, actions } = spies();
   const adopted = adoptResidentModelStatus(
     RESIDENT,
@@ -139,11 +132,9 @@ test("a load in flight is not fought", () => {
 });
 
 test("an empty status leaves the checkpoint pinned", () => {
-  // An empty status is not the same as the model going away. With idle unload on,
-  // the server frees it and keeps a stash the next request reloads, while /status
-  // says nothing is loaded and carries no field that tells the two apart. The
-  // store is what names the model meanwhile, for the usage examples and for that
-  // reload, so an observation must not clear it. The chat runtime does the same.
+  // An empty status is not the model going away: an idle unload frees it but keeps a
+  // stash the next request reloads, and /status carries no field telling the two apart.
+  // The store names the model meanwhile, so an observation must not clear it.
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null },
     emptyStore({
@@ -186,10 +177,8 @@ test("an empty status does not fight a load this tab started", () => {
 });
 
 test("coming back to the window re-reads inference status", () => {
-  // An OpenAI-compatible request auto-switches the resident model whenever it
-  // likes. The Hub's only other status read is its mount effect, so without this
-  // the catalog and the settings page keep describing the previous model for as
-  // long as the Hub stays mounted.
+  // An API request auto-switches at any time, and the Hub's only other read is its mount
+  // effect, so without this the catalog keeps describing the previous model.
   const targets = fakeTargets();
   let reads = 0;
   subscribeResidentStatusRefresh(() => {
@@ -204,8 +193,7 @@ test("coming back to the window re-reads inference status", () => {
 });
 
 test("a tab going hidden does not read", () => {
-  // visibilitychange fires on the way out too, and a hidden tab has no settings
-  // page to correct.
+  // visibilitychange fires on the way out too, and a hidden tab has nothing to correct.
   const targets = fakeTargets();
   let reads = 0;
   subscribeResidentStatusRefresh(() => {
@@ -222,12 +210,9 @@ test("a tab going hidden does not read", () => {
 });
 
 test("an auto-switch under a mounted Hub stops hiding the live config", () => {
-  // The whole point, end to end: while the Hub is mounted an OpenAI-compatible
-  // request swaps the resident model. Without a second read the store still names
-  // the old one, so hub-page's settingsTargetIsResident says the newly loaded
-  // model is not resident, its settings page is handed loadedConfig=null, and
-  // ModelConfigPage seeds the editor from saved/default values -- which Apply then
-  // reloads the model with, over what the API actually selected.
+  // End to end: an API request swaps the resident model under a mounted Hub. Without a
+  // second read settingsTargetIsResident says the new model is not resident, so the
+  // editor seeds from saved values that Apply then reloads over the API's choice.
   const store = emptyStore({
     checkpoint: "unsloth/Qwen3-8B-GGUF",
     activeGgufVariant: "Q4_K_M",
@@ -267,8 +252,8 @@ test("an auto-switch under a mounted Hub stops hiding the live config", () => {
   targets.fire("window", "focus");
   assert.equal(settingsTargetIsResident(), true);
 
-  // A load this tab started owns the store until it settles, so a refresh landing
-  // mid-switch must not re-pin the model the user is moving away from.
+  // A load this tab started owns the store until it settles, so a mid-switch refresh
+  // must not re-pin the model being moved away from.
   store.modelLoading = true;
   serverStatus = {
     checkpointId: "unsloth/Qwen3-8B-GGUF",

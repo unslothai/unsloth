@@ -301,8 +301,7 @@ export interface ApiMonitorEntry {
   model: string;
   prompt?: string;
   reply?: string;
-  // True for API-key callers, not UI sessions. The floating panel keys its
-  // auto-open off this so Studio's own chat does not pop it.
+  // True for API-key callers, not UI sessions: the panel auto-opens off this.
   via_api_key: boolean;
   prompt_preview: string;
   reply_preview: string;
@@ -329,9 +328,8 @@ export interface ApiMonitorEntry {
 
 export interface ApiMonitorResponse {
   status: "idle" | "ready" | "generating";
-  // Server wall clock (seconds) when the snapshot was taken, so an entry's
-  // started_at can be dated without trusting the browser's clock to agree.
-  // Absent on a backend older than the field.
+  // Server wall clock (seconds) at snapshot, so started_at can be dated without trusting
+  // the browser's clock. Absent on a backend older than the field.
   server_time?: number;
   active_model?: string | null;
   context_length?: number | null;

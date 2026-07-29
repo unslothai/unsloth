@@ -3,14 +3,11 @@
 
 // Adopting the resident model into the chat runtime store from the Hub.
 //
-// Landing straight on /hub (a reload, or a deep link after an OpenAI-compatible
-// auto-switch loaded something else) is the one entry point where nothing has
-// applied /api/inference/status yet: useChatModelRuntime has no mount sync and
-// the chat page is a different route. Pinning only the checkpoint leaves every
-// other field useActiveModelConfig reads at its default, so the Hub's settings
-// page passes those defaults on as the resident model's live config and Apply
-// reloads the model with them. Adoption therefore has to apply the whole status,
-// exactly as the chat runtime's refresh does.
+// Landing straight on /hub is the one entry point where nothing has applied
+// /api/inference/status yet. Pinning only the checkpoint leaves every other field
+// useActiveModelConfig reads at its default, so the settings page would pass those
+// defaults on as the live config and Apply would reload with them. Adoption therefore
+// applies the whole status, exactly as the chat runtime's refresh does.
 
 import { ggufVariantsMatch, modelIdsMatch } from "./model-identity.ts";
 
@@ -39,8 +36,8 @@ export interface ResidentAdoptionActions {
   setCheckpoint: (checkpointId: string, ggufVariant: string | null) => void;
   /**
    * Apply the rest of the status. Receives the store values from BEFORE
-   * ``setCheckpoint`` ran, which is what applyActiveModelStatusToStore needs to
-   * tell a hydration from steady state.
+   * ``setCheckpoint`` ran, which is how applyActiveModelStatusToStore tells a
+   * hydration from steady state.
    */
   applyStatus: (previous: {
     checkpoint: string | null;
@@ -60,25 +57,21 @@ export function adoptResidentModelStatus(
   actions: ResidentAdoptionActions,
 ): boolean {
   const { checkpointId } = status;
-  // An external-provider selection has no local mirror, so stamping the resident
-  // GGUF's capabilities and launch settings onto it would describe a model the
-  // user is not talking to.
+  // An external selection has no local mirror, so the resident GGUF's settings would
+  // describe a model the user is not talking to.
   if (state.checkpointIsExternal) {
     return false;
   }
-  // A load this tab started applies its own status when it settles, and the load
-  // dialog owns the params meanwhile. Adopting underneath it would fight both.
+  // A load this tab started applies its own status when it settles, and owns the params
+  // meanwhile. Adopting underneath it would fight both.
   if (state.modelLoading) {
     return false;
   }
   if (!checkpointId) {
-    // Nothing resident to mirror, and an empty status is not the same as a model
-    // going away: with idle unload on, the server frees the model and keeps a
-    // stash that the next request reloads, while /status reports nothing and
-    // carries no field that tells the two apart. The store is what names the
-    // model meanwhile, for the usage examples and for that reload, so this
-    // leaves it pinned, as the chat runtime does. Clearing belongs to whatever
-    // performed the unload, not to an observation of one.
+    // An empty status is not the same as a model going away: an idle unload frees the
+    // model but keeps a stash the next request reloads, and /status carries no field
+    // telling the two apart. The store names the model meanwhile, so leave it pinned;
+    // clearing belongs to whatever performed the unload, not to an observation of one.
     return false;
   }
   const previous = {
@@ -91,9 +84,8 @@ export function adoptResidentModelStatus(
   if (!alreadyPinned) {
     actions.setCheckpoint(checkpointId, status.ggufVariant);
   }
-  // Unconditional, even when the checkpoint already matched: a persisted
-  // checkpoint rehydrates from localStorage on its own, with none of the fields
-  // that say how the model was actually launched.
+  // Unconditional, even when the checkpoint matched: a persisted checkpoint rehydrates
+  // from localStorage without the fields saying how the model was launched.
   actions.applyStatus(previous);
   return true;
 }

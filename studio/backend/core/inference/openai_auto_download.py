@@ -805,12 +805,10 @@ async def _dispatch(
         return busy
 
     monitor_id = api_monitor.record_lifecycle(
-        # Reason "api" because only a /v1 request reaches auto-download. That is not
-        # the same as API-key traffic though: Studio's own chat calls those same
-        # endpoints with a session JWT, and marking its download as API traffic pops
-        # the overlay mid-chat, which via_api_key exists to prevent. So take the
-        # attribution from the request, and name the caller it belongs to, since the
-        # row is shared with every other subject.
+        # Reason "api" because only a /v1 request reaches auto-download, but that is not
+        # the same as API-key traffic: Studio's chat calls those endpoints on a JWT, and
+        # marking its download would pop the overlay mid-chat. So take the attribution
+        # from the request, and name its caller, since the row is shared.
         event = "download",
         model = label,
         reason = "api",

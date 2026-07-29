@@ -247,8 +247,7 @@ def test_same_repo_same_variant_does_not_reload(monkeypatch):
 
 
 def test_responses_endpoint_wires_auto_switch_before_dispatch():
-    # The /v1/responses endpoint must invoke the auto-switch hook before either
-    # dispatcher so streaming requests switch too.
+    # Before either dispatcher, so streaming requests switch too.
     import inspect
 
     src = inspect.getsource(inference_route.openai_responses)
@@ -278,9 +277,8 @@ def test_count_tokens_endpoint_wires_auto_switch_before_loaded_check():
 
 
 def test_openai_compat_routes_bound_to_handlers_with_auth():
-    # Inserting a helper between a @router.post decorator and its handler silently
-    # rebinds the route to the helper and drops its auth dependency (this happened to
-    # /messages/count_tokens).
+    # A helper between @router.post and its handler rebinds the route and drops its auth
+    # dependency (this happened to /messages/count_tokens).
     expected = {
         ("POST", "/chat/completions"): "openai_chat_completions",
         ("POST", "/completions"): "openai_completions",
@@ -339,8 +337,7 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
 
 
 def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
-    # Codex P2: _scan_models_dir's standalone-.gguf pass emits an entry for a bare
-    # mmproj projector (it only filters mmproj inside directory scans).
+    # _scan_models_dir only filters mmproj inside directory scans, not the standalone pass.
     from types import SimpleNamespace
 
     proj = tmp_path / "mmproj-F16.gguf"
@@ -380,8 +377,7 @@ def test_resolver_matches_and_splits_variant(monkeypatch):
 
 
 def test_resolver_failsafe_on_internal_error(monkeypatch):
-    # Resolution is best-effort: any internal failure must fall through to None so the
-    # request still serves the loaded model instead of 500-ing.
+    # Best-effort: any failure falls through to None so the request serves the loaded model.
     def boom():
         raise RuntimeError("scan blew up")
 
@@ -438,7 +434,6 @@ def test_describe_local_miss_is_failsafe(monkeypatch):
 
 
 def test_resolver_exact_id_with_colon_wins(monkeypatch):
-    # A local id that itself contains a colon (e.g.
     win = r"C:\models\foo.gguf"
     monkeypatch.setattr(resolver, "_build_index", lambda: {win.lower(): _entry(win)})
     resolver._scan = (0.0, {})
@@ -559,8 +554,7 @@ def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
 
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
-        # Wall clock, not an iteration count: Windows rounds a 10 ms sleep up to the
-        # ~15.6 ms tick on both loops, so a fixed count failed for being slow.
+        # Wall clock, not an iteration count: Windows rounds a 10 ms sleep to its ~15.6 ms tick.
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             await asyncio.sleep(0.01)
@@ -703,7 +697,7 @@ def _mock_override_store(monkeypatch):
     ):
         current = dict(store.get(key) or {})
         if fill_absent_fields:
-            # Fill only: every stored value wins and nothing is deleted.
+            # Fill only: every stored value wins, nothing is deleted.
             if not entry_value:
                 return current
             stored = current.get(entry_key)
@@ -1077,7 +1071,6 @@ def test_embeddings_malformed_body_503_not_500_when_unloaded(monkeypatch):
 
 
 def test_non_string_model_falls_through_without_error(monkeypatch):
-    # A non-string model (e.g.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)
@@ -1236,7 +1229,6 @@ def _json_body_request(payload):
 
 
 def test_completions_list_body_is_400_not_500(monkeypatch):
-    # A valid JSON non-dict body (e.g.
     from fastapi import HTTPException
 
     backend = _FakeBackend("unsloth/A-GGUF")  # loaded
@@ -1431,8 +1423,7 @@ def _revision_pair(root, complete: bool):
 
 
 def test_sibling_revision_resolves_to_its_own_weights(tmp_path):
-    # /v1/models advertises only the snapshot dir name, so a durable pin holds one
-    # revision hash.
+    # /v1/models advertises only the snapshot dir name, so a durable pin holds one revision.
     old, new = _revision_pair(tmp_path, complete = True)
 
     found = dict(resolver._sibling_revision_entries(str(new), "org/Repo"))
@@ -1468,8 +1459,7 @@ def test_sibling_revisions_skip_plain_repo_ids():
 
 
 def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
-    # A model loaded normally has model_identifier == repo id, but the resolver returns
-    # the concrete load path.
+    # A normal load sets model_identifier to the repo id; the resolver returns the load path.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/Repo-GGUF", hf_variant = "Q4_K_M")
@@ -1538,8 +1528,7 @@ def test_streaming_responses_uses_advertised_id_helper():
 
 
 def test_concurrent_same_target_requests_load_once(monkeypatch):
-    # Two concurrent requests for the same unloaded model must load once, not each 409
-    # the other.
+    # Two concurrent requests for one unloaded model must load once, not each 409 the other.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1621,8 +1610,7 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
 
 
 def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
-    # Both replacement directions drain, then recheck whether a sidecar install reserved
-    # the gate meanwhile.
+    # Both directions drain, then recheck whether a sidecar install took the gate meanwhile.
     import inspect
 
     src = inspect.getsource(inference_route._load_model_impl)
@@ -1715,8 +1703,7 @@ def test_pending_same_target_request_does_not_block_swap(monkeypatch):
 
 
 def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
-    # The real middleware counts a concurrent same-model request as in-flight before it
-    # resolves and registers a target waiter.
+    # The middleware counts a same-model request as in-flight before it registers a waiter.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2065,7 +2052,6 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
 
 
 def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
-    # gemini: one bad scanner (e.g.
     from types import SimpleNamespace
     import routes.models as models_route
     import utils.paths as paths
@@ -2096,8 +2082,7 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
 
 
 def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
-    # Codex: HF-cache GGUF snapshots leave model_format unset, so /v1/models must decide
-    # GGUF-ness from the on-disk files.
+    # HF-cache GGUF snapshots leave model_format unset, so GGUF-ness comes from the files.
     from types import SimpleNamespace
 
     gguf = tmp_path / "model-Q4_K_M.gguf"
@@ -2179,8 +2164,7 @@ def test_retrieve_model_tolerates_non_string_id(monkeypatch):
 
 
 def test_retrieve_model_resolves_raw_path_to_advertised_id(monkeypatch):
-    # Codex P2: a client caching the legacy absolute .gguf path must still retrieve a
-    # loaded auto-switch model.
+    # A client caching the legacy absolute .gguf path must still retrieve the loaded model.
     from types import SimpleNamespace
 
     raw_path = "/cache/models--org--B-GGUF/snapshots/abc/model.gguf"
@@ -2227,7 +2211,7 @@ def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
 
 
 def test_resolver_cache_stamped_after_slow_build(monkeypatch):
-    # Codex P2: the cache must be stamped AFTER _build_index.
+    # The cache must be stamped AFTER _build_index.
     import core.inference.local_model_resolver as r
 
     clock = {"t": 1000.0}
@@ -2360,8 +2344,7 @@ def test_embeddings_missing_input_rejected_before_idle_reload(monkeypatch):
 
 
 def test_messages_does_not_503_before_reload_hook_when_idle_on(monkeypatch):
-    # #3: /v1/messages 503'd before the reload hook when auto-switch was off, so a
-    # standalone idle TTL could never restore the freed model.
+    # /v1/messages 503'd before the reload hook with auto-switch off, so idle TTL never restored.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
@@ -2388,8 +2371,7 @@ def test_messages_503_gated_on_automatic_load_predicate():
 
 
 def test_raw_body_without_model_reloads_freed_model(monkeypatch):
-    # #6: a raw completions/embeddings body that omits `model` passed None, which
-    # skipped the idle-stash reload and 503'd.
+    # A raw body omitting `model` passed None, which skipped the idle-stash reload and 503'd.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
@@ -2443,8 +2425,7 @@ def test_audio_generate_does_not_reload_on_invalid_request(monkeypatch):
 
 
 def test_preview_scope_disables_auto_switch(monkeypatch):
-    # #7: the public preview route delegates to the chat handler; a caller-supplied
-    # model must not switch away from the pinned checkpoint.
+    # The preview route delegates to the chat handler; a caller model must not unpin it.
     backend = _FakeBackend("org/A-GGUF")
     rec = _LoadRecorder(backend)
     _wire(
@@ -2519,8 +2500,7 @@ def test_note_start_does_not_reset_idle_timer():
 
 
 def test_omitted_model_does_not_resolve_to_a_named_gguf(monkeypatch):
-    # Codex P2: a raw-body request that omits `model` must never run the resolver, so a
-    # downloaded GGUF literally named "default" can't be switched to.
+    # Omitting `model` must not run the resolver, or a GGUF named "default" becomes a target.
     backend = _FakeBackend("org/A-GGUF")  # a model is already loaded
     rec = _LoadRecorder(backend)
     _wire(
@@ -2837,9 +2817,8 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
 
 
 def test_chat_audio_input_guards_target_before_switch(monkeypatch):
-    # Codex P2: a chat request carrying audio_base64 must guard the target before the
-    # switch -- audio rides the same companion mmproj as vision -- so a text-only target
-    # can't be loaded and evict the working audio model.
+    # Audio rides the same companion mmproj as vision, so guard before the switch or a
+    # text-only target evicts the working audio model.
     class _Reached(Exception):
         pass
 
@@ -2864,8 +2843,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
-    # Codex P2: an object prompt like {"prompt": {}} is a deterministic client error
-    # (only a string or array is valid).
+    # Only a string or array is a valid prompt, so an object is a deterministic client error.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -3071,8 +3049,7 @@ def test_anthropic_request_has_image_helper():
 
 
 def test_responses_and_anthropic_wire_require_vision_from_images():
-    # P2: the modality guard must fire on /v1/responses and /v1/messages too, so an
-    # image request can't evict a vision model for a text-only target.
+    # The guard fires here too, or an image request evicts a vision model for a text target.
     import inspect
 
     responses_src = inspect.getsource(inference_route.openai_responses)
@@ -3137,7 +3114,7 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
 
 
 def test_audio_generate_is_reload_only(monkeypatch):
-    # Codex P2: /audio/generate must not switch to a client-named GGUF.
+    # /audio/generate must not switch to a client-named GGUF.
     from models.inference import ChatCompletionRequest
 
     class _Reached(Exception):
@@ -3165,8 +3142,7 @@ def test_audio_generate_is_reload_only(monkeypatch):
 
 
 def test_note_model_unloaded_clears_reload_stash(monkeypatch):
-    # Codex P2: a deliberate unload must drop the idle reload stash so the next /v1
-    # request can't resurrect the just-unloaded model.
+    # A deliberate unload drops the stash, or the next /v1 request resurrects the model.
     import core.inference.llama_keepwarm as kw
 
     kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
@@ -3262,8 +3238,7 @@ def test_lifecycle_gate_serializes_across_loops():
 
 
 def test_auto_switch_serializes_across_event_loops(monkeypatch):
-    # Codex P2: the per-loop asyncio lock can't serialize two swaps on different event
-    # loops in one process.
+    # A per-loop asyncio lock can't serialize two swaps on different loops in one process.
     import threading
 
     backend = _FakeBackend("org/A-GGUF")
@@ -3315,8 +3290,7 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
 
 
 def test_acquire_swap_gate_is_cancellation_safe():
-    # A waiter cancelled while waiting for the gate (client disconnect mid-swap) must
-    # not leak it: after the holder releases, a fresh acquire still succeeds.
+    # A waiter cancelled mid-swap must not leak the gate: a later acquire still succeeds.
     async def main():
         await inference_route._acquire_swap_gate()  # this loop holds the gate
         try:
@@ -3339,8 +3313,7 @@ def test_acquire_swap_gate_is_cancellation_safe():
 
 
 def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
-    # The "no model loaded" errors point at the opt-in auto-switch toggle so a request
-    # naming a listed-but-unloaded model is self-explanatory -- but only when it's off.
+    # The error points at the opt-in auto-switch toggle, but only when the toggle is off.
     base = "No GGUF model loaded. Load a GGUF model first."
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
@@ -4262,15 +4235,13 @@ def test_parallel_slots_are_stored_and_gated_on_gguf():
 
 
 def test_override_route_persists_parallel_slots(override_store):
-    # The mirror the picker writes has to carry the field, or a config whose only
-    # change is the slot count saves as an empty entry.
+    # The picker's mirror must carry the field, or a slot-count-only change saves as empty.
     resp = _put("unsloth/B-GGUF:Q4_K_M", n_parallel = 8)
     assert resp.overrides["unsloth/B-GGUF:Q4_K_M"] == {"n_parallel": 8}
 
 
 def test_eviction_cleanup_clears_mirrored_fields_but_keeps_launch_flags(override_store):
-    # Dropping a local entry to stay inside the browser's storage budget is not the user
-    # forgetting the model, so the cleanup sends remove=false with no fields.
+    # Evicting a local entry for storage budget is not a forget, so cleanup sends remove=false.
     settings.set_model_override(
         "unsloth/B-GGUF:Q4_K_M",
         llama_extra_args = ["--flash-attn"],
@@ -4287,8 +4258,7 @@ def test_eviction_cleanup_clears_mirrored_fields_but_keeps_launch_flags(override
 
 
 def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
-    # Settings are per quant, so Q4_K_M and Q8_0 of one repo are separate entries
-    # and the bare repo id is only the fallback.
+    # Settings are per quant; the bare repo id is only the fallback.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4335,15 +4305,13 @@ def test_override_route_preserves_launch_flags_across_a_settings_only_update(ove
     assert entry["llama_extra_args"] == ["--flash-attn"]
     assert entry["max_seq_length"] == 4096
 
-    # An explicit empty list is the UI's "forget this model", and with no other
-    # fields left it removes the entry outright.
+    # An explicit empty list is the UI's "forget", and with no fields left the entry goes.
     gone = _put("unsloth/B-GGUF", llama_extra_args = [])
     assert "unsloth/B-GGUF" not in gone.overrides
 
 
 def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
-    # A local folder or non-active HF cache resolves to a repo id plus a concrete
-    # path, and settings saved against the path must still be found.
+    # A local folder resolves to repo id + path; settings saved against the path must be found.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4361,10 +4329,8 @@ def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
 
 
 def test_path_qualified_override_beats_repo_qualified(monkeypatch):
-    # Most specific first: the settings page keys a local row (a folder, an LM Studio
-    # dir, a loose file) by the path being loaded, while the repo id is the advertised
-    # alias that a second copy of the same repo, or a hand-written overrides PUT, is
-    # configured under. The row the user actually edited wins.
+    # Most specific first: the settings page keys a local row by the path being loaded,
+    # while the repo id is only the advertised alias. The row the user edited wins.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4395,8 +4361,7 @@ def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(override_store):
 
 
 def test_bare_repo_carry_over_does_not_split_a_windows_path(override_store):
-    # The colon in "C:\models\x.gguf" is not a variant separator: splitting naively
-    # looks up "C" and could graft another model's flags on.
+    # The colon in "C:\models\x.gguf" is not a variant separator: splitting looks up "C".
     settings.set_model_override("C", llama_extra_args = ["--flash-attn"])
 
     resp = _put(r"C:\models\x.gguf", max_seq_length = 4096)
@@ -4411,8 +4376,7 @@ def test_windows_path_with_quant_still_carries_over(override_store):
 
 
 def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
-    # A two-GPU pin replayed on a one-GPU box used to 400 the whole load; the
-    # contract is that one dead field degrades to defaults.
+    # A two-GPU pin on a one-GPU box used to 400 the load; one dead field degrades to defaults.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4473,8 +4437,7 @@ def test_override_gpu_ids_probe_never_raises(monkeypatch):
 
 
 def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
-    # resolve_requested_gpu_ids only rejects malformed Vulkan ordinals, so presence
-    # needs the ggml probe the load runs, or the load 400s on the skipped check.
+    # resolve_requested_gpu_ids only rejects malformed ordinals; presence needs the ggml probe.
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
@@ -4490,8 +4453,7 @@ def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
 
 
 def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
-    # Nothing to probe with, and refusing would drop a valid pin on every load,
-    # so the later path stays the authority.
+    # Nothing to probe with, and refusing would drop a valid pin on every load.
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
@@ -4500,8 +4462,7 @@ def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
 
 
 def test_default_save_preserves_flags_instead_of_removing(override_store):
-    # "Remember for this model" with all-default values sends no fields, which is
-    # shape-identical to a removal; guessing wrong wipes unrecoverable launch flags.
+    # All-default values send no fields, shape-identical to a removal; guessing wrong wipes flags.
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
 
     resp = _put("unsloth/B-GGUF", remove = False)
@@ -4529,8 +4490,7 @@ def test_remove_false_with_real_fields_saves_normally(override_store):
 
 
 def test_override_lookup_falls_back_to_case_insensitive(override_store):
-    # The browser lowercases ids, so the backfill writes "unsloth/qwen3-8b-gguf:q4_k_m"
-    # while the resolver asks for the repo's real casing.
+    # The browser lowercases ids while the resolver asks for the repo's real casing.
     settings.set_model_override("unsloth/qwen3-8b-gguf:q4_k_m", max_seq_length = 8192)
     got = settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")
     assert got["max_seq_length"] == 8192
@@ -4544,8 +4504,7 @@ def test_exact_override_match_beats_a_case_variant(override_store):
 
 
 def test_ambiguous_case_fallback_matches_nothing(override_store):
-    # Two POSIX paths differing only in case are two files, so guessing between
-    # them applies one model's settings to another.
+    # Two POSIX paths differing only in case are two files; guessing applies the wrong settings.
     settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
     settings.set_model_override("/models/FOO.gguf", max_seq_length = 8192)
     assert settings.get_model_override("/models/Foo.gguf") == {}
@@ -4563,22 +4522,19 @@ def test_request_used_api_key_distinguishes_key_from_session():
     assert inference_route._request_used_api_key(_Req("Bearer eyJhbGciOiJIUzI1NiJ9.x")) is False
     assert inference_route._request_used_api_key(_Req("")) is False
     assert inference_route._request_used_api_key(_Req(None)) is False
-    # Runs on the hot path of every tracked request, so a malformed request object
-    # must read as "not an API key" rather than raise.
+    # Hot path: a malformed request object must read as "not an API key" rather than raise.
     assert inference_route._request_used_api_key(object()) is False
 
 
 def test_case_fallback_never_applies_to_a_posix_path(override_store):
-    # Two files differing only in case are two models on Linux, so a near miss must
-    # load defaults rather than another model's context and GPU pin.
+    # Two casings are two models on Linux, so a near miss loads defaults, not the other's pin.
     settings.set_model_override("/models/foo.gguf", max_seq_length = 8192, gpu_ids = [1])
     assert settings.get_model_override("/models/Foo.gguf") == {}
     assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
 
 
 def test_case_fallback_does_apply_to_a_windows_path(override_store):
-    # NTFS is case-insensitive, so these name one file and the browser folds drive paths
-    # before storing.
+    # NTFS is case-insensitive: these name one file, and the browser folds drive paths.
     settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 8192)
     assert settings.get_model_override(r"C:\models\FOO.gguf")["max_seq_length"] == 8192
     assert settings.get_model_override("C:/Models/Foo.gguf")["max_seq_length"] == 8192
@@ -4592,15 +4548,13 @@ def test_case_fallback_applies_to_unc_and_wsl_drive_paths(override_store):
 
 
 def test_a_plain_posix_path_under_mnt_stays_case_sensitive(override_store):
-    # Only /mnt/<letter> is a WSL drive mount; /mnt/data is an ordinary Linux mount
-    # point and stays case-sensitive.
+    # Only /mnt/<letter> is a WSL drive mount; /mnt/data is an ordinary case-sensitive mount.
     settings.set_model_override("/mnt/data/models/foo.gguf", max_seq_length = 8192)
     assert settings.get_model_override("/mnt/data/models/Foo.gguf") == {}
 
 
 def test_an_ambiguous_windows_case_fallback_still_matches_nothing(override_store):
-    # Two stored keys folding to one has no single answer, so the load takes
-    # defaults rather than guessing.
+    # Two keys folding to one has no single answer, so the load takes defaults.
     settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 1024)
     settings.set_model_override("C:/models/FOO.gguf", max_seq_length = 8192)
     assert settings.get_model_override(r"C:\Models\Foo.gguf") == {}
@@ -4613,41 +4567,35 @@ def test_case_fallback_still_covers_repo_ids(override_store):
 
 
 def test_explicit_remove_is_not_blocked_by_stale_invalid_flags(override_store):
-    # remove is the operation discriminator, so a rejected launch flag must not turn
-    # "forget this model" into a 400 that leaves the override in place.
+    # remove is the operation discriminator: a rejected flag must not turn a forget into a 400.
     settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
     resp = _put("unsloth/B-GGUF", remove = True, llama_extra_args = ["--port", "1234"])
     assert "unsloth/B-GGUF" not in resp.overrides
 
 
 def test_explicit_remove_wins_over_config_fields_in_the_same_payload(override_store):
-    # remove is the operation discriminator, so a stale field alongside it must not
-    # turn "forget this model" into an update.
+    # remove is the operation discriminator: a stale field beside it must not make it an update.
     settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
     resp = _put("unsloth/B-GGUF", remove = True, max_seq_length = 8192, tensor_parallel = True)
     assert "unsloth/B-GGUF" not in resp.overrides
 
 
 def test_posix_colon_in_a_path_is_not_treated_as_a_quant(override_store):
-    # "/models/foo:bar.gguf" is one POSIX filename, not repo + quant; splitting it
-    # grafts /models/foo's launch flags onto a different model.
+    # "/models/foo:bar.gguf" is one filename: splitting grafts /models/foo's flags onto it.
     settings.set_model_override("/models/foo", llama_extra_args = ["--flash-attn"])
     resp = _put("/models/foo:bar.gguf", max_seq_length = 4096)
     assert "llama_extra_args" not in resp.overrides["/models/foo:bar.gguf"]
 
 
 def test_unknown_quant_label_on_a_gguf_still_carries_flags_over(override_store):
-    # A .gguf with no recognizable quant token is labelled by its stem, so the UI saves
-    # under "/models/custom.gguf:custom".
+    # A .gguf with no quant token is labelled by its stem, so the UI saves ":custom".
     settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
     resp = _put("/models/custom.gguf:custom", max_seq_length = 4096)
     assert resp.overrides["/models/custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
 
 
 def test_bpw_qualified_variants_still_carry_flags_over(override_store):
-    # utils/models/model_config.py keeps a bits-per-weight modifier on the label to keep
-    # two files at the same base quant distinct, and that form reaches the override
-    # keys.
+    # model_config.py keeps a bits-per-weight modifier on the label, and that form reaches keys.
     settings.set_model_override("unsloth/Repo-GGUF", llama_extra_args = ["--flash-attn"])
     resp = _put("unsloth/Repo-GGUF:IQ4_XS-3.53bpw", max_seq_length = 4096)
     assert resp.overrides["unsloth/Repo-GGUF:IQ4_XS-3.53bpw"]["llama_extra_args"] == [
@@ -4656,17 +4604,14 @@ def test_bpw_qualified_variants_still_carry_flags_over(override_store):
 
 
 def test_a_posix_path_variant_folds_while_the_path_does_not(override_store):
-    # The browser lowercases the quant but keeps POSIX path casing, so the migrated
-    # "/models/Foo:q4_k_m" must answer the scanner's "/models/Foo:Q4_K_M" while the
-    # path itself stays case-sensitive.
+    # The browser lowercases the quant but keeps POSIX path casing.
     settings.set_model_override("/models/Foo:q4_k_m", max_seq_length = 8192)
     assert settings.get_model_override("/models/Foo:Q4_K_M")["max_seq_length"] == 8192
     assert settings.get_model_override("/models/foo:Q4_K_M") == {}
 
 
 def test_an_unknown_gguf_label_is_reachable_in_either_casing(override_store):
-    # A .gguf with no recognizable quant token is labelled by its stem, and v2 storage
-    # lowercases that label while the scanner keeps the filename casing.
+    # The stem-derived label is lowercased in storage while the scanner keeps filename casing.
     settings.set_model_override("/models/CustomModel.gguf:custommodel", max_seq_length = 8192)
     got = settings.get_model_override("/models/CustomModel.gguf:CustomModel")
     assert got["max_seq_length"] == 8192
@@ -4675,23 +4620,20 @@ def test_an_unknown_gguf_label_is_reachable_in_either_casing(override_store):
 
 
 def test_a_posix_colon_filename_is_not_folded_as_a_variant(override_store):
-    # "/models/foo:Bar.gguf" is one filename, not path + quant, so folding its tail
-    # would reach a different file's settings.
+    # "/models/foo:Bar.gguf" is one filename: folding its tail reaches a different file.
     settings.set_model_override("/models/foo:bar.gguf", max_seq_length = 8192)
     assert settings.get_model_override("/models/foo:Bar.gguf") == {}
 
 
 def test_a_suffix_the_scanner_would_not_derive_carries_nothing_over(override_store):
-    # Only the scanner's exact label is accepted, so an unrelated colon suffix cannot
-    # reach another model's flags.
+    # Only the scanner's exact label is accepted, so a stray colon suffix reaches nothing.
     settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
     resp = _put("/models/custom.gguf:something-else", max_seq_length = 4096)
     assert "llama_extra_args" not in resp.overrides["/models/custom.gguf:something-else"]
 
 
 def test_unknown_quant_label_carries_over_for_a_windows_path(override_store):
-    # Written on Windows but read back on a backend where a backslash is an ordinary
-    # filename character.
+    # Written on Windows, read back where a backslash is an ordinary filename character.
     settings.set_model_override(r"C:\models\custom.gguf", llama_extra_args = ["--flash-attn"])
     resp = _put(r"C:\models\custom.gguf:custom", max_seq_length = 4096)
     assert resp.overrides[r"C:\models\custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
@@ -4704,8 +4646,7 @@ def test_real_quant_suffix_on_a_path_still_carries_flags_over(override_store):
 
 
 def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatch):
-    # The pre-flight check cannot mirror every loader rule (a Vulkan diffusion GGUF
-    # refuses GPU selection), and a stale pin must never block a request.
+    # The pre-flight check can't mirror every loader rule, and a stale pin must not block a load.
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
@@ -4779,8 +4720,7 @@ def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
 
 
 def test_removal_clears_the_entry_a_load_would_actually_resolve(override_store):
-    # The browser normalizes casing before storing, so a forget can carry a different
-    # casing; removing only the literal key leaves an entry loads still resolve to.
+    # A forget can carry a different casing; removing only the literal key leaves a live entry.
     settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
     assert settings.get_model_override("unsloth/b-gguf:q4_k_m")["max_seq_length"] == 8192
 
@@ -4790,8 +4730,7 @@ def test_removal_clears_the_entry_a_load_would_actually_resolve(override_store):
 
 
 def test_save_updates_the_existing_case_variant_instead_of_forking_it(override_store):
-    # The backfill stores lowercase keys while a later UI save carries the catalog's
-    # casing.
+    # The backfill stores lowercase keys while a later UI save carries the catalog's casing.
     settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
     _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
     assert list(settings.get_model_overrides()) == ["unsloth/b-gguf:q4_k_m"]
@@ -4806,9 +4745,7 @@ def test_removal_of_a_path_still_only_touches_the_exact_key(override_store):
 
 
 def test_forget_clears_the_filename_derived_key_a_load_still_reads(override_store):
-    # The picker keyed a standalone .gguf by the quant label from its filename before it
-    # settled on the bare path, and the backfill carries those entries over from an
-    # upgraded browser.
+    # The picker once keyed a standalone .gguf by its filename quant label; backfill carries it.
     settings.set_model_override(
         "/models/Qwen3-8B-Q4_K_M.gguf:q4_k_m",
         max_seq_length = 8192,
@@ -4819,9 +4756,8 @@ def test_forget_clears_the_filename_derived_key_a_load_still_reads(override_stor
 
 
 def test_forget_clears_every_spelling_of_one_model(override_store):
-    # A build that stored the literal id could leave two spellings of one repo in
-    # the map. Clearing only the one named makes the survivor the sole fold match,
-    # so the very next load applies the settings that were just forgotten.
+    # Two spellings of one repo can coexist; clearing only the named one makes the survivor
+    # the sole fold match, so the next load reapplies what was just forgotten.
     settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
     settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
     _put("unsloth/B-GGUF:Q4_K_M", remove = True)
@@ -4838,8 +4774,7 @@ def test_forget_of_one_windows_spelling_clears_the_other(override_store):
 
 
 def test_forget_of_a_posix_path_still_spares_its_case_sibling(override_store):
-    # POSIX paths do not fold: two casings are two files, and forgetting one must
-    # not take the other's settings with it.
+    # POSIX paths do not fold: two casings are two files, so a forget spares the sibling.
     settings.set_model_override("/models/foo.gguf", max_seq_length = 8192)
     settings.set_model_override("/models/Foo.gguf", max_seq_length = 4096)
     _put("/models/foo.gguf", remove = True)
@@ -4847,8 +4782,7 @@ def test_forget_of_a_posix_path_still_spares_its_case_sibling(override_store):
 
 
 def test_forget_leaves_another_file_own_derived_key_alone(override_store):
-    # The derived key is built from the forgotten file's own path and its own
-    # label, so a neighbour that happens to share a quant keeps its settings.
+    # The derived key uses the forgotten file's own path, so a quant-sharing neighbour survives.
     settings.set_model_override("/models/Other-Q4_K_M.gguf:q4_k_m", max_seq_length = 4096)
     _put("/models/Qwen3-8B-Q4_K_M.gguf", remove = True)
     assert settings.get_model_override("/models/Other-Q4_K_M.gguf:Q4_K_M")["max_seq_length"] == 4096
@@ -4862,9 +4796,7 @@ def test_forget_of_a_repo_quant_key_derives_nothing(override_store):
 
 
 def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
-    # A downloaded but unloaded GGUF asked for as org/model:latest missed the resolver,
-    # so the switch could not load it (404ing on a quant that was never a quant with
-    # auto-download on, refusing with it off).
+    # "org/model:latest" missed the resolver, so the switch could not load a downloaded GGUF.
     from core.inference.local_model_resolver import _LocalGgufEntry
 
     import time
@@ -4935,8 +4867,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
 
 
 def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
-    # The request path reads this cache without scanning, so emptying it leaves no
-    # evidence until the rebuild lands.
+    # The request path reads this cache without scanning, so emptying it loses the entries.
     import time
 
     entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
@@ -4951,8 +4882,7 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
 
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
-    # list_local_gguf_variants orders by descending size, so the head is the biggest
-    # quant.
+    # list_local_gguf_variants orders by descending size, so the head is the biggest quant.
     from core.inference.local_model_resolver import _local_gguf_entry
 
     for name, size in (("model-F16.gguf", 900), ("model-Q4_K_M.gguf", 100)):
@@ -5157,8 +5087,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
 
     backfill = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF:Q4_K_M",
-        # The browser's own copy of a field the server already has, plus the ones
-        # only it holds.
+        # A field the server already has, plus the ones only the browser holds.
         max_seq_length = 2048,
         custom_context_length = 32768,
         kv_cache_dtype = "q8_0",
@@ -5179,8 +5108,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
     # One entry, not two: the fill resolves onto the key a load reads.
     assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
 
-    # An ordinary save is still a replacement, or a settings edit could never
-    # clear a field.
+    # An ordinary save is still a replacement, or an edit could never clear a field.
     edit = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
     )
@@ -5342,8 +5270,7 @@ def test_a_loose_gguf_prefers_its_path_keyed_settings_over_the_alias(monkeypatch
     )
     assert req.max_seq_length == 32768
 
-    # The alias is still read when it is the only key, so an entry written against
-    # the advertised id keeps working.
+    # The alias is still read when it is the only key.
     req2 = _switch_with_overrides(
         monkeypatch,
         resolves_to = (path, None, alias),
@@ -5474,8 +5401,7 @@ def test_override_payload_rejects_booleans_for_numeric_fields():
         with pytest.raises(ValidationError):
             ModelOverridePayload(model_id = "unsloth/x-GGUF:Q4_K_M", **{field: value})
 
-    # Only bools: every real value the picker sends still validates, and the
-    # fields that ARE booleans keep working.
+    # Only bools are rejected: real values, including real booleans, still validate.
     ok = ModelOverridePayload(
         model_id = "unsloth/x-GGUF:Q4_K_M",
         max_seq_length = 4096,

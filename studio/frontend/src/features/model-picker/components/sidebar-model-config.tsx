@@ -41,13 +41,11 @@ export function SidebarModelConfig({
   loadedConfig,
   onReload,
 }: SidebarModelConfigProps) {
-  // A standalone .gguf has no quant to choose between, but the loader labels it
-  // from its filename (llama_cpp falls back to _extract_quant_label when the load
-  // named no variant) and /status echoes that as gguf_variant. Keying settings by
-  // it would write "<path>:Q4_K_M" while the Hub row, the picker and the backfill
-  // all use the bare path, so the same file would carry two configs. The
-  // auto-switch lookup reads the bare path first, so the sidebar's entry would
-  // never be the one an API load applies. Same rule as settingsGgufVariantForRow.
+  // A standalone .gguf has no quant to choose between, but the loader labels it from its
+  // filename and /status echoes that back. Keying settings by it would write
+  // "<path>:Q4_K_M" while every other surface uses the bare path, so one file would carry
+  // two configs and the API would never apply this one. Same rule as
+  // settingsGgufVariantForRow.
   const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;
   const target = useMemo<ModelPickTarget>(() => {
     const leaf = leafName(modelId);
@@ -56,8 +54,7 @@ export function SidebarModelConfig({
       displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
       ggufVariant: settingsGgufVariant,
       isGguf,
-      // An Ollama blob loads through a link dir the auto-switch resolver skips,
-      // so its settings must not be mirrored as if the API could load it.
+      // An Ollama blob sits behind a link dir the resolver skips, so do not mirror it.
       apiLoadable: isGguf && !isOllamaLinkPath(modelId),
       meta: {
         source: "local",

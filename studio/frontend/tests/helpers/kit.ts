@@ -7,9 +7,8 @@ import type { ResidentAdoptionState } from "../../src/features/hub/lib/adopt-inf
 import type { ResidentStatusRefreshTargets } from "../../src/features/hub/lib/resident-status-refresh.ts";
 
 /**
- * Teach the loader the two resolution rules vite and tsconfig's "bundler" mode
- * give the app. Call this before the dynamic import of any src module that
- * resolves the way vite and tsconfig resolve, not the way bare node does.
+ * Teach the loader the two resolution rules vite and tsconfig's "bundler" mode give the
+ * app. Call before dynamically importing any src module that resolves that way.
  */
 export function registerBundlerResolver(): void {
   register("../bundler-resolver.mjs", import.meta.url);
@@ -22,9 +21,8 @@ export type StorageFake = {
 };
 
 /**
- * An in-memory localStorage, installed on globalThis under both the names the
- * app reads it by. The returned map is the backing store, so a test can stage
- * records before the module under test is imported.
+ * An in-memory localStorage, installed on globalThis under both names the app reads it
+ * by. The returned map is the backing store, so a test can stage records before import.
  */
 export function installLocalStorageFake(): {
   store: Map<string, string>;

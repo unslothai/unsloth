@@ -25,8 +25,7 @@ const { store, storage } = installLocalStorageFake();
 
 const REPO_KEY = 'v2:["unsloth/repo-gguf","q4_k_m"]';
 
-// The legacy import of unsloth_load_settings runs once, on the first read after
-// load, so it has to be staged before the module is imported.
+// The legacy import runs once on the first read, so it must be staged before the import.
 store.set(
   "unsloth_model_configs",
   JSON.stringify({ [REPO_KEY]: { version: 1, maxSeqLength: 32768 } }),
@@ -84,8 +83,8 @@ test("publicModelId mirrors what /status reports for a path-loaded model", () =>
 });
 
 test("a resident path-loaded model is matched by the id /status reports", () => {
-  // A loose .gguf: the catalog row is keyed by the path, and the Hub page records
-  // the loadable identifier (status.model_identifier), so the literal pass answers.
+  // A loose .gguf: the row is keyed by path and the Hub records the loadable
+  // identifier, so the literal pass answers.
   assert.equal(
     modelIdsMatch("Qwen3-8B-Q4_K_M", "/srv/models/Qwen3-8B-Q4_K_M.gguf"),
     false,
@@ -98,8 +97,7 @@ test("a resident path-loaded model is matched by the id /status reports", () => 
     ),
     true,
   );
-  // A repo in an inactive HF cache loads by snapshot path but keeps the repo id
-  // as its settings identity, so the configId alias already covers it.
+  // A repo in an inactive cache keeps the repo id as its settings identity.
   assert.equal(
     residentModelIdMatches(
       "unsloth/Qwen3-8B-GGUF",
@@ -139,8 +137,7 @@ test("a resident path-loaded model is matched by the id /status reports", () => 
 });
 
 test("a shared filename or folder name never marks a row resident", () => {
-  // Two loose GGUFs with the same filename in different folders collapse onto one
-  // public id, so a stem can only say "one of these", never which.
+  // Same filename in two folders collapses onto one public id, so a stem cannot say which.
   const loaded = "/srv/models/alpha/model.gguf";
   const other = "/srv/models/beta/model.gguf";
   assert.equal(publicModelId(loaded), publicModelId(other));
@@ -197,8 +194,8 @@ test("a standalone gguf keeps one settings identity across surfaces", () => {
     // What hub/services/models/common.py emits for a single scanned file.
     formatVariant: "Q4_K_M",
   } as LocalInventoryRow;
-  // The Chat picker opens the same file with no variant, so the Hub row must not
-  // adopt the filename-derived label or the two edit different configs.
+  // The Chat picker opens the same file with no variant, so adopting the filename
+  // label would leave the two editing different configs.
   assert.equal(settingsGgufVariantForRow(loose), null);
 
   // A GGUF directory still has a variant slot for the quant lookup to fill.
@@ -220,14 +217,11 @@ test("a standalone gguf keeps one settings identity across surfaces", () => {
   assert.equal(settingsGgufVariantForRow(cached), null);
 });
 
-// The one-time backfill re-reads listPerModelConfigs() to pick up a save that
-// landed while the override fetch was in flight, and matches on the folded
-// identity. That is only unambiguous because storage holds one record per model,
-// so these pin that rule rather than the backfill.
+// The backfill matches on the folded identity, which is only unambiguous because storage
+// holds one record per model. These pin that rule rather than the backfill.
 test("importing the legacy load settings never doubles up a model", () => {
-  // The typed casing in unsloth_load_settings names the model the v2 record
-  // already holds, so the import has to leave it alone rather than add a second
-  // record the picker would prefer and the backfill would not.
+  // The legacy casing names the model the v2 record already holds, so the import must
+  // leave it alone rather than add a second record.
   assert.deepEqual(listPerModelConfigs().length, 1);
   assert.deepEqual(storedKeys(), [REPO_KEY]);
   assert.equal(
@@ -274,18 +268,16 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   );
 });
 
-// Every answer below is the one split_quant_suffix in
-// studio/backend/utils/openai_auto_switch_settings.py gives for the same key. The
-// backfill folds a stored key with this before comparing it against the server's,
-// so a suffix this splits and the backend does not collapses two models onto one
-// key on the browser side only.
+// Every answer below is the one the backend's split_quant_suffix gives. The backfill
+// folds a stored key with this before comparing, so a suffix this splits and the backend
+// does not collapses two models onto one key on the browser side only.
 const CASES: [string, [string, string] | null][] = [
   // A known quant label, with and without the optional bpw modifier.
   ["org/Repo-GGUF:Q4_K_M", ["org/Repo-GGUF", "Q4_K_M"]],
   ["org/Repo-GGUF:IQ4_XS-3.53bpw", ["org/Repo-GGUF", "IQ4_XS-3.53bpw"]],
   ["org/Repo-GGUF:UD-Q4_K_XL", ["org/Repo-GGUF", "UD-Q4_K_XL"]],
-  // A .gguf with no quant token in its name is labelled by its stem, and storage
-  // lowercases the label while the scanner keeps the filename's casing.
+  // A .gguf with no quant token is labelled by its stem, lowercased in storage while
+  // the scanner keeps the filename's casing.
   ["/models/CustomModel.gguf:custommodel", ["/models/CustomModel.gguf", "custommodel"]],
   ["/models/CustomModel.gguf:CustomModel", ["/models/CustomModel.gguf", "CustomModel"]],
   ["C:\\models\\CustomModel.gguf:custommodel", ["C:\\models\\CustomModel.gguf", "custommodel"]],
@@ -306,8 +298,7 @@ const CASES: [string, [string, string] | null][] = [
     ["/models/dir/CustomModel.gguf", "custommodel"],
   ],
   ["/models/dir/CustomModel.gguf:dir/custommodel", null],
-  // A colon is legal in a POSIX filename. Neither of these is a variant, and
-  // reading them as one folds two real files onto a single key.
+  // A colon is legal in a POSIX filename: reading it as a variant folds two real files.
   ["/models/foo:Bar.gguf", null],
   ["/models/foo:bar.gguf", null],
   ["/models/llama.gguf:Bar.gguf", null],
@@ -332,10 +323,8 @@ test("splitQuantSuffix answers exactly as the backend's split_quant_suffix", () 
 });
 
 test("a .gguf filename carrying a colon is not folded into a variant", () => {
-  // Two real, distinct files: POSIX allows a colon in a name and is case
-  // sensitive, so the one-time backfill has to keep their settings apart. The
-  // variant half of an override key is stored lowercased, so folding these makes
-  // one key and strands whichever file the backfill reaches second.
+  // Two real, distinct files: POSIX allows a colon and is case sensitive. The variant
+  // half of a key is stored lowercased, so folding these strands one file's settings.
   const upper = "/models/llama.gguf:Bar.gguf";
   const lower = "/models/llama.gguf:bar.gguf";
   assert.equal(splitQuantSuffix(upper), null);

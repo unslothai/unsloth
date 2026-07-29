@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The two resolution rules vite and tsconfig's "bundler" mode give the app that
-// bare node does not have: the "@/*" path alias, and a relative import written
-// without its extension. Register this from a test that needs to import a src
-// module using either, which is otherwise unreachable from the test runner.
+// The two resolution rules vite and tsconfig's "bundler" mode give the app that bare node
+// does not: the "@/*" path alias, and a relative import written without its extension.
+// Register this from a test that imports a src module using either.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

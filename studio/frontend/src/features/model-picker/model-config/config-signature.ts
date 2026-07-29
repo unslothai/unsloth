@@ -3,19 +3,16 @@
 
 // Identity of one ModelConfigPage editor instance.
 //
-// ModelConfigPage seeds its editable state from `loadedConfig` in a useState
-// initializer, so it reads that prop exactly once per mounted instance. A host
-// that opens the page before /api/inference/status has hydrated, or while the
-// target is still loading, gets `loadedConfig` null first and the live config a
-// moment later; without the config in the React key the same instance survives
-// that flip and keeps showing the saved/default values for a model that is
-// running with something else, which Apply then writes back over it.
+// ModelConfigPage seeds its state from `loadedConfig` in a useState initializer, so it
+// reads that prop once per mount. A host that opens the page before status has hydrated
+// gets null first and the live config a moment later; without the config in the React
+// key the instance survives that flip and keeps showing saved/default values, which
+// Apply then writes back over the running model.
 
 import type { PerModelConfig } from "./per-model-config";
 
-// Serialize the per-model GPU knobs with the same "absent == default"
-// coalescing the store applies: mode auto/absent, gpuLayers Auto (< 0) /
-// absent, nCpuMoe 0 / absent, and the GPU pick (null / absent = all GPUs).
+// Serialize the GPU knobs with the store's "absent == default" coalescing: mode auto,
+// gpuLayers Auto (< 0), nCpuMoe 0, and a null GPU pick meaning all GPUs.
 export function gpuFieldsSignature(config: PerModelConfig): string {
   return [
     config.gpuMemoryMode ?? "auto",
@@ -38,8 +35,7 @@ function hashString(value: string): number {
 /**
  * Signature of the live config an editor was seeded from.
  *
- * `null` (no live config, because the model is not resident or status has not
- * answered yet) is deliberately its own value, distinct from every real config:
+ * `null` (not resident, or status has not answered yet) is deliberately its own value:
  * the arrival of the live config is exactly the transition that has to remount.
  */
 export function loadedConfigSignature(
@@ -64,9 +60,8 @@ export function loadedConfigSignature(
 }
 
 /**
- * React key for one ModelConfigPage instance. Every host mounts it under this so
- * they agree on when the editor is re-seeded: on a different model, a different
- * quant, or a change in the live config it is meant to be showing.
+ * React key for one ModelConfigPage instance, so every host agrees on when the editor
+ * re-seeds: a different model, a different quant, or a change in the live config.
  */
 export function modelConfigInstanceKey(
   modelId: string,

@@ -652,9 +652,8 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
-  // What the settings are stored under, which is not always what loads (see
-  // ModelPickTarget.configId). Every read, write and mirror uses it; the probes
-  // keep target.id, since they have to open the model.
+  // What settings are stored under, which is not always what loads. Every read, write
+  // and mirror uses it; the probes keep target.id, since they have to open the model.
   const configId = target.configId ?? target.id;
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -913,9 +912,8 @@ export function ModelConfigPage({
     const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
     const effectivePersistenceOnly =
       isActiveModel && effectiveAtBaseline && rememberChanged;
-    // Judge what storage keeps: savePerModelConfig normalizes first, and the runtime's
-    // Speculative Decoding "auto" canonicalizes to null, so judging the raw object
-    // reported saved while the write dropped it, and mirrored an override nothing held.
+    // Judge what storage keeps: savePerModelConfig normalizes first, so judging the raw
+    // object reported saved while the write dropped it.
     const normalizedRuntimeConfig = normalizePerModelConfig(
       effectiveRuntimeConfig,
     );
@@ -932,18 +930,13 @@ export function ModelConfigPage({
     } else {
       saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
     }
-    // Mirror to the server so an API request that loads this model gets these exact
-    // settings, not app defaults. Best-effort and non-blocking: the localStorage
-    // write above already governs this browser, and forgetting clears both.
+    // Mirror to the server so an API load of this model gets these settings, not app
+    // defaults. Best-effort: the localStorage write above already governs this browser.
     //
-    // Skipped when the local write failed (quota, a future-schema entry), or the
-    // two would permanently disagree with no way to tell which the next load used.
-    // Gated on auto-switch reach, not just GGUF-ness: the resolver indexes GGUFs and
-    // skips Ollama, so mirroring either would advertise a load that cannot happen.
-    // A native-path lease is the same case: /status withholds model_identifier for a
-    // dropped or file-picked GGUF, so this id is only the file's display name, which
-    // the resolver never keys, and reopening the file needs a lease the API cannot
-    // mint. The token, not the name, decides: the fallback label carries no suffix.
+    // Skipped when the local write failed, or the two would permanently disagree. Gated
+    // on auto-switch reach, not just GGUF-ness, since the resolver skips Ollama. A
+    // native-path lease is the same case: this id is only the file's display name, which
+    // the resolver never keys. The token, not the name, decides.
     if (
       !saveFailed &&
       (target.apiLoadable ?? target.isGguf) &&
@@ -956,9 +949,8 @@ export function ModelConfigPage({
       );
     }
     // Saving can push the local map over budget and drop other models, whose server
-    // entries would keep being applied with nothing in the UI able to forget them.
-    // Not a Forget though: the user never asked to drop these, so only the mirrored
-    // fields go and launch flags set through the API stay.
+    // entries would keep applying with nothing able to forget them. Not a Forget: only
+    // the mirrored fields go, and launch flags set through the API stay.
     for (const dropped of evicted) {
       syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
         keepLaunchFlags: true,

@@ -5,9 +5,8 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 /**
- * localStorage that cannot throw: Safari private browsing, blocked cookies and an
- * opaque webview origin all make `window.localStorage` throw on access. Losing the
- * preference there is fine; taking the whole panel down with it is not.
+ * localStorage that cannot throw: private browsing, blocked cookies and opaque webview
+ * origins all throw on access. Losing the preference is fine; losing the panel is not.
  */
 const safeStorage = {
   getItem: (name: string): string | null => {
@@ -61,8 +60,7 @@ export const useApiMonitorOverlayStore = create<ApiMonitorOverlayState>()(
       version: 1,
       storage: createJSONStorage(() => safeStorage),
       partialize: (state) => ({ autoOpen: state.autoOpen }),
-      // Without this a version bump discards the payload and hands the popup back
-      // to someone who had turned it off.
+      // Without this a version bump discards the payload and revives a disabled popup.
       migrate: (persisted) => persisted,
       // Explicit merge so an older stored payload cannot resurrect `isOpen`.
       merge: (persisted, current) => ({

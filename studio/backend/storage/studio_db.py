@@ -2991,7 +2991,7 @@ def upsert_app_setting_map_entry(
                 return current
             stored = current.get(entry_key)
             if isinstance(stored, dict):
-                # Stored values win field by field, so this only ever adds.
+                # Stored values win field by field, so this only adds.
                 merged = {**entry_value, **stored}
                 if merged == stored:
                     conn.rollback()

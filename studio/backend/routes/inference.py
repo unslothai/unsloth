@@ -3905,8 +3905,7 @@ async def _maybe_auto_download_model(
             hf_token = _auto_download_hf_token(fastapi_request),
             require_vision = require_vision,
             subject = current_subject,
-            # These /v1 endpoints also serve Studio's own chat on a session JWT,
-            # so only mark the download row as API traffic when it really is.
+            # These endpoints also serve Studio's chat on a JWT, so only mark real API traffic.
             via_api_key = _request_used_api_key(fastapi_request),
         )
     except Exception as exc:
@@ -4418,22 +4417,15 @@ async def _maybe_auto_switch_model(
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Apply this model's saved launch config so an API swap loads
-                        # it exactly as the picker would. Try variant-qualified keys
-                        # first (two quants of one repo can differ), then bare ids, and
-                        # within each pair the concrete load path before the advertised
-                        # id. The settings UI keys every local row (a folder, an LM
-                        # Studio dir, a non-active HF cache, a loose .gguf) by that path,
-                        # while override_id is a derived alias -- the /v1/models name a
-                        # hand-written overrides PUT uses, and for a loose file only its
-                        # filename stem. Reading the alias first let an older entry under
-                        # it shadow the settings the user just saved, for good. A cached
-                        # repo is keyed by its repo id, which is override_id, and no path
-                        # entry exists for it, so it still resolves on the second try.
-                        # A standalone .gguf resolves with variant=None; an early build
-                        # of this feature keyed it by the quant label derived from the
-                        # filename, so read "<path>:LABEL" too, after the bare path the
-                        # picker writes today.
+                        # Apply the saved launch config so an API swap loads as the picker
+                        # would. Variant-qualified keys first (quants of one repo differ),
+                        # then bare ids, and within each pair the load path before the
+                        # advertised id: the settings UI keys every local row by that path
+                        # while override_id is only a derived alias, so reading the alias
+                        # first let an older entry shadow the settings just saved. A cached
+                        # repo has no path entry and resolves on the second try. An early
+                        # build keyed a loose .gguf by its filename label, so read
+                        # "<path>:LABEL" too, after the bare path the picker writes today.
                         file_variant = None
                         if not variant and target_id.lower().endswith(".gguf"):
                             from hub.utils.gguf import extract_quant_label
@@ -4455,8 +4447,8 @@ async def _maybe_auto_switch_model(
                         load_kwargs.update(
                             model_override_load_kwargs(
                                 override,
-                                # Set for every GGUF the resolver returns; the
-                                # reload-stash path carries the quant it froze.
+                                # Set for every GGUF the resolver returns; the reload
+                                # stash carries the quant it froze.
                                 is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
                             )
                         )
@@ -4464,8 +4456,8 @@ async def _maybe_auto_switch_model(
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids
                         ):
-                            # Stale pin (GPU removed, mask changed, another host).
-                            # Dropping the one dead field beats 400ing the whole load.
+                            # Stale pin (GPU removed, another host): drop the one dead
+                            # field rather than 400 the whole load.
                             load_kwargs.pop("gpu_ids", None)
                             logger.warning(
                                 "Dropping saved gpu_ids %s for %s: not available here.",
@@ -4483,10 +4475,9 @@ async def _maybe_auto_switch_model(
                                 current_request_counted = True,
                             )
                         except HTTPException as exc:
-                            # The pre-flight check cannot mirror every gpu_ids rule the
-                            # loader applies (a Vulkan diffusion GGUF refuses GPU
-                            # selection outright). Retry once without the saved pin: a
-                            # stale placement preference must never block a request.
+                            # The pre-flight check cannot mirror every loader gpu_ids
+                            # rule, and a stale placement must never block a request,
+                            # so retry once without the saved pin.
                             if not (
                                 exc.status_code == 400
                                 and load_kwargs.get("gpu_ids")
@@ -4786,8 +4777,7 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
             return False
         resolved = resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
         if is_vulkan and resolved:
-            # Vulkan ordinals are their own index space, so resolve() only rejects
-            # malformed ones; presence needs the ggml probe the load runs.
+            # Vulkan ordinals are their own index space, so presence needs the ggml probe.
             binary = LlamaCppBackend._find_llama_server_binary()
             if binary:
                 probed = {
@@ -5399,11 +5389,9 @@ async def _load_model_impl(
         event = "load",
         model = _lifecycle_model_label(request.model_path, request.gguf_variant),
         running = True,
-        # Auto-switch loads run before the endpoint opens its request row, so a
-        # load that fails there leaves this as the only trace of API traffic.
+        # Auto-switch loads run before the request row opens, so a failure leaves only this.
         via_api_key = _request_used_api_key(fastapi_request),
-        # The row is shared, so every subject reads it. Name the caller it belongs
-        # to or the overlay pops open in browsers that did not cause the traffic.
+        # The row is shared, so name its owner or the overlay pops open in unrelated tabs.
         subject = current_subject,
     )
 
@@ -6967,9 +6955,8 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         operating_status = "idle"
     return {
         "status": operating_status,
-        # The clock every entry's started_at is on. The floating monitor dates its
-        # first snapshot against this instead of the browser's clock, which need not
-        # agree with ours over a tunnel or from a container.
+        # The clock every entry's started_at is on. The monitor dates its first snapshot
+        # against this, since the browser's clock need not agree over a tunnel.
         "server_time": time.time(),
         "active_model": active_model,
         "context_length": _monitor_context_length(),

@@ -49,11 +49,9 @@ class ApiMonitorEntry:
     status: str
     started_at: float
     updated_at: float
-    # Who this row belongs to. On a shared lifecycle row it does not restrict
-    # visibility (see _visible); it names the caller the row is attributed to.
+    # Who this row is attributed to; on a shared row it does not restrict visibility.
     subject: Optional[str] = None
-    # True for sk-unsloth key callers, not UI sessions. The floating panel only
-    # auto-opens for these, so Studio's own chat does not pop it mid-chat.
+    # True for sk-unsloth callers only: the panel auto-opens on these, not Studio's chat.
     via_api_key: bool = False
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
@@ -96,9 +94,8 @@ class ApiMonitorEntry:
             "endpoint": self.endpoint,
             "method": self.method,
             "model": self.model,
-            # A lifecycle row is shared, so it reaches subjects that had nothing to
-            # do with it. The overlay auto-opens on this flag, so report it only to
-            # the caller the row is attributed to; everyone else still sees the row.
+            # A shared row reaches subjects with nothing to do with it, and the overlay
+            # auto-opens on this flag, so report it only to the attributed caller.
             "via_api_key": self.via_api_key and attributed,
             "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
             "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
@@ -134,8 +131,7 @@ class ApiMonitor:
         enabled: bool = True,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
-        # Shared rows one subject cleared. Deleting them would erase another
-        # caller's history; keeping them makes "Clear log" look broken on reload.
+        # Shared rows one subject cleared: deleting would erase another caller's history.
         self._hidden_shared: dict[str, set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
@@ -159,8 +155,7 @@ class ApiMonitor:
             id = f"apireq_{uuid.uuid4().hex[:12]}",
             endpoint = endpoint,
             method = method,
-            # str(): a raw JSON body can carry any type, and a non-string
-            # breaks the UI that renders it.
+            # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
             prompt = _trim(prompt, _MAX_PROMPT_CHARS),
             status = "running",
@@ -215,13 +210,11 @@ class ApiMonitor:
             event = event,
             reason = reason,
             shared = True,
-            # The overlay opens on API-key traffic only. A switch or download that
-            # is refused never reaches api_monitor.start, so this row is the whole
-            # trace of it, and without the attribution the monitor stayed shut on
-            # exactly the failures it exists to surface.
+            # The overlay opens on API-key traffic only, and a refused switch never
+            # reaches api_monitor.start, so this row is its whole trace: without the
+            # attribution the monitor stayed shut on the failures it exists to surface.
             via_api_key = via_api_key,
-            # Shared rows are read by every subject, so the attribution needs an
-            # owner or the pop-open lands in browsers that did not cause it.
+            # Shared rows reach every subject, so attribution needs an owner.
             subject = subject,
         )
         with self._lock:
@@ -442,9 +435,8 @@ class ApiMonitor:
             for entry in self._entries:
                 if entry.shared and entry.status != "running":
                     hidden.add(entry.id)
-            # Shared rows are hidden, never dropped, even when this subject owns
-            # one: they are another caller's history too, and an owned shared row
-            # is exactly what an API-key load produces.
+            # Shared rows are hidden, never dropped, even when owned: they are another
+            # caller's history too.
             self._entries = deque(
                 entry for entry in self._entries if entry.shared or entry.subject != subject
             )
@@ -453,8 +445,7 @@ class ApiMonitor:
         if subject is None:
             return True
         if entry.shared:
-            # Shared rows reach every subject, minus the ones this one cleared.
-            # Checked before ownership so clearing hides a subject's own rows too.
+            # Every subject minus the cleared ones. Before ownership, so a clear hides own rows.
             return entry.id not in self._hidden_shared.get(subject, ())
         return entry.subject == subject
 

@@ -487,9 +487,8 @@ function ModelSelectorContent({
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
       ggufVariant: meta.ggufVariant ?? null,
       isGguf,
-      // Ollama's models list here as custom-folder GGUFs under a link dir the
-      // auto-switch resolver skips, so mirroring their settings to the server
-      // would advertise a load the API can never make.
+      // Ollama's models sit under a link dir the resolver skips, so mirroring their
+      // settings would advertise a load the API can never make.
       apiLoadable: isGguf && !isOllamaLinkPath(id),
       meta,
     });

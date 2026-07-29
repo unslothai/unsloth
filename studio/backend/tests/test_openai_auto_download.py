@@ -111,8 +111,7 @@ def _hub_error(error_type, status_code: int, message: str):
 
 
 def test_the_hub_error_helper_carries_a_status_on_both_majors():
-    # CI runs huggingface_hub 1.x and this box 0.x, and each takes only one of the
-    # constructor shapes.
+    # CI runs huggingface_hub 1.x and this box 0.x, each taking one constructor shape.
     from hub.utils.hf_errors import hf_error_status
 
     class _Legacy(Exception):
@@ -605,8 +604,7 @@ def test_a_hanging_auth_check_falls_through_to_the_download(hub, monkeypatch):
 
 
 def test_a_companion_only_repo_is_not_held_at_busy(hub):
-    # mmproj and MTP files are companions, not quants, so such a repo is non-servable
-    # and falls through to the resident model.
+    # mmproj and MTP files are companions, not quants, so the repo is non-servable.
     assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
     gb = 1024**3
     hub["info"] = _Info([_Sibling("mmproj-F16.gguf", gb), _Sibling("mtp-model.gguf", gb)])
@@ -1396,8 +1394,7 @@ def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch
 
 
 def test_a_refusal_is_never_swallowed_by_the_cannot_verify_handler(monkeypatch):
-    # The checks run inside a broad `except Exception` that turns a failure to decide
-    # into a fallthrough.
+    # The checks run inside a broad `except Exception` that turns a failure into fallthrough.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -1684,8 +1681,7 @@ def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
 
 
 def test_a_generic_gguf_advertises_the_label_the_worker_resolves(hub):
-    # With no recognized quant token the extractors part ways: one takes the last
-    # hyphenated segment, the plan and worker key the whole stem.
+    # With no quant token the extractors part ways: last hyphenated segment vs whole stem.
     from hub.utils.gguf import extract_quant_label as canonical
     from hub.utils.gguf_plan import build_gguf_variant_plans
 
@@ -1772,8 +1768,7 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
 
 
 def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatch):
-    # huggingface_hub treats None as "use the cached login", so only an explicit False
-    # is anonymous.
+    # huggingface_hub treats None as "use the cached login", so only False is anonymous.
     seen: list = []
 
     def _probe(model_name, hf_token = None):
