@@ -293,3 +293,81 @@ def test_training_guard_sees_the_layer_count():
     assert len(calls) == 2, "expected the /load and /validate call sites"
     for call in calls:
         assert any(kw.arg == "gpu_layers" for kw in call.keywords)
+
+
+# ── the probe must inspect the file that will be spawned, whatever its name ──
+
+
+@pytest.mark.parametrize("name", ["shim", "shim.pyw", "SHIM.PY"])
+def test_probe_keys_on_argv_shape_not_suffix(llama_cpp, tmp_path, name):
+    """_find_diffusion_assets launches any UNSLOTH_DG_SHIM file as-is, so the probe
+    must answer for that exact file -- an extensionless or .pyw override previously
+    fell through to the installed package and answered for a different shim."""
+    shim = tmp_path / name
+    shim.write_text('ap.add_argument("--ngl", type=int)\n', encoding = "utf-8")
+    assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
+
+
+def test_probe_does_not_mistake_the_module_form_for_a_file(llama_cpp, monkeypatch):
+    """[python, -m, unsloth_zoo.diffusion_studio.shim] carries a module name, not a
+    path; the probe must resolve the installed package, not stat the module string."""
+    import importlib.util as ilu
+
+    monkeypatch.setattr(ilu, "find_spec", lambda name: None)
+    cmd = ["python", "-m", "unsloth_zoo.diffusion_studio.shim"]
+    assert llama_cpp._shim_supports_ngl(cmd) is False  # unresolvable -> conservative
+
+
+# ── the guard must mirror what the launcher will actually do ──
+
+
+def test_split_supported_mirrors_the_launch_gate(llama_cpp, tmp_path, monkeypatch):
+    b = llama_cpp.LlamaCppBackend()
+    shim = tmp_path / "shim.py"
+
+    shim.write_text('ap.add_argument("--ngl", type=int)\n', encoding = "utf-8")
+    monkeypatch.setattr(
+        b, "_find_diffusion_assets", lambda: (["python", str(shim)], "/bin/dg", None)
+    )
+    assert b.diffusion_split_supported() is True
+
+    shim.write_text('ap.add_argument("--maxtok", type=int)\n', encoding = "utf-8")
+    assert b.diffusion_split_supported() is False
+
+    monkeypatch.setattr(b, "_find_diffusion_assets", lambda: None)
+    assert b.diffusion_split_supported() is False  # no runner -> no split
+
+
+def test_training_guard_mirrors_shim_support():
+    """The zero-layer bypass and the split-scaled estimate are only valid when the
+    launcher will actually emit --ngl; a dropped split runs GPU-resident."""
+    route_src = ROUTE_PATH.read_text(encoding = "utf-8")
+    route_tree = ast.parse(route_src)
+    fn = next(
+        n
+        for n in ast.walk(route_tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_guard_chat_load_against_training"
+    )
+    body = ast.get_source_segment(route_src, fn) or ""
+    assert "diffusion_split_supported" in body
+    assert body.index("diffusion_split_supported") < body.index("diffusion_ngl == 0")
+    assert "_scale_diffusion_required_gb" in body
+
+
+# ── a positive split competes with its GPU share, not the whole file ──
+
+
+@pytest.mark.parametrize(
+    ("required", "ngl", "n_layers", "expected"),
+    [
+        (15.0, 10, 30, 5.0),  # a third of the layers -> a third of the footprint
+        (15.0, 30, 30, 15.0),  # all layers -> unchanged
+        (15.0, 99, 30, 15.0),  # over-ask clamps to all layers
+        (15.0, 10, None, 15.0),  # unknown layer count stays conservative
+        (15.0, 10, 0, 15.0),  # degenerate header value stays conservative
+    ],
+)
+def test_positive_split_scales_the_guard_estimate(llama_cpp, required, ngl, n_layers, expected):
+    assert llama_cpp._scale_diffusion_required_gb(required, ngl, n_layers) == pytest.approx(
+        expected
+    )

@@ -1712,6 +1712,17 @@ def _diffusion_manual_ngl(gpu_memory_mode: str, gpu_layers: int) -> Optional[int
     return int(gpu_layers) if (gpu_memory_mode == "manual" and int(gpu_layers) >= 0) else None
 
 
+def _scale_diffusion_required_gb(required_gb: float, ngl: int, n_layers: Optional[int]) -> float:
+    """GPU share of a partially offloaded diffusion GGUF, for the training guard.
+
+    Only the ``ngl`` GPU-resident layers compete with training for VRAM; sizing the
+    whole file 409s a split that fits. Unknown layer count keeps the full
+    (conservative) estimate, and ``ngl >= n_layers`` is the all-layers case."""
+    if not n_layers or n_layers <= 0 or ngl >= n_layers:
+        return required_gb
+    return required_gb * (ngl / n_layers)
+
+
 def _source_declares_option(source: str, option: str) -> bool:
     """True iff ``source`` really registers ``option`` on an argparse parser.
 
@@ -1745,10 +1756,12 @@ def _shim_supports_ngl(shim_cmd: List[str], extra_pythonpath: Optional[str] = No
     startup failure. Read the shim source instead of spawning it: the launch path
     is already slow and a probe process would double the cost.
     """
-    # Case-insensitively: a Windows UNSLOTH_DG_SHIM override may well be SHIM.PY,
-    # and falling through to the installed-package branch would then answer for a
-    # different file than the one about to be spawned.
-    if len(shim_cmd) >= 2 and str(shim_cmd[-1]).lower().endswith(".py"):
+    # _find_diffusion_assets emits exactly two argv shapes: a file override
+    # ([python, <path>]) or the installed package ([python, -m, <module>]). Key on
+    # the shape, not the suffix: an UNSLOTH_DG_SHIM override may be extensionless,
+    # .pyw, or SHIM.PY, and every one of those is still the file about to be
+    # spawned -- probing anything else answers for the wrong shim.
+    if len(shim_cmd) >= 2 and "-m" not in shim_cmd:
         candidates = [Path(shim_cmd[-1])]
     else:
         candidates = []
@@ -5557,6 +5570,22 @@ class LlamaCppBackend:
                 )
 
         return None
+
+    def diffusion_split_supported(self) -> bool:
+        """Whether a diffusion launch right now would honour --ngl.
+
+        Mirror of the gate in _start_diffusion_server, for the training guard: a
+        requested split the launcher will drop must be guarded as the default
+        GPU-resident configuration, not as the split. False when no shim resolves
+        or the probe fails, matching the launcher's own fallback."""
+        try:
+            assets = self._find_diffusion_assets()
+        except Exception:
+            return False
+        if assets is None:
+            return False
+        shim_cmd, _visual_bin, extra_pythonpath = assets
+        return _shim_supports_ngl(shim_cmd, extra_pythonpath)
 
     @staticmethod
     def _diffusion_gpu_arg(

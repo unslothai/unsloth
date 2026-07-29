@@ -4637,6 +4637,25 @@ def _estimate_gguf_required_gb(
         return None
 
 
+def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
+    """Total block count from a local GGUF header, or None (remote / unreadable)."""
+    try:
+        main = getattr(config, "gguf_file", None)
+        if not (main and Path(main).is_file()):
+            repo = getattr(config, "gguf_hf_repo", None)
+            variant = getattr(config, "gguf_variant", None)
+            if repo and variant:
+                from hub.utils.gguf import resolve_local_gguf_path
+                main = resolve_local_gguf_path(repo, variant)
+        if main and Path(main).is_file():
+            probe = LlamaCppBackend()
+            probe._read_gguf_metadata(str(main))
+            return getattr(probe, "_n_layers", None) or None
+    except Exception as e:
+        logger.debug("Could not read GGUF layer count for training guard: %s", e)
+    return None
+
+
 def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     """Classify a GGUF as diffusion, normal, or unknown before loading."""
     identity = " ".join(
@@ -4830,7 +4849,7 @@ def _guard_chat_load_against_training(
         logger.warning("Could not check training state for chat-load guard: %s", e)
         return
 
-    from core.inference.llama_cpp import _diffusion_manual_ngl
+    from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
     if diffusion_kind is _DIFFUSION_KIND_UNSET:
@@ -4842,6 +4861,17 @@ def _guard_chat_load_against_training(
     # Mirrors the loader, which folds the same condition into its cpu_only
     # (core/inference/llama_cpp.py, _start_diffusion_server).
     diffusion_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers) if is_gguf else None
+    if diffusion_ngl is not None and diffusion_kind is not False:
+        # The loader drops the split when the installed shim has no --ngl and
+        # launches the default GPU-resident configuration. Guard what will run,
+        # not what was asked: otherwise a zero-layer request skips the VRAM
+        # check while the child still takes a whole GPU.
+        try:
+            if not get_llama_cpp_backend().diffusion_split_supported():
+                diffusion_ngl = None
+        except Exception as e:
+            logger.warning("Could not probe diffusion shim for chat-load guard: %s", e)
+            diffusion_ngl = None
     if is_gguf and diffusion_kind is not False and diffusion_ngl == 0:
         return
 
@@ -4899,6 +4929,19 @@ def _guard_chat_load_against_training(
         if is_gguf
         else None
     )
+    # A confirmed-diffusion positive split puts only ngl/n_layers of the weights
+    # on the GPU (the shim-support gate above already nulled a split the loader
+    # would drop). Unknown classification keeps the full estimate: its header was
+    # unreadable, so the layer count would be too.
+    if (
+        required_override_gb is not None
+        and diffusion_kind is True
+        and diffusion_ngl is not None
+        and diffusion_ngl > 0
+    ):
+        required_override_gb = _scale_diffusion_required_gb(
+            required_override_gb, diffusion_ngl, _gguf_layer_count(config)
+        )
 
     vulkan_free_vram_gb = None
     if is_gguf:

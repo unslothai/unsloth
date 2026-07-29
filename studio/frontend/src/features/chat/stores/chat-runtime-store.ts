@@ -748,12 +748,12 @@ export function loadedGpuMemoryFields(resp: {
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF runs mode-agnostic (pins all layers on one GPU, reports
-    // "auto"), so adopt everything a chat GGUF does EXCEPT the live standing
-    // preference -- the next chat load must still honor the user's manual choice.
-    // The loaded baseline is still "auto", but the UI hides mode controls for a
-    // loaded diffusion model so it can't read as dirty against the preference.
-    ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
+    // A diffusion GGUF reporting "auto" ran on the runner's own defaults, so an
+    // inert standing manual preference must survive it -- the next chat load
+    // still honors the user's choice. But "manual" means a layer split was
+    // actually applied (#7574): adopt it, or a refresh hydrates the store back
+    // to the persisted "auto" while the runner is serving a manual split.
+    ...(resp.is_diffusion && mode !== "manual" ? {} : { gpuMemoryMode: mode }),
     loadedGpuMemoryMode: mode,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.

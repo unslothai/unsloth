@@ -1164,6 +1164,9 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
+                // Sized like the load below: a manual DiffusionGemma split must
+                // not be validated as a full-GGUF occupant during training.
+                gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
               }
