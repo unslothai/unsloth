@@ -515,9 +515,11 @@ function modelMatchesDeleted(
  */
 function getIsLoraCompareFromState(
   state: ReturnType<typeof useChatRuntimeStore.getState>,
+  checkpoint = state.params.checkpoint,
 ): boolean {
-  const cp = state.params.checkpoint;
-  const selected = cp ? state.loras.find((l) => l.id === cp) : undefined;
+  const selected = checkpoint
+    ? state.loras.find((l) => l.id === checkpoint)
+    : undefined;
   return selected?.exportType === "lora";
 }
 
@@ -547,7 +549,11 @@ const CompareContent = memo(function CompareContent({
   );
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const [isLoraCompare, setIsLoraCompare] = useState<boolean | null>(null);
+  const [compareActive, setCompareActive] = useState(false);
   const usedInventoryFallbackRef = useRef(false);
+  const initialCheckpointRef = useRef(
+    useChatRuntimeStore.getState().params.checkpoint,
+  );
 
   // Wait for the full LoRA inventory before choosing the layout, then freeze
   // that choice. Generalized compare temporarily changes the global checkpoint
@@ -556,8 +562,13 @@ const CompareContent = memo(function CompareContent({
     if (modelRuntimeHydrated) {
       const detected = getIsLoraCompareFromState(
         useChatRuntimeStore.getState(),
+        initialCheckpointRef.current,
       );
       if (usedInventoryFallbackRef.current) {
+        // A successful retry can land while generalized compare has temporarily
+        // loaded one pane into the global checkpoint. Keep the fallback layout
+        // mounted until submission ends, then classify the original checkpoint.
+        if (compareActive) return;
         usedInventoryFallbackRef.current = false;
         setIsLoraCompare(detected);
       } else {
@@ -568,7 +579,7 @@ const CompareContent = memo(function CompareContent({
     if (!modelsError || isLoraCompare !== null) return;
     usedInventoryFallbackRef.current = true;
     setIsLoraCompare(false);
-  }, [modelRuntimeHydrated, modelsError, isLoraCompare]);
+  }, [compareActive, modelRuntimeHydrated, modelsError, isLoraCompare]);
 
   if (isLoraCompare === null) {
     return <div className="min-h-0 flex-1" aria-busy="true" />;
@@ -591,6 +602,7 @@ const CompareContent = memo(function CompareContent({
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
       onExitCompare={onExitCompare}
+      onComparingChange={setCompareActive}
     />
   );
 });
@@ -879,6 +891,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  onComparingChange,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -889,6 +902,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  onComparingChange?: (comparing: boolean) => void;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -915,6 +929,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     isLora: false,
   });
   const initialThreadLookupCompleteRef = useRef(false);
+  const [initialThreadLookupComplete, setInitialThreadLookupComplete] =
+    useState(false);
 
   const handleModelsChange = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -949,11 +965,15 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     [],
   );
 
-  const handleComparingChange = useCallback((submitting: boolean) => {
-    compareSubmittingRef.current = submitting;
-    if (submitting) idleThreadRefreshRef.current += 1;
-    setCompareSubmitting(submitting);
-  }, []);
+  const handleComparingChange = useCallback(
+    (submitting: boolean) => {
+      compareSubmittingRef.current = submitting;
+      if (submitting) idleThreadRefreshRef.current += 1;
+      setCompareSubmitting(submitting);
+      onComparingChange?.(submitting);
+    },
+    [onComparingChange],
+  );
 
   // Resolve the persisted pair independently of submission state. A send can
   // begin before IndexedDB returns; cancelling that first lookup would make the
@@ -961,20 +981,23 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   useEffect(() => {
     let isActive = true;
     initialThreadLookupCompleteRef.current = false;
+    setInitialThreadLookupComplete(false);
     lookupCompareThreadIds()
       .then((ids) => {
         if (!isActive) return;
         initialThreadLookupCompleteRef.current = true;
-        // A send may start before IndexedDB returns. Do not replace its
-        // temporary pane IDs mid-submission; the idle refresh below will apply
-        // persisted IDs after that run releases ownership.
-        if (compareSubmittingRef.current) return;
         applyCompareThreadIds(ids);
+        setInitialThreadLookupComplete(true);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
         }
+        if (!isActive) return;
+        // Storage is unavailable, so there are no persisted IDs to wait for.
+        // Allow the panes to continue with fresh local threads.
+        initialThreadLookupCompleteRef.current = true;
+        setInitialThreadLookupComplete(true);
       });
     return () => {
       isActive = false;
@@ -1051,6 +1074,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             onComparingChange={handleComparingChange}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
+            submissionReady={initialThreadLookupComplete}
           />
         ) : (
           <></>

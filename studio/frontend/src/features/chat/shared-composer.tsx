@@ -391,9 +391,15 @@ export function RegisterCompareHandle({
             // initialization assigns its persisted remote id before the adapter
             // marks the run active. Refresh both identities on every update so
             // the waiter follows that handoff instead of watching a stale id.
+            const remoteId = aui.threadListItem().getState().remoteId;
             const ids = [
               aui.threads().getState().mainThreadId,
-              aui.threadListItem().getState().remoteId,
+              remoteId,
+              // Before assistant-ui exposes the persisted ID, the adapter files
+              // first-turn run state under this transient key. Stop watching it
+              // once the handoff is observable so unrelated first turns cannot
+              // keep this pane's waiter alive.
+              ...(remoteId ? [] : ["__default"]),
             ].filter((id): id is string => Boolean(id));
             const isRunning = ids.some((id) =>
               Boolean(state.runningByThreadId[id]),
@@ -487,6 +493,7 @@ export function SharedComposer({
   onComparingChange,
   model1ThreadId,
   model2ThreadId,
+  submissionReady = true,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
@@ -495,6 +502,7 @@ export function SharedComposer({
   onComparingChange?: (comparing: boolean) => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
+  submissionReady?: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
@@ -542,6 +550,7 @@ export function SharedComposer({
     new CompareRunOwnership<CompareModelSelection>(),
   );
   const sendRef = useRef<(() => void) | null>(null);
+  const sendInProgressRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -979,6 +988,21 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
+    // File conversion happens before compare ownership begins. Claim this
+    // synchronous guard first so two attachment submissions cannot both pass
+    // the idle render and later supersede an in-flight backend model load.
+    if (!submissionReady || sendInProgressRef.current) return;
+    sendInProgressRef.current = true;
+    onComparingChange?.(true);
+    try {
+      await sendImpl();
+    } finally {
+      onComparingChange?.(false);
+      sendInProgressRef.current = false;
+    }
+  }
+
+  async function sendImpl() {
     if (composingRef.current) return;
     const msg = text.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
@@ -1463,7 +1487,6 @@ export function SharedComposer({
 
       setComparing(true);
       compareStepSucceededRef.current = false;
-      onComparingChange?.(true);
       try {
         // Require both append targets before starting either generation. A
         // remount timeout must fail the compare, not run against stale history.
@@ -1577,7 +1600,6 @@ export function SharedComposer({
         if (compareRunsRef.current.release(run)) {
           useChatRuntimeStore.getState().setModelLoading(false);
           setComparing(false);
-          onComparingChange?.(false);
         }
       }
     } else {
@@ -1651,6 +1673,7 @@ export function SharedComposer({
     (text.trim().length > 0 ||
       pendingImages.length > 0 ||
       pendingAudio !== null) &&
+    submissionReady &&
     !busy &&
     !isComposing &&
     !isDictating;

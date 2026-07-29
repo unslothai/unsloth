@@ -33,6 +33,8 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     assert "state.modelRuntimeHydrated" in compare
     assert "state.modelsError" in compare
     assert "usedInventoryFallbackRef" in compare
+    assert "initialCheckpointRef" in compare
+    assert "if (compareActive) return;" in compare
     assert "if (!modelsError || isLoraCompare !== null) return;" in compare
     assert "setIsLoraCompare(false);" in compare
     assert "setIsLoraCompare(detected);" in compare
@@ -59,13 +61,35 @@ def test_same_model_reload_retains_origin_for_stop_reconciliation():
     assert "same-model reload" in composer
 
 
-def test_initial_thread_lookup_does_not_replace_active_submission_ids():
+def test_compare_waiter_tracks_default_key_until_remote_id_handoff():
+    composer = _read("shared-composer.tsx")
+    waiter = composer.split("waitForRunEnd: () =>", 1)[1].split(
+        "};\n    return () =>", 1
+    )[0]
+    assert '...(remoteId ? [] : ["__default"])' in waiter
+    assert waiter.index("const remoteId") < waiter.index('["__default"]')
+
+
+def test_overlapping_compare_sends_are_rejected_before_file_conversion():
+    composer = _read("shared-composer.tsx")
+    send = composer.split("async function send() {", 1)[1].split(
+        "async function sendImpl() {", 1
+    )[0]
+    assert "sendInProgressRef.current" in send
+    assert "sendInProgressRef.current = true;" in send
+    assert "await sendImpl();" in send
+    assert "sendInProgressRef.current = false;" in send
+
+
+def test_initial_thread_lookup_blocks_submission_until_ids_are_applied():
     page = _read("chat-page.tsx")
     initial_lookup = page.split(
         "// Resolve the persisted pair independently of submission state.", 1
     )[1].split("// Once the initial lookup is known", 1)[0]
-    assert "initialThreadLookupCompleteRef.current = true;" in initial_lookup
-    assert "if (compareSubmittingRef.current) return;" in initial_lookup
-    assert initial_lookup.index("if (compareSubmittingRef.current) return;") < (
-        initial_lookup.index("applyCompareThreadIds(ids);")
+    assert "applyCompareThreadIds(ids);" in initial_lookup
+    assert "setInitialThreadLookupComplete(true);" in initial_lookup
+    assert initial_lookup.index("applyCompareThreadIds(ids);") < initial_lookup.index(
+        "setInitialThreadLookupComplete(true);"
     )
+    general = page.split("const GeneralCompareContent = memo(", 1)[1]
+    assert "submissionReady={initialThreadLookupComplete}" in general
