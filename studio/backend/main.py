@@ -340,7 +340,7 @@ from utils.hardware import (
 )
 import utils.hardware.hardware as _hw_module
 
-from utils.torch_warmup import start_background_warm
+from utils.torch_warmup import join_background_warm, start_background_warm
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
@@ -496,6 +496,39 @@ def _warm_rag_embedder() -> None:
         pass
 
 
+def _post_warm_background_work() -> None:
+    """Stack-dependent startup work, run after the coordinated warm.
+
+    Both of these import the ML stack, and both used to do it their own way
+    before the socket bound: the MLX check inline on the lifespan thread (so a
+    healthy Mac waited on mlx.core/mlx_lm/mlx_vlm before uvicorn could bind, and
+    the whole point of deferring torch was lost there), the RAG embedder on a
+    thread started early enough to race the warm for the GIL and the import
+    locks -- pulling sentence-transformers/transformers/torch outside the warm's
+    hardware-first ordering and its purge-on-failure handling.
+
+    Joining the warm first means the stack is imported once, in the intended
+    order, and these two then run against a warm module cache.
+    """
+    join_background_warm()
+
+    # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
+    # Reinstall mlx by name on a background thread and re-detect, so a
+    # reinstall/update that dropped mlx self-heals. No-op elsewhere; opt out with
+    # UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. The availability probe imports the MLX
+    # runtime, which is why this waits for the warm rather than running inline:
+    # it cannot be made metadata-only, since checking versions without importing
+    # is precisely what lets a version-satisfying but broken install go unrepaired.
+    try:
+        from utils.mlx_repair import start_mlx_autorepair_if_needed
+        start_mlx_autorepair_if_needed()
+    except Exception as _mlx_exc:
+        import structlog as _structlog
+        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+    _warm_rag_embedder()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -520,16 +553,9 @@ async def lifespan(app: FastAPI):
     # ensure_hardware_detected() and wait for that same detection instead of
     # reading a half-set global.
 
-    # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
-    # Reinstall mlx by name on a background thread (off the critical path) and
-    # re-detect, so a reinstall/update that dropped mlx self-heals. No-op
-    # elsewhere; opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
-    try:
-        from utils.mlx_repair import start_mlx_autorepair_if_needed
-        start_mlx_autorepair_if_needed()
-    except Exception as _mlx_exc:
-        import structlog as _structlog
-        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+    # MLX autorepair is NOT here any more: its availability probe imports the MLX
+    # runtime, which on a healthy Mac kept the socket unbound for exactly the wait
+    # this startup path exists to remove. It runs in _post_warm_background_work.
 
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
@@ -557,8 +583,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
+    # The RAG embedder warm moved to _post_warm_background_work: started here it
+    # raced the coordinated warm for the GIL and the import locks.
     _start_helper_precache_if_enabled()
-    threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
     from core.research_runs import ResearchSupervisor
 
@@ -605,6 +632,7 @@ async def lifespan(app: FastAPI):
     # `import main` used to pull in before the port could bind. The socket binds
     # as soon as this returns, so the login screen is up while the stack loads.
     start_background_warm()
+    threading.Thread(target = _post_warm_background_work, daemon = True, name = "post-warm").start()
 
     _lifespan_log.info(
         "lifespan startup completed in %.1fms",
