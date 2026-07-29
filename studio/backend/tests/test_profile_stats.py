@@ -522,6 +522,122 @@ def test_unknown_timezone_falls_back_to_the_offset(stats_db):
     assert stats["totals"]["totalTokens"] == 20
 
 
+def test_deleting_the_source_thread_keeps_the_forks_copies(stats_db):
+    """forked_from_thread_id is not a foreign key, so it outlives the source."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "gone", "m", [(now - timedelta(hours = 2), _metadata(100, 50))])
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, "
+            "updated_at, forked_from_thread_id, forked_from_message_id) "
+            "VALUES ('kept', 'fork', 'base', 'm', ?, ?, 'gone', 'gone-a0')",
+            (_ms(now), _ms(now)),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('kept-a0', 'kept', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2))),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert compute_profile_stats(days = 7)["totals"]["totalTokens"] == 150
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DELETE FROM chat_threads WHERE id = 'gone'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    invalidate_profile_stats_cache()
+    stats = compute_profile_stats(days = 7)
+
+    # The fork now holds the only copy, so it must still be counted once.
+    assert stats["totals"]["totalTokens"] == 150
+    assert stats["totals"]["messages"] == 1
+
+
+def test_deleting_a_continuation_restores_its_source(stats_db):
+    """delete_run leaves resume_blocked set, so supersession needs a live tail."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, output_dir, resume_blocked) "
+            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, "
+            "'/runs/out', 1)",
+        )
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, output_dir, resume_blocked) "
+            "VALUES ('cont', 'completed', 'm', 'd', '{}', '2026-01-02T10:00:00', 20, 15, "
+            "'/runs/out', 0)",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert compute_profile_stats(days = 7)["training"]["steps"] == 15
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DELETE FROM training_runs WHERE id = 'cont'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    invalidate_profile_stats_cache()
+
+    # With the continuation gone the source is the only record of that work.
+    assert compute_profile_stats(days = 7)["training"]["steps"] == 10
+
+
+def test_out_of_range_timestamps_do_not_break_the_panel(stats_db):
+    """created_at is client supplied and SQLite stores it unchecked."""
+    now = datetime.now()
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "sane", "m", [(now, _metadata(10, 10))])
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at) "
+            "VALUES ('bad', 'bad', 'base', 'm', 1, 1)",
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('bad-a0', 'bad', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(7, 3)), 99_999_999_999_999_999),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = compute_profile_stats(days = 7)
+
+    # Totals still include the bad row; only its day and hour buckets are
+    # dropped, so the two well-formed messages are all that is placed.
+    assert stats["totals"]["totalTokens"] == 30
+    assert stats["totals"]["messages"] == 3
+    assert sum(stats["hourly"]) == 2
+
+
+def test_future_dated_history_is_not_a_current_streak(stats_db):
+    """A client clock that ran ahead must not report a streak that has not happened."""
+    future = datetime.now() + timedelta(days = 5)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "ahead", "m", [(future, _metadata(10, 10))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    streak = compute_profile_stats(days = 366)["streak"]
+
+    assert streak["current"] == 0
+
+
 def test_days_and_hours_use_the_callers_timezone(stats_db):
     """A remote browser must not be bucketed against the server's calendar."""
     # 01:30 UTC. In UTC that is one day; at UTC-4 it is 21:30 the day before.

@@ -21,16 +21,21 @@ export function formatCompactNumber(value: number): string {
     { limit: 1e6, suffix: "M" },
     { limit: 1e3, suffix: "K" },
   ];
-  for (const { limit, suffix } of units) {
-    if (abs >= limit) {
-      const scaled = value / limit;
-      // One decimal below 100 keeps "1.9B" readable; above it the decimal is noise.
-      const text =
-        Math.abs(scaled) >= 100
-          ? Math.round(scaled).toString()
-          : scaled.toFixed(1);
-      return `${text.replace(TRAILING_ZERO_DECIMAL, "")}${suffix}`;
+  for (const [index, { limit, suffix }] of units.entries()) {
+    if (abs < limit) continue;
+    const scaled = value / limit;
+    // One decimal below 100 keeps "1.9B" readable; above it the decimal is noise.
+    const rounded =
+      Math.abs(scaled) >= 100 ? Math.round(scaled) : Number(scaled.toFixed(1));
+    // Rounding can push a value over the next boundary, and "1000K" is not
+    // compact. Step up a unit rather than print four digits.
+    const next = units[index - 1];
+    if (next && Math.abs(rounded) >= 1000) {
+      return `${(value / next.limit).toFixed(1).replace(TRAILING_ZERO_DECIMAL, "")}${next.suffix}`;
     }
+    const text =
+      Math.abs(scaled) >= 100 ? rounded.toString() : scaled.toFixed(1);
+    return `${text.replace(TRAILING_ZERO_DECIMAL, "")}${suffix}`;
   }
   return String(Math.round(value));
 }

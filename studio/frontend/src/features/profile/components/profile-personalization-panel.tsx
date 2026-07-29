@@ -138,6 +138,18 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
+  // Escape, or any programmatic close, unmounts the tab without dispatching a
+  // blur, which would drop whatever was typed. Commit the drafts on the way
+  // out; both saves no-op on an unchanged value, so a double commit is safe.
+  const flushDrafts = useRef<() => void>(() => {});
+  useEffect(() => {
+    flushDrafts.current = () => {
+      saveName();
+      saveNickname();
+    };
+  });
+  useEffect(() => () => flushDrafts.current(), []);
+
   const applyAvatar = (value: string | null) => {
     setAvatarDataUrl(value);
     const persisted = readPersistedProfile();

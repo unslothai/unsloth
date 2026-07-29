@@ -25,6 +25,17 @@ test("compact numbers match the tile format", () => {
   assert.equal(formatCompactNumber(Number.NaN), "0");
 });
 
+test("rounding up a unit steps to the next suffix", () => {
+  // Rounding 999.5K to "1000K" is four digits, which is not compact.
+  assert.equal(formatCompactNumber(999_999), "1M");
+  assert.equal(formatCompactNumber(999_500), "1M");
+  assert.equal(formatCompactNumber(999_999_999), "1B");
+  assert.equal(formatCompactNumber(999_999_999_999), "1T");
+  assert.equal(formatCompactNumber(-999_999), "-1M");
+  // Just below the rounding boundary the unit is unchanged.
+  assert.equal(formatCompactNumber(999_499), "999K");
+});
+
 test("durations read the way the header does", () => {
   assert.equal(formatDuration(0), "0m");
   assert.equal(formatDuration(45), "45s");

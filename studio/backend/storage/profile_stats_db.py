@@ -90,10 +90,18 @@ def _resolve_zone(tz_name: str, tz_offset_minutes: int):
 
 
 def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
-    """Wall-clock time in the caller's timezone, not the server's."""
+    """Wall-clock time in the caller's timezone, not the server's.
+
+    created_at is a client-supplied integer that SQLite stores unchecked, so a
+    value outside datetime's range is possible. Drop that row rather than let
+    one bad import take down the whole panel.
+    """
     if created_at_ms <= 0:
         return None
-    return datetime.fromtimestamp(created_at_ms / 1000, tz = zone).replace(tzinfo = None)
+    try:
+        return datetime.fromtimestamp(created_at_ms / 1000, tz = zone).replace(tzinfo = None)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
@@ -114,7 +122,9 @@ def _streaks(days: set[date], today: date) -> dict[str, Any]:
 
     last = ordered[-1]
     current_streak = 0
-    if today - last <= timedelta(days = 1):
+    # A future-dated row (client clock ahead) is not a live streak: the last
+    # active day still has to be today or yesterday.
+    if timedelta(0) <= today - last <= timedelta(days = 1):
         current_streak = 1
         cursor = last
         while cursor - timedelta(days = 1) in days:
@@ -182,9 +192,13 @@ def _fold_messages(conn, zone) -> _MessageFold:
         """
         SELECT m.thread_id, m.role, m.metadata_json, m.attachments_json, m.created_at,
                t.title, t.model_id, t.model_type,
-               t.created_at AS thread_created_at, t.forked_from_thread_id
+               t.created_at AS thread_created_at, src.id AS fork_source_id
         FROM chat_messages m
         LEFT JOIN chat_threads t ON t.id = m.thread_id
+        -- forked_from_thread_id is not a foreign key, so it outlives the source.
+        -- Joining to the real row means the copies are only suppressed while
+        -- the originals are still there to be counted.
+        LEFT JOIN chat_threads src ON src.id = t.forked_from_thread_id
         ORDER BY m.thread_id, m.created_at
         """
     )
@@ -225,8 +239,9 @@ def _fold_messages(conn, zone) -> _MessageFold:
         # Forking clones the whole ancestry into the new thread, keeping each
         # copy's original timestamp. Counting those again would double every
         # metric for the branched-from conversation, so skip anything older
-        # than the fork itself.
-        if row["forked_from_thread_id"] and created_at < _as_int(row["thread_created_at"]):
+        # than the fork itself, but only while the source survives to be
+        # counted in its place.
+        if row["fork_source_id"] and created_at < _as_int(row["thread_created_at"]):
             continue
 
         fold.messages += 1
@@ -342,14 +357,29 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
     return series
 
 
-def _superseded(prefix: str) -> str:
+def _superseded(prefix: str = "r.") -> str:
     """SQL for "a later run resumed from this one, so its counters live there".
+
+    ``prefix`` must qualify the outer row: the EXISTS subquery selects from the
+    same table, so a bare column name would bind to the subquery instead.
 
     ``create_run``'s resume claim sets ``resume_blocked`` and leaves
     ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the
     same flag, so the flag alone cannot tell the two apart.
+
+    ``delete_run`` never clears the flag, so the continuation has to still be
+    there. Otherwise deleting it would strand the source at zero while its row
+    and metrics stay visible in history.
     """
-    return f"{prefix}resume_blocked = 1 AND {prefix}output_dir IS NOT NULL"
+    return f"""
+        {prefix}resume_blocked = 1
+        AND {prefix}output_dir IS NOT NULL
+        AND EXISTS (
+            SELECT 1 FROM training_runs continuation
+            WHERE continuation.output_dir = {prefix}output_dir
+              AND continuation.started_at > {prefix}started_at
+        )
+    """
 
 
 def _training_stats(conn) -> dict[str, Any]:
@@ -371,7 +401,7 @@ def _training_stats(conn) -> dict[str, Any]:
     # resume_blocked while leaving output_dir intact, whereas cancelling clears
     # output_dir, so a cancelled run keeps contributing the work it did do.
     steps = conn.execute(
-        f"SELECT COALESCE(SUM(final_step), 0) FROM training_runs WHERE NOT ({_superseded('')})"
+        f"SELECT COALESCE(SUM(r.final_step), 0) FROM training_runs r WHERE NOT ({_superseded()})"
     ).fetchone()[0]
 
     # num_tokens is state.num_input_tokens_seen, a running total logged at each

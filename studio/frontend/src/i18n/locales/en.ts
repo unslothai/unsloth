@@ -411,10 +411,10 @@ export const en = {
       stats: {
         title: "Your stats",
         subtitle:
-          "Everything below is counted from history on this machine. Nothing is uploaded.",
+          "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
         retry: "Try again",
         privacyNote:
-          "Stats are computed locally from your chat and training history and never leave this device.",
+          "Stats are computed from the chat and training history held by your Unsloth install. Nothing is collected, and nothing is sent to Unsloth or any third party.",
         emptyChats:
           "No chats yet. Start a conversation and your stats will fill in here.",
         lifetimeTokens: "Lifetime tokens",
