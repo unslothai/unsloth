@@ -517,7 +517,6 @@ export function useChatModelRuntime() {
       setLoadingModel(null);
       setLoadProgress(null);
       setLoadToastDismissedState(false);
-      if (!preserveCheckpoint) clearCheckpoint();
       if (tid != null) toast.dismiss(tid);
       const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
       toast.info("Stopping model load", {
@@ -548,8 +547,17 @@ export function useChatModelRuntime() {
           // backend model. Do not let a replacement start before the cancelled
           // frontend task has observed that outcome.
           await run.completionPromise;
+          // A standalone cancellation can race before the target reaches the
+          // backend. In that case /unload leaves the resident model untouched,
+          // so derive the UI checkpoint from the backend instead of clearing it
+          // optimistically.
+          if (!preserveCheckpoint) await refresh();
           return true;
         } catch (error) {
+          // Even when /unload fails, the cancelled frontend task may still own
+          // a running transformers install. Keep the shared slot until all of
+          // that run's owned work has settled.
+          await run.completionPromise;
           const detail =
             error instanceof Error ? error.message : "Unknown unload error";
           const message = `Failed to stop ${model.displayName}`;
@@ -592,12 +600,7 @@ export function useChatModelRuntime() {
       run.cancelPromise = cancelPromise;
       return cancelPromise;
     },
-    [
-      clearCheckpoint,
-      refresh,
-      setLoadToastDismissedState,
-      setModelsError,
-    ],
+    [refresh, setLoadToastDismissedState, setModelsError],
   );
 
   const cancelLoading = useCallback(
@@ -661,6 +664,7 @@ export function useChatModelRuntime() {
         return;
       }
       const initialActiveRun = activeLoadRunRef.current;
+      const initialSharedRun = sharedModelLoadHandle?.run;
       const initialInFlightLoad =
         initialActiveRun?.info ??
         useChatRuntimeStore.getState().loadingModelPick;
@@ -669,7 +673,11 @@ export function useChatModelRuntime() {
         (initialInFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
         (initialInFlightLoad.nativePathToken ?? null) ===
           (nativePathToken ?? null);
-      if (initiallyLoadingSamePick && !initialActiveRun?.cancelPromise) {
+      if (
+        initiallyLoadingSamePick &&
+        !initialActiveRun?.cancelPromise &&
+        !initialSharedRun?.cancelPromise
+      ) {
         restorePreviousConfig();
         return;
       }
@@ -685,6 +693,7 @@ export function useChatModelRuntime() {
       // by cancelling that newer run rather than starting concurrently.
       while (true) {
         const activeRun = activeLoadRunRef.current;
+        const sharedRun = activeRun ? null : sharedModelLoadHandle?.run;
         const inFlightLoad =
           activeRun?.info ??
           useChatRuntimeStore.getState().loadingModelPick;
@@ -693,7 +702,11 @@ export function useChatModelRuntime() {
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (loadingSamePick && !activeRun?.cancelPromise) {
+        if (
+          loadingSamePick &&
+          !activeRun?.cancelPromise &&
+          !sharedRun?.cancelPromise
+        ) {
           restorePreviousConfig();
           return;
         }
@@ -950,6 +963,7 @@ export function useChatModelRuntime() {
             // anonymously / replace token" recovery flow could run.
             const preparedToken = await prepareHfTokenForUse(
               useChatRuntimeStore.getState().hfToken || null,
+              { dialogOwner: run, signal: abortCtrl.signal },
             );
             if (!preparedToken.proceed) {
               throw new Error("Model load cancelled.");

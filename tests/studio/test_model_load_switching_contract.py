@@ -25,11 +25,12 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "const stopped = await cancelLoadRun(activeRun, true);" in runtime
     assert "if (!stopped)" in runtime
     assert "await refresh();" in runtime
-    assert "if (!preserveCheckpoint) clearCheckpoint();" in cancel
+    assert "if (!preserveCheckpoint) clearCheckpoint();" not in cancel
+    assert "if (!preserveCheckpoint) await refresh();" in cancel
     assert 'useHfTokenWarningStore.getState().resolve("cancel", run);' in cancel
     assert "useRemoteCodeConsentDialogStore.getState().resolve(false, run);" in cancel
     assert "useTransformersUpgradeDialogStore.getState().cancelPending(run);" in cancel
-    assert "await run.completionPromise;" in cancel
+    assert cancel.count("await run.completionPromise;") >= 2
 
 
 def test_late_callbacks_are_bound_to_their_originating_run():
@@ -94,6 +95,11 @@ def test_cancelled_preflight_does_not_open_late_owned_dialogs():
     remote_code = _read("features/security/hooks/use-remote-code-consent.ts")
     hf_token = _read("features/hf-auth/confirm-token.ts")
     assert runtime.count("signal: abortCtrl.signal") >= 3
+    staged_token = runtime.split(
+        "const preparedToken = await prepareHfTokenForUse(", 1
+    )[1].split(");", 1)[0]
+    assert "dialogOwner: run" in staged_token
+    assert "signal: abortCtrl.signal" in staged_token
     assert "if (signal?.aborted)" in remote_code
     assert "if (options.signal?.aborted)" in hf_token
     assert hf_token.index("await validateHfToken(normalized, options.signal)") < hf_token.index(
@@ -113,6 +119,8 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     assert "supersedeOwnerIntent: () => void;" in runtime
     assert "shared.supersedeOwnerIntent();" in runtime
     assert "loadIntentRef.current += 1;" in runtime
+    assert "!initialSharedRun?.cancelPromise" in runtime
+    assert "!sharedRun?.cancelPromise" in runtime
 
 
 def test_superseded_replacement_keeps_the_working_model_config():
@@ -139,6 +147,8 @@ def test_shared_loading_pick_stays_visible_until_cancel_settles():
     assert cancel.index("await run.completionPromise;") < cancel.index(
         "clearLoadingModelPick(pickOf(model))"
     )
+    failed_unload = cancel.split("} catch (error) {", 1)[1].split("} finally {", 1)[0]
+    assert "await run.completionPromise;" in failed_unload
 
 
 def test_active_model_reload_cancellation_marks_rollback_unloaded():
