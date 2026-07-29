@@ -1245,7 +1245,7 @@ export function AppSidebar() {
                   </span>
                 </Link>
               )}
-              <div className="flex shrink-0 items-center gap-0.5">
+              <div className="flex shrink-0 items-center gap-0.25">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
@@ -1254,7 +1254,7 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
                       <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
@@ -1278,7 +1278,7 @@ export function AppSidebar() {
                       <button
                         type="button"
                         onClick={togglePinned}
-                        className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
                         <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
