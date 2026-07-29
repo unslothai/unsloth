@@ -684,9 +684,15 @@ def test_parallel_slots_setting_wired_end_to_end():
     # the control would pin a blank "server default" to a number.
     assert "loadedNParallel: status.requested_parallel_slots," in status
     assert "nParallel: status.requested_parallel_slots," not in status
-    sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
-    # The sidebar form remounts when an external change lands.
-    assert 'config.nParallel ?? "",' in sidebar
+    # The sidebar form remounts when an external change lands. The signature it
+    # keys on is shared with the hub and the model config page now, so the slot
+    # count has to be in that one definition rather than the sidebar's own copy.
+    signature = _read("features/model-picker/model-config/config-signature.ts")
+    assert 'config.nParallel ?? "",' in signature
+    sidebar = " ".join(
+        _read("features/model-picker/components/sidebar-model-config.tsx").split()
+    )
+    assert "key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}" in sidebar
 
 
 def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
