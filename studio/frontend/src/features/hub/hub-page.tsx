@@ -74,6 +74,7 @@ import { useHubInventory } from "./inventory";
 import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
 import { settingsGgufVariantForRow } from "./inventory/settings-identity";
 import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
+import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -384,11 +385,13 @@ export function ModelsPage() {
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
 
-  useEffect(() => {
-    let cancelled = false;
+  // Drops a response that lands after a newer read started, or after unmount.
+  const residentStatusSeq = useRef(0);
+  const refreshResidentModelStatus = useCallback(() => {
+    const seq = ++residentStatusSeq.current;
     void getInferenceStatus()
       .then((status) => {
-        if (cancelled) return;
+        if (seq !== residentStatusSeq.current) return;
         const store = useChatRuntimeStore.getState();
         adoptResidentModelStatus(
           {
@@ -424,10 +427,23 @@ export function ModelsPage() {
         );
       })
       .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
   }, []);
+
+  // Mount, then again whenever this tab could have missed an API-driven switch.
+  // adoptResidentModelStatus is what makes re-reading safe: it stands down for an
+  // external selection and for a load this tab started, so a refresh never fights
+  // the model the user is switching to.
+  useEffect(() => {
+    refreshResidentModelStatus();
+    const unsubscribe = subscribeResidentStatusRefresh(
+      refreshResidentModelStatus,
+    );
+    return () => {
+      // A response still in flight adopts nothing once the Hub is gone.
+      residentStatusSeq.current += 1;
+      unsubscribe();
+    };
+  }, [refreshResidentModelStatus]);
 
   const { tab, setTab: setModelsTab } = useModelsTabState();
   const [query, setQuery] = useState("");
@@ -1282,6 +1298,13 @@ export function ModelsPage() {
   const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
     null,
   );
+  // Opening a model's settings is where a stale read costs something: the editor
+  // is seeded once, from saved/default values when the store says this model is
+  // not the resident one, and Apply reloads with them. Reading status here covers
+  // a switch that landed while this window kept focus the whole time.
+  useEffect(() => {
+    if (settingsTarget) refreshResidentModelStatus();
+  }, [settingsTarget, refreshResidentModelStatus]);
   // Bumped per open so a slow variant lookup for an abandoned row cannot land
   // on top of the row actually chosen.
   const settingsOpenSeq = useRef(0);
