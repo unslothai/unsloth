@@ -2106,6 +2106,7 @@ const Composer: FC<{
       return null;
     };
     const pendingSettingsIds = new Set<number>();
+    let cancelled = false;
     return {
       getDocumentThreadId: () => {
         const state = getThreadListItemState();
@@ -2116,6 +2117,9 @@ const Composer: FC<{
       },
       append: async (prompt) => {
         const initialization = await queuedThreadInitialization;
+        if (cancelled) {
+          throw new Error("Prompt queue target was cancelled");
+        }
         if (initialization && !initialization.ok) {
           throw initialization.error;
         }
@@ -2142,6 +2146,7 @@ const Composer: FC<{
         }
       },
       cancel: () => {
+        cancelled = true;
         for (const settingsId of pendingSettingsIds) {
           discardQueuedChatRunSettings(settingsId);
         }

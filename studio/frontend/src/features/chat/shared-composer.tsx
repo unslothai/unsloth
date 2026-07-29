@@ -164,6 +164,7 @@ export interface CompareHandle {
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
+  getThreadIds: () => string[];
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
@@ -404,6 +405,7 @@ export function RegisterCompareHandle({
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
+      getThreadIds: getCompareThreadIds,
       waitForRunEnd: () =>
         new Promise<void>((resolve, reject) => {
           let wasRunning = false;
@@ -436,7 +438,7 @@ export function RegisterCompareHandle({
               event as CustomEvent<PromptQueueRunFailedEventDetail>
             ).detail?.threadId;
             if (
-              failedThreadId &&
+              !failedThreadId ||
               getCompareThreadIds().includes(failedThreadId)
             ) {
               finish(new Error("Compare run failed before streaming started"));
@@ -598,12 +600,24 @@ export function SharedComposer({
   useEffect(() => {
     const stopRunListQueue = (event: Event) => {
       const detail = (event as CustomEvent<PromptQueueStopOptions>).detail;
-      // A targeted single-chat stop does not identify compare panes. Global
-      // stops (including Clear all) must discard the saved-prompt run list
-      // before cancelling its active pane runs can advance it.
-      if (detail?.threadIds?.length || !isQueueRunningRef.current) {
+      if (!isQueueRunningRef.current) {
         return;
       }
+      const stoppedThreadIds = detail?.threadIds ?? [];
+      if (stoppedThreadIds.length > 0) {
+        const compareThreadIds = Object.values(handlesRef.current).flatMap(
+          (handle) => handle.getThreadIds(),
+        );
+        if (
+          !stoppedThreadIds.some((threadId) =>
+            compareThreadIds.includes(threadId),
+          )
+        ) {
+          return;
+        }
+      }
+      // Clear before cancelling active pane runs can turn their running-to-idle
+      // transition into permission to advance the saved-prompt run list.
       isQueueRunningRef.current = false;
       queueRef.current = [];
       queueIndexRef.current = 0;
@@ -613,7 +627,7 @@ export function SharedComposer({
     window.addEventListener(PROMPT_QUEUE_STOP_EVENT, stopRunListQueue);
     return () =>
       window.removeEventListener(PROMPT_QUEUE_STOP_EVENT, stopRunListQueue);
-  }, []);
+  }, [handlesRef]);
 
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;

@@ -2501,7 +2501,14 @@ export function createOpenAIStreamAdapter(
             ...queuedRunSettings,
             params: queuedRunSettings.params,
           }
-          : liveRuntime
+          : {
+            ...liveRuntime,
+            ...queuedRunSettings,
+            params: {
+              ...queuedRunSettings.params,
+              checkpoint: liveRuntime.params.checkpoint,
+            },
+          }
         : liveRuntime;
       const { params } = runtime;
       const {

@@ -141,6 +141,8 @@ def test_compare_wait_rejects_when_pre_stream_validation_fails():
     )
     assert "PRE_STREAM_RUN_FAILED_EVENT" in compare
     assert "getCompareThreadIds().includes(failedThreadId)" in compare
+    assert "!failedThreadId ||" in compare
+    assert "getThreadIds: getCompareThreadIds" in compare
     assert "reject(error);" in compare
     assert "notifyPreStreamRunFailed(resolvedThreadId ?? null, runReservationToken)" in CHAT_ADAPTER
     assert "notifyPromptQueueRunFailed(threadId)" in QUEUE_BOUNDARY
@@ -219,6 +221,11 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert "const queuedThreadInitialization = initialState.remoteId" in target
     assert "append: async (prompt) =>" in target
     assert "const initialization = await queuedThreadInitialization;" in target
+    assert "if (cancelled)" in target
+    assert target.index("if (cancelled)") < target.index(
+        "registerQueuedChatRunSettings("
+    )
+    assert "cancelled = true;" in target
     assert "if (initialization && !initialization.ok)" in target
     assert "discardQueuedChatRunSettings(settingsId)" in target
     assert "discardQueuedChatRunSettingsForThread(threadId);" in THREAD
@@ -226,6 +233,7 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert "queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
     assert "? queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
     assert ": liveRuntime" in CHAT_ADAPTER
+    assert "checkpoint: liveRuntime.params.checkpoint" in CHAT_ADAPTER
     assert "usePromptQueueUI.getState().isRunning" in CHAT_PAGE
     assert "Object.values(runtime.runningByThreadId).some(Boolean)" in CHAT_PAGE
     assert "getPreStreamRunReservationCount() > 0" in CHAT_PAGE
@@ -250,6 +258,8 @@ def test_bulk_archive_and_clear_stop_prompt_queues_first():
     )
     assert "window.addEventListener(PROMPT_QUEUE_STOP_EVENT, stopRunListQueue)" in SHARED_COMPOSER
     assert "queueRef.current = [];" in SHARED_COMPOSER
+    assert "handle.getThreadIds()" in SHARED_COMPOSER
+    assert "compareThreadIds.includes(threadId)" in SHARED_COMPOSER
 
 
 def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
