@@ -443,8 +443,7 @@ def _hermes_install_hint() -> str:
 def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
     parts = ["npm", "install", "-g"]
     if os.name != "nt":
-        # No resolvable home (container under a bare UID): fall back to npm's own prefix
-        # rather than failing a launch whose agent may already be installed.
+        # No home (bare container UID): fall back to npm's own prefix instead of failing.
         try:
             parts.extend(("--prefix", str(Path.home() / ".local")))
         except (RuntimeError, OSError):
@@ -2419,9 +2418,7 @@ def _refresh_windows_path() -> None:
 
 
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
-    # Best-effort probe on the launch path: reaching the backend for the managed Node must
-    # never break a launch, so any failure (missing package, unreadable home, degraded env)
-    # just means "no managed Node" and falls back to the system runtime.
+    # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
         ensure_studio_backend_path()
         from utils.node_runtime import managed_node_binary, resolve_node_executable
@@ -2446,11 +2443,10 @@ def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
 
 
 def _augment_path_with_install_dirs() -> None:
-    # Add known install dirs to PATH so a freshly installed agent resolves without a new
-    # shell. User agent dirs are appended so existing tools keep precedence. A managed Node
-    # selected over the system runtime is prepended so Node-backed shims use that same runtime.
-    # Only the user install dirs need a home; a missing one must not also drop the managed
-    # Node, or a shim resolved here fails on `env node` under a bare container UID.
+    # Add known install dirs to PATH so a freshly installed agent resolves without a new shell.
+    # User dirs are appended (existing tools keep precedence); a preferred managed Node is
+    # prepended so Node-backed shims use it. Only user dirs need a home, so a missing home must
+    # not drop the managed Node, or a shim fails on `env node` under a bare container UID.
     try:
         home = Path.home()
     except (RuntimeError, OSError):
@@ -2548,8 +2544,7 @@ def _npm_executable() -> Optional[str]:
         if executable and not _wsl_windows_executable([executable]):
             return executable
         if executable:
-            # WSL inherits the Windows PATH, so the shim just rejected may be shadowing a
-            # usable native npm further along it. Keep looking rather than giving up here.
+            # WSL inherits the Windows PATH, so the rejected shim may shadow a native npm.
             for directory in os.get_exec_path():
                 candidate = shutil.which("npm", path = directory)
                 if candidate and not _wsl_windows_executable([candidate]):
@@ -2583,9 +2578,8 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
         )
     args = shlex.split(install_hint)
     env = dict(os.environ)
-    # dirname, not Path().parent: Path picks its flavour from os.name, so a caller that
-    # overrides it (the tests do) builds the wrong one. Empty means npm is a bare name,
-    # and prepending "" would put the cwd on PATH.
+    # dirname, not Path().parent: Path picks its flavour from os.name, which the tests
+    # override. Empty means npm is a bare name; prepending "" would put the cwd on PATH.
     npm_dir = os.path.dirname(npm)
     current_path = env.get("PATH", "")
     if npm_dir:
@@ -2822,19 +2816,17 @@ def _agents_config_root() -> Path:
 
 @contextlib.contextmanager
 def _temporary_agent_config(prefix: str):
-    # These homes live under Studio's auth tree, which nothing else prunes, so reuse the
-    # locked session helper: a wrapper killed before its finally runs leaves a home that
-    # the next launch reclaims, and the lock keeps a live session from being swept.
+    # Nothing else prunes Studio's auth tree, so reuse the locked session helper: the next
+    # launch reclaims homes left by a killed wrapper, and the lock spares live sessions.
     temp_root = _agents_config_root() / ".tmp"
     with contextlib.ExitStack() as stack:
         try:
             temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
             path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
         except OSError:
-            # Attaching to a remote or already-running Studio does not need a local auth
-            # tree, so it may be absent, read-only, or owned by someone else; the key cache
-            # degrades the same way. Fall back to the system temp dir, where these homes
-            # lived before. No reclamation there, but the OS prunes it.
+            # Attaching to a remote or running Studio needs no local auth tree, so it may be
+            # absent or unwritable. Fall back to the system temp dir, as before: no
+            # reclamation there, but the OS prunes it.
             path = Path(tempfile.mkdtemp(prefix = prefix))
             stack.callback(shutil.rmtree, path, ignore_errors = True)
         yield path
@@ -3002,8 +2994,7 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        # Windows codex keeps #7519's short, locked home (MAX_PATH + stale reclaim);
-        # every other agent uses the Studio-private root.
+        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Studio's root.
         parent = _ephemeral_session_parent(agent)
         prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:

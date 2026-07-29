@@ -299,8 +299,7 @@ def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX hint form")
 def test_npm_install_hint_without_resolvable_home(monkeypatch):
-    # A bare container UID has no home; the hint must still build so an already
-    # installed agent can launch.
+    # A bare container UID has no home; the hint must still build.
     def no_home():
         raise RuntimeError("no home directory")
 
@@ -5201,8 +5200,7 @@ def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monke
 
 @pytest.mark.parametrize("agent", ["codex", "codex-subagent"])
 def test_windows_codex_homes_use_the_short_parent(monkeypatch, tmp_path, agent):
-    # codex-subagent nests CODEX_HOME under <home>/parent, so the long Studio auth
-    # path would eat even more of the legacy MAX_PATH budget than a plain launch.
+    # codex-subagent nests CODEX_HOME under <home>/parent, so it needs the short root even more.
     monkeypatch.setattr(start.os, "name", "nt")
     monkeypatch.setattr(start.Path, "home", staticmethod(lambda: tmp_path))
 
@@ -5220,8 +5218,7 @@ def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
 
 
 def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeypatch, tmp_path):
-    # mkdir(exist_ok = True) succeeds on a root that already exists but cannot be written,
-    # so the lock file is the first thing to fail.
+    # mkdir(exist_ok = True) succeeds on an existing unwritable root, so the lock fails first.
     agents = tmp_path / "agents"
     temp_root = agents / ".tmp"
     temp_root.mkdir(parents = True)
@@ -5238,8 +5235,7 @@ def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeyp
 
 
 def test_augment_path_keeps_managed_node_without_a_home(monkeypatch, tmp_path):
-    # A bare container UID has no home, but the managed Node is still the runtime that
-    # resolves a Node-backed shim, so it must stay on PATH.
+    # No home, but the managed Node still backs Node shims, so it must stay on PATH.
     managed_bin = tmp_path / "node" / "bin"
     managed_bin.mkdir(parents = True)
     monkeypatch.setattr(
@@ -5292,8 +5288,7 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
 
 
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
-    # Attaching to a remote or already-running Studio does not need a local auth tree, so
-    # an absent or read-only one must not stop the launch.
+    # Attaching to a remote Studio needs no local auth tree, so a read-only one must not stop it.
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
     monkeypatch.setattr(start, "_agents_config_root", lambda: readonly / "agents")
@@ -5305,8 +5300,7 @@ def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypat
 
 
 def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
-    # These homes sit under Studio's auth tree, which nothing else prunes, so a wrapper
-    # killed before its finally runs must be reclaimed by the next launch.
+    # Nothing else prunes Studio's auth tree, so a killed wrapper's home must be reclaimed.
     agents_root = tmp_path / "agents"
     temp_root = agents_root / ".tmp"
     temp_root.mkdir(parents = True)
