@@ -173,14 +173,23 @@ _ACTION_VERB = (
     r"|review|inspect|read|gather|examine|retrieve|browse|consult|verify"
     r"|confirm|compute|calculate|determine|identify|render)"
 )
+# Offering to help hands control back exactly like "let me know": measured on real
+# turns, "I'll do my best to help" and "allow me to assist" close a clarification
+# request and never precede a tool call. "help you" keeps its plan reading when an
+# action follows it ("I'll help you search the web").
+_HELP_OFFER = (
+    r"(?:do(?:ing)?\s+my\s+best|try\s+my\s+best|be\s+(?:able|happy|glad)\s+to\b"
+    r"|assist\b|help\s+you\b(?!\s+" + _ACTION_VERB + r")|give\s+you\s+accurate\b)"
+)
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
     r"(?im)("
     # Direct intent ("I'll"); lookahead drops negated forms ("I will not").
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\b(?!\s+(?:not|never)\b)"
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\b"
+    r"(?!\s+(?:not|never)\b)(?!\s+" + _HELP_OFFER + r")"
     r"|"
     # "let me know" hands control back rather than announcing an action.
-    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)"
+    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)(?!\s+to\s+" + _HELP_OFFER + r")"
     r"|"
     # Step/plan framing. "first" must open a sentence and be followed by a plan
     # (pronoun, "my/our plan", or an action verb); otherwise it is prose ("The
