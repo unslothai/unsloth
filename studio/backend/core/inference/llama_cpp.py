@@ -1748,7 +1748,7 @@ def _source_declares_option(source: str, option: str) -> bool:
     return False
 
 
-def _shim_supports_ngl(shim_cmd: List[str], extra_pythonpath: Optional[str] = None) -> bool:
+def _shim_supports_ngl(shim_cmd: List[str]) -> bool:
     """Whether the resolved diffusion shim accepts --ngl.
 
     The package floor still allows an unsloth_zoo without the flag, and argparse
@@ -1760,7 +1760,8 @@ def _shim_supports_ngl(shim_cmd: List[str], extra_pythonpath: Optional[str] = No
     # ([python, <path>]) or the installed package ([python, -m, <module>]). Key on
     # the shape, not the suffix: an UNSLOTH_DG_SHIM override may be extensionless,
     # .pyw, or SHIM.PY, and every one of those is still the file about to be
-    # spawned -- probing anything else answers for the wrong shim.
+    # spawned. Probe that file and nothing else -- a sibling shim.py in the same
+    # directory answers for a different shim than the one argparse will run.
     if len(shim_cmd) >= 2 and "-m" not in shim_cmd:
         candidates = [Path(shim_cmd[-1])]
     else:
@@ -1773,8 +1774,6 @@ def _shim_supports_ngl(shim_cmd: List[str], extra_pythonpath: Optional[str] = No
                 candidates.append(pkg_dir / "diffusion_studio" / "shim.py")
         except Exception:
             return False
-    if extra_pythonpath:
-        candidates.append(Path(extra_pythonpath) / "shim.py")
     for path in candidates:
         try:
             source = path.read_text(encoding = "utf-8", errors = "ignore")
@@ -5584,8 +5583,8 @@ class LlamaCppBackend:
             return False
         if assets is None:
             return False
-        shim_cmd, _visual_bin, extra_pythonpath = assets
-        return _shim_supports_ngl(shim_cmd, extra_pythonpath)
+        shim_cmd, _visual_bin, _extra_pythonpath = assets
+        return _shim_supports_ngl(shim_cmd)
 
     @staticmethod
     def _diffusion_gpu_arg(
@@ -5669,7 +5668,7 @@ class LlamaCppBackend:
         # out, even with GPU layers set to 0 (#7574). An older shim has no --ngl,
         # so drop the flag rather than launching a child that dies in argparse.
         manual_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
-        if manual_ngl is not None and not _shim_supports_ngl(shim_cmd, extra_pythonpath):
+        if manual_ngl is not None and not _shim_supports_ngl(shim_cmd):
             logger.warning(
                 "DiffusionGemma: ignoring the %d GPU-layer split; the installed "
                 "unsloth_zoo shim has no --ngl. Upgrade unsloth_zoo to set the split.",
@@ -9938,7 +9937,19 @@ class LlamaCppBackend:
             # preference standing across a diffusion load, so comparing modes would
             # reload forever, while comparing raw gpu_layers would miss that Auto(-1)
             # and Unsloth mode both mean "runner default".
-            if _diffusion_manual_ngl(gpu_memory_mode, gpu_layers) != self.diffusion_requested_ngl:
+            requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
+            if requested_ngl != self.diffusion_requested_ngl:
+                return False
+            # An identical ask whose split was DROPPED at launch (old shim,
+            # _gpu_layers kept the default) still dedupes -- unless the shim has
+            # gained --ngl since (zoo upgraded mid-session), in which case the
+            # reload finally applies it. Probing only in the dropped state keeps
+            # the no-loop behaviour when the shim stays old.
+            if (
+                requested_ngl is not None
+                and self._gpu_layers != requested_ngl
+                and self.diffusion_split_supported()
+            ):
                 return False
         else:
             requested_extra_args = extra_args if extra_args is not None else self._extra_args

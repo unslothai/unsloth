@@ -3396,8 +3396,19 @@ def _request_matches_loaded_settings(
         # applied default would make the same request mismatch forever and reload on
         # every /load.
         from core.inference.llama_cpp import _diffusion_manual_ngl
+
         loaded_ngl = llama_backend.diffusion_requested_ngl
-        if _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers) != loaded_ngl:
+        requested_ngl = _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers)
+        if requested_ngl != loaded_ngl:
+            return False
+        # A dropped split (old shim; the runner applied its default) still dedupes
+        # -- unless the shim has gained --ngl since (zoo upgraded mid-session), so
+        # the reload finally applies the ask. Mirrors _already_in_target_state.
+        if (
+            requested_ngl is not None
+            and llama_backend.gpu_layers != requested_ngl
+            and llama_backend.diffusion_split_supported()
+        ):
             return False
     else:
         if request.gpu_memory_mode != llama_backend.gpu_memory_mode:

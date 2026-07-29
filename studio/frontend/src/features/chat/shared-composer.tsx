@@ -1103,14 +1103,12 @@ export function SharedComposer({
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
+        // The diffusion runner honours the layer split (#7574); only the knobs it
+        // truly has no equivalent for (MoE offload, tensor parallel) stay forced.
         const effectiveGpuMemoryMode =
-          resolvedIsDiffusion
-            ? "auto"
-            : (ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode);
+          ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode;
         const effectiveGpuLayers =
-          resolvedIsDiffusion
-            ? GPU_LAYERS_AUTO
-            : (ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers);
+          ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
         const effectiveNCpuMoe =
           resolvedIsDiffusion
             ? 0

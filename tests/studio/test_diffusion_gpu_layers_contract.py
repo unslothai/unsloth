@@ -171,6 +171,9 @@ def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
     b._requested_spec_mode = "auto"
     b._spec_fallback_reason = b._speculative_type = b._spec_draft_n_max = None
     b._chat_template_override = b._mtp_draft_path = b._extra_args = None
+    # The dropped-split rows below model "the shim stayed old"; the shim-upgraded
+    # flip is exercised separately in test_zoo_upgrade_reloads_a_dropped_split.
+    b.diffusion_split_supported = lambda: False
     return b
 
 
@@ -371,3 +374,32 @@ def test_positive_split_scales_the_guard_estimate(llama_cpp, required, ngl, n_la
     assert llama_cpp._scale_diffusion_required_gb(required, ngl, n_layers) == pytest.approx(
         expected
     )
+
+
+# ── a custom-named override answers for itself, not a sibling shim.py ──
+
+
+def test_probe_ignores_a_sibling_shim_next_to_a_custom_override(llama_cpp, tmp_path):
+    """An UNSLOTH_DG_SHIM override named anything runs as-is; a capable shim.py in
+    the same directory must not vouch for it, or the launch appends --ngl to a
+    parser that exits on it."""
+    override = tmp_path / "my_shim"
+    override.write_text('ap.add_argument("--maxtok", type=int)\n', encoding = "utf-8")
+    sibling = tmp_path / "shim.py"
+    sibling.write_text('ap.add_argument("--ngl", type=int)\n', encoding = "utf-8")
+    assert llama_cpp._shim_supports_ngl(["python", str(override)]) is False
+
+
+# ── a zoo upgrade mid-session must un-stick a dropped split ──
+
+
+def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
+    """manual/20 against an old shim launched with the default and deduped on the
+    ask. Once the shim gains --ngl, the identical ask must reload to apply it."""
+    b = _loaded_diffusion(llama_cpp, recorded_layers = -1, requested_ngl = 20)
+    assert _in_target_state(b, mode = "manual", layers = 20) is True  # shim still old
+    b.diffusion_split_supported = lambda: True  # zoo upgraded in this session
+    assert _in_target_state(b, mode = "manual", layers = 20) is False  # now applies
+    b2 = _loaded_diffusion(llama_cpp, recorded_layers = 20, requested_ngl = 20)
+    b2.diffusion_split_supported = lambda: True
+    assert _in_target_state(b2, mode = "manual", layers = 20) is True  # applied: rest
