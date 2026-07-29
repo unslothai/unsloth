@@ -67,6 +67,27 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
+setup_fail() {
+    local exit_code=$1
+    shift
+    [ "$exit_code" -ne 0 ] || exit_code=1
+    local message
+    message=$(printf '%s' "$*" | tr '\r\n' '  ')
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
+    esac
+    exit "$exit_code"
+}
+
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# Mirrors install.sh's _can_read_tty; defined here too because setup.sh runs
+# as its own process (install.sh invokes it, it does not source it).
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
@@ -164,7 +185,7 @@ _run_quiet() {
         exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -173,7 +194,10 @@ _run_quiet() {
     local tmplog
     tmplog=$(mktemp) || {
         step "error" "Failed to create temporary file" "$C_ERR" >&2
-        [ "$on_fail" = "exit" ] && exit 1 || return 1
+        if [ "$on_fail" = "exit" ]; then
+            setup_fail 1 "Failed to create temporary file for $label"
+        fi
+        return 1
     }
 
     if "$@" >"$tmplog" 2>&1; then
@@ -187,7 +211,7 @@ _run_quiet() {
         rm -f "$tmplog"
 
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -540,10 +564,14 @@ if [ -n "$_studio_override" ]; then
     if [ ! -d "$_studio_override" ]; then
         echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
         echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
-        exit 1
+        setup_fail 1 "$_studio_override_var=$_studio_override does not exist"
     fi
-    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
-    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+    if [ ! -w "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2
+        setup_fail 1 "$_studio_override_var=$_studio_override is not writable"
+    fi
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" ||
+        setup_fail 1 "Could not resolve $_studio_override_var=$_studio_override"
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
@@ -589,7 +617,7 @@ _assert_studio_owned_or_absent() {
         fi
         echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
-        exit 1
+        setup_fail 1 "$_aso_label path is not an Unsloth-owned install: $_aso_dir"
     fi
 }
 
@@ -707,12 +735,12 @@ elif [ "$NODE_SOURCE" = bundled ]; then
         step "node" "install blocked by another active Unsloth install" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "close other Unsloth installs and retry"
-        exit 3
+        setup_fail 3 "Node install is blocked by another active Unsloth install"
     elif [ "$_NODE_STATUS" -ne 0 ]; then
         step "node" "isolated Node install failed" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
-        exit 1
+        setup_fail 1 "Could not install an isolated Node runtime"
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
@@ -845,7 +873,7 @@ if [ "$_bun_install_ok" = false ]; then
     if [ "$_npm_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
         rm -f "$_FRONTEND_INSTALL_LOG"
-        exit "$_npm_install_rc"
+        setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
     fi
 fi
 _CAPTURE_LOG=""
@@ -885,7 +913,7 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     if [ "$_oxc_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_OXC_INSTALL_LOG"
         rm -f "$_OXC_INSTALL_LOG"
-        exit "$_oxc_install_rc"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
     fi
     rm -f "$_OXC_INSTALL_LOG"
     cd "$SCRIPT_DIR"
@@ -923,7 +951,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
             if ! run_quiet_no_exit "install Colab backend deps" pip install -q -r "$_COLAB_REQS_TMP"; then
                 rm -f "$_COLAB_REQS_TMP"
                 step "python" "Colab backend dependency install failed" "$C_ERR"
-                exit 1
+                setup_fail 1 "Colab backend dependency installation failed"
             fi
         else
             step "python" "no Colab backend dependencies resolved from requirements file" "$C_WARN"
@@ -934,7 +962,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         step "python" "venv not found at $VENV_DIR" "$C_ERR"
         substep "Run install.sh first to create the environment:"
         substep "curl -fsSL https://unsloth.ai/install.sh | sh"
-        exit 1
+        setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
 else
     source "$VENV_DIR/bin/activate"
@@ -944,14 +972,47 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# ── HTTP GET to stdout (supports curl and wget) ──
+# install.sh takes either transport everywhere, so a wget-only box installs fine
+# and then stalled here, where curl was the only way to fetch anything.
+_setup_http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+    else
+        return 1
+    fi
+}
+
+# Same, with a deadline, for the checks that must not hang the install.
+# wget has nothing like curl's total-transfer --max-time: --timeout is per
+# operation and it retries 20 times, so a stalled server took minutes and a slow
+# drip never ended. --tries=1 plus an outer `timeout` restores the 5s ceiling;
+# without timeout (base macOS, which ships curl anyway) the per-operation bound
+# stands rather than the check being dropped.
+_setup_http_get_timed() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 5 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 wget -qO- --timeout=5 --tries=1 "$1"
+        else
+            wget -qO- --timeout=5 --tries=1 "$1"
+        fi
+    else
+        return 1
+    fi
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
     if _is_verbose; then
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        _setup_http_get https://astral.sh/uv/install.sh | sh
     else
-        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
     export PATH="$HOME/.local/bin:$PATH"
@@ -992,7 +1053,7 @@ import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
@@ -1014,6 +1075,21 @@ except (PackageNotFoundError, ValueError, IndexError):
 sys.exit(0 if (major, minor) >= (4, 14) else 1)
 " 2>/dev/null; then
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+        # An interrupted install leaves $_PKG_NAME current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        if ! "$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
+sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+" "$SCRIPT_DIR" 2>/dev/null; then
+            substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
@@ -1167,12 +1243,14 @@ elif [ "$_setup_amd_detected" = true ]; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
+            *9070*|*9080*)                                                                                 _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
             *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _setup_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
+            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
             *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
             *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
@@ -1222,6 +1300,7 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
+_LLAMA_CPP_NO_SPACE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -1265,7 +1344,7 @@ fi
 if [ -n "$_LLAMA_PR" ]; then
     if ! [[ "$_LLAMA_PR" =~ ^[0-9]+$ ]] || [ "$_LLAMA_PR" -le 0 ]; then
         step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number" "$C_ERR"
-        exit 1
+        setup_fail 1 "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number"
     fi
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
     _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
@@ -1301,7 +1380,7 @@ _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
-        exit 1
+        setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
     _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
     # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
@@ -1339,7 +1418,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # with no usable binary.
         if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
             step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
-            exit 1
+            setup_fail 1 "No llama-server was found under $_RESOLVED_LOCAL"
         fi
         # A stale link from a previous --with-llama-cpp-dir run isn't Unsloth-owned
         # content; drop it before the ownership check so re-runs stay idempotent
@@ -1448,7 +1527,14 @@ else
             substep "existing install was restored"
         fi
         substep "close Unsloth or other llama.cpp users and retry"
-        exit 3
+        setup_fail 3 "llama.cpp install is blocked by an active llama.cpp process"
+    elif [ "$_PREBUILT_STATUS" -eq 4 ]; then
+        step "llama.cpp" "not enough disk space to install llama.cpp" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
+        _LLAMA_CPP_NO_SPACE=true
+        _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
     else
         step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -1500,25 +1586,46 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         step "gguf deps" "installed"
     elif command -v sudo >/dev/null 2>&1; then
         step "gguf deps" "sudo required for: $_STILL_MISSING" "$C_WARN"
-        printf "  %-15s" ""
-        printf "accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
+        if _can_read_tty; then
+            printf "  %-15s" ""
+            printf "accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline.
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    substep "skipped -- run manually:"
+                    substep "sudo apt-get install -y $_STILL_MISSING"
+                    _SKIP_GGUF_BUILD=true
+                    ;;
+                *)
+                    # Degrade like the no-sudo branch below rather than letting
+                    # set -e abort setup on a bare apt error: missing GGUF build
+                    # deps are recoverable, not fatal.
+                    if sudo apt-get update -y </dev/null &&
+                        sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                        step "gguf deps" "installed"
+                    else
+                        step "gguf deps" "install failed -- run manually:" "$C_WARN"
+                        substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                        _SKIP_GGUF_BUILD=true
+                    fi
+                    ;;
+            esac
         else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
-                substep "skipped -- run manually:"
-                substep "sudo apt-get install -y $_STILL_MISSING"
+            # Nobody can answer a prompt or type a password here, so -n makes
+            # sudo refuse rather than prompt into a closed stdin, and -k ignores
+            # any cached timestamp so only a real NOPASSWD rule gets through.
+            # Same treatment as install.sh's _smart_apt_install. This is the WSL
+            # GGUF-export case noted above, where sudo does want a password.
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                step "gguf deps" "installed (non-interactive sudo)"
+            else
+                step "gguf deps" "needs sudo, no terminal -- run manually:" "$C_WARN"
+                substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 _SKIP_GGUF_BUILD=true
-                ;;
-            *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
-                step "gguf deps" "installed"
-                ;;
-        esac
+            fi
+        fi
     else
         step "gguf deps" "missing (no sudo) -- install manually:" "$C_WARN"
         substep "apt-get install -y $_STILL_MISSING"
@@ -1944,7 +2051,14 @@ else
                     --validate-install "$_BUILD_TMP"
                 )
                 [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
-                if ! run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}"; then
+                _SMOKE_RC=0
+                run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}" || _SMOKE_RC=$?
+                # Exit 4 is a full disk, not a bad build: the CPU rebuild needs even
+                # more space, so keep what we already have.
+                if [ "$_SMOKE_RC" -eq 4 ]; then
+                    substep "not enough disk space to validate the $_FB_LABEL build; keeping it" "$C_WARN"
+                    _LLAMA_CPP_NO_SPACE=true
+                elif [ "$_SMOKE_RC" -ne 0 ]; then
                     substep "$_FB_LABEL source build failed smoke test; retrying CPU build..." "$C_WARN"
                     _TRY_METAL_CPU_FALLBACK=false
                     rm -rf "$_BUILD_TMP/build"
@@ -2001,8 +2115,10 @@ fi  # end _SKIP_GGUF_BUILD check
 # An arm64 Linux GPU host source-builds for the GPU above. If that produced no
 # binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
 # instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
-# attributes so the CPU bundle is selected rather than re-attempting CUDA.
+# attributes so the CPU bundle is selected rather than re-attempting CUDA. Skipped
+# on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
@@ -2168,5 +2284,5 @@ echo ""
 # successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
-    exit 1
+    setup_fail 1 "llama.cpp setup did not produce a usable server"
 fi

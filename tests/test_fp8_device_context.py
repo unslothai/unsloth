@@ -78,7 +78,7 @@ class _LaunchVisitor(ast.NodeVisitor):
 
 
 def _load_device_context_helper(fake_torch: _FakeTorch):
-    source = FP8_SOURCE.read_text()
+    source = FP8_SOURCE.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_fp8_triton_device_context":
@@ -144,7 +144,7 @@ def test_fp8_device_context_is_noop_for_non_cuda_tensor() -> None:
 
 
 def test_fp8_triton_launches_enter_tensor_device_context() -> None:
-    tree = ast.parse(FP8_SOURCE.read_text())
+    tree = ast.parse(FP8_SOURCE.read_text(encoding = "utf-8"))
     function_names = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
     assert "_fp8_triton_device_context" in function_names
 

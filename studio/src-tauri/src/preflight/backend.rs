@@ -1,6 +1,6 @@
 use super::types::BackendProbe;
 use super::version::{
-    backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -149,7 +149,7 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
             .clone()
             .or_else(|| Some("desktop_auth_unsupported".to_string()));
     }
-    if health.desktop_manageability_version.unwrap_or(0) < DESKTOP_MANAGEABILITY_VERSION {
+    if health.desktop_manageability_version.unwrap_or(0) < DESKTOP_BACKEND_MANAGEABILITY_VERSION {
         return Some("desktop_manageability_unsupported".to_string());
     }
     if health.supports_desktop_backend_ownership != Some(true) {

@@ -61,14 +61,19 @@ def ensure_studio_backend_path() -> None:
 def configure_quiet_logging() -> None:
     import logging
 
-    import structlog
-
     # The CLI never configures structlog, so without this every backend INFO
     # line prints. LOG_LEVEL is exported so the worker subprocess inherits it.
     level_name = os.environ.setdefault("LOG_LEVEL", "WARNING").upper()
     level = getattr(logging, level_name, logging.WARNING)
-    structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+    # Quieting logs must not fail a command before the import that really needs
+    # structlog gets to report itself.
+    try:
+        import structlog
+    except ModuleNotFoundError:
+        return
+    structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
 
 
 def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:
@@ -98,9 +103,9 @@ def _json_rank_count_from_env(name: str) -> Optional[int]:
         if value.lstrip().startswith(("[", "{")):
             data = json.loads(value)
         else:
-            with open(value, "r") as f:
+            with open(value, "r", encoding = "utf-8") as f:
                 data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     if isinstance(data, list):
         return len(data)
@@ -158,7 +163,7 @@ def quiet_if_nonzero_mlx_rank():
     sys.stderr.flush()
     saved_stdout_fd = os.dup(1)
     saved_stderr_fd = os.dup(2)
-    with open(os.devnull, "w") as devnull:
+    with open(os.devnull, "w", encoding = "utf-8") as devnull:
         try:
             os.dup2(devnull.fileno(), 1)
             os.dup2(devnull.fileno(), 2)
@@ -433,7 +438,9 @@ def load_chat_backend(
     fresh_backend uses a private orchestrator so a second model (compare's
     base column) can run alongside the main one.
     """
-    with quiet_if_nonzero_mlx_rank():
+    from unsloth_cli._studio_deps import studio_backend_imports
+
+    with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
         is_mlx_distributed, rank, _world_size = mlx_distributed_info()
         if model_config is None:
             model_config = resolve_model_config(model, hf_token = hf_token)

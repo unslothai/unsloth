@@ -39,6 +39,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
       normalizeSpeculativeType(config.speculativeType) ??
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
+    nParallel: config.nParallel ?? null,
     tensorParallel: config.tensorParallel ?? false,
     visionProjectorEnabled: config.visionProjectorEnabled ?? true,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
@@ -78,6 +79,7 @@ export function currentRuntimePerModelConfig(
     kvCacheDtype: s.kvCacheDtype ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
+    nParallel: s.nParallel ?? null,
     tensorParallel: s.tensorParallel ?? false,
     visionProjectorEnabled: s.visionProjectorEnabled,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
@@ -103,6 +105,7 @@ export function perModelConfigsEqual(
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
+    (a.nParallel ?? null) === (b.nParallel ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     (a.visionProjectorEnabled ?? true) === (b.visionProjectorEnabled ?? true) &&
     cleanTemplate(a.chatTemplateOverride) ===

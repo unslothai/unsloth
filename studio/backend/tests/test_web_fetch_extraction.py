@@ -15,11 +15,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference._html_to_md import html_to_markdown
+from core.inference._html_to_md import _is_aria_heading, html_to_markdown
 from core.inference.tools import (
     _fetch_page_text,
     _fetch_url_raw,
@@ -161,9 +163,7 @@ def test_inline_style_display_none_important_is_dropped():
 
 
 def test_inline_style_display_none_among_other_declarations():
-    html = (
-        "<body><p>keep</p>" '<div style="color: red; display : none ; margin:0">gone</div></body>'
-    )
+    html = '<body><p>keep</p><div style="color: red; display : none ; margin:0">gone</div></body>'
     out = html_to_markdown(html)
     assert "keep" in out
     assert "gone" not in out
@@ -214,8 +214,7 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
     # HTML5 optional end tags: a sibling <p> start tag implicitly closes an open
     # <p hidden>, so the hidden region ends there instead of swallowing siblings.
     html = (
-        "<body><div><p hidden>secret"
-        "<p>visible one</p><p>visible two</p></div><p>after</p></body>"
+        "<body><div><p hidden>secret<p>visible one</p><p>visible two</p></div><p>after</p></body>"
     )
     out = html_to_markdown(html)
     assert "secret" not in out
@@ -715,6 +714,79 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
     assert content_type == ""
 
 
+@pytest.mark.parametrize(
+    "disable_dns_pinning,expected_url",
+    [
+        (False, "https://203.0.113.7:8443/page?q=1"),
+        (True, "https://example.com:8443/page?q=1"),
+    ],
+)
+def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinning, expected_url):
+    import email
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"ok"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    requested = []
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            requested.append(req)
+            return _FakeResp()
+
+    resolved = []
+
+    def resolve(host, port):
+        resolved.append((host, port))
+        return True, "", "203.0.113.7"
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+
+    # No embedded credentials: the web access policy rejects those outright
+    # (see test_fetch_url_raw_rejects_embedded_credentials).
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+
+    assert err is None
+    assert body == "ok"
+    assert resolved == [("example.com", 8443)]
+    assert [req.full_url for req in requested] == [expected_url]
+    assert requested[0].get_header("Host") == "example.com:8443"
+
+
+def test_fetch_url_raw_rejects_embedded_credentials(monkeypatch):
+    # Credentials in the URL are blocked rather than stripped, so they can never
+    # leak to a redirect target or into logs.
+    import core.inference.tools as tools_mod
+
+    def resolve(host, port):
+        raise AssertionError("must be rejected before DNS resolution")
+
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
+
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://user:secret@example.com:8443/page?q=1"
+    )
+
+    assert err is not None and "credentials" in err
+    assert body == ""
+
+
 def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
     # A header-less server returning an HTML body must still be converted.
     def fake_fetch(
@@ -1194,3 +1266,858 @@ def test_looks_like_html_document_only_matches_real_documents():
         "<dl><dt>x</dt></dl>",
     ):
         assert not _looks_like_html_document(frag), frag
+
+
+# <header> inside the selected scope (Wikipedia's Vector 2022 skin)
+def _interlanguage_list(count: int) -> str:
+    return "".join(
+        f'<li class="interlanguage-link">'
+        f'<a href="https://x{i}.wikipedia.org/wiki/K">Lang{i}</a></li>'
+        for i in range(count)
+    )
+
+
+def test_in_main_header_language_list_does_not_displace_article():
+    body = (
+        "<main><header><h1>Cat</h1><div id='p-lang-btn'><ul>%s</ul></div></header>"
+        "<div id='mw-content-text'><p>%s</p></div></main>"
+    ) % (_interlanguage_list(300), "The cat (Felis catus) is a small mammal. " * 30)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Felis catus" in out
+    assert "Lang0" not in out
+    assert "x0.wikipedia.org" not in out
+    assert "# Cat" in out
+    assert out.index("Felis catus") < 200
+
+
+def test_header_title_kept_when_article_is_shorter_than_its_language_list():
+    body = ("<main><header><h1>Stub</h1><ul>%s</ul></header><p>%s</p></main>") % (
+        _interlanguage_list(300),
+        "Short article body. " * 15,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Short article body." in out
+    assert "Lang0" not in out
+    assert "# Stub" in out
+
+
+def test_link_only_article_header_reduces_to_its_heading():
+    body = ("<article><header><h1>Post title</h1><ul>%s</ul></header><p>%s</p></article>") % (
+        _interlanguage_list(300),
+        "Real article content. " * 40,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "# Post title" in out
+    assert "Real article content." in out
+    assert "Lang0" not in out
+
+
+def test_article_header_byline_and_date_are_kept():
+    # Standard semantic blog markup: only near-pure link lists are furniture.
+    body = (
+        "<article><header><h1>Why Rust</h1><p>By Jane Doe</p>"
+        "<time>2026-07-12</time><p>A summary of what this essay argues.</p></header>"
+        "<p>%s</p></article>"
+    ) % ("Real article content. " * 40)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "# Why Rust" in out
+    assert "By Jane Doe" in out
+    assert "2026-07-12" in out
+    assert "A summary of what this essay argues." in out
+
+
+def test_small_link_header_is_left_alone():
+    # Under the size floor there is nothing large enough to displace an article.
+    body = (
+        "<article><header><h1>Post title</h1>"
+        "<a href='/subscribe'>Subscribe now</a></header><p>%s</p></article>"
+    ) % ("Real article content. " * 40)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Subscribe now" in out
+    assert "Real article content." in out
+
+
+def test_unclosed_header_does_not_swallow_the_body():
+    # Browsers adopt the rest of the subtree into an unclosed <header>.
+    body = "<main><header><h1>Title</h1><p>%s</p></main>" % ("Article body text. " * 40)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Article body text." in out
+    assert "Title" in out
+
+
+def test_unclosed_header_with_many_headings_keeps_body():
+    # Headings survive, so a heading-rich page clears the size gate alone.
+    sections = "".join(f"<h2>Section {i}</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12))
+    body = f"<main><header><h1>T</h1>{sections}</main>"
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Body prose here." in out
+    assert "Section 0" in out
+
+
+def test_header_strip_applies_without_article_or_main():
+    body = ("<header><h1>Site name</h1><ul>%s</ul></header><p>%s</p>") % (
+        _interlanguage_list(300),
+        "Page prose without a main landmark. " * 20,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page prose without a main landmark." in out
+    assert "# Site name" in out
+    assert "Lang0" not in out
+
+
+def test_header_kept_in_unscoped_conversion():
+    body = "<header><h1>Site</h1><a href='/x'>Nav link</a></header><p>Text.</p>"
+    out = html_to_markdown(f"<body>{body}</body>")
+    assert "Nav link" in out
+    assert "Text." in out
+
+
+def test_unclosed_header_in_truncated_scope_keeps_body():
+    # A capped fetch ends before </main>: the flushed segment must still carry its dropped prose.
+    sections = "".join(
+        f"<h2>Section {i} of the article</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12)
+    )
+    out = html_to_markdown(
+        f"<body><main><header><h1>T</h1>{sections}",
+        main_content = True,
+    )
+    assert "Body prose here." in out
+    assert "Section 0 of the article" in out
+
+
+def test_sibling_card_does_not_beat_an_article_with_a_swallowed_body():
+    real = "<article><header><h1>Real</h1><p>%s</p></article>" % ("Real article body. " * 40)
+    card = "<article><p>%s</p></article>" % ("Related card teaser. " * 12)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "Real article body." in out
+    assert "Related card teaser." not in out
+
+
+def test_text_heavy_header_is_kept_even_when_longer_than_the_body():
+    # python.org keeps its hero carousel here, so size alone cannot condemn it.
+    body = "<main><header><h1>Title</h1><p>%s</p></header><p>%s</p></main>" % (
+        "Introductory hero text. " * 30,
+        "The real body prose. " * 20,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "The real body prose." in out
+    assert "Introductory hero text." in out
+    assert "# Title" in out
+
+
+def test_unclosed_link_in_unclosed_header_keeps_the_body():
+    # The <a> adopts the body, so its text is not link furniture.
+    body = "<main><header><h1>Title</h1><a href='/'>Home<p>%s</p>" % ("Article body text. " * 40)
+    out = html_to_markdown(f"<body>{body}", main_content = True)
+    assert "Article body text." in out
+    assert "# Title" in out
+
+
+def test_unclosed_link_does_not_hand_the_scope_to_a_sibling_card():
+    real = "<article><header><h1>Real</h1><a href='/'>Home<p>%s</p></article>" % ("REAL " * 60)
+    card = "<article><p>%s</p></article>" % ("CARD " * 30)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "REAL" in out
+    assert "CARD" not in out
+
+
+def test_entity_encoded_body_is_not_lost_to_an_unclosed_header():
+    out = html_to_markdown(
+        "<body><main><header><h1>T</h1><p>%s</p>" % ("&alpha;" * 400),
+        main_content = True,
+    )
+    assert out.count("α") == 400
+
+
+def test_header_closed_by_an_ancestor_is_kept_whole():
+    # Without a matching </header> the header may have adopted the body, so keep all.
+    body = "<div><header><h1>Site</h1><ul>%s</ul></div><p>%s</p>" % (
+        _interlanguage_list(300),
+        "The real body prose. " * 20,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "The real body prose." in out
+    assert "# Site" in out
+    assert "Lang0" in out
+
+
+def test_unclosed_header_does_not_strip_a_short_article_it_adopted():
+    body = "<main><header><h1>T</h1><ul>%s</ul><p>%s</p></main>" % (
+        _interlanguage_list(300),
+        "Short real article. " * 4,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Short real article." in out
+
+
+def test_heading_inside_a_nested_buffer_is_kept_and_the_links_still_go():
+    # Teeing keeps the title without forcing the language list back in.
+    body = (
+        "<main><header><blockquote><h1>Page Title</h1></blockquote><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(400),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Lang0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_long_hrefs_count_toward_the_header_size_floor():
+    # Short labels, huge destinations: the rendered links are what displace it.
+    nav = "".join('<a href="https://e.com/p?%s=%d">L%d</a>' % ("q" * 1000, i, i) for i in range(30))
+    body = "<main><header>%s</header><p>%s</p></main>" % (nav, "Article body. " * 30)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "L0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_linked_heading_does_not_condemn_the_byline_beside_it():
+    body = (
+        "<article><header><h1><a href='/p'>%s</a></h1><p>By Jane Doe, July 2026</p></header><p>%s</p></article>"
+        % (
+            "A Very Long Linked Headline About Assorted Things In The World Today " * 5,
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "By Jane Doe" in out
+    assert "Very Long Linked" in out
+
+
+def test_anchor_without_href_is_prose_not_link_furniture():
+    body = (
+        "<article><header><h1>T</h1><a name='intro'>%s</a><p>Byline</p></header><p>%s</p></article>"
+        % (
+            "Introductory prose that renders as plain text. " * 8,
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Introductory prose" in out
+    assert "Byline" in out
+
+
+def test_linked_heading_is_not_emitted_twice():
+    body = (
+        "<main><header><h1><a href='/post'>Title</a></h1><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "# [Title](/post)" in out
+    assert out.count("Title") == 1
+
+
+def test_article_still_beats_a_bigger_card_after_its_header_goes():
+    # Dropped furniture is added back when ranking siblings, so a stripped header still wins.
+    real = "<article><header><h1>Real</h1><ul>%s</ul></header><p>%s</p></article>" % (
+        _interlanguage_list(300),
+        "Short real body. " * 14,
+    )
+    card = "<article><p>%s</p></article>" % ("Related card teaser text here. " * 12)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "Short real body." in out
+    assert "Related card teaser" not in out
+
+
+def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
+    # Furniture ranks, never makes eligible: a nav-only header returned a 225 char astro.build card.
+    card = "<article><header>%s</header><p>%s</p></article>" % (
+        "".join('<a href="/l%d">Language %d</a>' % (i, i) for i in range(120)),
+        "Short teaser about the related thing, read more.",
+    )
+    body = "<p>%s</p>" % ("The real article body the reader wants. " * 40)
+    out = html_to_markdown(f"<body><main>{body}{card}</main></body>", main_content = True)
+    assert "The real article body the reader wants." in out
+    assert "Language 7" not in out
+
+
+def test_a_long_heading_href_does_not_condemn_the_rest_of_the_header():
+    # The heading is kept anyway, so its size must not clear the floor for the metadata beside it.
+    body = (
+        "<article><header><h1><a href='/p?%s'>Title</a></h1>"
+        "<a href='/author/jane'>Jane</a></header><p>%s</p></article>"
+        % ("q" * 900, "Article body. " * 30)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Title" in out
+    assert "Jane" in out
+
+
+def test_a_preserved_heading_is_terminated():
+    # The closing tag's blank line lands after the heading mark pops, so render must supply it.
+    body = "<main><header><h1>Title</h1><ul>%s</ul></header>Article body text here.</main>" % (
+        _interlanguage_list(300)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "# TitleArticle" not in out
+    assert out.startswith("# Title")
+    assert "Article body text here." in out
+
+
+def test_scope_holding_only_furniture_does_not_win_or_blank_the_page():
+    # Removed furniture must not make an empty candidate eligible, or the fetch returns nothing.
+    body = "<main><header><ul>%s</ul></header></main><p>%s</p>" % (
+        _interlanguage_list(300),
+        "Real page body prose. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Real page body prose." in out
+
+
+def test_header_inside_an_enclosing_link_renders_once():
+    body = "<main><a href='/x'><header><h1>T</h1></header></a><p>%s</p></main>" % (
+        "Article body. " * 30
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("[# T](/x)") == 1
+
+
+def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
+    html = "<table><tr><td><header><table><tr><td>x</td></tr></table></header></td></tr></table>"
+    assert html_to_markdown(f"<body>{html}</body>", main_content = True) == html_to_markdown(
+        f"<body>{html}</body>"
+    )
+
+
+def test_truncated_header_and_blockquote_keep_source_order():
+    out = html_to_markdown("<body><main><header><h1>Title</h1><blockquote>Quote", main_content = True)
+    assert out.index("Title") < out.index("Quote")
+
+
+# Headers interact with every buffer, so enumerate the grid: that is where the one-off bugs live.
+_GRID_HEADINGS = {
+    "h1": "<h1>Page Title</h1>",
+    "aria": "<div role='heading'>Page Title</div>",
+    "in_quote": "<blockquote><h1>Page Title</h1></blockquote>",
+    "is_link": "<a role='heading' href='/t'>Page Title</a>",
+    "none": "",
+}
+_GRID_WRAPPERS = {
+    "bare": ("", ""),
+    "quote": ("<blockquote>", "</blockquote>"),
+    "cell": ("<table><tr><td>", "</td></tr></table>"),
+    "link": ("<a href='/x'>", "</a>"),
+    "item": ("<ul><li>", "</li></ul>"),
+    "pre": ("<pre>", "</pre>"),
+}
+_GRID_NESTED = {
+    "bare": ("", ""),
+    "quote": ("<blockquote>", "</blockquote>"),
+    "cell": ("<table><tr><td>", "</td></tr></table>"),
+    "pre": ("<pre>", "</pre>"),
+}
+_GRID_BODY = "Article body sentence. " * 30
+
+
+@pytest.mark.parametrize("heading", sorted(_GRID_HEADINGS))
+@pytest.mark.parametrize("wrapper", sorted(_GRID_WRAPPERS))
+@pytest.mark.parametrize("nested", sorted(_GRID_NESTED))
+@pytest.mark.parametrize("inner", ("link_dense", "content"))
+@pytest.mark.parametrize("close_header", (True, False))
+@pytest.mark.parametrize("close_nested", (True, False))
+def test_header_survives_every_buffer_combination(
+    heading, wrapper, nested, inner, close_header, close_nested
+):
+    open_wrap, close_wrap = _GRID_WRAPPERS[wrapper]
+    open_nest, close_nest = _GRID_NESTED[nested]
+    payload = (
+        f"<ul>{_interlanguage_list(300)}</ul>"
+        if inner == "link_dense"
+        else "<p>By Jane Doe, 12 July 2026</p><p>A summary of the argument.</p>"
+    )
+    header = (
+        f"<header>{_GRID_HEADINGS[heading]}{open_nest}{payload}"
+        f"{close_nest if close_nested else ''}{'</header>' if close_header else ''}"
+    )
+    html = (
+        f"<body><main>{open_wrap}{header}{close_wrap if close_header else ''}"
+        f"<p>{_GRID_BODY}</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    # These hold for every shape, however malformed.
+    assert "Article body sentence." in out, "body lost"
+    assert out.strip(), "empty output"
+    assert out.index("Article body sentence.") < 16000, "body pushed past the fetch cap"
+    # The title holds only for closed markup with no <pre>: there a heading is verbatim text, and
+    # unclosed shapes get best-effort recovery predating this pass.
+    well_formed = close_header and close_nested and "pre" not in (wrapper, nested)
+    if _GRID_HEADINGS[heading] and well_formed:
+        assert out.count("Page Title") == 1, "title duplicated or lost"
+
+
+def test_a_stub_cannot_outrank_a_real_article_on_removed_navigation():
+    # A long title alone is not substantive retained content.
+    stub = "<article><header><h1>%s</h1><ul>%s</ul></header></article>" % (
+        "A Long Title That Exceeds Fifty Characters Easily Here",
+        _interlanguage_list(300),
+    )
+    real = "<article><p>%s</p></article>" % ("Genuine full article body text. " * 20)
+    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content = True)
+    assert "Genuine full article body" in out
+
+
+def test_unclosed_link_in_a_closed_header_counts_as_furniture():
+    # The </header> proves the anchor did not adopt the body.
+    body = "<main><header><h1>T</h1><a href='/nav'>%s</header><p>%s</p></main>" % (
+        "Navigation label text. " * 20,
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Navigation label text." not in out
+    assert "Article body." in out
+
+
+def test_enclosing_anchor_text_counts_toward_header_density():
+    body = "<main><a href='/nav'><header>%s</header></a><p>%s</p></main>" % (
+        "".join(f"<span>Nav label {i}</span>" for i in range(40)),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Nav label 0" not in out
+    assert "Article body." in out
+
+
+def test_truncated_header_flushes_into_its_enclosing_buffer():
+    # The header is inside the link/cell, so its text belongs there, in order.
+    assert html_to_markdown(
+        "<body><main><a href='/x'>before<header><h1>Title", main_content = True
+    ).startswith("[before")
+    assert html_to_markdown(
+        "<body><main><table><tr><td><header><h1>Title", main_content = True
+    ).startswith("|")
+
+
+def test_empty_blocks_do_not_inflate_the_header_size():
+    # _cleanup collapses them, so the size threshold must see the cleaned form.
+    body = (
+        "<article><header><h1>%s</h1>%s<a href='/x'>L</a></header></article>"
+        "<article><p>%s</p></article>"
+        % (
+            "A Fairly Long Heading Title Here" * 2,
+            "<div></div>" * 500,
+            "Genuine full article body text. " * 20,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Genuine full article body" in out
+
+
+def test_blockquoted_heading_is_not_counted_as_retained_prose():
+    stub = "<article><blockquote><header><h1>%s</h1><ul>%s</ul></header></blockquote></article>" % (
+        "A Long Title That Exceeds Fifty Characters Easily Here",
+        _interlanguage_list(300),
+    )
+    real = "<article><p>%s</p></article>" % ("Genuine full article body text. " * 20)
+    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content = True)
+    assert "Genuine full article body" in out
+
+
+def test_list_left_open_in_a_header_does_not_indent_the_body():
+    body = "<main><header><h1>T</h1><ul>%s</header><ul><li>Body item one</li></ul></main>" % (
+        _interlanguage_list(300)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    item = next(line for line in out.split("\n") if "Body item one" in line)
+    assert item.startswith("*"), item
+
+
+def test_deeply_nested_headers_do_not_blow_up_quadratically():
+    # Header sizing must not rescan each parent's cumulative buffer.
+    chunk = "<p>%s</p>" % ("filler text here. " * 100)
+
+    def build(depth):
+        return (
+            "<body><main>"
+            + "".join(f"<header>{chunk}" for _ in range(depth))
+            + "</header>" * depth
+            + "<p>body</p></main></body>"
+        )
+
+    import time
+
+    timings = []
+    for depth in (20, 80):
+        html = build(depth)
+        start = time.perf_counter()
+        html_to_markdown(html, main_content = True)
+        timings.append(time.perf_counter() - start)
+    # Four times the depth and payload, nowhere near quadratic cost.
+    assert timings[1] < timings[0] * 12, timings
+
+
+def test_linked_heading_text_is_counted_once_for_the_size_floor():
+    body = (
+        "<article><header><h1><a href='/p'>%s</a></h1>"
+        "<a href='/author'>Jane</a></header><p>%s</p></article>"
+        % ("Headline word " * 60, "Article body. " * 30)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Jane" in out
+
+
+def test_fenced_code_counts_as_retained_content():
+    # A leading # inside a fence is a comment, not a heading; scoring it as one loses this article.
+    code = "<pre>%s</pre>" % "\n".join("# comment line %d" % i for i in range(16))
+    article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
+        _interlanguage_list(300),
+        code,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "comment line 1" in out
+    assert "Sibling teaser" not in out
+
+
+_FENCE = "`" * 3
+
+
+def test_dropped_furniture_cannot_dominate_sibling_ranking():
+    # Credit must not decide the match: a teaser with a 1000 link header outranked five times its
+    # own real text.
+    teaser = "<article><header>%s</header><p>%s</p></article>" % (
+        "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(1000)),
+        "Teaser words here. " * 20,
+    )
+    real = "<article><p>%s</p></article>" % ("The genuine article body text goes here. " * 55)
+    out = html_to_markdown(f"<body>{teaser}{real}</body>", main_content = True)
+    assert "The genuine article body text goes here." in out
+    assert "Teaser words here." not in out
+
+
+def test_literal_bracket_paren_is_prose_not_a_destination():
+    # No [ opened it, so "](" is literal and the parens hold prose; skipping them scored 192 of 295.
+    article = "<article><p>%s](%s) %s</p></article>" % (
+        "Real article prose that the reader wants to see. " * 3,
+        "y" * 100,
+        "Tail prose to finish the paragraph off here.",
+    )
+    sibling = "<article><p>%s</p></article>" % ("Unrelated sibling teaser words. " * 8)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "Real article prose that the reader wants to see." in out
+    assert "Unrelated sibling teaser" not in out
+
+
+def test_hand_preserved_heading_reaches_the_eligibility_tally():
+    # The partial branch writes the title straight into heading_parts, so the gate needs telling
+    # too or a title-only card reads as body prose.
+    card = (
+        '<article><header><a href="/h"><div role="heading">%s</div>%s</a><ul>%s</ul></header></article>'
+        % (
+            "Card Title Words " * 14,
+            "nav text " * 40,
+            _interlanguage_list(300),
+        )
+    )
+    real = "<p>%s</p>" % ("The real page body text here. " * 30)
+    out = html_to_markdown(f"<body><main>{real}{card}</main></body>", main_content = True)
+    assert "The real page body text here." in out
+
+
+def test_pre_inside_a_table_cell_is_drained_before_the_row():
+    # The row is emitted, so an open <pre> swallowed it into a fence as CODEMARKER|  |.
+    body = "<main><header><h1>T</h1><table><tr><td><pre>CODEMARKER</header><p>%s</p></main>" % (
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "CODEMARKER|" not in out
+    assert "Article body." in out
+
+
+def test_post_processing_respects_the_widened_fence():
+    # Both passes toggled on any ``` line, so the literal one closed the block and its code was
+    # cleaned and de-boilerplated.
+    code = "<pre>%s\nskip to content\n\nreal code line   \nmore code</pre>" % _FENCE
+    body = "<article>%s<p>%s</p></article>" % (code, "Body text here. " * 20)
+    out = html_to_markdown(f"<body><main>{body}</main></body>", main_content = True)
+    assert "skip to content" in out
+    assert "skip to content\n\nreal code line" in out
+    assert "real code line   " in out
+
+
+def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
+    # /docs/(draft never balances, so it is not a link; the scan must keep the prose on that line.
+    article = '<article><p><a href="/docs/(draft">Doc</a> %s</p></article>' % (
+        "Substantial article prose continues here. " * 6,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "Substantial article prose continues here." in out
+    assert "Sibling teaser" not in out
+
+
+def test_structural_headings_do_not_satisfy_the_eligibility_gate():
+    # role="heading" renders as prose, so ATX reparsing missed it and a header-only card cleared
+    # the gate on its title plus dropped-list credit.
+    card = '<article><header><div role="heading">%s</div><ul>%s</ul></header></article>' % (
+        "Card Title Words " * 14,
+        _interlanguage_list(300),
+    )
+    real = "<article><p>%s</p></article>" % ("The real article body text here. " * 20)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "The real article body text here." in out
+    assert "Card Title Words" not in out
+
+
+def test_anchor_wrapping_a_heading_preserves_only_the_heading():
+    # <a><h1>Title</h1>...nav...</a> carries a title; teeing the whole anchor returned 14k of nav.
+    bulk = " ".join("NavWord%04d" % i for i in range(1200))
+    body = (
+        '<main><header><a href="/home"><h1>Title</h1>%s</a><ul>%s</ul></header><p>%s</p></main>'
+        % (
+            bulk,
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Title" in out
+    assert "NavWord0000" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_link_destination_scan_balances_parentheses():
+    # A destination may hold parens, so stopping at the first ) scored the rest of the URL as prose.
+    query = "utm_source=x&" * 25
+    card = '<article><header>%s</header><p><a href="/card(foo)?%s">Read</a></p></article>' % (
+        "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
+        query,
+    )
+    real = "<article><p>%s</p></article>" % ("The genuine article body text here. " * 20)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "The genuine article body text here." in out
+    assert "/card(foo)?" not in out
+
+
+def test_literal_fence_inside_pre_does_not_end_the_code_region():
+    # A ``` line in the source is content; ending the fence there made the rest read as headings.
+    code = "<pre>%s\n%s</pre>" % (
+        _FENCE,
+        "\n".join("# code line %d" % i for i in range(20)),
+    )
+    article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
+        _interlanguage_list(300),
+        code,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "code line 1" in out
+    assert "Sibling teaser" not in out
+
+
+def test_heading_through_a_nested_buffer_is_emitted_once():
+    # The title was teed entering the blockquote and again on flush, so it was kept twice.
+    body = (
+        '<main><header><div role="heading"><blockquote>UniqueTitle</blockquote></div><ul>%s</ul></header><p>%s</p></main>'
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("UniqueTitle") == 1
+
+
+def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
+    # </code> arrives after </header>; the frame already closed the span, so a second emit is odd.
+    body = "<main><header><h1>T</h1><code>navcode<ul>%s</ul></header><p>%s</p></code></main>" % (
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("`") % 2 == 0
+    assert "Article body." in out
+
+
+def test_header_text_is_sized_after_whitespace_collapses():
+    # The run collapses to one space, so counting it raw pushed a short byline over the floor.
+    byline = '<a href="/a">Jane%sDoe</a><time>July 2026</time>' % (" " * 300)
+    body = "<main><header><h1>T</h1>%s</header><p>%s</p></main>" % (
+        byline,
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Jane Doe" in out
+    assert "July 2026" in out
+
+
+def test_link_destinations_do_not_count_as_retained_prose():
+    # A tracking URL is not prose: this card shows 4 visible chars but its destination scored 339.
+    query = "utm_source=x&" * 25
+    card = '<article><header>%s</header><p><a href="/card?%s">Read</a></p></article>' % (
+        "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
+        query,
+    )
+    real = "<article><p>%s</p></article>" % ("The genuine article body text here. " * 20)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "The genuine article body text here." in out
+    assert "/card?" not in out
+
+
+def test_late_end_tag_cannot_replay_a_recovered_pre_block():
+    # </header> arrives while <pre> is open, so the frame drains it; the later </pre> replayed it.
+    body = "<main><header><h1>T</h1><ul>%s</ul><pre>%s</header><p>%s</p></pre></main>" % (
+        _interlanguage_list(300),
+        "NAVJUNK_MARKER\n" * 3,
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "NAVJUNK_MARKER" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_aria_heading_accepts_a_fallback_role_token_list():
+    # role is a token list authors use for fallbacks, so an exact match dropped the title.
+    assert _is_aria_heading({"role": "heading"})
+    assert _is_aria_heading({"role": "future-role heading"})
+    assert _is_aria_heading({"role": "HEADING"})
+    assert not _is_aria_heading({"role": "banner"})
+    assert not _is_aria_heading({})
+    body = (
+        '<main><header><div role="future-role heading">Page Title</div><ul>%s</ul></header><p>%s</p></main>'
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Lang0" not in out
+
+
+@pytest.mark.parametrize(
+    ("heading_markup", "marker"),
+    [
+        ("<h1>Page Title</h1>", "Page Title"),
+        ("<table><tr><td><h1>Page Title</h1></td></tr></table>", "Page Title"),
+        ("<div role='heading' aria-level='1'>Page Title</div>", "Page Title"),
+        ("<a role='heading' href='/title'>Page Title</a>", "Page Title"),
+        ("<a href='/post'><h1>Page Title</h1></a>", "Page Title"),
+        ("<hgroup><h1>Title</h1><p>Subtitle here</p></hgroup>", "Subtitle here"),
+    ],
+)
+def test_heading_survives_a_stripped_header(heading_markup, marker):
+    # However the title is expressed, reducing a link-only header keeps it and nothing else.
+    body = "<main><header>%s<ul>%s</ul></header><p>%s</p></main>" % (
+        heading_markup,
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert marker in out
+    assert "Lang0" not in out
+    assert "Article body." in out
+
+
+@pytest.mark.parametrize(
+    "body_markup",
+    [
+        # The blockquote encloses the header, so its content belongs to the frame.
+        "<main><blockquote><header><h1>T</h1><ul>{links}</ul></header></blockquote><p>{body}</p></main>",
+        # </blockquote> omitted: the frame must claim the content before judging.
+        "<main><header><h1>T</h1><blockquote><ul>{links}</ul></header><p>{body}</p></main>",
+        # </td> omitted, same requirement through the cell buffer.
+        "<main><header><h1>T</h1><table><tr><td><ul>{links}</ul></header><p>{body}</p></main>",
+    ],
+)
+def test_link_list_is_stripped_through_a_nested_buffer(body_markup):
+    body = body_markup.format(links = _interlanguage_list(300), body = "Article body. " * 30)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Lang0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_hash_prefixed_prose_still_wins_its_scope():
+    # Every line opens with a hash, so treating those as headings left the scope looking empty.
+    lines = "".join("<p>#include &lt;header_%02d.h&gt;</p>" % i for i in range(14))
+    article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
+        _interlanguage_list(300),
+        lines,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "#include" in out
+    assert "Sibling teaser" not in out
+
+
+def test_header_size_is_independent_of_the_buffer_it_renders_through():
+    # Text counted entering a nested buffer AND on flush doubled it, so links stripped once quoted.
+    links = "".join(
+        '<a href="/very/long/section/path/number/%03d/index">L%03d</a>' % (i, i) for i in range(14)
+    )
+    wrapped = {
+        "bare": links,
+        "blockquote": f"<blockquote>{links}</blockquote>",
+        "cell": f"<table><tr><td>{links}</td></tr></table>",
+    }
+    kept = set()
+    for inner in wrapped.values():
+        body = "<main><header><h1>T</h1>%s</header><p>%s</p></main>" % (
+            inner,
+            "Article body. " * 30,
+        )
+        kept.add("L000" in html_to_markdown(f"<body>{body}</body>", main_content = True))
+    assert len(kept) == 1
+
+
+def test_nested_inline_code_closes_every_span_it_opened():
+    # Two <code> elements owe two backticks; as a flag the first </code> answered for both.
+    body = "<main><article><p><code><code>x</code></code></p><p>%s</p></article></main>" % (
+        "Body text here. " * 20,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("`") % 2 == 0
+    assert "``x``" in out
+
+
+def test_header_inside_open_inline_code_leaves_delimiters_paired():
+    # The <code> opened outside the header, so closing it in the frame left </code> unpaired.
+    body = "<main><code>head<header><h1>T</h1></header>tail</code><p>%s</p></main>" % (
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("`") % 2 == 0
+    assert "`head`" not in out
+    assert "Article body." in out
+
+
+def test_nested_blockquote_prose_does_not_backtrack():
+    # Heading detection must scan linearly: a regex backtracks exponentially on "> > > ... prose".
+    import time
+
+    html = (
+        "<body><main>"
+        + "<blockquote>" * 40
+        + "<p>prose text here</p>"
+        + "</blockquote>" * 40
+        + "</main></body>"
+    )
+    start = time.perf_counter()
+    html_to_markdown(html, main_content = True)
+    assert time.perf_counter() - start < 1.0
+
+
+def test_deeply_nested_tags_stay_linear():
+    # _close_implicit must not rescan the whole open-tag stack per start tag.
+    import time
+
+    def build(count):
+        return (
+            "<body><main>"
+            + "<header><h1>T</h1>" * count
+            + "</header>" * count
+            + "<p>body</p></main></body>"
+        )
+
+    timings = []
+    for count in (1000, 4000):
+        start = time.perf_counter()
+        html_to_markdown(build(count), main_content = True)
+        timings.append(time.perf_counter() - start)
+    # Four times the tags, well under sixteen times the work.
+    assert timings[1] < timings[0] * 12, timings

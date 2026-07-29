@@ -20,6 +20,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
+  const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const visionProjectorEnabled = useChatRuntimeStore(
     (s) => s.visionProjectorEnabled,
@@ -47,6 +48,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       kvCacheDtype: kvCacheDtype ?? null,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
+      nParallel: nParallel ?? null,
       tensorParallel: tensorParallel ?? false,
       visionProjectorEnabled,
       chatTemplateOverride: chatTemplateOverride ?? null,
@@ -69,6 +71,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     kvCacheDtype,
     speculativeType,
     specDraftNMax,
+    nParallel,
     tensorParallel,
     visionProjectorEnabled,
     chatTemplateOverride,

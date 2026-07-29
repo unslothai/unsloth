@@ -28,7 +28,7 @@ import re as _re
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
 
-from utils.api_errors import openai_error_body, anthropic_error_body
+from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
 from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
@@ -387,7 +387,7 @@ def _raise_unsupported_n(path_label: str) -> None:
     _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
 
 
-def _sse_streaming_response(content) -> StreamingResponse:
+def _sse_streaming_response(content, *, unstarted_cleanup = None) -> StreamingResponse:
     """A ``text/event-stream`` response with the standard SSE headers used by
     every streaming path here: no client/proxy caching, no proxy buffering, and
     a one-shot connection. Two callers build their response inline instead: the
@@ -409,6 +409,7 @@ def _sse_streaming_response(content) -> StreamingResponse:
             "Connection": "close",
             "X-Accel-Buffering": "no",
         },
+        unstarted_cleanup = unstarted_cleanup,
     )
 
 
@@ -726,6 +727,7 @@ def _wants_stream_usage(payload) -> bool:
 
 _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S = 2.0
 _SSE_DONE_LINE = "data: [DONE]"
+_SSE_DONE_CHUNK = "data: [DONE]\n\n"
 
 
 def _openai_passthrough_sse_line_terminal_state(raw_line: str) -> Optional[str]:
@@ -1003,14 +1005,20 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
+        _kv_bytes_per_elem,
+        _kv_unified_from_args,
+        _planned_main_cache_types,
+        _swa_full_from_args_or_env,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
+        parse_gpu_layers_override,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1041,14 +1049,20 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
+        _kv_bytes_per_elem,
+        _kv_unified_from_args,
+        _planned_main_cache_types,
+        _swa_full_from_args_or_env,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
+        parse_gpu_layers_override,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1141,7 +1155,7 @@ def _openai_admission_request_path(request: Optional[Request]) -> Optional[str]:
         return None
 
 
-def _openai_admission_log(
+def _llama_admission_log(
     event: str,
     reservation: Optional[LlamaAdmissionReservation] = None,
     *,
@@ -1159,13 +1173,15 @@ def _openai_admission_log(
         wait_ms = int(max(0.0, time.monotonic() - wait_started_at) * 1000)
     log = getattr(logger, level, logger.debug)
     log(
-        "openai admission %s: mode=%s path=%s completion_id=%s capacity=%s active=%s queued=%s wait_ms=%s",
+        "llama admission %s: mode=%s path=%s completion_id=%s "
+        "pool=%s/%s free=%s queued=%s wait_ms=%s",
         event,
         mode,
         _openai_admission_request_path(request),
         completion_id,
-        getattr(snapshot, "capacity", None),
         getattr(snapshot, "active", None),
+        getattr(snapshot, "capacity", None),
+        getattr(snapshot, "free", None),
         getattr(snapshot, "queued", None),
         wait_ms,
     )
@@ -1186,6 +1202,23 @@ def _openai_admission_http_exception(exc: Exception, *, status_code: int) -> HTT
     return HTTPException(
         status_code = status_code,
         detail = _openai_admission_error_body(exc, status_code = status_code),
+    )
+
+
+def _anthropic_admission_http_exception(exc: Exception, *, status_code: int) -> HTTPException:
+    """Anthropic-shaped error for an admission reject/timeout/cancel (429/503/499)."""
+    snapshot = getattr(exc, "snapshot", None)
+    message = str(exc)
+    if snapshot is not None:
+        message = (
+            f"{message} "
+            f"(active={snapshot.active}, queued={snapshot.queued}, capacity={snapshot.capacity})"
+        )
+    # Types come from ANTHROPIC_TYPE_BY_STATUS (429 -> rate_limit_error, which is
+    # what Anthropic SDKs back off on); overloaded_error is reserved for 529.
+    return HTTPException(
+        status_code = status_code,
+        detail = anthropic_error_body(message, status = status_code),
     )
 
 
@@ -1494,6 +1527,24 @@ class _SameTaskStreamingResponse(StreamingResponse):
             await self.background()
 
 
+async def _release_unstarted_anthropic_stream(iterator, prior_cleanup) -> None:
+    """Close a stream whose body never started, running the response's own
+    pre-start hook. aclose() on an unstarted async generator is a no-op, so its
+    finally never runs and anything the builder acquired eagerly (the passthrough
+    cancel tracker) would leak without the hook."""
+    aclose = getattr(iterator, "aclose", None)
+    if aclose is not None:
+        try:
+            await aclose()
+        except Exception:
+            pass
+    if prior_cleanup is not None:
+        try:
+            await prior_cleanup()
+        except Exception:
+            pass
+
+
 def _tracked_cancel_unstarted_cleanup(tracker):
     """unstarted_cleanup that exits ``tracker`` on a pre-start disconnect, when
     the generator's finally (which normally exits it) never runs."""
@@ -1746,6 +1797,7 @@ from models.inference import (
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
+    anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
     anthropic_tool_choice_to_openai,
     openai_finish_to_anthropic_stop,
@@ -1755,6 +1807,7 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+from state import active_generations
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
@@ -1794,7 +1847,16 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
-_ARTIFACT_PREVIEW_FRAME_ANCESTORS = "'self' tauri://localhost http://tauri.localhost"
+# Packaged desktop runs at tauri://localhost (macOS/Linux) or http://tauri.localhost
+# (Windows WebView2); the web build is same-origin ('self'). The `tauri dev` shell,
+# however, serves the frontend from the Vite dev origin (http://localhost:5173),
+# so the packaged allowlist alone leaves the preview blocked in dev with an
+# "ancestor violates frame-ancestors" error. This shell exposes no server resource
+# (it only renders postMessage'd HTML in a no-same-origin sandbox), so also allowing
+# any localhost/127.0.0.1 dev origin to frame it is safe and unblocks the dev shell.
+_ARTIFACT_PREVIEW_FRAME_ANCESTORS = (
+    "'self' tauri://localhost http://tauri.localhost http://localhost:* http://127.0.0.1:*"
+)
 _ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "default-src 'none'; "
     "script-src 'unsafe-inline'; "
@@ -2128,14 +2190,13 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
-    Honors the documented default that an unset permission_mode behaves as
-    "ask". An explicit confirm_tool_calls (True or False) wins; explicit
-    ask/auto always engage the gate (a non-streaming one is then rejected, since
-    it cannot prompt); off/full never prompt. An unset mode defaults to ask, but
-    that is only realizable on a streaming request, so a non-streaming unset
-    request keeps the legacy run-without-gate behavior instead of 400ing. Used
-    at the pre-switch guard and the per-backend tool paths so a forced tool loop
-    (CLI --enable-tools) with the default mode still gates streaming requests.
+    An explicit confirm_tool_calls (True or False) wins; explicit ask/auto always
+    engage the gate (a non-streaming one is then rejected, since it cannot prompt);
+    off/full never prompt. An unset mode stays lenient here even though the loop
+    defaults it to "auto": a non-streaming request keeps the legacy
+    run-without-gate behavior instead of 400ing, so non-streaming clients and
+    health checks keep working. Used at the pre-switch guard and the per-backend
+    tool paths so a forced tool loop (CLI --enable-tools) still gates streaming.
     """
     if payload.confirm_tool_calls is not None:
         return bool(payload.confirm_tool_calls)
@@ -2197,11 +2258,38 @@ def _prune_pending(now: float) -> None:
 
 
 class _TrackedCancel:
-    """Register cancel_event in _CANCEL_REGISTRY for the block's duration."""
+    """Register cancel_event in _CANCEL_REGISTRY for the block's duration.
 
-    def __init__(self, event: threading.Event, *keys):
+    Also records the run in state.active_generations so /load and /unload can
+    see which chats a reload would interrupt. Both registries share this event,
+    so either one cancels down the same per-request path.
+    """
+
+    def __init__(
+        self,
+        event: threading.Event,
+        *keys,
+        thread_id = None,
+        model = None,
+        kind = "chat",
+    ):
         self.event = event
         self.keys = tuple(k for k in keys if k)
+        # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
+        # naming them chats would offer to stop something the user never started from a thread.
+        self._active = active_generations.ActiveGeneration(
+            event, thread_id = thread_id, model = model, kind = kind
+        )
+
+    @classmethod
+    def for_payload(cls, event: threading.Event, payload, *keys):
+        """Track the run against the conversation its request names."""
+        return cls(
+            event,
+            *keys,
+            thread_id = getattr(payload, "thread_id", None),
+            model = getattr(payload, "model", None),
+        )
 
     def __enter__(self):
         # Register + consume-pending in one critical section to close the
@@ -2215,6 +2303,7 @@ class _TrackedCancel:
             for k in self.keys:
                 if k and _PENDING_CANCELS.pop(k, None) is not None:
                     should_cancel = True
+        self._active.__enter__()
         if should_cancel:
             self.event.set()
         return self.event
@@ -2228,6 +2317,7 @@ class _TrackedCancel:
                 bucket.discard(self.event)
                 if not bucket:
                     _CANCEL_REGISTRY.pop(k, None)
+        self._active.__exit__(*exc)
         return False
 
 
@@ -2351,10 +2441,16 @@ async def _await_cancel_or_disconnect_then_close_client(
         return
 
 
-async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
+async def _stop_local_disconnect_cancel_watcher(watcher, timeout_s: float = 5.0) -> None:
+    # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
+    # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
+    # and an abandoned watcher owns no resources.
     watcher.cancel()
+    done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
+    if not done:
+        return
     try:
-        await watcher
+        watcher.result()
     except (asyncio.CancelledError, Exception):
         pass
 
@@ -3061,12 +3157,36 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
+    """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
+    clean = public_model_id(model) or model or "model"
+    return f"{clean}:{variant}" if variant and ":" not in clean else clean
+
+
+def _close_load_event(
+    entry_id: Optional[str], model: Optional[str], variant: Optional[str]
+) -> None:
+    """Close a monitor load row, relabelled with the id the load resolved: the row
+    opened on the request's model_path, which may be an HF snapshot dir."""
+    api_monitor.relabel(entry_id, _lifecycle_model_label(model, variant))
+    api_monitor.finish(entry_id)
+
+
 def _monitor_active_model() -> Optional[str]:
+    """The loaded model as a client-facing id, quant included when known.
+
+    Cleaned like /v1/models: rendered in the settings UI and served over the public
+    --secure tunnel, so it must never be the on-disk load path.
+    """
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
-        return getattr(llama_backend, "model_identifier", None)
+        model_id = _llama_public_model_id(llama_backend)
+        variant = getattr(llama_backend, "hf_variant", None)
+        if model_id and variant and ":" not in model_id:
+            return f"{model_id}:{variant}"
+        return model_id
     backend = get_inference_backend()
-    return backend.active_model_name
+    return public_model_id(backend.active_model_name) or backend.active_model_name
 
 
 def _validate_native_gguf_companion(
@@ -3191,10 +3311,25 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
+def _parallel_slot_echo(llama_backend: LlamaCppBackend) -> dict:
+    """requested/effective parallel-slot fields for /load and /status echoes.
+
+    The diffusion runner ignores ``--parallel`` and never commits a count, so it
+    reports None like the non-GGUF paths; echoing the reset placeholder 1 would
+    fabricate an "invoked with 1 slot"."""
+    if llama_backend.is_diffusion:
+        return {"requested_parallel_slots": None, "parallel_slots": None}
+    return {
+        "requested_parallel_slots": llama_backend.requested_parallel_slots,
+        "parallel_slots": llama_backend.effective_parallel_slots,
+    }
+
+
 def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
+    requested_parallel_slots: Optional[int] = None,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -3203,10 +3338,21 @@ def _request_matches_loaded_settings(
     launched (user override, else a bundled family template such as the
     gemma-4 override), so the dedup compares against what the backend actually
     holds rather than the raw request field. Defaults to the request field for
-    callers that do not resolve a bundled override."""
+    callers that do not resolve a bundled override.
+
+    ``requested_parallel_slots`` is the resolved count the load would use
+    (per-load ``n_parallel``, else the server-wide default); None skips it."""
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
+        return False
+    # Requested-vs-requested for the same reason: the fitter may launch fewer
+    # slots. Diffusion ignores --parallel, so a change there must not reload.
+    if (
+        requested_parallel_slots is not None
+        and not llama_backend.is_diffusion
+        and int(requested_parallel_slots) != llama_backend.requested_parallel_slots
+    ):
         return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
@@ -3236,6 +3382,10 @@ def _request_matches_loaded_settings(
         )
     )
     if not llama_backend.is_diffusion and requested_load_mmproj != bool(llama_backend.load_mmproj):
+        return False
+    if not llama_backend.is_diffusion and llama_backend.swa_full != _swa_full_from_args_or_env(
+        effective_extra
+    ):
         return False
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
@@ -3449,15 +3599,38 @@ def _switch_waiter_count() -> int:
         return sum(max(0, count) for count in _auto_switch_waiters.values())
 
 
-async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
+async def _wait_for_model_switch_idle(
+    *,
+    current_request_counted: bool,
+    cancel_pending: bool = False,
+    timeout_s: Optional[float] = None,
+) -> None:
     """Wait until a model replacement cannot interrupt active inference.
 
     The caller holds ``inference_lifecycle_gate``, which prevents new inference
     from starting while existing requests drain. Auto-switch requests that have
     resolved their targets are scheduler waiters, not active generations, so
     exclude them to avoid a queue deadlock.
+
+    ``cancel_pending`` is set by a forced swap that has NOT cancelled yet: the
+    registered generations are the ones it is about to stop, so waiting on them
+    would wait out exactly what the force exists to end. Excluding them lets the
+    drain finish ahead of the cancel, which keeps every check that can still
+    reject the swap in front of the destructive step. Recomputed each poll (not
+    snapshotted) so a generation that ends on its own stops being discounted and
+    the remaining, non-cancellable requests are still waited out.
+
+    ``timeout_s`` bounds the wait and returns rather than raising. Only the
+    post-cancel drains pass it: what they wait on may never observe its cancel
+    (TTS on the subprocess backend has no observer), and they hold the lifecycle
+    gate, so an unbounded wait pins every load and unload behind one
+    uninterruptible generation. Expiring there just proceeds, which is what they
+    do anyway once drained. Pre-cancel drains stay unbounded -- the swap can
+    still be refused, so they must not shorten the protection they provide.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
+
+    deadline = None if timeout_s is None else time.monotonic() + timeout_s
     while True:
         queued_switches = _switch_waiter_count()
         if current_request_counted and queued_switches > 0:
@@ -3466,7 +3639,18 @@ async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
             current_request_counted = current_request_counted,
             include_pending = False,
         )
+        if cancel_pending:
+            active_others -= min(active_others, active_generations.count())
         if active_others <= queued_switches:
+            return
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.warning(
+                "model_switch_drain_timed_out",
+                extra = {
+                    "event": "inference.switch_drain_timeout",
+                    "remaining": active_others - queued_switches,
+                },
+            )
             return
         await asyncio.sleep(0.02)
 
@@ -3488,6 +3672,9 @@ _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
 # literally named "default" can't be swapped to). The NUL keeps it off any index.
 _RELOAD_ONLY_MODEL = "\x00reload-only"
+# One cold scan is worth paying to avoid answering a named model with another,
+# bounded so a pathological install cannot hang the request behind it.
+_COLD_INDEX_WAIT_S = 10.0
 
 
 def _switch_model_for_payload(payload) -> str:
@@ -3573,6 +3760,467 @@ def _no_model_loaded_detail(base: str) -> str:
     )
 
 
+# Cap on ids listed by a "not downloaded" error, so it stays readable in a terminal.
+_MAX_LISTED_AVAILABLE_MODELS = 8
+
+
+def _raw_body_model(body) -> Optional[str]:
+    """The ``model`` a raw-body endpoint was given, else None (same value
+    :func:`_auto_switch_from_request_body` fed the switch hook)."""
+    return body.get("model") if isinstance(body, dict) else None
+
+
+async def _available_model_ids() -> list[str]:
+    """Sorted ids a /v1 request may name, from the catalog ``GET /v1/models``
+    serves, so an error and the listing can't disagree."""
+    return sorted(
+        mid
+        for mid in (m.get("id") for m in await _openai_catalog_objects())
+        if isinstance(mid, str) and mid
+    )
+
+
+def _format_available_models(ids: list[str]) -> str:
+    if not ids:
+        return ""
+    shown = ", ".join(ids[:_MAX_LISTED_AVAILABLE_MODELS])
+    extra = len(ids) - _MAX_LISTED_AVAILABLE_MODELS
+    return f"{shown} and {extra} more" if extra > 0 else shown
+
+
+async def _unavailable_model_message(requested_model: str) -> str:
+    """Why a named model can't serve this request, and what can.
+
+    Auto-switch only loads downloaded GGUFs, so a request naming a real model
+    usually fails because it is not on this machine, which /inference/load cannot
+    fix; say what is actually wrong.
+    """
+    from core.inference.local_model_resolver import (
+        MISS_VARIANT_NOT_FOUND,
+        describe_local_miss,
+    )
+
+    reason, variants = await asyncio.to_thread(describe_local_miss, requested_model)
+    if reason == MISS_VARIANT_NOT_FOUND:
+        # Repo downloaded, only the quant missing: sibling quants beat the catalog.
+        base_id, _, wanted = requested_model.strip().rpartition(":")
+        return (
+            f"The model '{base_id}' is downloaded, but the quant '{wanted}' is not. "
+            f"Available quants: {', '.join(variants)}."
+        )
+    available = _format_available_models(await _available_model_ids())
+    if not available:
+        return (
+            f"The model '{requested_model}' is not downloaded on this server, and no "
+            "models are downloaded yet. Download one in Unsloth Studio."
+        )
+    return (
+        f"The model '{requested_model}' is not downloaded on this server. "
+        f"Available models: {available}. Download more in Unsloth Studio, "
+        "or list them with GET /v1/models."
+    )
+
+
+async def _no_model_loaded_error(
+    base: str, requested_model: Optional[str], fastapi_request: Optional[Request], *, status: int
+):
+    """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
+
+    Changes only the case the generic text gets wrong (auto-switch on, a model
+    named, that name resolving to nothing local, so the switch silently did
+    nothing) into a 404 model_not_found. Everything else keeps ``status`` and the
+    :func:`_no_model_loaded_detail` text verbatim.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    named = (
+        requested_model
+        if isinstance(requested_model, str)
+        and requested_model.strip()
+        and requested_model != _RELOAD_ONLY_MODEL
+        else None
+    )
+    if named is None or not get_openai_auto_switch_enabled():
+        return status, _no_model_loaded_detail(base)
+    try:
+        if _loaded_satisfies(named):
+            # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
+            return status, _no_model_loaded_detail(base)
+        if await asyncio.to_thread(resolve_local_gguf, named) is not None:
+            # Resolvable but unloaded: the switch failed, which the generic text covers.
+            return status, _no_model_loaded_detail(base)
+        message = await _unavailable_model_message(named)
+    except Exception as exc:
+        # The diagnosis is a nicety; never let it turn a 4xx into a 500.
+        logger.debug("no-model-loaded diagnosis failed for %r: %s", named, exc)
+        return status, _no_model_loaded_detail(base)
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    if not isinstance(path, str):
+        # No request in hand: let the global /v1/* handler pick the envelope.
+        return 404, message
+    return 404, error_body_for_path(
+        path,
+        message,
+        status = 404,
+        code = "model_not_found",
+        param = "model",
+    )
+
+
+def _auto_download_hf_token(fastapi_request: Optional[Request]) -> Optional[str]:
+    """The token to fetch with: only one the caller sent themselves.
+
+    Never the server's ambient token, and never the OpenAI bearer key. The repo is
+    named by whoever holds an API key, so borrowing the owner's Hub identity would
+    let that key pull the owner's private repos and publish them in /v1/models.
+    """
+    from hub.dependencies import HUB_HF_TOKEN_HEADER, HUB_HF_TOKEN_MAX_LENGTH
+
+    headers = getattr(fastapi_request, "headers", None)
+    if headers is None:
+        return None
+    supplied = (headers.get(HUB_HF_TOKEN_HEADER) or "").strip()
+    if supplied and len(supplied) <= HUB_HF_TOKEN_MAX_LENGTH:
+        return supplied
+    return None
+
+
+async def _maybe_auto_download_model(
+    requested_model: str,
+    fastapi_request: Optional[Request],
+    *,
+    require_vision: bool = False,
+) -> None:
+    """Opt-in: start fetching a named GGUF this server doesn't have.
+
+    Raises to stop the request while the model is downloading or cannot be fetched.
+    Off by default, and never fires on a name not shaped like a Hub repo, so an
+    unknown id like "gpt-4" still falls through to the resident model.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
+    from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
+
+    if not requested_model or not get_openai_auto_download_enabled():
+        return
+    if not is_downloadable_ref(requested_model):
+        return
+    # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
+    if _loaded_satisfies(requested_model):
+        return
+    try:
+        refusal = await maybe_auto_download(
+            requested_model,
+            hf_token = _auto_download_hf_token(fastapi_request),
+            require_vision = require_vision,
+        )
+    except Exception as exc:
+        # Never turn a servable request into a 500 over the download attempt.
+        logger.warning("auto-download failed for %r: %s", requested_model, exc)
+        return
+    if refusal is None:
+        return
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    detail = (
+        error_body_for_path(
+            path,
+            refusal.message,
+            status = refusal.status,
+            code = refusal.code,
+            param = "model",
+        )
+        if isinstance(path, str)
+        else refusal.message
+    )
+    raise HTTPException(
+        status_code = refusal.status,
+        detail = detail,
+        headers = ({"Retry-After": str(refusal.retry_after)} if refusal.retry_after else None),
+    )
+
+
+def _loaded_satisfies(requested: str) -> bool:
+    """Whether what is serving right now actually answers to *requested*.
+
+    A bare ``org/model`` is satisfied by any loaded quant of that repo; an explicit
+    ``:QUANT`` must match the loaded one.
+    """
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    base, variant = split_model_ref(requested)
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        candidates = [
+            candidate
+            for candidate in (
+                getattr(llama_backend, "model_identifier", None),
+                getattr(llama_backend, "_openai_advertised_id", None),
+                _llama_public_model_id(llama_backend),
+            )
+            if candidate
+        ]
+        if not _matches_any(base, candidates):
+            return False
+        if not looks_like_quant(variant):
+            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
+            return True
+        return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
+    active = getattr(get_inference_backend(), "active_model_name", None)
+    if not active:
+        return False
+    # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
+    if looks_like_quant(variant):
+        return False
+    return _matches_any(base, [active, public_model_id(active)])
+
+
+def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
+    """Refuse a name we cannot yet place, rather than answer it with another model."""
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    message = (
+        f"This server is still indexing its local models, so it cannot confirm "
+        f"'{requested_model}' yet. Retry shortly."
+    )
+    raise HTTPException(
+        status_code = 503,
+        detail = (
+            error_body_for_path(path, message, status = 503, code = "model_indexing")
+            if isinstance(path, str)
+            else message
+        ),
+        headers = {"Retry-After": "5"},
+    )
+
+
+def _matches_any(requested: str, candidates) -> bool:
+    """Whether *requested* names any of *candidates*.
+
+    A repo alias is case-insensitive, a filesystem path is not: lowercasing both
+    made /srv/models/foo.gguf and /srv/models/Foo.gguf the same weights.
+    """
+    lowered = requested.strip().lower()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if _looks_like_local_path(requested) or _looks_like_local_path(candidate):
+            if _norm_path(requested) == _norm_path(candidate):
+                return True
+            continue
+        if lowered == str(candidate).strip().lower():
+            return True
+    return False
+
+
+def _looks_like_local_path(value: str) -> bool:
+    """A filesystem path rather than a repo id, so case matters."""
+    text = str(value)
+    return text.startswith("/") or text.startswith("~") or ":\\" in text or "\\" in text
+
+
+def _norm_path(value: str) -> str:
+    """Compare-ready path. normcase, not lower: on a case-sensitive filesystem
+    /srv/models/Foo and /srv/models/foo are different models."""
+    import os
+
+    # normcase after, not before: on Windows it folds case *and* rewrites "/" to a
+    # backslash, leaving the descendant checks below comparing against a path with none.
+    return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
+
+
+def _resident_quant_is(variant: Optional[str]) -> bool:
+    """Whether the loaded GGUF is that exact quant."""
+    resident = getattr(get_llama_cpp_backend(), "hf_variant", None) or ""
+    return bool(variant) and resident.lower() == variant.strip().lower()
+
+
+def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False) -> bool:
+    """Whether a resolved on-disk path is what is already loaded.
+
+    ``llama_only`` drops the Transformers backend: only llama.cpp carries a quant
+    identity, so a Transformers model active from a directory that also holds GGUF
+    exports would otherwise answer a request for one of those quants.
+    """
+    if not load_path:
+        return False
+    target = _norm_path(load_path)
+    llama_backend = get_llama_cpp_backend()
+    for candidate in (
+        getattr(llama_backend, "gguf_path", None)
+        if getattr(llama_backend, "is_loaded", False)
+        else None,
+        getattr(llama_backend, "model_identifier", None)
+        if getattr(llama_backend, "is_loaded", False)
+        else None,
+        None if llama_only else getattr(get_inference_backend(), "active_model_name", None),
+    ):
+        if not candidate:
+            continue
+        current = _norm_path(candidate)
+        if current == target:
+            return True
+        if current.startswith(f"{target}/"):
+            # A model directory holding the weights loaded from it. Nested entries
+            # (/models/A alongside /models/A/sub/B) matched too, so a request for A was
+            # answered with B. The innermost indexed model owns the file; with none
+            # indexed there is no nesting to tell apart, so keep matching.
+            owner = _innermost_indexed_owner(current)
+            if owner is None or owner == target:
+                return True
+            continue
+        if target.startswith(f"{current}/"):
+            return True
+    return False
+
+
+def _innermost_indexed_owner(path: str) -> Optional[str]:
+    """Longest catalog-listed model path containing *path*, or None if none does."""
+    best = None
+    for info in _CATALOG_CACHE["models"] or ():
+        listed = getattr(info, "path", None)
+        if not listed:
+            continue
+        normalized = _norm_path(listed)
+        if path == normalized or path.startswith(f"{normalized}/"):
+            if best is None or len(normalized) > len(best):
+                best = normalized
+    return best
+
+
+async def _reject_unservable_model(
+    requested_model: Optional[str], fastapi_request: Optional[Request]
+) -> None:
+    """Refuse rather than answer a named model with a different one.
+
+    Only for a reference this server can tell was meant for it: an explicit GGUF
+    quant, or a model that is actually here. A namespace decides nothing either way
+    (``vendor/model`` is how LiteLLM and OpenRouter name every provider, and a
+    standalone GGUF is advertised without one), so a slashless id that resolves
+    locally is still a concrete reference. Only runs while something is serving:
+    with nothing loaded, :func:`_no_model_loaded_error` already says the right thing.
+    """
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    if (
+        not isinstance(requested_model, str)
+        or not requested_model.strip()
+        or requested_model == _RELOAD_ONLY_MODEL
+    ):
+        return
+    base, variant = split_model_ref(requested_model)
+    quantified = looks_like_quant(variant)
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        recently_downloaded,
+        resolve_local_gguf,
+        warm_index_soon,
+    )
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    still_indexing = False
+    try:
+        if _loaded_satisfies(requested_model):
+            return
+        if not (
+            get_llama_cpp_backend().is_loaded
+            or getattr(get_inference_backend(), "active_model_name", None)
+        ):
+            return
+        # Refresh in the background and read the index as-is: scanning here would stall the
+        # request, and a cold index only costs evidence (the gate below fails safe without it).
+        if index_is_built():
+            warm_index_soon()
+            resolved = resolve_local_gguf(requested_model, allow_scan = False)
+        else:
+            # Nothing cached to reason from yet, and falling through would answer a
+            # named model with the resident one. Pay the scan once, off the loop and
+            # bounded, rather than read "not scanned yet" as "not here".
+            try:
+                resolved = await asyncio.wait_for(
+                    asyncio.to_thread(resolve_local_gguf, requested_model),
+                    _COLD_INDEX_WAIT_S,
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                # Still scanning, so nothing is known about this name: say "not yet"
+                # rather than guess and put the resident model behind it.
+                warm_index_soon()
+                still_indexing = True
+                resolved = None
+        # A manual load stores the on-disk path the resolver advertises under an alias,
+        # so match on the path too. Quants of one repo share a directory, so the path
+        # alone cannot tell them apart: without the variant check an explicit :Q8_0
+        # would be answered by a resident Q4_K_M.
+        if (
+            resolved is not None
+            and _resolves_to_resident(resolved[0], llama_only = quantified)
+            and (not quantified or _resident_quant_is(variant))
+        ):
+            return
+        downloaded = resolved is not None
+        # /v1/models may have advertised this id off its own scan while the index is cold.
+        advertised = _advertised_local_path(base)
+        if (
+            advertised is not None
+            and _resolves_to_resident(advertised, llama_only = quantified)
+            and (not quantified or _resident_quant_is(variant))
+        ):
+            return
+        # The exact ref may miss on the quant alone, so ask about the repo too.
+        here = (
+            downloaded
+            or advertised is not None
+            # Just landed, so no scan has indexed it yet and neither of the above sees it.
+            or recently_downloaded(base)
+            or (variant is not None and resolve_local_gguf(base, allow_scan = False) is not None)
+        )
+        switchable = downloaded and get_openai_auto_switch_enabled()
+    except HTTPException:
+        # A refusal decided above is the answer, not a failure to decide: without this
+        # the handler below logs it and falls through to the resident model.
+        raise
+    except Exception as exc:
+        # Can't verify: an explicit quant still proves intent, so refuse; let anything else by.
+        logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
+        if not quantified:
+            return
+        downloaded = here = switchable = False
+    if still_indexing:
+        _raise_still_indexing(requested_model, fastapi_request)
+    if not (quantified or here):
+        return
+    if switchable:
+        # On disk and switching allowed, so the swap failed: the resident model is wrong weights.
+        status_code, code = 503, "model_switch_failed"
+        message = (
+            f"The model '{requested_model}' is downloaded, but this server could not "
+            "switch to it. Retry shortly, or load it in Unsloth Studio."
+        )
+    elif downloaded:
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The model '{requested_model}' is downloaded but not loaded, and "
+            "'Switch model by request' is off, so this server can only serve the "
+            "loaded model. Turn it on in Unsloth Studio under Settings > API."
+        )
+    else:
+        status_code, code = 404, "model_not_found"
+        try:
+            message = await _unavailable_model_message(requested_model)
+        except Exception as exc:
+            # Only the wording is uncertain; the mismatch is already established.
+            logger.debug("unavailable-model diagnosis failed for %r: %s", requested_model, exc)
+            message = f"The model '{requested_model}' is not the model this server is serving."
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    raise HTTPException(
+        status_code = status_code,
+        detail = (
+            error_body_for_path(path, message, status = status_code, code = code, param = "model")
+            if isinstance(path, str)
+            else message
+        ),
+        headers = {"Retry-After": "5"} if status_code == 503 else None,
+    )
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -3584,7 +4232,8 @@ async def _maybe_auto_switch_model(
 
     No-op unless enabled and ``requested_model`` resolves to a downloaded local
     model different from the loaded one. Unknown names fall through (drop-in
-    compat) and no remote download is triggered. ``require_vision`` rejects a swap
+    compat); a miss only reaches the network when auto-download is also on, and
+    even then only for ``namespace/name`` ids. ``require_vision`` rejects a swap
     to a text-only target before it runs, so an image request can't evict the
     resident vision model only to 400 afterwards.
     """
@@ -3614,6 +4263,8 @@ async def _maybe_auto_switch_model(
     # loop freed is restored on the next request. The resolver-based switch still
     # requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+        # No switching to do, but a named model must still not be answered by another.
+        await _reject_unservable_model(requested_model, fastapi_request)
         return
 
     async def _resolve_and_switch() -> None:
@@ -3629,6 +4280,11 @@ async def _maybe_auto_switch_model(
         last = get_last_unloaded_model()
         stashed_load_mmproj: Optional[bool] = None
         if resolved is None:
+            # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
+            if auto_switch_on and not reload_only:
+                await _maybe_auto_download_model(
+                    requested_model, fastapi_request, require_vision = require_vision
+                )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
@@ -3672,7 +4328,13 @@ async def _maybe_auto_switch_model(
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
-        bare = ":" not in requested_model
+        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+        # A tag that names no quant (":latest", ":8b") means the repo, as
+        # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
+        # a serving Q8 to load the preferred Q4 for a request either satisfies.
+        _, _requested_variant = split_model_ref(requested_model)
+        bare = not looks_like_quant(_requested_variant)
 
         def _already_serving() -> bool:
             # Match against both the concrete load path and the advertised repo id,
@@ -3777,6 +4439,8 @@ async def _maybe_auto_switch_model(
                 _note_switch_waiter(key, -1)
 
     await _resolve_and_switch()
+    # The switch may have missed, so refuse rather than answer as whatever is resident.
+    await _reject_unservable_model(requested_model, fastapi_request)
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
@@ -3810,7 +4474,7 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     if not adapter_cfg_path.exists():
         return load_in_4bit
     try:
-        with open(adapter_cfg_path) as f:
+        with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
             adapter_cfg = json.load(f)
         if not isinstance(adapter_cfg, dict):  # malformed -> keep requested
             return load_in_4bit
@@ -3858,10 +4522,12 @@ def _estimate_gguf_kv_gb(
     max_seq_length: int,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
 ) -> float:
     """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
-    override, over n_parallel slots, with the default f16 cache so the estimate is
-    never below what the server allocates. 0 if metadata is unreadable."""
+    override, over n_parallel slots, using the effective cache settings and managed
+    launcher defaults. 0 if metadata is unreadable."""
     try:
         from core.inference.llama_server_args import parse_ctx_override
 
@@ -3876,7 +4542,43 @@ def _estimate_gguf_kv_gb(
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
             return 0.0
-        kv = probe._estimate_kv_cache_bytes(ctx, n_parallel = max(1, n_parallel or 1))
+        slots = max(1, n_parallel or 1)
+        managed_kv_unified = bool(
+            slots > 1
+            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
+        )
+        planned_cache_types = _planned_main_cache_types(
+            cache_type_kv,
+            llama_extra_args,
+        )
+        if tensor_parallel and any(
+            cache_type not in LlamaCppBackend._TENSOR_PARALLEL_KV_TYPES
+            for cache_type in planned_cache_types
+        ):
+            # Tensor mode strips quantized axes, but a layer fallback restores
+            # the original settings. Size for the larger successful outcome.
+            tensor_cache_types = _planned_main_cache_types(None, None)
+            cache_type_for_budget = max(
+                (*planned_cache_types, *tensor_cache_types, "f16"),
+                key = _kv_bytes_per_elem,
+            )
+        else:
+            cache_type_for_budget = max(
+                planned_cache_types,
+                key = _kv_bytes_per_elem,
+            )
+        kv = probe._estimate_kv_cache_bytes(
+            ctx,
+            cache_type_for_budget,
+            n_parallel = slots,
+            swa_full = _swa_full_from_args_or_env(llama_extra_args),
+            kv_unified = _kv_unified_from_args(
+                llama_extra_args,
+                default = managed_kv_unified,
+            ),
+            n_ubatch = _extra_args_n_ubatch(llama_extra_args, n_ctx = ctx),
+            flash_attn = False,
+        )
         return kv / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
@@ -3890,6 +4592,8 @@ def _estimate_gguf_required_gb(
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
     include_mmproj: bool = True,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -3908,7 +4612,12 @@ def _estimate_gguf_required_gb(
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
             return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
-                main, max_seq_length, llama_extra_args, n_parallel
+                main,
+                max_seq_length,
+                llama_extra_args,
+                n_parallel,
+                cache_type_kv,
+                tensor_parallel,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -4051,6 +4760,8 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     include_mmproj: bool = True,
 ) -> None:
@@ -4099,6 +4810,20 @@ def _guard_chat_load_against_training(
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
         )
 
+    # Size with the count that will actually launch, or a load that fits gets a
+    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
+    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
+    if is_gguf and n_parallel > 1:
+        if diffusion_kind is True:
+            n_parallel = 1
+        else:
+            try:
+                caps = LlamaCppBackend.probe_server_capabilities()
+                if caps.get("found") and not caps.get("supports_kv_unified"):
+                    n_parallel = 1
+            except Exception as e:
+                logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
+
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
@@ -4107,6 +4832,11 @@ def _guard_chat_load_against_training(
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
             include_mmproj = include_mmproj,
+            cache_type_kv = cache_type_kv,
+            tensor_parallel = (
+                _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+                and (is_vulkan or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2)
+            ),
         )
         if is_gguf
         else None
@@ -4295,6 +5025,214 @@ def _raise_if_sidecar_swap_in_progress() -> None:
         )
 
 
+def _raise_or_cancel_active_generations(
+    *,
+    force: bool,
+    action: str,
+    cancel: bool = True,
+) -> int:
+    """Gate a model swap on the chats currently generating.
+
+    Every open conversation decodes on the single llama-server this route is
+    about to replace, so refuse with 409 and name them. force_cancel_active
+    instead stops them through the same events an explicit Stop uses. Returns
+    how many were cancelled. The frontend guard is bypassable from a second tab
+    or curl; this one is not.
+
+    ``cancel = False`` runs the refusal half only. /load calls it that way once
+    up front, so a non-forced swap still fails fast, and again with cancel just
+    before teardown: cancelling is destructive and unrecoverable, so it must not
+    run ahead of preflight checks that can still reject the load (see
+    _load_model_impl).
+    """
+    if not active_generations.count():
+        return 0
+    if not force:
+        thread_ids = active_generations.active_thread_ids()
+        running = active_generations.count()
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "error": "active_generations",
+                "message": (
+                    f"{action} would stop {running} chat"
+                    f"{'s' if running != 1 else ''} that "
+                    f"{'are' if running != 1 else 'is'} still generating. "
+                    "Stop them first, or retry with force_cancel_active."
+                ),
+                "running": running,
+                "thread_ids": thread_ids,
+            },
+        )
+    if not cancel:
+        # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
+        return 0
+    cancelled = active_generations.cancel_all()
+    if cancelled:
+        logger.info(
+            "model_swap_cancelled_active_generations",
+            extra = {"event": "inference.reload_cancelled_generations", "count": cancelled},
+        )
+    return cancelled
+
+
+_POST_CANCEL_DRAIN_TIMEOUT_S = 5.0
+
+
+async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) -> None:
+    """Clear the way for a confirmed sidecar swap, then stop the chats it interrupts.
+
+    The installer gates on the middleware's in-flight count, not on
+    active_generations, so it also sees requests the cancel cannot stop. Drain
+    those FIRST, discounting the registered chats (they are what the cancel is
+    for, so waiting on them would wait out the point of the force). Only then
+    cancel, and let the survivors unwind. Cancelling first meant an unrelated
+    counted request -- a /v1/messages/count_tokens, say -- was still there for
+    the caller's recheck, which then refused an install that had already stopped
+    every chat for nothing.
+
+    Bounded on both halves: the requests being waited on may never observe a
+    cancel, and this holds the lifecycle gate and the sidecar reservation inside
+    ``asyncio.shield``, so an unbounded wait would wedge the process. Expiring in
+    the first half returns without cancelling, so the caller's recheck refuses
+    with the chats untouched.
+    """
+    from core.inference.llama_keepwarm import other_inference_request_count
+
+    budget = _POST_CANCEL_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
+
+    async def _drain(deadline: float, *, discount_registered: bool) -> bool:
+        while True:
+            counted = other_inference_request_count(
+                current_request_counted = False, include_pending = False
+            )
+            if discount_registered:
+                counted -= min(counted, active_generations.count())
+            if counted <= 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.02)
+
+    # Weighted, not halved, so the total wait under the gate is unchanged. The first drain only
+    # asks whether unrelated inference is in flight; cutting the second short refused installs
+    # whose chats had already been stopped for nothing.
+    if not await _drain(time.monotonic() + budget / 5, discount_registered = True):
+        return
+    _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
+    await _drain(time.monotonic() + budget * 4 / 5, discount_registered = False)
+
+
+async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> None:
+    """Wait out inference the registry cannot see, then stop anything new.
+
+    A request that passed the keep-warm middleware but has not reached its
+    ``_TrackedCancel`` yet is counted in-flight and absent from the registry, so
+    cancelling on the registry alone lets a teardown land on an already-admitted
+    request. Drain on the middleware count instead, which covers both the runs
+    just cancelled and the ones still in that window, then cancel again for
+    anything that registered while waiting.
+
+    Bounded and non-raising: an unload is a deliberate user action, so the worst
+    case stays what it is today rather than becoming a refusal.
+    """
+    await _wait_for_model_switch_idle(
+        current_request_counted = False,
+        timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+    )
+    if force:
+        _raise_or_cancel_active_generations(force = True, action = action)
+
+
+_UNRESOLVED_BACKEND_STATE = object()
+
+
+def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
+    """Whether ``backend.unload_model(model_path)`` will really evict something.
+
+    The standard backend refuses to unload a name it never loaded ("don't unload
+    a stale model") and returns success, so /unload for a model another tab has
+    already replaced is a no-op. That must not count as a teardown: cancelling
+    the running chats for it would end them and leave the resident model up.
+
+    Mirrors the backend's own guard (case-insensitive on the active name, since
+    the load path canonicalizes casing). A backend that exposes neither field is
+    reported as a real unload, which keeps the previous behaviour.
+    """
+    active = getattr(backend, "active_model_name", _UNRESOLVED_BACKEND_STATE)
+    loaded = getattr(backend, "models", _UNRESOLVED_BACKEND_STATE)
+    if active is _UNRESOLVED_BACKEND_STATE and loaded is _UNRESOLVED_BACKEND_STATE:
+        return True
+    if isinstance(active, str) and active and active.lower() == (model_path or "").lower():
+        return True
+    return isinstance(loaded, dict) and model_path in loaded
+
+
+def _unload_may_evict(model_path: str) -> bool:
+    """Whether POST /unload for ``model_path`` can still tear something down.
+
+    The refusal passes gate on this. A request naming a model another tab has
+    already replaced reaches none of the teardown branches and returns the
+    documented idempotent no-op (see _unload_evicts_standard_backend), so
+    refusing it counts a teardown that cannot happen and leaves a stale tab
+    unable to clear its selection. Each disjunct mirrors one teardown branch, so
+    True means "some branch may fire", never "this unload succeeds".
+
+    Attribute reads only, no lifecycle gate, so the pre-gate pass still fails
+    fast on a swap that would really stop chats. A stale answer is safe in both
+    directions: the gated pass re-runs this under the gate, and every branch
+    re-runs the refusal at its own point of no return, so a False here can never
+    let a teardown through unrefused.
+    """
+    backend = get_inference_backend()
+    loading = getattr(backend, "get_loading_model", lambda: None)()
+    if (
+        loading is not None
+        and hasattr(backend, "cancel_load")
+        and (model_path == loading or model_path.lower() == loading.lower())
+    ):
+        return True
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_active and (
+        llama_backend.model_identifier == model_path
+        or is_registered_native_path_label(llama_backend.model_identifier, model_path)
+        # Up but not serving is mid-load, evicted whatever model was named.
+        or not llama_backend.is_loaded
+    ):
+        return True
+    return _unload_evicts_standard_backend(backend, model_path)
+
+
+@studio_router.get("/active-generations")
+async def get_active_generations(
+    fastapi_request: Request, current_subject: str = Depends(get_current_subject)
+):
+    """Conversations currently generating, plus how many can decode at once.
+
+    Lets a model swap name the chats it would interrupt, including runs this tab
+    cannot see (another tab, or a reload behind a proxy). parallel_slots is the
+    slot count actually in use, which the VRAM fit may have cut below the
+    requested --parallel; chats beyond it queue rather than fail.
+    """
+    entries = active_generations.snapshot()
+    # A tracker's model can be a native local path (the legacy stream records active_model_name
+    # verbatim); redact here, the one place that serialises it.
+    for _entry in entries:
+        if isinstance(_entry.get("model"), str):
+            _entry["model"] = redact_native_paths(_entry["model"])
+    slots = 1
+    try:
+        slots = _openai_llama_admission_capacity(fastapi_request, get_llama_cpp_backend())
+    except Exception:
+        slots = int(getattr(fastapi_request.app.state, "llama_parallel_slots", 1) or 1)
+    return {
+        "active": entries,
+        "count": len(entries),
+        "thread_ids": active_generations.active_thread_ids(),
+        "parallel_slots": max(1, int(slots)),
+    }
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -4322,7 +5260,18 @@ async def load_model(
     # holds this gate.
     async with inference_lifecycle_gate():
         _raise_if_sidecar_swap_in_progress()
-        return await _load_model_impl(request, fastapi_request, current_subject)
+        # The active-generation gate runs inside _load_model_impl, once it knows this is a real
+        # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
+        return await _load_model_impl(
+            request,
+            fastapi_request,
+            current_subject,
+            on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                force = request.force_cancel_active,
+                action = "Loading a model",
+                cancel = cancel,
+            ),
+        )
 
 
 async def _load_model_impl(
@@ -4331,12 +5280,20 @@ async def _load_model_impl(
     current_subject: str,
     *,
     current_request_counted: bool = False,
+    on_reload_confirmed = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     # A new load starts here; arm the progress throttle so this load's first
     # sampled step logs even if it reports 100% immediately (cached/small load).
     _reset_load_progress_step()
+
+    # Live "loading" row: discarded if already loaded, relabelled on the real id, closed on exit.
+    _load_event = api_monitor.record_lifecycle(
+        event = "load",
+        model = _lifecycle_model_label(request.model_path, request.gguf_variant),
+        running = True,
+    )
 
     native_grant_backed = False
     model_log_label = request.model_path
@@ -4359,11 +5316,16 @@ async def _load_model_impl(
             None if request.llama_extra_args is None else extra_llama_args
         )
 
-        # Manual mode owns the offload flags: strip them from EXPLICIT extras
-        # too (the inherited path already does), or a last-wins --gpu-layers /
-        # --fit in extras re-enables GPU offload on a load status reports as
-        # CPU-only. Manual + per-GPU ratio owns --tensor-split the same way.
+        # Manual mode owns the offload flags. Preserve an explicit layer count
+        # by translating its last-wins value into the first-class field before
+        # stripping the raw flags. This keeps CLI pass-through such as
+        # ``-ngl 20`` from being silently replaced by the manual default (-1).
+        # The inherited path already strips offload flags. Manual + per-GPU
+        # ratio owns --tensor-split the same way.
         if request.gpu_memory_mode == "manual" and extra_llama_args:
+            _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
+            if _gpu_layers_override is not None:
+                request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})
             _stripped_explicit = strip_shadowing_flags(
                 extra_llama_args,
                 strip_context = False,
@@ -4409,6 +5371,17 @@ async def _load_model_impl(
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
 
+        # Resolve the slot count once (per-load field, else the server-wide
+        # --parallel default) so the dedupe, the training guard and the load
+        # kwargs all size against what launches. app.state stays the launch
+        # intent / admission fallback; getattr because direct callers have no app.
+        _app_state = getattr(getattr(fastapi_request, "app", None), "state", None)
+        _n_parallel = (
+            request.n_parallel
+            if request.n_parallel is not None
+            else getattr(_app_state, "llama_parallel_slots", 1)
+        )
+
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         if request.gguf_variant or is_direct_gguf_request:
             gguf_variant_matches = is_direct_gguf_request or bool(
@@ -4426,11 +5399,14 @@ async def _load_model_impl(
                     request,
                     llama_backend,
                     effective_chat_template_override,
+                    requested_parallel_slots = _n_parallel,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 llama_backend._record_matching_gpu_request(request.gpu_ids)
+                # Nothing was loaded, so the monitor must not show a load row.
+                api_monitor.discard(_load_event)
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
@@ -4479,12 +5455,14 @@ async def _load_model_impl(
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
                     requested_gpu_ids = llama_backend.requested_gpu_ids,
+                    **_parallel_slot_echo(llama_backend),
                 )
         else:
             if (
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
             ):
+                api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
@@ -4525,6 +5503,19 @@ async def _load_model_impl(
                     context_length = _positive_int_or_none(_model_info.get("context_length")),
                     chat_template = _chat_template,
                 )
+
+        # Past every already_loaded fast return, so this really will replace the running model: gate
+        # it on the chats that would stop. Refusal only, so a non-forced swap fails fast; the checks
+        # between here and the teardown (identifier, GPU, training guard, downloads) can still
+        # reject the load, and cancelling now would stop every chat for a model that never loads.
+        # Auto-switch passes no hook and keeps its current behaviour.
+        if on_reload_confirmed is not None:
+            on_reload_confirmed(cancel = False)
+
+        # Destructive cancel still owed at the teardown below, so it can be deferred past every
+        # remaining check; the drains key off this. Only a forced swap cancels: unforced already
+        # 409'd above, auto-switch has no hook.
+        cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
@@ -4610,7 +5601,9 @@ async def _load_model_impl(
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
-            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            n_parallel = _n_parallel,
+            cache_type_kv = request.cache_type_kv,
+            tensor_parallel = bool(request.tensor_parallel),
             gpu_memory_mode = request.gpu_memory_mode,
             include_mmproj = effective_load_mmproj,
         )
@@ -4645,12 +5638,32 @@ async def _load_model_impl(
                         ),
                     )
 
-            # Keep the resident model alive until every active generation finishes;
-            # the caller's lifecycle gate blocks new starts.
-            await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
-            # A sidecar install can reserve the gate while inference drains, after the
-            # route-level checks above, so recheck before replacing either backend.
+            # Fast path only: a swap can still be reserved during the drain.
             _raise_if_sidecar_swap_in_progress()
+
+            # Drain active generations first (the lifecycle gate blocks new starts); a forced swap
+            # excludes the ones it is about to cancel rather than waiting them out.
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                cancel_pending = cancel_pending,
+            )
+            # Decisive recheck, and the last thing that can reject this load, so it runs BEFORE the
+            # cancel: rejecting after would stop every chat for nothing.
+            _raise_if_sidecar_swap_in_progress()
+
+            # Point of no return for the GGUF path: nothing left can reject this load, so stop the
+            # chats the swap interrupts (or refuse, if the caller never opted in).
+            if on_reload_confirmed is not None:
+                on_reload_confirmed(cancel = True)
+
+            # Let the cancelled generations unwind before the teardown; no check follows, so this cannot
+            # strand a cancelled chat behind a 409. Bounded: TTS observes no cancel event, so an
+            # unbounded wait would hold the gate for a whole audio run.
+            if cancel_pending:
+                await _wait_for_model_switch_idle(
+                    current_request_counted = current_request_counted,
+                    timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+                )
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
@@ -4664,7 +5677,6 @@ async def _load_model_impl(
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests
             # during the (potentially long) GGUF download + llama-server start.
-            _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
 
             # Load kwargs common to HF and local modes; the two differ only by
             # the model-source args (hf_repo/-token vs gguf_path/mmproj).
@@ -4804,6 +5816,11 @@ async def _load_model_impl(
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
+            _close_load_event(
+                _load_event,
+                model_log_label if native_grant_backed else config.identifier,
+                request.gguf_variant or getattr(llama_backend, "hf_variant", None),
+            )
             # Clear any idle-unload reload stash now, not only on the next poll.
             from core.inference.llama_keepwarm import note_model_loaded
 
@@ -4859,15 +5876,33 @@ async def _load_model_impl(
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
+                **_parallel_slot_echo(llama_backend),
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
         backend = get_inference_backend()
 
-        # Unload any active GGUF model first
-        llama_backend = get_llama_cpp_backend()
-        await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
+        # Same sidecar rejection as GGUF: fast path ahead of the drain, rechecked after.
         _raise_if_sidecar_swap_in_progress()
+
+        llama_backend = get_llama_cpp_backend()
+        await _wait_for_model_switch_idle(
+            current_request_counted = current_request_counted,
+            cancel_pending = cancel_pending,
+        )
+        _raise_if_sidecar_swap_in_progress()
+
+        # Point of no return for the Unsloth path: cancel only once nothing can still reject the load.
+        if on_reload_confirmed is not None:
+            on_reload_confirmed(cancel = True)
+
+        # Let the cancelled generations unwind before the teardown; no check follows. Bounded like GGUF.
+        if cancel_pending:
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+            )
+        # Unload any active GGUF model first
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
@@ -4922,6 +5957,9 @@ async def _load_model_impl(
 
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
+        )
+        _close_load_event(
+            _load_event, model_log_label if native_grant_backed else config.identifier, None
         )
         # Clear any idle-unload reload stash: a manual load supersedes an idle-freed
         # GGUF, so the next /v1 request must not resurrect it. Mirror the GGUF branch
@@ -5045,6 +6083,8 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
+        # Catch-all: an error or cancelled load would otherwise leave the row "loading".
+        api_monitor.fail_open(_load_event, "Load did not complete")
 
 
 def _requires_trust_remote_code_for_model(
@@ -5241,10 +6281,17 @@ async def validate_model(
                 requested_gpu_ids = effective_gpu_ids,
                 llama_extra_args = effective_extra_args,
                 n_parallel = (
-                    getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
-                    if fastapi_request is not None
-                    else 1
+                    request.n_parallel
+                    if request.n_parallel is not None
+                    # Same getattr chain as the load path: preflight must size like the load.
+                    else getattr(
+                        getattr(getattr(fastapi_request, "app", None), "state", None),
+                        "llama_parallel_slots",
+                        1,
+                    )
                 ),
+                cache_type_kv = request.cache_type_kv,
+                tensor_parallel = request.tensor_parallel,
                 gpu_memory_mode = request.gpu_memory_mode,
                 include_mmproj = effective_load_mmproj,
             )
@@ -5466,7 +6513,13 @@ async def install_latest_transformers_route(
             other_inference_request_count,
         )
 
-        if other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
+        # A confirmed swap skips only this fast path; the recheck under the gate still has to pass,
+        # so the guard is unchanged for anyone who did not confirm.
+        if (
+            not request.force_cancel_active
+            and other_inference_request_count(current_request_counted = False, include_pending = False)
+            > 0
+        ):
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -5560,9 +6613,16 @@ async def install_latest_transformers_route(
                             "Retry the install."
                         ),
                     )
+                # Carry a confirmed swap's decision through: the user already accepted the "stop N
+                # chats" prompt, and refusing here would make that answer unactionable (Retry
+                # cannot succeed while the same chats run). Deliberately LAST, after every check
+                # that can still reject the install, so the cancel is spent only once nothing can
+                # turn this request away -- /load's rule.
+                if request.force_cancel_active:
+                    await _cancel_and_drain_for_sidecar_swap()
                 # Recheck under the gate: new streams bump their in-flight count while
-                # holding it, so once held nothing slips past (the pre-gate check is only
-                # a fast path and can be outlasted by a wait on a long /load).
+                # holding it, so once held nothing slips past. A forced install that could
+                # not drain in time lands here too, for the same 409 as without the flag.
                 if (
                     other_inference_request_count(
                         current_request_counted = False, include_pending = False
@@ -5614,9 +6674,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
-        # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
-        # so gating first would make the cancel wait it out. cancel_load only tears the
-        # loading subprocess down (no unload command), so it is safe off-gate.
+        # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
+        # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
+        # active-generation refusal below, which it can never need (see there).
         backend = get_inference_backend()
         loading = getattr(backend, "get_loading_model", lambda: None)()
         if (
@@ -5629,13 +6689,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Same "stop loading" fast path for a still-loading GGUF (llama-server spawned,
-        # health check not yet passed). A gated unload would wait out the multi-minute
-        # load; unload_model() sets the cancel_event load_model polls off its own lock and
-        # kills the child, sending no worker command, so it is safe off-gate like
-        # cancel_load. The gated GGUF branch below handles the already-loaded case. Gate on
-        # the loading model (identifier or native label): the single llama-server loads one
-        # GGUF at a time, so an unload for a different model must not cancel this load.
+        # Same "stop loading" fast path for a still-loading GGUF (spawned, health check not passed).
+        # unload_model() sets the cancel_event load_model polls and kills the child without a
+        # worker command, so it is safe off-gate like cancel_load; the gated branch below handles
+        # the already-loaded case. Gated on the loading model so an unload for a different model
+        # cannot cancel this load.
         llama_backend = get_llama_cpp_backend()
         if (
             llama_backend.is_active
@@ -5652,11 +6710,35 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
+        # Same gate as /load: refusal only, so a non-forced unload fails fast before queueing on the
+        # lifecycle gate. Skipped when no teardown branch can fire, or a request naming a model
+        # another tab already replaced would 409 on chats it cannot interrupt.
+        #
+        # BEHIND the two "stop loading" fast paths above: both cancel a load that has not replaced
+        # anything yet, so neither can interrupt a chat, and refusing them counted a teardown that
+        # cannot happen (unretryably -- the frontend's Cancel sends this unload unforced and drops
+        # the error). Any other name still falls through here.
+        if _unload_may_evict(request.model_path):
+            _raise_or_cancel_active_generations(
+                force = request.force_cancel_active,
+                action = "Unloading the model",
+                cancel = False,
+            )
+
         # Serialize with /load under the same lifecycle gate: the Unsloth unload now runs
         # off the event loop (asyncio.to_thread), so without this a concurrent /load could
         # swap in a fresh subprocess mid-unload and the unload command would land on the
         # new worker. The gate makes load and unload exclusive.
         async with inference_lifecycle_gate():
+            # Rechecked under the gate, like /load: a chat can register while this one queues here (the
+            # middleware takes and releases the same gate). Still refusal only, and re-read rather
+            # than carried down, since a load may have finished meanwhile.
+            if _unload_may_evict(request.model_path):
+                _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    cancel = False,
+                )
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
             if llama_backend.is_active and (
@@ -5666,10 +6748,28 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 )
                 or not llama_backend.is_loaded
             ):
-                # A manual unload is a deliberate user action: tear down now even if a
-                # request is mid-stream (only the automatic idle loop defers to it).
+                # Read the identity before teardown clears it, so the row reads repo:QUANT.
+                _unloaded = _llama_public_model_id(llama_backend, request.model_path)
+                _unloaded_variant = getattr(llama_backend, "hf_variant", None)
+                # Point of no return: this really does replace the running server, so stop the
+                # chats. A manual unload is a deliberate user action, so it cancels mid-stream
+                # requests rather than deferring to them the way the automatic idle loop does.
+                _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
+                # Let what we just cancelled unwind first, like /load: tearing the server down under
+                # streams told to stop but not yet finished turned a clean end into a dropped
+                # connection. Bounded, since a manual unload is deliberate.
+                await _drain_and_recancel_before_teardown(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
                 llama_backend.unload_model()
                 note_model_unloaded()
+                api_monitor.record_lifecycle(
+                    event = "unload",
+                    model = _lifecycle_model_label(_unloaded, _unloaded_variant),
+                    reason = "manual",
+                )
                 logger.info(f"Unloaded GGUF model: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -5677,11 +6777,27 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
             backend = get_inference_backend()
+            if _unload_evicts_standard_backend(backend, request.model_path):
+                # Point of no return for the standard path, same rule as above.
+                _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
+                await _drain_and_recancel_before_teardown(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
+            api_monitor.record_lifecycle(
+                event = "unload",
+                model = _lifecycle_model_label(request.model_path),
+                reason = "manual",
+            )
             logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
+    except HTTPException:
+        # Typed refusals (the gate's 409) must not be rewritten as a 500 below.
+        raise
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to unload model")
@@ -5830,6 +6946,12 @@ async def generate_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(fastapi_request, cancel_event)
         )
+        # Registered inside the generator, under the finally that unregisters it, so a response whose
+        # body never starts leaves nothing behind. Unregistered, this run passes /unload's 409 gate
+        # (which runs no idle drain) and a forced swap has no event to signal. GenerateRequest
+        # carries no thread_id: counted, not nameable.
+        _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
+        _tracker.__enter__()
         try:
             gen = backend.generate_chat_response(
                 messages = request.messages,
@@ -5850,7 +6972,7 @@ async def generate_stream(
                     # Watcher set cancel_event between chunks. Reset here: closing
                     # the generator does not signal a subprocess backend, so it would
                     # keep decoding. The finally's reset is guarded, so no double-run.
-                    backend.reset_generation_state()
+                    backend.reset_generation_state(cancel_event)
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
@@ -5866,24 +6988,28 @@ async def generate_stream(
 
         except asyncio.CancelledError:
             cancel_event.set()
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             raise
         except Exception as e:
             cancel_event.set()
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
             yield "data: [DONE]\n\n"
         finally:
-            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-            if not completed and not cancel_event.is_set():
-                cancel_event.set()
-                backend.reset_generation_state()
-            if gen is not None:
-                try:
-                    await asyncio.to_thread(gen.close)
-                except (RuntimeError, ValueError):
-                    pass
+            # Nested so a teardown failure still unregisters; a phantom entry 409s swaps.
+            try:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                if not completed and not cancel_event.is_set():
+                    cancel_event.set()
+                    backend.reset_generation_state(cancel_event)
+                if gen is not None:
+                    try:
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
+            finally:
+                _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(stream())
 
@@ -5933,6 +7059,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 and os.path.isabs(_model_id)
             ):
                 _display_model_id = os.path.basename(_model_id)
+            elif not _native_grant_backed and _display_model_id == _model_id:
+                # No label registered, so report the clean public id, not the snapshot's sha.
+                _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the
@@ -5990,6 +7119,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
+                **_parallel_slot_echo(llama_backend),
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
@@ -6148,6 +7278,10 @@ async def generate_audio(
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
     await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, current_subject)
 
+    # Created before the backend pick so the GGUF lambda can close over it; the registration
+    # that arms it is below, once the model name is known.
+    _audio_cancel = threading.Event()
+
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
@@ -6164,6 +7298,7 @@ async def generate_audio(
             min_p = payload.min_p,
             max_new_tokens = _effective_max_tokens(payload) or 2048,
             repetition_penalty = payload.repetition_penalty,
+            cancel_event = _audio_cancel,
         )
     else:
         backend = get_inference_backend()
@@ -6192,11 +7327,30 @@ async def generate_audio(
     # /audio/generate route and the chat-completions audio branches that delegate here.
     _fill_recommended_sampling_openai(payload, _audio_model_id)
 
-    try:
-        wav_bytes, sample_rate = await asyncio.to_thread(gen)
-    except Exception as e:
-        logger.error(f"Audio generation error: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
+    # generations and tore the model down mid-generation. The GGUF path observes the event; the
+    # subprocess backend blocks on its response queue with no cancel plumbing, so there it is
+    # only advisory -- which is why the swap drains are bounded. No cancel keys: /cancel
+    # addresses streams, and this route has none.
+    with _TrackedCancel(
+        _audio_cancel,
+        thread_id = getattr(payload, "thread_id", None),
+        model = model_name,
+        kind = "audio",
+    ):
+        # Stop in the UI aborts the fetch and nothing more, and this route has no cancel id to
+        # address, so without watching the disconnect llama-server kept generating for the rest
+        # of the request timeout after the chat had already reported it stopped.
+        _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
+        try:
+            wav_bytes, sample_rate = await asyncio.to_thread(gen)
+        except Exception as e:
+            if _audio_cancel.is_set():
+                raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+            logger.error(f"Audio generation error: {e}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+        finally:
+            await _stop_local_disconnect_cancel_watcher(_audio_watcher)
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -7812,10 +8966,13 @@ async def openai_chat_completions(
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
-            raise HTTPException(
-                status_code = 400,
-                detail = _no_model_loaded_detail("No model loaded. Call POST /inference/load first."),
+            _status, _detail = await _no_model_loaded_error(
+                "No model loaded. Call POST /inference/load first.",
+                _switch_model_for_payload(payload),
+                request,
+                status = 400,
             )
+            raise HTTPException(status_code = _status, detail = _detail)
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
         model_name = public_model_id(backend.active_model_name) or payload.model
@@ -7885,7 +9042,7 @@ async def openai_chat_completions(
 
             if payload.stream:
                 _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-                _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+                _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
                 _tracker.__enter__()
 
                 async def audio_input_stream():
@@ -7951,6 +9108,12 @@ async def openai_chat_completions(
                     },
                 )
             else:
+                # `stream` defaults to False, so this is the ordinary shape of an audio-input chat and it
+                # holds the worker for the whole request. Unregistered, a swap counted zero generations
+                # and cancelled it instead of 409ing (/unload runs no idle drain).
+                _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+                _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+                _tracker.__enter__()
                 try:
                     full_text = ""
                     for chunk_text in audio_input_generate():
@@ -7964,6 +9127,9 @@ async def openai_chat_completions(
                 except Exception as e:
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
+                finally:
+                    # Nested under the except arms too: api_monitor.fail() can throw, and a leaked entry 409s swaps.
+                    _tracker.__exit__(None, None, None)
                 api_monitor.set_reply(monitor_id, full_text)
                 api_monitor.finish(monitor_id)
                 response = ChatCompletion(
@@ -8122,7 +9288,7 @@ async def openai_chat_completions(
                 monitor_id = monitor_id,
             )
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-        _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
         try:
             return await _openai_passthrough_non_streaming(
@@ -8345,7 +9511,7 @@ async def openai_chat_completions(
                     llama_backend = llama_backend,
                 )
             except LlamaAdmissionQueueFull as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -8357,15 +9523,45 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             _tool_sentinel = object()
+            # True only once the sync generator returned on its own; see _gguf_decode_finished.
+            _tool_decode_finished = False
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
 
             async def gguf_tool_stream():
+                nonlocal _tool_decode_finished
                 gen = None
                 next_task = None
                 stream_completed = False
+                # A call parked on the approval prompt is not decoding, so it gives its slot back;
+                # otherwise unanswered prompts hold every slot.
+                _parked = False
+
+                async def _park_admission(on: bool, *, wait: bool = True):
+                    nonlocal _parked
+                    if on == _parked:
+                        return
+                    # This run's own lease, not a fresh lookup: queues are keyed by base_url and a
+                    # reload mints a new port, so re-resolving could release someone else's slot.
+                    lease = reservation.lease_nowait()
+                    if lease is None:
+                        return
+                    if on:
+                        # Refused when the budget is spent: the slot stays here,
+                        # so there is nothing to take back afterwards.
+                        if not lease.park():
+                            return
+                    elif wait:
+                        # Resuming: park() may have handed our slot to a waiter, so wait for room instead
+                        # of putting two holders on one slot.
+                        await lease.unpark_async(cancel_event = cancel_event)
+                    else:
+                        # Tearing down; the lease is released separately.
+                        lease.unpark()
+                    _parked = on
+
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
@@ -8423,7 +9619,14 @@ async def openai_chat_completions(
                             if next_task.done():
                                 next_task = None
                         if event is _tool_sentinel:
+                            _tool_decode_finished = True
                             break
+
+                        # Anything after the gated tool_start means the user answered.
+                        if not (
+                            event["type"] == "tool_start" and event.get("awaiting_confirmation")
+                        ):
+                            await _park_admission(False)
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
@@ -8463,6 +9666,8 @@ async def openai_chat_completions(
                                     yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
+                                # Yielded just before the loop blocks on the user.
+                                await _park_admission(bool(event.get("awaiting_confirmation")))
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -8546,6 +9751,8 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
                 finally:
+                    # A disconnect mid-approval must not leave a slot parked.
+                    await _park_admission(False, wait = False)
                     try:
                         if not stream_completed:
                             cancel_event.set()
@@ -8583,7 +9790,7 @@ async def openai_chat_completions(
                 admission_wait_started_at = None
                 if stream_lease is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -8608,7 +9815,7 @@ async def openai_chat_completions(
                                     yield wait_item
                                     continue
                                 lease = wait_item
-                                _openai_admission_log(
+                                _llama_admission_log(
                                     "granted-after-wait",
                                     reservation,
                                     request = request,
@@ -8629,6 +9836,13 @@ async def openai_chat_completions(
                         stream_started = True
                         try:
                             async for chunk in iterator:
+                                # Release before the yield; see gguf_stream_chunks.
+                                if (
+                                    lease is not None
+                                    and _tool_decode_finished
+                                    and chunk == _SSE_DONE_CHUNK
+                                ):
+                                    lease.release()
                                 yield chunk
                         except asyncio.CancelledError:
                             stream_cancelled = True
@@ -8639,7 +9853,7 @@ async def openai_chat_completions(
                                 cancelled = stream_cancelled,
                             )
                     except LlamaAdmissionTimeout as exc:
-                        _openai_admission_log(
+                        _llama_admission_log(
                             "timeout",
                             reservation,
                             request = request,
@@ -8653,7 +9867,7 @@ async def openai_chat_completions(
                             _openai_admission_error_body(exc, status_code = 503)
                         )
                     except LlamaAdmissionCancelled:
-                        _openai_admission_log(
+                        _llama_admission_log(
                             "cancelled-before-upstream",
                             reservation,
                             request = request,
@@ -8764,7 +9978,7 @@ async def openai_chat_completions(
             try:
                 if reservation.lease_nowait() is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -8779,7 +9993,7 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 if admission_wait_started_at is not None:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -8850,7 +10064,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise
             except LlamaAdmissionTimeout as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "timeout",
                     reservation,
                     request = request,
@@ -8865,7 +10079,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
             except LlamaAdmissionCancelled as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
                     request = request,
@@ -8931,12 +10145,15 @@ async def openai_chat_completions(
             )
 
         _gguf_sentinel = object()
+        # True only once the sync generator returned on its own: only then has _open_stream's
+        # client exited. A cancel still emits [DONE] without it.
+        _gguf_decode_finished = False
 
         if payload.stream:
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("streaming GGUF chat completions")
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             try:
                 reservation, admission_config = _openai_llama_admission_reserve(
@@ -8945,7 +10162,7 @@ async def openai_chat_completions(
                 )
             except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -8957,6 +10174,7 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             async def gguf_stream_chunks():
+                nonlocal _gguf_decode_finished
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
@@ -9001,6 +10219,7 @@ async def openai_chat_completions(
                             if next_task.done():
                                 next_task = None
                         if cumulative is _gguf_sentinel:
+                            _gguf_decode_finished = True
                             break
                         # Capture server metadata for the final usage chunk
                         if isinstance(cumulative, dict):
@@ -9117,7 +10336,7 @@ async def openai_chat_completions(
             admission_wait_started_at = None
             if stream_lease is None:
                 admission_wait_started_at = time.monotonic()
-                _openai_admission_log(
+                _llama_admission_log(
                     "queued",
                     reservation,
                     request = request,
@@ -9142,7 +10361,7 @@ async def openai_chat_completions(
                                 yield wait_item
                                 continue
                             lease = wait_item
-                            _openai_admission_log(
+                            _llama_admission_log(
                                 "granted-after-wait",
                                 reservation,
                                 request = request,
@@ -9163,6 +10382,20 @@ async def openai_chat_completions(
                     stream_started = True
                     try:
                         async for chunk in iterator:
+                            # The slot is idle once the sync generator returned and the stream ends
+                            # with the plain sentinel. The finally only runs at ASGI teardown, so
+                            # waiting for it starves the next request. Release before the yield: a
+                            # stalled send() or a consumer that stops pulling parks us there, and
+                            # Starlette never aclose()s a body iterator. Release is idempotent, so
+                            # the finally stays the backstop. Exact equality, not endswith:
+                            # _openai_stream_error_sse ends in the same sentinel before its
+                            # cleanup runs, and that stream still owns the slot.
+                            if (
+                                lease is not None
+                                and _gguf_decode_finished
+                                and chunk == _SSE_DONE_CHUNK
+                            ):
+                                lease.release()
                             yield chunk
                     except asyncio.CancelledError:
                         stream_cancelled = True
@@ -9173,7 +10406,7 @@ async def openai_chat_completions(
                             cancelled = stream_cancelled,
                         )
                 except LlamaAdmissionTimeout as exc:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "timeout",
                         reservation,
                         request = request,
@@ -9187,7 +10420,7 @@ async def openai_chat_completions(
                         _openai_admission_error_body(exc, status_code = 503)
                     )
                 except LlamaAdmissionCancelled:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "cancelled-before-upstream",
                         reservation,
                         request = request,
@@ -9243,7 +10476,7 @@ async def openai_chat_completions(
                     llama_backend = llama_backend,
                 )
             except LlamaAdmissionQueueFull as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -9255,14 +10488,14 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             admission_lease = None
             admission_wait_started_at = None
             try:
                 if reservation.lease_nowait() is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -9277,7 +10510,7 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 if admission_wait_started_at is not None:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -9299,7 +10532,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise
             except LlamaAdmissionTimeout as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "timeout",
                     reservation,
                     request = request,
@@ -9314,7 +10547,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
             except LlamaAdmissionCancelled as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
                     request = request,
@@ -9697,7 +10930,7 @@ async def openai_chat_completions(
 
         _sf_tool_sentinel = object()
         _sf_cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-        _sf_tracker = _TrackedCancel(cancel_event, *_sf_cancel_keys)
+        _sf_tracker = _TrackedCancel.for_payload(cancel_event, payload, *_sf_cancel_keys)
         _sf_tracker.__enter__()
 
         async def sf_tool_stream():
@@ -9726,11 +10959,11 @@ async def openai_chat_completions(
 
                 while True:
                     if cancel_event.is_set():
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         break
                     if await request.is_disconnected():
                         cancel_event.set()
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
@@ -9753,7 +10986,7 @@ async def openai_chat_completions(
                     if event is _sf_tool_sentinel:
                         break
                     if isinstance(event, GenStreamError):
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(event)
                         api_monitor.fail(monitor_id, _msg)
                         yield _openai_stream_error_sse(
@@ -9848,16 +11081,16 @@ async def openai_chat_completions(
 
             except asyncio.CancelledError:
                 cancel_event.set()
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
             except GenStreamErrorRaised as exc:
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
                 yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception:
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 # Generic wire message; full trace stays in the log (CWE-209:
                 # transformers/torch errors may leak paths).
                 logger.exception("safetensors tool stream error")
@@ -9951,20 +11184,20 @@ async def openai_chat_completions(
             return _model_json_response(response)
         except asyncio.CancelledError:
             cancel_event.set()
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except GenStreamErrorRaised as exc:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
             api_monitor.fail(monitor_id, _msg)
             raise HTTPException(status_code = 500, detail = _msg)
         except HTTPException as exc:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             api_monitor.fail(monitor_id, str(exc.detail))
             raise
         except Exception:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             # CWE-209: generic detail; full trace in log.
             logger.exception("safetensors tool completion error")
             api_monitor.fail(monitor_id, "An internal error occurred.")
@@ -10089,7 +11322,7 @@ async def openai_chat_completions(
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-        _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
 
         async def stream_chunks():
@@ -10116,7 +11349,7 @@ async def openai_chat_completions(
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         break
                     # Stall keepalive (see safetensors tool stream) each window while
                     # next(gen) runs in a worker. next(gen, _DONE) returns _DONE rather
@@ -10136,7 +11369,7 @@ async def openai_chat_completions(
                     if cumulative is _DONE:
                         break
                     if isinstance(cumulative, GenStreamError):
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(cumulative)
                         api_monitor.fail(monitor_id, _msg)
                         yield _openai_stream_error_sse(
@@ -10145,7 +11378,7 @@ async def openai_chat_completions(
                         return
                     if await request.is_disconnected():
                         cancel_event.set()
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         api_monitor.finish(monitor_id, "cancelled")
                         return
                     new_text = cumulative[len(prev_text) :]
@@ -10246,18 +11479,18 @@ async def openai_chat_completions(
 
             except asyncio.CancelledError:
                 cancel_event.set()
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
             except GenStreamErrorRaised as exc:
                 # Adapter-controlled (compare-mode) backend failure. Honor the
                 # public flag so operational errors surface their real message.
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
                 yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception as e:
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 _msg = _friendly_error(e)
                 api_monitor.fail(monitor_id, _msg)
@@ -10296,11 +11529,17 @@ async def openai_chat_completions(
 
     # ── Non-streaming response ────────────────────────────────────
     else:
+        # `stream` defaults to False, so this is the default shape of a standard (non-GGUF) chat and
+        # generate() holds the worker throughout. Unregistered, a swap cancelled this run rather
+        # than returning 409 (/unload runs no idle drain).
+        _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+        _tracker.__enter__()
         try:
             full_text = ""
             for token in generate():
                 if isinstance(token, GenStreamError):
-                    backend.reset_generation_state()
+                    backend.reset_generation_state(cancel_event)
                     _msg = _friendly_gen_stream_error(token)
                     api_monitor.fail(monitor_id, _msg)
                     raise HTTPException(status_code = 500, detail = _msg)
@@ -10407,15 +11646,18 @@ async def openai_chat_completions(
         except GenStreamErrorRaised as exc:
             # Adapter-controlled (compare-mode) backend failure. Honor the public
             # flag so operational errors surface their real message.
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
             api_monitor.fail(monitor_id, _msg)
             raise HTTPException(status_code = 500, detail = _msg)
         except Exception as e:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+        finally:
+            # Nested under the except arms too: reset_generation_state() can throw, and a leaked entry 409s swaps.
+            _tracker.__exit__(None, None, None)
 
 
 # =====================================================================
@@ -10523,6 +11765,9 @@ def _openai_model_objects() -> list[dict]:
             "created": _created,
             "owned_by": _OWNED_BY,
         }
+        _quant = getattr(llama_backend, "hf_variant", None)
+        if _quant and _quant_reference_resolves(entry["id"], _quant):
+            entry["quant"] = _quant
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
             entry["context_length"] = _ctx
@@ -10563,6 +11808,50 @@ def _openai_model_objects() -> list[dict]:
 # Brief cache for the local-model filesystem scan so repeated /v1/models calls
 # don't rescan the HF cache and models dirs on every request.
 _CATALOG_CACHE: dict = {"at": 0.0, "models": []}
+# Ids the last catalog scan listed, rebuilt only when that scan is replaced.
+_ADVERTISED_CACHE: dict = {"at": None, "paths": {}}
+
+
+def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
+    """Whether ``<model_id>:<quant>`` still resolves once this model is not resident.
+
+    A standalone .gguf takes its quant from the filename, but the resolver stores
+    such files with no quants, so advertising one hands out a pin that dies the
+    moment another model loads.
+    """
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        recently_downloaded,
+        resolve_local_gguf,
+        warm_index_soon,
+    )
+
+    if not model_id:
+        return False
+    # A cold index proves nothing, and publishing on no proof is what hands out the
+    # dead pin; warm so the next response carries the quant.
+    warm_index_soon()
+    return resolve_local_gguf(f"{model_id}:{quant}", allow_scan = False) is not None
+
+
+def _advertised_local_path(model: str) -> Optional[str]:
+    """On-disk path of *model* if the last /v1/models scan listed it, else None.
+
+    Cache-only, never scans. The catalog scans on its own schedule, so it can have
+    advertised a local model the resolver index has not picked up yet, which is
+    evidence the name means something other than the resident one.
+    """
+    if _ADVERTISED_CACHE["at"] != _CATALOG_CACHE["at"]:
+        paths = {}
+        for info in _CATALOG_CACHE["models"] or ():
+            cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+            path = getattr(info, "path", None)
+            if cid and path:
+                paths.setdefault(cid.strip().lower(), path)
+        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
+    return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
+
+
 _CATALOG_TTL_S = 30.0
 # Per-loop lock (like _auto_switch_lock): a module-level asyncio.Lock ties its
 # waiters to the loop that first awaited it, so a second event loop awaiting it
@@ -10629,11 +11918,14 @@ async def _openai_catalog_objects() -> list[dict]:
     # read from the on-disk files, not model_format: the HF-cache scanner leaves
     # model_format unset for GGUF snapshots, so a model_format filter would drop
     # every cached GGUF. The file checks run off the loop.
-    from core.inference.local_model_resolver import info_has_local_gguf
+    from core.inference.local_model_resolver import local_gguf_quants
 
     catalog = await _cached_local_catalog()
-    servable = await asyncio.to_thread(lambda: [i for i in catalog if info_has_local_gguf(i)])
-    for info in servable:
+    # One scan yields both "is this servable" and its on-disk quants, so no second pass.
+    servable = await asyncio.to_thread(
+        lambda: [(i, q) for i in catalog if (q := local_gguf_quants(i)) is not None]
+    )
+    for info, quants in servable:
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
@@ -10642,8 +11934,21 @@ async def _openai_catalog_objects() -> list[dict]:
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
-            "loaded": False,
+            # A manual load keys the resident entry by path basename while the catalog
+            # uses the alias, so match on the path or the alias reads as not loaded.
+            # llama-only: a Transformers model live from a directory that also holds
+            # GGUF exports must not mark one of these GGUF entries loaded, or the
+            # examples pin a quant nothing can serve with switching off.
+            "loaded": _resolves_to_resident(getattr(info, "path", None), llama_only = True),
         }
+        # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
+        # For the resident model that must be the quant actually loaded, not the
+        # preferred one on disk, or the listing advertises alias:Q4 while Q8 serves.
+        resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
+        if obj["loaded"] and resident_quant:
+            obj["quant"] = resident_quant
+        elif quants:
+            obj["quant"] = quants[0]
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display
@@ -10779,10 +12084,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
@@ -10803,10 +12111,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
+    monitor_model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default")
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
         method = request.method,
-        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+        model = monitor_model,
         prompt = prompt_text,
         context_length = llama_backend.context_length,
         subject = current_subject,
@@ -10834,12 +12143,23 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             bytes_iter = None
             disconnect_event = threading.Event()
             disconnect_watcher = None
+            # This proxy relays straight from llama-server, so the swap gate has to see it: without an
+            # entry a non-forced /unload counts zero generations and tears the server down mid-response.
+            # Sharing disconnect_event lets a forced swap stop the relay through the check it already
+            # polls. Entered inside the body generator, so a response whose body never starts leaves
+            # nothing behind (see _responses_stream). No thread_id: public API surface, not a chat.
+            _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
+            _tracker.__enter__()
             try:
                 req = client.build_request(
                     "POST", target_url, json = body, headers = {"Connection": "close"}
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                # Same event the relay loop polls, so a forced swap ends the request during prefill
+                # instead of only once headers arrive.
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, disconnect_event, request = request
+                )
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
@@ -10910,27 +12230,64 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 yield _openai_stream_error_sse_bytes(error_chunk)
                 return
             finally:
-                await _aclose_stream_resources(
-                    watchers = (disconnect_watcher,),
-                    iterator = bytes_iter,
-                    resp = resp,
-                    client = client,
-                )
+                # Nested so a close-time failure still unregisters; a phantom entry 409s swaps.
+                try:
+                    await _aclose_stream_resources(
+                        watchers = (disconnect_watcher,),
+                        iterator = bytes_iter,
+                        resp = resp,
+                        client = client,
+                    )
+                finally:
+                    _tracker.__exit__(None, None, None)
 
         return _sse_streaming_response(_stream())
     else:
-        try:
-            resp = await nonstreaming_client().post(
-                target_url,
-                json = body,
-                timeout = _llama_non_streaming_generation_timeout(),
+        # ``stream`` defaults to false, so this common shape registers with the swap gate like the
+        # streaming branch: unregistered, a non-forced /unload counts zero generations and kills
+        # llama-server mid-request, and force_cancel_active has no event. Unpooled client so a
+        # cancel-close hits this call only.
+        _cancel_event = threading.Event()
+        _client = _cancelable_nonstreaming_client()
+        _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
+        _tracker.__enter__()
+        _cancel_watcher = asyncio.create_task(
+            _await_cancel_or_disconnect_then_close_client(
+                cancel_event = _cancel_event,
+                request = request,
+                client = _client,
             )
+        )
+        try:
+            try:
+                resp = await _client.post(
+                    target_url,
+                    json = body,
+                    timeout = _llama_non_streaming_generation_timeout(),
+                )
+            except httpx.RequestError:
+                # The watcher closed the client out from under the request: report the cancel, not a transport failure.
+                if _cancel_event.is_set():
+                    raise asyncio.CancelledError()
+                raise
+            if _cancel_event.is_set():
+                raise asyncio.CancelledError()
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except Exception as e:
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise
+        finally:
+            # Nested so a close-time failure still unregisters; a phantom entry 409s swaps.
+            try:
+                await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
+                try:
+                    await _client.aclose()
+                except Exception:
+                    pass
+            finally:
+                _tracker.__exit__(None, None, None)
 
         if resp.status_code != 200:
             api_monitor.fail(monitor_id, resp.text[:500])
@@ -10999,10 +12356,13 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # a non-embedding target switches, then llama-server returns a no-pooling error.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
@@ -11023,18 +12383,54 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             subject = current_subject,
         )
 
-    try:
-        resp = await nonstreaming_client().post(
-            target_url,
-            json = body,
-            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    # Same gate registration as the completions proxy: unregistered, a non-forced /unload counts
+    # zero generations and kills llama-server mid-embedding. Unpooled client so a cancel-close
+    # hits this call only.
+    _cancel_event = threading.Event()
+    _client = _cancelable_nonstreaming_client()
+    _tracker = _TrackedCancel(
+        _cancel_event,
+        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+        kind = "embeddings",
+    )
+    _tracker.__enter__()
+    _cancel_watcher = asyncio.create_task(
+        _await_cancel_or_disconnect_then_close_client(
+            cancel_event = _cancel_event,
+            request = request,
+            client = _client,
         )
+    )
+    try:
+        try:
+            resp = await _client.post(
+                target_url,
+                json = body,
+                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+            )
+        except httpx.RequestError:
+            # The watcher closed the client out from under the request: report the cancel, not a transport failure.
+            if _cancel_event.is_set():
+                raise asyncio.CancelledError()
+            raise
+        if _cancel_event.is_set():
+            raise asyncio.CancelledError()
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
     except Exception as exc:
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise
+    finally:
+        # Nested so a close-time failure still unregisters; a phantom entry 409s swaps.
+        try:
+            await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
+            try:
+                await _client.aclose()
+            except Exception:
+                pass
+        finally:
+            _tracker.__exit__(None, None, None)
     if resp.status_code != 200:
         api_monitor.fail(monitor_id, resp.text[:500])
     else:
@@ -11739,14 +13135,15 @@ async def _responses_stream(
         # double-layer asyncgen close pattern that produces "Attempted to exit
         # cancel scope in a different task" on Python 3.13. Surface a typed 400
         # so the client sees a useful error instead of a dangling stream.
-        raise HTTPException(
-            status_code = 400,
-            detail = _no_model_loaded_detail(
-                "Streaming /v1/responses requires a GGUF model loaded via "
-                "llama-server. Use non-streaming /v1/responses, "
-                "/v1/chat/completions, or load a GGUF model."
-            ),
+        _status, _detail = await _no_model_loaded_error(
+            "Streaming /v1/responses requires a GGUF model loaded via "
+            "llama-server. Use non-streaming /v1/responses, "
+            "/v1/chat/completions, or load a GGUF model.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 400,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Direct pass-through bypasses the openai_chat_completions image gate.
     if not llama_backend.is_vision and any(
@@ -11766,13 +13163,19 @@ async def _responses_stream(
     )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    # The stream's own disconnect event, shared with the cancel/active-generation registries:
+    # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
+    # of tearing the server down mid-response. Entered inside the body generator below, so a
+    # response whose body never starts leaves nothing behind.
+    cancel_event = threading.Event()
+    _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
     try:
         reservation, admission_config = _openai_llama_admission_reserve(
             request = request,
             llama_backend = llama_backend,
         )
     except LlamaAdmissionQueueFull as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -12219,14 +13622,19 @@ async def _responses_stream(
         resp = None
         lines_iter = None
         disconnect_watcher = None
-        disconnect_event = threading.Event()
+        # Tracked per-run event: a client disconnect and a forced reload both land here.
+        disconnect_event = cancel_event
         try:
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
             )
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
-                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                # Same event the loop below polls: prefill can run for the whole first-token window,
+                # and only the send watcher can end it early.
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, disconnect_event, request = request
+                )
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
@@ -12622,6 +14030,9 @@ async def _responses_stream(
         yield _sse("response.completed", completed_response)
 
     async def admitted_event_generator():
+        # Register for the body's whole lifetime, admission wait included: the run holds a decode
+        # slot from here on, so /load and /unload must count it. __exit__ runs from the finally below.
+        _tracker.__enter__()
         lease = reservation.lease_nowait()
         admission_wait_started_at = None
         stream_started = False
@@ -12630,7 +14041,7 @@ async def _responses_stream(
         try:
             if lease is None:
                 admission_wait_started_at = time.monotonic()
-                _openai_admission_log(
+                _llama_admission_log(
                     "queued",
                     reservation,
                     request = request,
@@ -12638,17 +14049,20 @@ async def _responses_stream(
                     completion_id = resp_id,
                     level = "debug",
                 )
+                # The tracked event, not just the client socket: registered above, so a forced swap's
+                # cancel_all() reaches this run while it is still queued. Otherwise it takes a lease it was
+                # told to give up and the post-cancel drain waits out the round trip it just cancelled.
                 async for wait_item in _openai_admission_wait_stream_chunks(
                     reservation,
                     admission_config,
                     request = request,
-                    cancel_event = None,
+                    cancel_event = cancel_event,
                 ):
                     if isinstance(wait_item, str):
                         yield wait_item
                         continue
                     lease = wait_item
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -12663,7 +14077,7 @@ async def _responses_stream(
             await _raise_if_openai_admission_cancelled(
                 reservation,
                 request = request,
-                cancel_event = None,
+                cancel_event = cancel_event,
             )
             iterator = event_generator()
             stream_started = True
@@ -12680,7 +14094,7 @@ async def _responses_stream(
                     cancelled = stream_cancelled,
                 )
         except LlamaAdmissionTimeout as exc:
-            _openai_admission_log(
+            _llama_admission_log(
                 "timeout",
                 reservation,
                 request = request,
@@ -12692,7 +14106,7 @@ async def _responses_stream(
             api_monitor.fail(monitor_id, str(exc))
             yield _responses_admission_failed_sse(exc, status_code = 503)
         except LlamaAdmissionCancelled:
-            _openai_admission_log(
+            _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
                 request = request,
@@ -12712,6 +14126,7 @@ async def _responses_stream(
             if not stream_started:
                 api_monitor.finish(monitor_id, "cancelled")
                 reservation.cancel()
+            _tracker.__exit__(None, None, None)
 
     async def _responses_admission_unstarted_cleanup() -> None:
         api_monitor.finish(monitor_id, "cancelled")
@@ -12848,8 +14263,7 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     requested: set[str] = set()
     for tool in tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
-        # Client tools always carry input_schema; server tools never do.
-        if td.get("input_schema") is not None:
+        if td.get("input_schema") is not None or anthropic_schema_client_tool_kind(td) is not None:
             continue
         # Anthropic dispatches server tools by `type`, not bare `name`; matching
         # name too would let a malformed client tool like `{"name": "python"}`
@@ -12942,18 +14356,21 @@ def _validate_anthropic_client_tools(tools) -> None:
     # Reject malformed client tools before any model load, so an invalid request
     # never evicts the loaded model. AnthropicTool relaxed name/input_schema to
     # Optional for server tools, so the converter silently drops incomplete
-    # entries; surface them as 400 here. A `type` field marks a server-tool
-    # declaration (unrecognized server tools are no-ops); anything else without
-    # input_schema or name is malformed.
+    # entries; surface them as 400 here. Recognized Anthropic-schema client
+    # tools use type/name without input_schema; other type declarations are
+    # server tools (unrecognized server tools remain no-ops).
     for tool in tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
         name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
+        schema_client_kind = anthropic_schema_client_tool_kind(td)
         if schema is None and not isinstance(type_, str):
             raise HTTPException(
                 status_code = 400,
                 detail = f"Tool {name!r} is missing required field 'input_schema'.",
             )
-        if schema is not None and (not isinstance(name, str) or not name):
+        if (schema is not None or schema_client_kind is not None) and (
+            not isinstance(name, str) or not name
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = "Client tool is missing required field 'name'.",
@@ -12988,10 +14405,13 @@ async def anthropic_count_tokens(
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Same Anthropic → OpenAI translation as anthropic_messages: system is
     # folded into the messages list, so pass system=None to the counter.
@@ -13060,6 +14480,7 @@ async def anthropic_messages(
     # before any request-shape check, exactly as the pre-feature endpoint did. When
     # an automatic load can run (auto-switch or a standalone idle TTL), fall through
     # so validation runs before the reload hook gets a chance to restore the model.
+    # Plain detail, not _no_model_loaded_error: that helper leaves this case unchanged.
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,
@@ -13090,9 +14511,13 @@ async def anthropic_messages(
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
     _has_client_tool = any(
         (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(t) is not None
         for t in payload.tools or []
     )
-    if requested_studio_tools and _has_client_tool:
+    _explicit_server_tools = bool(requested_studio_tools) or (
+        payload.enable_tools is True and _effective_enable_tools(payload) is not False
+    )
+    if _explicit_server_tools and _has_client_tool:
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -13115,7 +14540,11 @@ async def anthropic_messages(
     # post-switch); an image request can never take the server-tool path, so it is
     # excluded as in the server_tools gate below. off/full and an explicit
     # confirm_tool_calls=False opt-out always pass.
-    _enable_pre = _effective_enable_tools(payload)
+    # A process-wide ``--enable-tools`` policy is only a default for ordinary
+    # chat. It must not steal an explicit Anthropic client-tool catalog (Claude
+    # Code's Write/Edit/Bash tools) and turn it into Unsloth's local tool loop.
+    # An explicit per-request server-tool ask was rejected as mixed mode above.
+    _enable_pre = False if _has_client_tool else _effective_enable_tools(payload)
     _server_tools_requested_pre = (
         _enable_pre or (_enable_pre is None and bool(requested_studio_tools))
     ) and not _anthropic_request_has_image(payload)
@@ -13159,10 +14588,13 @@ async def anthropic_messages(
         require_vision = _anthropic_request_has_image(payload),
     )
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Advertised repo id after an auto-switch load, else a clean public id, never
     # the local .gguf path (and a legacy raw path in payload.model is sanitized).
@@ -13241,7 +14673,7 @@ async def anthropic_messages(
     # An Anthropic server-tool declaration implies server-tool mode, but only
     # when tools aren't explicitly disabled (CLI --disable-tools or per-request
     # enable_tools=false). Explicit False always wins.
-    _enable = _effective_enable_tools(payload)
+    _enable = False if _has_client_tool else _effective_enable_tools(payload)
     server_tools = (
         (_enable or (_enable is None and bool(requested_studio_tools)))
         and llama_backend.supports_tools
@@ -13292,12 +14724,226 @@ async def anthropic_messages(
             cancel_event,
         )
 
+    async def _tracked_anthropic_non_streaming(coro):
+        """Register a non-streaming /v1/messages run with the swap gate.
+
+        `stream` defaults to false, so this is the route's common shape, and all
+        three helpers hold llama-server for the whole await. /unload runs no idle
+        drain, so unregistered a swap tore the server down mid-request; only the
+        streaming siblings registered. No cancel keys, unlike the streaming
+        tool/plain siblings: the gate reaches a run through the registry, and
+        keys would add a cancel surface to a public API.
+        """
+        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
+        _tracker.__enter__()
+        try:
+            return await _monitored_anthropic(coro)
+        finally:
+            # _monitored_anthropic's bookkeeping can throw; a leaked entry 409s later swaps.
+            _tracker.__exit__(None, None, None)
+
+    # ── Admission control ─────────────────────────────────────
+    # Bound concurrent llama-server generations to the backend's serving slots via a
+    # FIFO queue keyed by base_url (shared with /v1/chat/completions, same slots).
+    # Excess requests queue; a streaming waiter gets SSE keep-alives, the queue 429s
+    # once full. Mirrors the OpenAI passthrough admission wiring. Streaming takes the
+    # slot when the response is built and drops it when the body finishes or is
+    # abandoned; the non-stream path holds it across the single awaited generation.
+    _anthropic_admission_mode = "anthropic_stream" if payload.stream else "anthropic_nonstream"
+
+    async def _admitted_anthropic_stream(
+        orig_body,
+        reservation,
+        admission_config,
+        stream_lease,
+        prior_cleanup = None,
+    ):
+        lease = stream_lease
+        stream_cancelled = False
+        body_started = False
+        wait_started_at = None
+        try:
+            if lease is None:
+                wait_started_at = time.monotonic()
+                _llama_admission_log(
+                    "queued",
+                    reservation,
+                    request = request,
+                    mode = _anthropic_admission_mode,
+                )
+                async for wait_item in _openai_admission_wait_stream_chunks(
+                    reservation,
+                    admission_config,
+                    request = request,
+                    cancel_event = cancel_event,
+                ):
+                    if isinstance(wait_item, str):
+                        yield wait_item
+                        continue
+                    lease = wait_item
+                    break
+                _llama_admission_log(
+                    "granted-after-wait",
+                    reservation,
+                    request = request,
+                    mode = _anthropic_admission_mode,
+                    wait_started_at = wait_started_at,
+                )
+            if lease is None:
+                return
+            body_started = True
+            async for chunk in orig_body:
+                yield chunk
+        except asyncio.CancelledError:
+            # Must reach the monitored generator as CancelledError, not aclose's
+            # GeneratorExit, or its handler never finalizes the monitor entry.
+            stream_cancelled = True
+            raise
+        except LlamaAdmissionTimeout as exc:
+            api_monitor.fail(monitor_id, str(exc))
+            _llama_admission_log(
+                "timeout",
+                reservation,
+                request = request,
+                mode = _anthropic_admission_mode,
+                wait_started_at = wait_started_at,
+                level = "warning",
+            )
+            yield build_anthropic_sse_event(
+                "error",
+                anthropic_error_body(str(exc), status = 503),
+            )
+        except LlamaAdmissionCancelled:
+            _llama_admission_log(
+                "cancelled-before-upstream",
+                reservation,
+                request = request,
+                mode = _anthropic_admission_mode,
+                wait_started_at = wait_started_at,
+            )
+            return
+        finally:
+            # Closing can raise (a raw body re-raises CancelledError after
+            # teardown), and a slot lost that way never comes back: with no queue
+            # timeout the pool just shrinks and later callers wait forever. Keep
+            # the release in its own finally, as the /responses wiring does.
+            try:
+                if body_started:
+                    await _close_openai_admitted_stream_iterator(
+                        orig_body,
+                        cancelled = stream_cancelled,
+                    )
+                else:
+                    # Gave up while queued: the monitored body never ran, so nothing
+                    # downstream finalizes the entry or exits the response's tracker.
+                    api_monitor.finish(monitor_id, "cancelled")
+                    await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
+            finally:
+                if lease is not None:
+                    lease.release()
+                else:
+                    reservation.cancel()
+
+    async def _admitted_anthropic(coro):
+        try:
+            reservation, admission_config = _openai_llama_admission_reserve(
+                request = request, llama_backend = llama_backend
+            )
+        except LlamaAdmissionQueueFull as exc:
+            coro.close()
+            api_monitor.fail(monitor_id, str(exc))
+            _llama_admission_log(
+                "queue-full",
+                snapshot = getattr(exc, "snapshot", None),
+                request = request,
+                mode = _anthropic_admission_mode,
+                level = "warning",
+            )
+            raise _anthropic_admission_http_exception(exc, status_code = 429)
+        except BaseException:
+            # Reserving never awaited the generation, so close it rather than
+            # leave an un-awaited coroutine behind.
+            coro.close()
+            raise
+
+        if payload.stream:
+            stream_lease = reservation.lease_nowait()
+            # Set up the stream (token count + tracker enter) and surface a pre-response
+            # cancel now, exactly as the un-admitted path did; the upstream generation is
+            # deferred to body iteration, so the slot is only held while tokens flow.
+            try:
+                # Token counting calls llama-server, so a dead backend raises here
+                # with the slot already taken. cancel() covers both cases: it
+                # releases the lease if one was granted, else drops the waiter.
+                monitored = await _monitored_anthropic(coro)
+            except BaseException:
+                reservation.cancel()
+                raise
+            orig_body = getattr(monitored, "body_iterator", None)
+            if orig_body is None:
+                reservation.cancel()
+                return monitored
+
+            # Replacing body_iterator would strand the response's own pre-start
+            # hook (the passthrough uses one to exit its cancel tracker), so chain
+            # to it instead of clobbering it.
+            prior_cleanup = getattr(monitored, "_unstarted_cleanup", None)
+
+            async def _unstarted_cleanup() -> None:
+                # The body never ran, so nothing else closes out the monitor entry.
+                api_monitor.finish(monitor_id, "cancelled")
+                try:
+                    await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
+                finally:
+                    # A BaseException here is swallowed upstream, so releasing
+                    # outside the finally would shrink the pool silently.
+                    reservation.cancel()
+
+            monitored.body_iterator = _admitted_anthropic_stream(
+                orig_body, reservation, admission_config, stream_lease, prior_cleanup
+            )
+            monitored._unstarted_cleanup = _unstarted_cleanup
+            return monitored
+
+        lease = None
+        try:
+            lease = await _wait_for_openai_admission_non_streaming(
+                reservation,
+                admission_config,
+                request = request,
+                cancel_event = cancel_event,
+            )
+            # Registered only once admitted: a queued request is not holding
+            # llama-server, so it has no business blocking a swap.
+            monitored = await _tracked_anthropic_non_streaming(coro)
+            return monitored
+        except LlamaAdmissionTimeout as exc:
+            coro.close()
+            api_monitor.fail(monitor_id, str(exc))
+            raise _anthropic_admission_http_exception(exc, status_code = 503)
+        except LlamaAdmissionCancelled as exc:
+            coro.close()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _anthropic_admission_http_exception(exc, status_code = 499)
+        except BaseException:
+            # Cancelled while queued (shutdown, outer task cancel): the generation
+            # coroutine was never awaited, so close it rather than leak it.
+            if lease is None:
+                coro.close()
+                api_monitor.finish(monitor_id, "cancelled")
+            raise
+        finally:
+            if lease is not None:
+                lease.release()
+            else:
+                reservation.cancel()
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
 
         if payload.stream:
-            return await _monitored_anthropic(
+            return await _admitted_anthropic(
                 _anthropic_passthrough_stream(
                     request,
                     cancel_event,
@@ -13321,7 +14967,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                 )
             )
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_passthrough_non_streaming(
                 llama_backend,
                 openai_messages,
@@ -13340,6 +14986,8 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 auto_heal_tool_calls = payload.auto_heal_tool_calls,
                 nudge_tool_calls = payload.nudge_tool_calls,
+                request = request,
+                cancel_event = cancel_event,
             )
         )
 
@@ -13422,10 +15070,11 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
+                promote_reasoning_only = False,
             )
 
         if payload.stream:
-            return await _monitored_anthropic(
+            return await _admitted_anthropic(
                 _anthropic_tool_stream(
                     request,
                     cancel_event,
@@ -13438,7 +15087,7 @@ async def anthropic_messages(
                     disable_parallel_tool_use = _disable_parallel,
                 )
             )
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
                 _run_tool_gen,
                 message_id,
@@ -13461,10 +15110,11 @@ async def anthropic_messages(
             max_tokens = payload.max_tokens,
             stop = stop,
             cancel_event = cancel_event,
+            promote_reasoning_only = False,
         )
 
     if payload.stream:
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_plain_stream(
                 request,
                 cancel_event,
@@ -13475,7 +15125,7 @@ async def anthropic_messages(
                 openai_messages = openai_messages,
             )
         )
-    return await _monitored_anthropic(
+    return await _admitted_anthropic(
         _anthropic_plain_non_streaming(
             _run_plain_gen,
             message_id,
@@ -13513,134 +15163,132 @@ async def _anthropic_tool_stream(
         )
 
     async def _stream():
-        emitter = AnthropicStreamEmitter()
-        for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-            yield line
-
-        captured_finish_reason = None
-        # Whether the response currently ends on a pending tool_use block (the
-        # client must act → stop_reason "tool_use") as opposed to final text.
-        # The server may run a tool and then keep generating, which flips this
-        # back to False — that is an end_turn (or max_tokens) response.
-        ends_on_tool_use = False
-        tool_blocks_emitted = 0
-        drop_until_tool_end = False
-        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy
-        # past the stall window still gets a keepalive though its events are dropped.
-        _last_drop_keepalive = time.monotonic()
-
-        gen = run_gen()
-        _next_task = None
-        # Watcher to cancel on disconnect: the in-loop poll fires only between
-        # events, so a mid-prefill disconnect would otherwise hold the decode slot.
-        disconnect_watcher = asyncio.create_task(
-            _await_disconnect_then_cancel(request, cancel_event)
-        )
+        # The server-tool loop decodes on llama-server for its whole body, so without an entry a
+        # non-forced /unload saw zero generations and tore the server down mid-response. Entered
+        # inside the body generator so a response whose body never starts leaves nothing behind.
+        # No thread_id: public API surface.
+        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
+        _tracker.__enter__()
         try:
-            while True:
-                if cancel_event.is_set() or await request.is_disconnected():
-                    cancel_event.set()
-                    return
-                # Stall keepalive (see GGUF tool stream): silent backend segments
-                # must not leave the SSE stream idle past proxy timeouts.
-                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
-                while True:
-                    _done_tasks, _ = await asyncio.wait(
-                        {_next_task},
-                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                    )
-                    if _done_tasks:
-                        break
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                event = _next_task.result()
-                # Done; drop the reference so the finally-block drain no-ops.
-                _next_task = None
-                if event is _sentinel:
-                    break
-                etype = event.get("type")
-                if etype == "heartbeat":
-                    # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
-                    # skip: a dropped tool still runs server-side and its events keep the
-                    # stall keepalive from firing, so dropping heartbeats would go silent.
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                    continue
-                if etype in ("tool_output", "tool_args"):
-                    # Live stdout / arg streaming have no Anthropic Messages equivalent
-                    # (the full call/result follow in tool_use / tool_result), so drop them.
-                    # They keep the stall keepalive from firing, so a chatty tool would go
-                    # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
-                    _now = time.monotonic()
-                    if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
-                        _last_drop_keepalive = _now
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                    continue
-                if drop_until_tool_end:
-                    # disable_parallel_tool_use: skip every event until (and
-                    # including) this dropped tool call's tool_end.
-                    if etype == "tool_end":
-                        drop_until_tool_end = False
-                    continue
-                if etype == "metadata":
-                    _fr = event.get("finish_reason")
-                    if _fr is not None:
-                        captured_finish_reason = _fr
-                # Strip leaked tool-call XML from content events first, so a
-                # content event that was purely tool XML doesn't count as text.
-                # Protected helper preserves <think> rehearsal and balanced
-                # [TOOL_CALLS] trailing prose (raw _TOOL_XML_RE.sub corrupts both).
-                if etype == "content":
-                    event = dict(event)
-                    event["text"] = _strip_tool_xml_for_display(
-                        event["text"],
-                        auto_heal_tool_calls = True,
-                        enabled_tool_names = _display_names,
-                    )
-                # disable_parallel_tool_use: keep only the first tool_use block,
-                # dropping every later tool_start and its paired tool_end (robust
-                # to empty tool-call ids — tracked by state, not id matching).
-                if etype == "tool_start":
-                    if disable_parallel_tool_use and tool_blocks_emitted >= 1:
-                        drop_until_tool_end = True
-                        continue
-                    ends_on_tool_use = True
-                elif etype == "tool_end":
-                    tool_blocks_emitted += 1
-                    # A tool_end means Unsloth executed the tool server-side, so
-                    # the response no longer ends on a pending client action.
-                    # Without this, a server tool that produces no trailing text
-                    # would be mislabeled stop_reason "tool_use", telling the
-                    # client to run a tool Unsloth already ran.
-                    ends_on_tool_use = False
-                elif etype == "content" and event.get("text"):
-                    ends_on_tool_use = False
-                for line in emitter.feed(event):
-                    yield line
-        except Exception as e:
-            logger.error("anthropic_messages stream error: %s", e)
-            # force = True so an unclassified mid-stream failure (llama-server crash,
-            # decode OOM, dropped socket) still emits an SSE error and returns, instead
-            # of a normal message_stop that masks a truncated turn as a clean finish.
-            _error_event = _anthropic_stream_error_event(e, force = True)
-            if _error_event is not None:
-                yield _error_event
-                return
-        finally:
-            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-            # Drain a still-running next(gen) worker before closing, so a mid-prefill
-            # disconnect releases the thread/generator/tool resources. Closing first
-            # would race into ValueError('generator already executing').
-            await _drain_pending_next_task(_next_task, cancel_event)
-            if gen is not None:
-                try:
-                    await asyncio.to_thread(gen.close)
-                except (RuntimeError, ValueError):
-                    pass
+            emitter = AnthropicStreamEmitter()
+            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
+                yield line
 
-        stop_reason = openai_finish_to_anthropic_stop(
-            captured_finish_reason, had_tool_calls = ends_on_tool_use
-        )
-        for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
-            yield line
+            captured_finish_reason = None
+            # Response ends on a pending tool_use block rather than final text; a server tool
+            # that keeps generating flips this back to False.
+            ends_on_tool_use = False
+            tool_blocks_emitted = 0
+            drop_until_tool_end = False
+            # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
+            # stall window still gets one though its events are dropped.
+            _last_drop_keepalive = time.monotonic()
+
+            gen = run_gen()
+            _next_task = None
+            # Watcher to cancel on disconnect: the in-loop poll fires only between events,
+            # so a mid-prefill disconnect would hold the decode slot.
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
+            try:
+                while True:
+                    if cancel_event.is_set() or await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    # Stall keepalive (see GGUF tool stream): silent backend segments must not
+                    # leave the SSE stream idle past proxy timeouts.
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    event = _next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _next_task = None
+                    if event is _sentinel:
+                        break
+                    etype = event.get("type")
+                    if etype == "heartbeat":
+                        # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
+                        # a dropped tool still runs and suppresses the stall keepalive.
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+                    if etype in ("tool_output", "tool_args"):
+                        # No Anthropic Messages equivalent (the full call/result follow in tool_use /
+                        # tool_result), so drop them. They suppress the stall keepalive, so emit a
+                        # rate-limited one instead of going silent past the ~100s proxy cap.
+                        _now = time.monotonic()
+                        if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                            _last_drop_keepalive = _now
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+                    if drop_until_tool_end:
+                        # disable_parallel_tool_use: skip every event until (and
+                        # including) this dropped tool call's tool_end.
+                        if etype == "tool_end":
+                            drop_until_tool_end = False
+                        continue
+                    if etype == "metadata":
+                        _fr = event.get("finish_reason")
+                        if _fr is not None:
+                            captured_finish_reason = _fr
+                    # Strip leaked tool-call XML first, so a purely-tool-XML content event doesn't
+                    # count as text. The protected helper keeps <think> rehearsal and balanced
+                    # [TOOL_CALLS] trailing prose, which a raw sub corrupts.
+                    if etype == "content":
+                        event = dict(event)
+                        event["text"] = _strip_tool_xml_for_display(
+                            event["text"],
+                            auto_heal_tool_calls = True,
+                            enabled_tool_names = _display_names,
+                        )
+                    # disable_parallel_tool_use: keep only the first tool_use block, dropping
+                    # later tool_start/tool_end pairs (by state, not id: ids may be empty).
+                    if etype == "tool_start":
+                        if disable_parallel_tool_use and tool_blocks_emitted >= 1:
+                            drop_until_tool_end = True
+                            continue
+                        ends_on_tool_use = True
+                    elif etype == "tool_end":
+                        tool_blocks_emitted += 1
+                        # Unsloth ran the tool server-side, so the response no longer ends on a pending
+                        # client action; otherwise stop_reason "tool_use" tells the client to run it again.
+                        ends_on_tool_use = False
+                    elif etype == "content" and event.get("text"):
+                        ends_on_tool_use = False
+                    for line in emitter.feed(event):
+                        yield line
+            except Exception as e:
+                logger.error("anthropic_messages stream error: %s", e)
+                # force = True so an unclassified mid-stream failure emits an SSE error instead
+                # of a message_stop that masks a truncated turn as a clean finish.
+                _error_event = _anthropic_stream_error_event(e, force = True)
+                if _error_event is not None:
+                    yield _error_event
+                    return
+            finally:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
+                # its resources; closing first races into 'already executing'.
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
+
+            stop_reason = openai_finish_to_anthropic_stop(
+                captured_finish_reason, had_tool_calls = ends_on_tool_use
+            )
+            for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
+                yield line
+        finally:
+            _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(_stream())
 
@@ -13664,75 +15312,81 @@ async def _anthropic_plain_stream(
         input_tokens = await asyncio.to_thread(llama_backend.count_chat_tokens, openai_messages)
 
     async def _stream():
-        emitter = AnthropicStreamEmitter()
-        for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-            yield line
-
-        captured_finish_reason = None
-
-        gen = run_gen()
-        _next_task = None
-        # Watcher to cancel on disconnect: the in-loop poll fires only between
-        # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
-        disconnect_watcher = asyncio.create_task(
-            _await_disconnect_then_cancel(request, cancel_event)
-        )
+        # Registered like the tool stream above: this default /v1/messages path decodes on
+        # llama-server, so without an entry a non-forced /unload tore it down mid-response.
+        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
+        _tracker.__enter__()
         try:
-            while True:
-                if cancel_event.is_set() or await request.is_disconnected():
-                    cancel_event.set()
-                    return
-                # Stall keepalive (see Anthropic tool stream) each window while
-                # next(gen) runs in a worker.
-                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
-                while True:
-                    _done_tasks, _ = await asyncio.wait(
-                        {_next_task},
-                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                    )
-                    if _done_tasks:
-                        break
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                cumulative = _next_task.result()
-                # Done; drop the reference so the finally-block drain no-ops.
-                _next_task = None
-                if cumulative is _sentinel:
-                    break
-                if isinstance(cumulative, dict):
-                    if cumulative.get("type") == "metadata":
-                        _fr = cumulative.get("finish_reason")
-                        if _fr is not None:
-                            captured_finish_reason = _fr
-                        for line in emitter.feed(cumulative):
-                            yield line
-                    continue
-                # Plain generator yields cumulative text strings
-                for line in emitter.feed({"type": "content", "text": cumulative}):
-                    yield line
-        except Exception as e:
-            logger.error("anthropic_messages stream error: %s", e)
-            # force = True so an unclassified mid-stream failure (llama-server crash,
-            # decode OOM, dropped socket) still emits an SSE error and returns, instead
-            # of a normal message_stop that masks a truncated turn as a clean finish.
-            _error_event = _anthropic_stream_error_event(e, force = True)
-            if _error_event is not None:
-                yield _error_event
-                return
-        finally:
-            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-            # Drain a still-running next(gen) worker before closing, so a mid-prefill
-            # disconnect releases the thread/generator/model resources. Closing first
-            # would race into ValueError('generator already executing').
-            await _drain_pending_next_task(_next_task, cancel_event)
-            if gen is not None:
-                try:
-                    await asyncio.to_thread(gen.close)
-                except (RuntimeError, ValueError):
-                    pass
+            emitter = AnthropicStreamEmitter()
+            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
+                yield line
 
-        stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
-        for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
-            yield line
+            captured_finish_reason = None
+
+            gen = run_gen()
+            _next_task = None
+            # Watcher to cancel on disconnect: the in-loop poll fires only between chunks,
+            # so a mid-prefill disconnect would hold the decode slot.
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
+            try:
+                while True:
+                    if cancel_event.is_set() or await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    # Stall keepalive each window while next(gen) runs in a worker.
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    cumulative = _next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _next_task = None
+                    if cumulative is _sentinel:
+                        break
+                    if isinstance(cumulative, dict):
+                        if cumulative.get("type") == "metadata":
+                            _fr = cumulative.get("finish_reason")
+                            if _fr is not None:
+                                captured_finish_reason = _fr
+                            for line in emitter.feed(cumulative):
+                                yield line
+                        continue
+                    # Plain generator yields cumulative text strings
+                    for line in emitter.feed({"type": "content", "text": cumulative}):
+                        yield line
+            except Exception as e:
+                logger.error("anthropic_messages stream error: %s", e)
+                # force = True so an unclassified mid-stream failure emits an SSE error instead
+                # of a message_stop that masks a truncated turn as a clean finish.
+                _error_event = _anthropic_stream_error_event(e, force = True)
+                if _error_event is not None:
+                    yield _error_event
+                    return
+            finally:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
+                # its resources; closing first races into 'already executing'.
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
+
+            stop_reason = openai_finish_to_anthropic_stop(
+                captured_finish_reason, had_tool_calls = False
+            )
+            for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
+                yield line
+        finally:
+            _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(_stream())
 
@@ -13924,6 +15578,113 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
 # =====================================================================
 
 
+_JSON_SCHEMA_MAP_KEYWORDS = frozenset(
+    {
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    }
+)
+_JSON_SCHEMA_SINGLE_KEYWORDS = frozenset(
+    {
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+_JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+_LLAMA_GRAMMAR_MAX_REPETITION = 2000
+_JSON_SCHEMA_REPETITION_KEYWORDS = frozenset({"maxItems", "maxLength", "minItems", "minLength"})
+
+
+def _llama_compatible_tool_schema(schema):
+    """Return a llama.cpp-compatible copy of one JSON Schema node.
+
+    JSON Schema ``pattern`` expressions match anywhere in a string, so an
+    unanchored pattern is valid and cannot be made compatible by merely adding
+    ``^`` and ``$`` without changing its meaning. llama.cpp's grammar converter
+    currently rejects those patterns outright. Its grammar parser likewise
+    rejects repetition bounds above 2000. Omit only those unsupported
+    constraints from the local-backend copy; the agent retains and validates
+    its original schema, while every compatible constraint still reaches
+    llama.cpp.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    compatible = dict(schema)
+    pattern = compatible.get("pattern")
+    if isinstance(pattern, str) and not (pattern.startswith("^") and pattern.endswith("$")):
+        compatible.pop("pattern")
+    # llama-grammar.cpp refuses repetition bounds above its sane-default
+    # threshold. Dropping the local-backend constraint preserves every value
+    # the client schema accepts; capping it would incorrectly reject otherwise
+    # valid tool arguments.
+    for keyword in _JSON_SCHEMA_REPETITION_KEYWORDS:
+        bound = compatible.get(keyword)
+        if (
+            isinstance(bound, int)
+            and not isinstance(bound, bool)
+            and bound > _LLAMA_GRAMMAR_MAX_REPETITION
+        ):
+            compatible.pop(keyword)
+
+    for keyword in _JSON_SCHEMA_MAP_KEYWORDS:
+        children = compatible.get(keyword)
+        if isinstance(children, dict):
+            compatible[keyword] = {
+                key: _llama_compatible_tool_schema(value) for key, value in children.items()
+            }
+
+    for keyword in _JSON_SCHEMA_SINGLE_KEYWORDS:
+        child = compatible.get(keyword)
+        if isinstance(child, dict):
+            compatible[keyword] = _llama_compatible_tool_schema(child)
+
+    for keyword in _JSON_SCHEMA_LIST_KEYWORDS:
+        children = compatible.get(keyword)
+        if isinstance(children, list):
+            compatible[keyword] = [_llama_compatible_tool_schema(value) for value in children]
+
+    return compatible
+
+
+def _llama_compatible_tools(openai_tools):
+    if not isinstance(openai_tools, list):
+        return openai_tools
+
+    compatible_tools = []
+    for tool in openai_tools:
+        if not isinstance(tool, dict):
+            compatible_tools.append(tool)
+            continue
+        function = tool.get("function")
+        parameters = function.get("parameters") if isinstance(function, dict) else None
+        if not isinstance(parameters, dict):
+            compatible_tools.append(tool)
+            continue
+        compatible_tools.append(
+            {
+                **tool,
+                "function": {
+                    **function,
+                    "parameters": _llama_compatible_tool_schema(parameters),
+                },
+            }
+        )
+    return compatible_tools
+
+
 def _build_passthrough_payload(
     openai_messages,
     openai_tools,
@@ -13951,7 +15712,7 @@ def _build_passthrough_payload(
         "stream": stream,
     }
     if openai_tools:
-        body["tools"] = openai_tools
+        body["tools"] = _llama_compatible_tools(openai_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:
@@ -13985,6 +15746,28 @@ def _build_passthrough_payload(
         # of the model's load-time default.
         body["chat_template_kwargs"] = chat_template_kwargs
     return body
+
+
+async def _anthropic_passthrough_retry_url(llama_backend, exc):
+    """Fresh upstream URL after respawning a dead llama-server, else None.
+
+    A crashed server relaunches on a NEW ephemeral port, so a passthrough still
+    holding the old base_url keeps failing until the next load. Mirrors the
+    respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
+    already scheduled its own recovery, or when nothing needed respawning.
+    """
+    recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
+    if recover is not None and recover(exc):
+        return None
+    # Only the first caller gets True above; the rest must not respawn the same
+    # MTP config underneath the fallback that is already reloading without it.
+    if getattr(llama_backend, "_mtp_runtime_fallback_in_progress", False):
+        return None
+    respawn = getattr(llama_backend, "_respawn_if_dead", None)
+    if respawn is None or not await asyncio.to_thread(respawn):
+        return None
+    logger.warning("llama-server was unreachable; respawned it and retrying the passthrough")
+    return f"{llama_backend.base_url}/v1/chat/completions"
 
 
 async def _anthropic_passthrough_stream(
@@ -14039,10 +15822,23 @@ async def _anthropic_passthrough_stream(
 
     # cancel_id mirrors the OpenAI passthrough so a per-run cancel POST
     # works without the caller having to know the local message_id.
-    _tracker = _TrackedCancel(cancel_event, cancel_id, session_id, message_id)
-    _tracker.__enter__()
+    # No thread_id: public API surface, but still registered so a reload cannot yank
+    # llama-server out from under it. Built here, entered below inside _stream().
+    _tracker = _TrackedCancel(
+        cancel_event,
+        cancel_id,
+        session_id,
+        message_id,
+        model = model_name,
+        kind = "messages",
+    )
 
     async def _stream():
+        # Entered inside the body, not eagerly: aclose() runs no body on a generator
+        # that never started, so a client that drops first would leave the run
+        # registered until restart, 409-ing every swap. Ahead of the first yield, so
+        # the opening lines are covered as well.
+        _tracker.__enter__()
         emitter = AnthropicPassthroughEmitter()
         # Promote text-form tool calls (declared client tools only) into
         # tool_use blocks; verbatim behavior when healing is off or no tools.
@@ -14054,8 +15850,15 @@ async def _anthropic_passthrough_stream(
                 openai_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
-        for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-            yield line
+        # These yields sit outside the teardown try below, so a disconnect while
+        # the opening lines are being sent would strand the tracker. __exit__ is
+        # idempotent, so the normal path still exits once, down there.
+        try:
+            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
+                yield line
+        except BaseException:
+            _tracker.__exit__(None, None, None)
+            raise
 
         # Manage the httpx client, response, AND the aiter_lines() async
         # generator MANUALLY -- no `async with`, no anonymous iterator.
@@ -14090,13 +15893,24 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         disconnect_watcher = None
         try:
-            req = client.build_request(
-                "POST", target_url, json = body, headers = {"Connection": "close"}
-            )
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-            resp = await _send_stream_with_preheader_cancel(
-                client, req, cancel_event, request = request
-            )
+            url = target_url
+            try:
+                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
+            except httpx.ConnectError as exc:
+                # Nothing has streamed yet, so a respawned server can be retried once
+                # on its new port without duplicating output.
+                url = await _anthropic_passthrough_retry_url(llama_backend, exc)
+                if url is None:
+                    raise
+                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
             if resp is None:
                 return
 
@@ -14175,7 +15989,13 @@ async def _anthropic_passthrough_stream(
         for line in emitter.finish():
             yield line
 
-    return _sse_streaming_response(_stream())
+    # The tracker is entered eagerly above, but _stream()'s finally is what exits
+    # it. Closing an async generator that never started is a no-op, so hand the
+    # response a cleanup hook or a pre-start give-up leaks the registry entry.
+    return _sse_streaming_response(
+        _stream(),
+        unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
+    )
 
 
 async def _anthropic_passthrough_non_streaming(
@@ -14196,8 +16016,16 @@ async def _anthropic_passthrough_non_streaming(
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
     nudge_tool_calls = None,
+    request: Optional[Request] = None,
+    cancel_event = None,
 ):
-    """Non-streaming client-side pass-through."""
+    """Non-streaming client-side pass-through.
+
+    Both POSTs run on a per-request client so a Stop or a forced swap can close
+    it and interrupt them. The pooled ``nonstreaming_client()`` cannot be closed
+    without disturbing unrelated calls, which left this path registered with the
+    swap gate but deaf to the event it registered.
+    """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_passthrough_payload(
         openai_messages,
@@ -14215,125 +16043,162 @@ async def _anthropic_passthrough_non_streaming(
         backend_ctx = llama_backend.context_length,
     )
 
-    resp = await nonstreaming_client().post(
-        target_url,
-        json = body,
-        timeout = _llama_non_streaming_generation_timeout(),
+    _client = _cancelable_nonstreaming_client()
+    _cancel_watcher = asyncio.create_task(
+        _await_cancel_or_disconnect_then_close_client(
+            cancel_event = cancel_event,
+            request = request,
+            client = _client,
+        )
     )
 
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code = resp.status_code,
-            detail = _friendly_upstream_error(resp.text[:500]),
-        )
-
-    data = resp.json()
-    # tool_choice arrives here already converted to the OpenAI shape.
-    _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
-
-    # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the model
-    # tried to call a tool but nothing usable came out; re-ask once with the
-    # prompt prefix intact so llama-server's KV cache is reused.
-    if (
-        _allowed_tools
-        and nudge_enabled(nudge_tool_calls)
-        and nudge_should_retry(data, _allowed_tools, openai_tools)
-    ):
-        retry_body = {
-            **body,
-            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
-        }
+    async def _post(payload_body):
+        nonlocal target_url
         try:
-            retry_resp = await nonstreaming_client().post(
+            return await _client.post(
                 target_url,
-                json = retry_body,
+                json = payload_body,
                 timeout = _llama_non_streaming_generation_timeout(),
             )
-            if retry_resp.status_code == 200:
-                retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
-                    data = retry_data
-        except (httpx.RequestError, ValueError) as exc:
-            logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
+        except httpx.RequestError as exc:
+            # The watcher closes the client to break a blocked POST, so a transport error
+            # with the event set is the cancel, not a failure.
+            if cancel_event is not None and cancel_event.is_set():
+                raise asyncio.CancelledError()
+            # Nothing was returned yet, so retry once against the respawned server's
+            # new port; the nudge retry below then reuses the same fresh URL.
+            retry_url = (
+                await _anthropic_passthrough_retry_url(llama_backend, exc)
+                if isinstance(exc, httpx.ConnectError)
+                else None
+            )
+            if retry_url is None:
+                raise
+            target_url = retry_url
+            return await _client.post(
+                target_url,
+                json = payload_body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
 
-    choice = (data.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    finish_reason = choice.get("finish_reason")
+    try:
+        resp = await _post(body)
 
-    healing_active = bool(_allowed_tools)
-    healed_events = (
-        heal_openai_message_events(message, _allowed_tools, openai_tools)
-        if healing_active
-        else None
-    )
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code = resp.status_code,
+                detail = _friendly_upstream_error(resp.text[:500]),
+            )
 
-    content_blocks = []
-    tool_calls = []
-    if healed_events:
-        emitted_tool_uses = 0
-        for kind, value in healed_events:
-            if kind == "text":
-                text = str(value).strip()
+        data = resp.json()
+        # tool_choice arrives here already converted to the OpenAI shape.
+        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
+
+        # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
+        # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
+        if (
+            _allowed_tools
+            and nudge_enabled(nudge_tool_calls)
+            and nudge_should_retry(data, _allowed_tools, openai_tools)
+        ):
+            retry_body = {
+                **body,
+                "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+            }
+            try:
+                retry_resp = await _post(retry_body)
+                if retry_resp.status_code == 200:
+                    retry_data = retry_resp.json()
+                    if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
+                        data = retry_data
+            except (httpx.RequestError, ValueError) as exc:
+                logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
+
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        finish_reason = choice.get("finish_reason")
+
+        healing_active = bool(_allowed_tools)
+        healed_events = (
+            heal_openai_message_events(message, _allowed_tools, openai_tools)
+            if healing_active
+            else None
+        )
+
+        content_blocks = []
+        tool_calls = []
+        if healed_events:
+            emitted_tool_uses = 0
+            for kind, value in healed_events:
+                if kind == "text":
+                    text = str(value).strip()
+                    if text:
+                        content_blocks.append(AnthropicResponseTextBlock(text = text))
+                    continue
+                if disable_parallel_tool_use and emitted_tool_uses >= 1:
+                    continue
+                fn = value.get("function") or {}
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append(value)
+                emitted_tool_uses += 1
+                content_blocks.append(
+                    AnthropicResponseToolUseBlock(
+                        id = anthropic_tool_use_id(value.get("id")),
+                        name = fn.get("name", ""),
+                        input = args,
+                    )
+                )
+        else:
+            text = message.get("content") or ""
+            if text:
+                # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
+                # or no-client-tool requests. The protected helper preserves <think> rehearsal and
+                # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
+                # NAME[ARGS]{...} example is kept.
+                if not healing_active:
+                    text = _strip_tool_xml_for_display(
+                        text,
+                        auto_heal_tool_calls = True,
+                        enabled_tool_names = _display_tool_name_gate(openai_tools),
+                    )
+                text = text.strip()
                 if text:
                     content_blocks.append(AnthropicResponseTextBlock(text = text))
-                continue
-            if disable_parallel_tool_use and emitted_tool_uses >= 1:
-                continue
-            fn = value.get("function") or {}
-            try:
-                args = json.loads(fn.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                args = {}
-            tool_calls.append(value)
-            emitted_tool_uses += 1
-            content_blocks.append(
-                AnthropicResponseToolUseBlock(
-                    id = anthropic_tool_use_id(value.get("id")),
-                    name = fn.get("name", ""),
-                    input = args,
-                )
-            )
-    else:
-        text = message.get("content") or ""
-        if text:
-            # Keep unpromoted bytes when healing is active; legacy stripping is
-            # only for opted-out or no-client-tool requests. Protected helper (not
-            # raw _TOOL_XML_RE.sub): preserves <think> rehearsal and balanced
-            # [TOOL_CALLS] trailing prose, gated on the declared tools so an
-            # inactive NAME[ARGS]{...} example in the final text is kept.
-            if not healing_active:
-                text = _strip_tool_xml_for_display(
-                    text,
-                    auto_heal_tool_calls = True,
-                    enabled_tool_names = _display_tool_name_gate(openai_tools),
-                )
-            text = text.strip()
-            if text:
-                content_blocks.append(AnthropicResponseTextBlock(text = text))
 
-        tool_calls = message.get("tool_calls") or []
-        if disable_parallel_tool_use and len(tool_calls) > 1:
-            tool_calls = tool_calls[:1]
-        for tc in tool_calls:
-            fn = tc.get("function") or {}
-            try:
-                args = json.loads(fn.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                args = {}
-            content_blocks.append(
-                AnthropicResponseToolUseBlock(
-                    id = anthropic_tool_use_id(tc.get("id")),
-                    name = fn.get("name", ""),
-                    input = args,
+            tool_calls = message.get("tool_calls") or []
+            if disable_parallel_tool_use and len(tool_calls) > 1:
+                tool_calls = tool_calls[:1]
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {}
+                content_blocks.append(
+                    AnthropicResponseToolUseBlock(
+                        id = anthropic_tool_use_id(tc.get("id")),
+                        name = fn.get("name", ""),
+                        input = args,
+                    )
                 )
-            )
 
-    stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
+        stop_reason = openai_finish_to_anthropic_stop(
+            finish_reason, had_tool_calls = bool(tool_calls)
+        )
 
-    usage = data.get("usage") or {}
-    return _anthropic_message_json_response(
-        message_id, model_name, content_blocks, stop_reason, usage
-    )
+        usage = data.get("usage") or {}
+        return _anthropic_message_json_response(
+            message_id, model_name, content_blocks, stop_reason, usage
+        )
+    finally:
+        await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
+        try:
+            await _client.aclose()
+        except Exception:
+            pass
 
 
 # =====================================================================
@@ -14715,7 +16580,7 @@ async def _openai_passthrough_stream(
     monitor_id: Optional[str] = None,
 ):
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-    _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+    _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
     _tracker.__enter__()
     try:
         reservation, admission_config = _openai_llama_admission_reserve(
@@ -14724,7 +16589,7 @@ async def _openai_passthrough_stream(
         )
     except LlamaAdmissionQueueFull as exc:
         _tracker.__exit__(None, None, None)
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -14769,7 +16634,7 @@ async def _openai_passthrough_stream(
         )
 
     admission_wait_started_at = time.monotonic()
-    _openai_admission_log(
+    _llama_admission_log(
         "queued",
         reservation,
         request = request,
@@ -14793,7 +16658,7 @@ async def _openai_passthrough_stream(
                 if isinstance(wait_item, str):
                     yield wait_item
                     continue
-                _openai_admission_log(
+                _llama_admission_log(
                     "granted-after-wait",
                     reservation,
                     request = request,
@@ -14838,7 +16703,7 @@ async def _openai_passthrough_stream(
                             await cleanup()
                 return
         except LlamaAdmissionTimeout as exc:
-            _openai_admission_log(
+            _llama_admission_log(
                 "timeout",
                 reservation,
                 request = request,
@@ -14850,7 +16715,7 @@ async def _openai_passthrough_stream(
             api_monitor.fail(monitor_id, str(exc))
             yield _openai_stream_error_sse(_openai_admission_error_body(exc, status_code = 503))
         except LlamaAdmissionCancelled:
-            _openai_admission_log(
+            _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
                 request = request,
@@ -15627,7 +17492,7 @@ async def _openai_passthrough_non_streaming(
             llama_backend = llama_backend,
         )
     except LlamaAdmissionQueueFull as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -15642,7 +17507,7 @@ async def _openai_passthrough_non_streaming(
     try:
         if reservation.lease_nowait() is None:
             admission_wait_started_at = time.monotonic()
-            _openai_admission_log(
+            _llama_admission_log(
                 "queued",
                 reservation,
                 request = request,
@@ -15656,7 +17521,7 @@ async def _openai_passthrough_non_streaming(
             cancel_event = cancel_event,
         )
         if admission_wait_started_at is not None:
-            _openai_admission_log(
+            _llama_admission_log(
                 "granted-after-wait",
                 reservation,
                 request = request,
@@ -15678,7 +17543,7 @@ async def _openai_passthrough_non_streaming(
             cancel_event = cancel_event,
         )
     except LlamaAdmissionTimeout as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "timeout",
             reservation,
             request = request,
@@ -15689,7 +17554,7 @@ async def _openai_passthrough_non_streaming(
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 503)
     except LlamaAdmissionCancelled as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "cancelled-before-upstream",
             reservation,
             request = request,
