@@ -395,8 +395,27 @@ function hexLuminance(hex: string): number {
   return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
 }
 
+const FOREGROUND_DARK = "#111417";
+const FOREGROUND_LIGHT = "#ffffff";
+
+/** WCAG contrast ratio between two relative luminances. */
+function contrastRatio(a: number, b: number): number {
+  const [high, low] = a >= b ? [a, b] : [b, a];
+  return (high + 0.05) / (low + 0.05);
+}
+
+/**
+ * Whichever foreground actually contrasts more. A fixed luminance threshold
+ * put white on mid-tone accents: #22c55e scored 2.28:1 on white against
+ * 8.11:1 on the dark ink. The crossover for this pair is near 0.19, but
+ * comparing the ratios needs no constant at all.
+ */
 function readableForeground(hex: string): string {
-  return hexLuminance(hex) > 0.45 ? "#111417" : "#ffffff";
+  const accent = hexLuminance(hex);
+  return contrastRatio(accent, hexLuminance(FOREGROUND_DARK)) >=
+    contrastRatio(accent, hexLuminance(FOREGROUND_LIGHT))
+    ? FOREGROUND_DARK
+    : FOREGROUND_LIGHT;
 }
 
 /**
