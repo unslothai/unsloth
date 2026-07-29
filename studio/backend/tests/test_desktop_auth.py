@@ -445,7 +445,7 @@ def test_consume_refresh_token_second_call_returns_none():
     storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
 
     first = storage.consume_refresh_token(raw)
-    assert first == (storage.DEFAULT_ADMIN_USERNAME, False)
+    assert first[:2] == (storage.DEFAULT_ADMIN_USERNAME, False)
     second = storage.consume_refresh_token(raw)
     assert second is None
 
@@ -474,7 +474,7 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
 
     successes = [r for r in results if r is not None]
     assert len(successes) == 1, f"expected exactly one consumer to win, got {len(successes)}"
-    assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
+    assert successes[0][:2] == (storage.DEFAULT_ADMIN_USERNAME, False)
 
 
 def test_consume_refresh_token_expired_returns_none():
@@ -548,6 +548,28 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
     assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
+def test_rotated_credential_job_start_is_401_not_500(loaded_local_model):
+    # A reset-password landing mid-request makes the workflow-key mint refuse.
+    # That must reach the client as a revoked credential, not an unhandled error.
+    from fastapi import HTTPException
+
+    seed_user()
+    jobs_route = data_recipe_jobs_module()
+    stale_gen = storage.credential_generation(secrets.token_urlsafe(64))
+
+    with pytest.raises(storage.CredentialRotated):
+        jobs_route._inject_local_providers(local_recipe(), local_recipe_request("t"), stale_gen)
+
+    def _boom(*_a, **_k):
+        raise storage.CredentialRotated("revoked")
+
+    jobs_route._inject_local_providers = _boom
+    payload = SimpleNamespace(recipe = local_recipe(), run = {})
+    with pytest.raises(HTTPException) as excinfo:
+        jobs_route.create_job(payload, local_recipe_request("t"), ("unsloth", stale_gen))
+    assert excinfo.value.status_code == 401
+
+
 def test_desktop_login_rejects_invalid_secret():
     seed_user(must_change_password = False)
     client = auth_client()
@@ -580,18 +602,31 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     from unsloth_cli.commands import studio as studio_cli
 
     auth_dir = tmp_path / "auth"
-    auth_dir.mkdir()
-    (auth_dir / "auth.db").write_text("db")
-    (auth_dir / ".bootstrap_password").write_text("boot")
-    (auth_dir / ".desktop_secret").write_text("new")
     monkeypatch.setattr(studio_cli, "STUDIO_HOME", tmp_path)
+    secret = studio_cli._create_desktop_secret_in_cli()
+    studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
+    (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).write_text("boot")
 
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
 
-    assert result.exit_code == 0
-    assert not (auth_dir / "auth.db").exists()
-    assert not (auth_dir / ".bootstrap_password").exists()
-    assert not (auth_dir / ".desktop_secret").exists()
+    assert result.exit_code == 0, result.output
+    # The DB survives on purpose: a running server keeps serving from its admin row.
+    assert (auth_dir / "auth.db").exists()
+    assert not (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).exists()
+    assert not (auth_dir / studio_cli.DESKTOP_SECRET_FILE).exists()
+
+    conn = studio_cli._connect_auth_db()
+    try:
+        surviving = conn.execute(
+            "SELECT COUNT(*) FROM app_secrets WHERE key IN (?, ?)",
+            (
+                studio_cli.DESKTOP_SECRET_HASH_KEY,
+                studio_cli.DESKTOP_SECRET_CREATED_AT_KEY,
+            ),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert surviving == 0
 
 
 def test_reset_password_removes_desktop_secret_files_without_db(tmp_path, monkeypatch):
@@ -846,7 +881,7 @@ def test_update_password_clears_desktop_secret():
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
     changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
-    assert changed is True
+    assert changed
     assert storage.validate_desktop_secret(raw) is None
 
 
@@ -855,7 +890,7 @@ def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
     raw = storage.create_desktop_secret()
 
     changed = storage.update_password("not-a-user", "irrelevant")
-    assert changed is False
+    assert not changed
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
 
