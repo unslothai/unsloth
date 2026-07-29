@@ -987,11 +987,14 @@ _setup_http_get() {
 }
 
 # Same, with a deadline, for the checks that must not hang the install.
+# wget's --timeout is per operation and it retries 20 times by default, so a
+# server that accepts the request and then stalls drags a "5 second" check out
+# to minutes; --tries=1 keeps it to the single attempt curl's --max-time gives.
 _setup_http_get_timed() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --max-time 5 "$1"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO- --timeout=5 "$1"
+        wget -qO- --timeout=5 --tries=1 "$1"
     else
         return 1
     fi
