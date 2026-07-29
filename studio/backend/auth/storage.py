@@ -67,43 +67,34 @@ def _persist_bootstrap_password(password: str) -> None:
 
 
 def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
-    """Give an existing malformed file its trailing LF, in place.
+    """Append the LF a pre-newline release left off.
 
-    Deliberately not the atomic replace above: a rename would recreate the file
-    if clear_bootstrap_password() or the CLI cleanup deleted it after we read
-    it, putting revoked plaintext back on disk for a later reset to re-seed.
-    Opening without O_CREAT cannot resurrect a deleted file, and the contents
-    are re-checked through the descriptor so an in-place truncation is not
-    undone either.
+    Append-only, and only to a file that is exactly the credential. Rewriting
+    could restore revoked plaintext, because clear_bootstrap_password() may
+    unlink or (when unlink fails, notably on Windows while this descriptor is
+    open) truncate the file through another descriptor at any point after we
+    read it. Appending cannot: the worst case is a lone "\\n" over a cleared
+    file, which strips to empty and reads back as no bootstrap password.
+
+    Releases before the newline wrote the password with no terminator at all,
+    so that is the only shape in the wild. Anything else is left alone and
+    keeps working, since every reader strips.
     """
-    data = _bootstrap_file_bytes(password)
-    # Only a trailing-whitespace rewrite is safe without a rename: every partial
-    # state is then "<secret>\n" plus leftover whitespace, which still strips to
-    # the same credential. Anything else keeps working unnormalised.
-    if not raw.startswith(data[:-1]):
+    if raw != password.encode("utf-8"):
         return
 
-    # O_BINARY or Windows opens the descriptor in text mode and os.write turns
-    # the LF straight back into CRLF, which is the bug this path exists to fix.
-    fd = os.open(_BOOTSTRAP_PW_PATH, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    # O_BINARY or Windows opens the descriptor in text mode and turns the LF
+    # straight back into CRLF, which is the bug this exists to fix.
+    fd = os.open(
+        _BOOTSTRAP_PW_PATH,
+        os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0),
+    )
     try:
-        if os.read(fd, len(raw) + 1) != raw:
-            return
-        os.lseek(fd, 0, os.SEEK_SET)
-        # os.write may write fewer bytes than asked; truncating after a short
-        # write would NUL-fill the credential and lock the admin out.
-        written = 0
-        while written < len(data):
-            n = os.write(fd, data[written:])
-            if not n:
-                return
-            written += n
-        os.ftruncate(fd, len(data))
+        os.write(fd, b"\n")
         try:
             os.fchmod(fd, 0o600)
         except (AttributeError, OSError):
-            # fchmod only reached Windows in 3.13. Staying on the descriptor
-            # matters more than re-applying a mode the writer already set.
+            # fchmod only reached Windows in 3.13.
             pass
     finally:
         os.close(fd)
@@ -125,9 +116,8 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
     if not password:
         return None
 
-    # Older releases wrote no terminator, and text mode wrote CRLF on Windows,
-    # so upgrades kept the `cat` problem. Best-effort: a read-only auth dir or a
-    # credential cleared underneath us must not fail startup.
+    # Older releases wrote no terminator, so upgrades kept the `cat` problem.
+    # Best-effort: a read-only auth dir must not fail startup.
     if raw != _bootstrap_file_bytes(password):
         try:
             _normalise_bootstrap_file(raw, password)

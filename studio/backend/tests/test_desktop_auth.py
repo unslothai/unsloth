@@ -153,23 +153,33 @@ def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
     assert storage.generate_bootstrap_password() == original
 
 
-@pytest.mark.parametrize(
-    "legacy",
-    [
-        b"legacy-bootstrap-secret",  # written before the newline existed
-        b"legacy-bootstrap-secret\r\n",  # written by text mode on Windows
-    ],
-)
-def test_upgrade_normalises_the_bootstrap_file(legacy):
+def test_upgrade_normalises_the_bootstrap_file():
     # The upgrade path is ensure_default_admin() on an install that already has
     # the admin row, which never reaches generate_bootstrap_password().
     seed_user()
-    storage._BOOTSTRAP_PW_PATH.write_bytes(legacy)
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
     storage.ensure_default_admin()
 
     assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
     assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+
+
+@pytest.mark.parametrize("other", [
+    b"legacy-bootstrap-secret\r\n",     # only an unreleased build wrote this
+    b"legacy-bootstrap-secret\r",
+    b"legacy-bootstrap-secret   ",
+])
+def test_only_an_exactly_untermimated_bootstrap_file_is_touched(other):
+    # Appending is safe precisely because it is restricted to the one shape
+    # released code produced. Everything else reads fine and is left alone.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(other)
+
+    storage.ensure_default_admin()
+
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == other
 
 
 def test_upgrade_normalises_when_the_admin_row_is_missing():
@@ -242,7 +252,11 @@ def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
 
     storage._read_persisted_bootstrap_password()
 
-    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"brand-new-secret\n"
+    # The append may add a second newline; the rotated credential must survive.
+    raw = storage._BOOTSTRAP_PW_PATH.read_bytes()
+    assert raw.strip() == b"brand-new-secret"
+    storage._bootstrap_password = None
+    assert storage._load_bootstrap_password() == "brand-new-secret"
 
 
 def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
@@ -278,21 +292,29 @@ def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
     assert seen and all(f & 0x8000 for f in seen), seen
 
 
-def test_normalising_survives_a_short_write(monkeypatch):
-    # A short write followed by ftruncate would NUL-fill the credential.
+def test_clearing_by_truncation_mid_normalisation_is_not_undone(monkeypatch):
+    # clear_bootstrap_password() truncates through its own descriptor when the
+    # unlink fails, which is what happens on Windows while ours is open. The
+    # append must not put the revoked plaintext back.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
-    real_write = storage.os.write
 
-    def one_byte_at_a_time(fd, data):
-        return real_write(fd, data[:1])
+    real_open = storage.os.open
 
-    monkeypatch.setattr(storage.os, "write", one_byte_at_a_time)
+    def truncate_then_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            storage._BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
+        return fd
 
-    storage.ensure_default_admin()
+    monkeypatch.setattr(storage.os, "open", truncate_then_open)
 
-    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
-    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+    storage._read_persisted_bootstrap_password()
+
+    # A lone newline over a cleared file still reads back as no password.
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes().strip() == b""
+    storage._bootstrap_password = None
+    assert storage._load_bootstrap_password() is None
 
 
 def test_normalising_works_without_fchmod(monkeypatch):
