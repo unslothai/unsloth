@@ -14500,6 +14500,30 @@ async def chat_count_tokens(
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
+    # A thread left on a PENDING turn -- an unanswered user message, or a tool result an
+    # interrupted loop never answered -- is the one shape where the next generation runs
+    # on exactly these messages, and the tool loop starts it by splicing in whatever
+    # build_rag_autoinject retrieves: top-K passages, or a whole thread document under
+    # the context budget. That is thousands of tokens this count never sees, so a bar
+    # refreshed here would report that the pending turn fits when the generation it
+    # stands in for would not. Every other shape ends in an assistant turn, where the
+    # retrieval would run against a user message that does not exist yet and no count
+    # could predict it. Retrieval is not this endpoint's job -- it embeds, searches and
+    # reads documents -- so decline exactly as the image case above does and leave the
+    # usage already on the bar. A count payload never carries an autoinject override
+    # (the frontend sends the scope for its catalog entry and grounding nudge alone),
+    # so a scope arriving here is one build_rag_autoinject's default-on gate retrieves
+    # for; declining a scope it would have skipped only keeps the previous total.
+    if (
+        payload.rag_scope
+        and openai_messages
+        and openai_messages[-1].get("role") in ("user", "tool")
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for a pending turn that would retrieve documents.",
+        )
+
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
     # Tool schemas and the action nudge are a large share of a tool-enabled prompt, so

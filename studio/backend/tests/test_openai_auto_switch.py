@@ -3285,6 +3285,62 @@ def test_chat_count_tokens_refuses_image_messages(monkeypatch):
     assert switched == [], "and neither must the auto-switch hook"
 
 
+# The shapes the recount sends for a thread with documents in scope. Only a thread left
+# on a PENDING turn is one the next generation answers from these exact messages, and
+# the tool loop opens that turn by splicing in what build_rag_autoinject retrieves.
+_PENDING_USER_TURN = [{"role": "user", "content": "what does the contract say"}]
+_PENDING_TOOL_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "checking"},
+    {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+]
+_SETTLED_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "it renews yearly"},
+]
+
+
+@pytest.mark.parametrize(
+    ("messages", "rag_scope", "expected_total"),
+    [
+        # Retrieval would splice whole-document or top-K passages in front of this turn,
+        # so counting the messages alone reports that it fits when the generation does not.
+        pytest.param(_PENDING_USER_TURN, {"thread_id": "t1"}, None, id = "pending_user_turn"),
+        # An interrupted loop's unanswered tool result is the same pending shape.
+        pytest.param(_PENDING_TOOL_TURN, {"project_id": "p1"}, None, id = "pending_tool_turn"),
+        # Ends on an assistant turn: the next retrieval runs against a user message that
+        # does not exist yet, so nothing is being omitted and the count still stands.
+        pytest.param(_SETTLED_TURN, {"thread_id": "t1"}, 4242, id = "settled_turn_still_counts"),
+        # No documents in scope means no injection to miss, pending turn or not.
+        pytest.param(_PENDING_USER_TURN, None, 4242, id = "no_rag_scope_still_counts"),
+    ],
+)
+def test_chat_count_tokens_declines_a_pending_turn_that_would_retrieve(
+    monkeypatch, messages, rag_scope, expected_total
+):
+    """A recount that omits RAG injection under-reports by however much was retrieved,
+    which is exactly the direction the context bar must never be wrong in. Decline as the
+    image case does and leave the bar showing the usage it already had."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 4242)
+    payload = _count_request(
+        messages,
+        **({"rag_scope": rag_scope} if rag_scope else {}),
+    )
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert total == expected_total, (
+        "a pending turn whose generation would retrieve documents must be declined, "
+        "not priced without them"
+    )
+    if expected_total is None:
+        assert counted == {}, "the tokenizer must not be reached for a declined count"
+
+
 def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     # The completion path joins every system/developer turn into one, so the count must
     # render the prompt the next request would build rather than the raw history.
