@@ -359,10 +359,32 @@ jobs:
           fi
           [ -n "$SH" ] && [ -f "$SH" ] || { echo "::error::the bundle ships no install.sh resource"; exit 1; }
           echo "bundled installer: $SH"
+          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547.
+          # The bundle carries its own install.sh, and REL_TAG predates #7547, so on a
+          # stripped runner it still exits 2 at the NEED_SUDO handshake for the optional
+          # set instead of falling through to prebuilt llama.cpp. No change to this PR
+          # can move that; only a new release can. _SMART_APT_OPTIONAL is the guard #7547
+          # added, so finding it means the release caught up and this pin must go.
+          if grep -q '_SMART_APT_OPTIONAL' "$SH"; then
+            echo "::error::the bundled install.sh now carries #7547; delete this pin block and let the venv + torch assertions below run unconditionally"
+            exit 1
+          fi
           # --tauri rejects a custom studio home (install.sh:102-114), so drop the
           # workspace-scoped override, and close stdin as install.rs does.
+          rc=0
           env -u UNSLOTH_STUDIO_HOME \
-            bash "$SH" --tauri < /dev/null 2>&1 | tee logs/bundled-install.log
+            bash "$SH" --tauri < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
+          echo "bundled installer exit code: $rc"
+          # Exit code AND the exact optional set, so a different NEED_SUDO list or any
+          # other non-zero exit is still a failure.
+          if [ "$rc" -eq 2 ] && grep -qE '^\[TAURI:NEED_SUDO\] cmake git build-essential libcurl4-openssl-dev[[:space:]]*$' logs/bundled-install.log; then
+            echo "::notice::known pre-#7547 outcome: the shipped bundle's install.sh asked to elevate for the optional set and exited 2. Not a regression here; the next desktop release retires this pin."
+            exit 0
+          fi
+          [ "$rc" -eq 0 ] || {
+            echo "::error::bundled installer exited $rc, which is neither success nor the pinned pre-#7547 outcome (exit 2 plus exactly '[TAURI:NEED_SUDO] cmake git build-essential libcurl4-openssl-dev')"
+            exit 1
+          }
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
           [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
           "$PY" -V

@@ -62,6 +62,9 @@ on:
       # preinstalled Python and full developer tooling.
       - 'studio/backend/requirements/**'
       - '.github/scripts/clean-machine-*.sh'
+      # The virgin Windows container lane lives in this workflow too.
+      - '.github/scripts/virgin-windows-*.ps1'
+      - '.github/scripts/ensure-docker-daemon.ps1'
       - '.github/workflows/clean-machine-install-ci.yml'
   push:
     branches: [main]
@@ -77,6 +80,9 @@ on:
       - 'studio/install_python_stack.py'
       - 'studio/backend/requirements/**'
       - '.github/scripts/clean-machine-*.sh'
+      # The virgin Windows container lane lives in this workflow too.
+      - '.github/scripts/virgin-windows-*.ps1'
+      - '.github/scripts/ensure-docker-daemon.ps1'
       - '.github/workflows/clean-machine-install-ci.yml'
   workflow_dispatch:
     inputs:
@@ -733,19 +739,18 @@ jobs:
             winget: 'masked'
             experimental: false
             overlay: true
-          # Windows on ARM reaches the dependency install and stops on two packages
-          # that publish no win_arm64 wheel at all:
-          #   pyarrow==25.0.0 (via datasets) -- PyPI has win_amd64 only, so uv falls
-          #     back to the sdist and its CMake configure fails
-          #   hf-transfer==0.1.9 -- a maturin/Rust sdist whose openssl-sys build script
-          #     wants perl, which the image does not have
-          # The ARM handling itself works: the log shows "windows on arm: skipping
-          # torchaudio", and torch 2.10.0+cpu and torchvision install from wheels. What
-          # is left is a real product gap on this platform, not a gap in the simulation,
-          # so the leg stays experimental and keeps reporting it.
+          # Windows on ARM gets a native ARM64 CPython, and torchaudio has never
+          # published a win_arm64 wheel at any version, so the PyTorch step cannot
+          # resolve and install.ps1 stops at "Failed to install PyTorch". #7549 fixes it
+          # by preferring an x64 interpreter on an ARM64 host (x64 wheels run fine under
+          # emulation), and that fix lives in install.ps1 on an unmerged PR, so nothing
+          # in THIS branch can make the row green. The Install step is therefore
+          # continue-on-error and the step below pins that exact failure: the job stays
+          # required, so a DIFFERENT failure is still red, and the pin turns into a hard
+          # error the moment the installer starts picking an x64 Python.
           - os: windows-11-arm
             winget: 'visible'
-            experimental: true
+            experimental: false
             overlay: true
 
     steps:
@@ -899,6 +904,8 @@ jobs:
       - name: Install
         id: install
         shell: pwsh
+        # ARM64 only: its failure is pinned below rather than gating (see the matrix).
+        continue-on-error: ${{ matrix.os == 'windows-11-arm' }}
         env:
           # Empty, and therefore ignored by install.ps1, on the non-overlay legs.
           UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
@@ -929,6 +936,54 @@ jobs:
           $rc = $LASTEXITCODE
           Write-Host "installer exit code: $rc"
           exit $rc
+
+      # KNOWN OUTCOME PIN, retire when #7549 merges. continue-on-error on Install would
+      # otherwise tolerate a bootstrap outage or an unrelated early exit exactly like
+      # the intended diagnostic, so every branch here that is not the pinned failure
+      # exits 1 and fails the (required) job.
+      - name: Assert the windows-11-arm outcome is a known one
+        if: always() && matrix.os == 'windows-11-arm' && steps.install.outcome != 'skipped'
+        shell: pwsh
+        run: |
+          # The flip condition. #7549 makes install.ps1 prefer an x64 CPython on an ARM64
+          # host, and torchaudio does publish win_amd64, so an AMD64 venv interpreter
+          # means the fix has landed and this pin is stale. Asked of the interpreter
+          # (sysconfig), not inferred from PROCESSOR_ARCHITECTURE, which describes the
+          # shell. The failing PyTorch step runs after the venv exists, so the absence of
+          # that interpreter is itself a different failure.
+          $venvPy = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\python.exe'
+          if (-not (Test-Path -LiteralPath $venvPy)) {
+            Write-Host "::error::no venv interpreter at $venvPy; the run did not even reach the pinned PyTorch failure"
+            exit 1
+          }
+          $tag = (& $venvPy -c "import sysconfig; print(sysconfig.get_platform())" 2>&1 | Out-String).Trim()
+          $global:LASTEXITCODE = 0
+          Write-Host "venv interpreter platform: $tag"
+          if ($tag -ne 'win-arm64') {
+            Write-Host "::error::the installer selected a '$tag' interpreter on this ARM64 host, so #7549 has landed. Delete this pin, drop continue-on-error from the Install step, and let the leg gate normally."
+            exit 1
+          }
+          if ('${{ steps.install.outcome }}' -eq 'success') {
+            Write-Host '::error::the ARM64 leg installed successfully; the pinned failure is gone, so delete this pin and drop continue-on-error from the Install step'
+            exit 1
+          }
+          if (-not (Test-Path logs/install.log)) {
+            Write-Host '::error::the ARM64 leg produced no install log'
+            exit 1
+          }
+          $log = Get-Content logs/install.log -Raw
+          # All three, so a failure anywhere else in the installer is still red: it must
+          # be the PyTorch step, it must be about torchaudio, and it must be the missing
+          # win_arm64 platform tag rather than (say) a network error.
+          $atTorchStep = $log -match 'Failed to install PyTorch \(exit code'
+          $isTorchaudio = $log -match 'versions of torchaudio are available'
+          $isNoArmWheel = $log -match 'matching platform tag \(e\.g\., `win_arm64`\)'
+          Write-Host "PyTorch step: $atTorchStep / torchaudio: $isTorchaudio / no win_arm64 wheel: $isNoArmWheel"
+          if (-not ($atTorchStep -and $isTorchaudio -and $isNoArmWheel)) {
+            Write-Host '::error::the ARM64 leg did not fail at the pinned "torchaudio has no win_arm64 wheel" resolution error out of the PyTorch step; this is a new failure'
+            exit 1
+          }
+          Write-Host '::notice::known outcome: a native ARM64 CPython plus no win_arm64 torchaudio wheel. Fixed by #7549 (prefer an x64 interpreter on ARM64 hosts); nothing in this branch can change it.'
 
       # See the macOS job: proves the leg is testing what its matrix row claims.
       - name: Assert this ref's Python was really put under test
@@ -974,6 +1029,246 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: clean-win-${{ matrix.os }}-${{ matrix.winget }}
+          path: logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── Windows, genuinely virgin: the same install inside a Windows container ────
+  # The `win` legs above only SIMULATE absence, and two things they structurally
+  # cannot test are the VC++ 2015-2022 runtime (it ships in the runner image's
+  # System32 and cannot be removed without breaking the runner, hence the HONESTY
+  # NOTE on the torch assert) and a Windows with no Microsoft Store at all rather
+  # than a winget hidden from PATH. A servercore container answers both, so this
+  # lane lives here rather than in a sibling file: same premise, same path filters,
+  # and the reader compares masked against real in one place.
+  #
+  # Constraints, all load-bearing:
+  #   * `container:` is Linux-only on the Actions runner (actions/runner#1402), so
+  #     docker is driven from ordinary `run:` steps and the payload goes in by
+  #     `docker cp` -- actions/checkout inside the container would need git.
+  #   * servercore, not nanoserver: install.ps1 needs Windows PowerShell 5.1, which
+  #     nanoserver does not ship at all.
+  #   * windows-2022, not windows-latest: process isolation needs the host and
+  #     container builds to match, and only the 2022 image pre-caches ltsc2022.
+  #     windows-latest is Server 2025 and caches no Windows images.
+  windows_container_probe:
+    name: virgin win container / probe
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      IMAGE: mcr.microsoft.com/windows/servercore:ltsc2022
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Docker is installed on every windows-2022 image but is not always already
+      # running: one spike leg died in 21s on npipe:////./pipe/docker_engine, and that
+      # flake misreads as "Windows containers are unavailable".
+      - name: Ensure the Docker daemon is running
+        shell: pwsh
+        run: ./.github/scripts/ensure-docker-daemon.ps1
+
+      - name: Docker engine facts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          docker version
+          $osType = (docker info --format '{{.OSType}}').Trim()
+          Write-Host "OSType $osType / Isolation $(docker info --format '{{.Isolation}}')"
+          if ($osType -ne 'windows') {
+            Write-Host "::error::docker is serving '$osType' containers, not windows; this lane cannot run here"
+            exit 1
+          }
+          docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}'
+
+      - name: Start the container
+        shell: pwsh
+        run: |
+          # Deliberately never refresh a cached image: process isolation needs the
+          # container build <= the host build, and MCR has shipped a patched image
+          # ahead of the runner host before (actions/runner-images#11582 broke every
+          # Windows container job for ~2 weeks). The cached one is the one that
+          # matched at runner-image build time.
+          if ((docker images --format '{{.Repository}}:{{.Tag}}') -contains $env:IMAGE) {
+            Write-Host "using the runner's pre-cached $env:IMAGE (no pull)"
+          } else {
+            Write-Host "::warning::$env:IMAGE is not pre-cached; pulling (slow, and it may outrun the host build)"
+            docker pull $env:IMAGE
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not pull $env:IMAGE"; exit 1 }
+          }
+          # A keepalive entrypoint so each assertion can be its own `docker exec`, and
+          # therefore its own step with its own exit code.
+          docker run -d --name virgin $env:IMAGE cmd /c "ping -t localhost >nul"
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not start a container from $env:IMAGE"; exit 1 }
+          Write-Host "isolation: $(docker inspect virgin --format '{{.HostConfig.Isolation}}')"
+          docker exec virgin cmd /c "mkdir C:\ci"
+          docker cp "$env:GITHUB_WORKSPACE\." virgin:C:\ci
+          docker exec virgin cmd /c "dir C:\ci\install.ps1"
+
+      - name: Assert the container is genuinely virgin
+        shell: pwsh
+        run: |
+          docker exec virgin powershell.exe -NoLogo -NoProfile -NonInteractive `
+            -ExecutionPolicy Bypass -File C:\ci\.github\scripts\virgin-windows-probe.ps1 `
+            *>&1 | Tee-Object -FilePath logs/virginity.log
+          exit $LASTEXITCODE
+
+      - name: Tear down
+        if: always()
+        shell: pwsh
+        run: |
+          docker rm -f virgin 2>&1 | Out-Null
+          exit 0
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: virgin-win-probe
+          path: logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+  windows_container_install:
+    name: virgin win container / overlay=${{ matrix.overlay }}
+    needs: windows_container_probe
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      IMAGE: mcr.microsoft.com/windows/servercore:ltsc2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The consumer path: install.ps1 from this ref, unsloth from PyPI.
+          - overlay: false
+          # This ref's studio/setup.ps1 and install_python_stack.py, via
+          # UNSLOTH_CI_SOURCE_OVERLAY (install.ps1:2643). Without it a branch changing
+          # setup.ps1 gets a green run that proves nothing about the change.
+          - overlay: true
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Ensure the Docker daemon is running
+        shell: pwsh
+        run: ./.github/scripts/ensure-docker-daemon.ps1
+
+      - name: Start the container
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # See the probe job: use the pre-cached image, never refresh it.
+          if (-not ((docker images --format '{{.Repository}}:{{.Tag}}') -contains $env:IMAGE)) {
+            Write-Host "::warning::$env:IMAGE not pre-cached; pulling"
+            docker pull $env:IMAGE
+          }
+          docker run -d --name virgin $env:IMAGE cmd /c "ping -t localhost >nul"
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not start a container from $env:IMAGE"; exit 1 }
+          docker exec virgin cmd /c "mkdir C:\ci"
+          docker cp "$env:GITHUB_WORKSPACE\." virgin:C:\ci
+          docker exec virgin cmd /c "mkdir C:\ci-out"
+
+      # Re-run here and not only in `probe`: different runner, and an install leg that
+      # skipped the check would be reporting on an environment it never verified.
+      - name: Assert the container is genuinely virgin
+        shell: pwsh
+        run: |
+          docker exec virgin powershell.exe -NoLogo -NoProfile -NonInteractive `
+            -ExecutionPolicy Bypass -File C:\ci\.github\scripts\virgin-windows-probe.ps1 `
+            *>&1 | Tee-Object -FilePath logs/virginity.log
+          exit $LASTEXITCODE
+
+      # AFTER the virginity assertion, so that assertion still proves what it says.
+      # A fresh container ships an almost empty trusted-root store; a real Windows
+      # desktop fills it via automatic root update, so seeding it makes the container
+      # MORE representative, not less. Needed because studio/install_node_prebuilt.py
+      # downloads Node with bare urllib.request.urlopen and so reads the empty Windows
+      # ROOT store and gets CERTIFICATE_VERIFY_FAILED; uv and pip bundle certifi and
+      # are unaffected. That product fragility is reported separately, not fixed here.
+      - name: Seed the container's trusted root CA store
+        shell: pwsh
+        run: |
+          docker exec virgin cmd /c "certutil -generateSSTFromWU C:\roots.sst && certutil -addstore -f Root C:\roots.sst" `
+            *>&1 | Select-Object -Last 15
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '::error::could not seed the container root CA store; Python-side HTTPS will fail'
+            exit 1
+          }
+
+      - name: Install into the virgin container
+        id: install
+        shell: pwsh
+        # KNOWN OUTCOME PIN, retire when #7549 merges. studio/setup.ps1 on this ref and
+        # in the released wheel both hard-stop on a winget-only git gate and reach for
+        # winget again for the VC++ runtime, and a Server Core container has no
+        # Microsoft Store and therefore no winget, ever. #7549 is what relaxes both, and
+        # it is not in this branch, so no change here can make either row pass. The job
+        # stays required and the step below decides: only the pinned signature is
+        # tolerated, and it errors out once the install starts working.
+        continue-on-error: true
+        run: |
+          $overlayArg = if ('${{ matrix.overlay }}' -eq 'true') { 'C:\ci' } else { '' }
+          docker exec virgin powershell.exe -NoLogo -NoProfile -NonInteractive `
+            -ExecutionPolicy Bypass -File C:\ci\.github\scripts\virgin-windows-install.ps1 `
+            -Overlay "$overlayArg" *>&1 | Tee-Object -FilePath logs/install-outer.log
+          exit $LASTEXITCODE
+
+      - name: Assert the container install outcome is a known one
+        if: always() && steps.install.outcome != 'skipped'
+        shell: pwsh
+        run: |
+          if ('${{ steps.install.outcome }}' -eq 'success') {
+            Write-Host '::error::a virgin Windows container now installs, so #7549 has landed. Delete this pin and drop continue-on-error from the Install step so this row gates.'
+            exit 1
+          }
+          if (-not (Test-Path logs/install-outer.log)) {
+            Write-Host '::error::the container install produced no log'
+            exit 1
+          }
+          $log = Get-Content logs/install-outer.log -Raw
+          # The overlay hook is this PR's own feature and gates unconditionally: without
+          # this the overlay row would be indistinguishable from the released-wheel row,
+          # since on this ref both stop at the same gate.
+          if ('${{ matrix.overlay }}' -eq 'true' -and -not ($log -match 'CI: overlaying source checkout')) {
+            Write-Host '::error::the overlay row never overlaid the checkout, so it only tested the released package'
+            exit 1
+          }
+          # The two winget-only gates this lane exists to surface. Anything else is a new
+          # problem and must be red.
+          $gitGate = $log -match 'Git is required but could not be installed automatically'
+          $vcGate  = $log -match 'torch failed to import'
+          if (-not ($gitGate -or $vcGate)) {
+            Write-Host '::error::the container install failed at neither the winget-only git gate nor the missing VC++ runtime; this is a new failure'
+            exit 1
+          }
+          if ($gitGate) { Write-Host '::notice::known outcome: winget-only git gate (studio/setup.ps1), fixed by #7549' }
+          if ($vcGate)  { Write-Host '::notice::known outcome: no VC++ runtime and Ensure-VCRedist is winget-only, fixed by #7549' }
+
+      - name: Recover the install log from the container
+        if: always()
+        shell: pwsh
+        run: |
+          docker cp virgin:C:\ci-out\install.log logs/install.log 2>&1 | Out-Null
+          if (Test-Path logs/install.log) { Write-Host "recovered $((Get-Item logs/install.log).Length) bytes" }
+          else { Write-Host '::warning::no install log inside the container' }
+          exit 0
+
+      - name: Tear down
+        if: always()
+        shell: pwsh
+        run: |
+          docker rm -f virgin 2>&1 | Out-Null
+          exit 0
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: virgin-win-container-overlay-${{ matrix.overlay }}
           path: logs/
           retention-days: 7
           if-no-files-found: warn
