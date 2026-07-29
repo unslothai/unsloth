@@ -593,11 +593,16 @@ jobs:
   # No third-party action: the official Ubuntu rootfs plus `wsl --import` is
   # deterministic and checksum-verifiable, adding no supply-chain dependency to a repo
   # that audits its lockfiles.
+  #
+  # Gating, deliberately: this is the only job that runs the real WSL branch, so a
+  # job-level continue-on-error made the distro import, the installer exit code, the
+  # `platform wsl` assertion and the CLI check all unable to fail anything. Eight
+  # consecutive staging runs were green through every step, so there is no flake to
+  # absorb; if the pinned rootfs ever moves, a red job is the correct signal.
   wsl:
     name: wsl ubuntu-24.04
     runs-on: windows-latest
     timeout-minutes: 50
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -995,6 +1000,50 @@ jobs:
             exit 1
           }
           Write-Host "overlay applied; this leg exercised this ref's Python"
+
+      - name: Assert the install added no compiler toolchain
+        if: always() && steps.install.outcome != 'skipped'
+        shell: pwsh
+        run: |
+          # macOS and Linux re-run `absent`/`nobuild` after the install; Windows checked
+          # nothing afterwards, so setup.ps1 committing to a llama.cpp SOURCE build would
+          # winget-install CMake (setup.ps1:816-822) and VS Build Tools (845-857) and the
+          # leg still went green. Git is out of scope on purpose: bootstrapping it through
+          # winget (setup.ps1:1658-1661) is the consumer path the visible leg exists to
+          # exercise. The VC++ runtime is a runtime, not a toolchain, and is likewise fine.
+          $bad = @()
+          if (-not (Test-Path logs/install.log)) {
+            Write-Host '::error::no install log, so nothing proves the install stayed toolchain-free'
+            exit 1
+          }
+          # The announcements inside Ensure-BuildToolsForLlamaSourceBuild, which runs only
+          # when a source build is committed. Matched instead of the package ids: setup.ps1
+          # PRINTS `winget install Microsoft.VisualStudio.2022.BuildTools` as manual advice
+          # when winget is missing, and advice is not an install.
+          foreach ($m in 'CMake not found -- installing via winget',
+                         'Visual Studio Build Tools not found -- installing via winget') {
+            if (Select-String -Path logs/install.log -Pattern $m -SimpleMatch -Quiet) {
+              $bad += "install log reports: $m"
+            }
+          }
+          # winget puts what it installs on the MACHINE PATH, which this step's own
+          # process PATH (scrubbed, from GITHUB_ENV) never sees, so read the registry
+          # copies back rather than ask Get-Command. The scrub already removed every
+          # entry matching these, so a match here means the install put one back.
+          foreach ($scope in 'Machine','User') {
+            $raw = [System.Environment]::GetEnvironmentVariable('Path', $scope)
+            if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+            foreach ($e in ([System.Environment]::ExpandEnvironmentVariables($raw) -split ';')) {
+              if ($e -match 'CMake|BuildTools|Microsoft Visual Studio|LLVM') {
+                $bad += "$scope PATH regained $e"
+              }
+            }
+          }
+          if ($bad) {
+            Write-Host "::error::the install put a compiler toolchain on this machine: $($bad -join '; ')"
+            exit 1
+          }
+          Write-Host 'no CMake and no VS Build Tools install; the prebuilt contract held'
 
       - name: Assert torch loads, and record what that does and does not prove
         if: steps.install.outcome == 'success'

@@ -306,6 +306,25 @@ jobs:
           gh release download "$REL_TAG" --repo "$REL_REPO" --pattern "$pat" --dir dl
           ls -la dl
 
+      - name: Strip the developer toolchain
+        # Same gate as macOS. Without this the Linux rows ignored strip_toolchain
+        # entirely and ran the bundled installer with the runner's git, gcc, cmake and
+        # make in /usr/bin, so a bundle that needs a toolchain passed the one workflow
+        # whose premise is that it must not.
+        #
+        # BEFORE the bundle install, as macOS and Windows already do: dpkg runs the
+        # package's own maintainer scripts, and installing first meant they ran with the
+        # hosted image's git, compilers and cmake in /usr/bin, so a release whose scripts
+        # reached for one would pass here and fail on a clean machine. Nothing in that
+        # install needs a masked tool -- clean-machine-env.sh moves aside only $TOOLS
+        # (compilers, git, cmake, make, brew, cargo), leaving apt, dpkg and sudo -- and
+        # the current bundle ships a postrm and no install-time script at all.
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        run: |
+          bash .github/scripts/clean-machine-env.sh mask --remove
+          set -a; . ./clean-machine.env; set +a
+          bash .github/scripts/clean-machine-assert.sh absent
+
       - name: Install with NO dev tooling, only runtime libs
         run: |
           # Deliberately not build-essential/cmake/git: a user installing a .deb has
@@ -327,17 +346,6 @@ jobs:
           fi
           echo "BIN=$BIN" >> "$GITHUB_ENV"
           echo "binary: $BIN"
-
-      - name: Strip the developer toolchain
-        # Same gate as macOS. Without this the Linux rows ignored strip_toolchain
-        # entirely and ran the bundled installer with the runner's git, gcc, cmake and
-        # make in /usr/bin, so a bundle that needs a toolchain passed the one workflow
-        # whose premise is that it must not. After apt: the .deb install needs dpkg.
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
-        run: |
-          bash .github/scripts/clean-machine-env.sh mask --remove
-          set -a; . ./clean-machine.env; set +a
-          bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Run the bundled installer, the path first launch takes
         run: |
