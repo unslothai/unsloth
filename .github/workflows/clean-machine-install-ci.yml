@@ -56,6 +56,13 @@ on:
       - 'studio/setup.sh'
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
+      # setup.sh (727) and setup.ps1 (2343, 3630, 3916) call these directly, and the
+      # overlay makes them THIS ref's code, so they decide whether a clean machine gets
+      # a native prebuilt or falls back to a toolchain-dependent path. Left off the
+      # list, a change to one of them skipped the only workflow that can see it.
+      - 'studio/install_*_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/node_prebuilt_pins.json'
       # The overlay exists so a constraints or requirements change is actually
       # exercised here (see the header). Without these paths the one workflow that
       # resolves them with no compiler and no cached wheels never runs for the PR that
@@ -63,6 +70,7 @@ on:
       # preinstalled Python and full developer tooling.
       - 'studio/backend/requirements/**'
       - '.github/scripts/clean-machine-*.sh'
+      - '.github/scripts/assert-llama-loads.sh'
       # The virgin Windows container lane lives in this workflow too.
       - '.github/scripts/virgin-windows-*.ps1'
       - '.github/scripts/ensure-docker-daemon.ps1'
@@ -80,8 +88,16 @@ on:
       - 'studio/setup.sh'
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
+      # setup.sh (727) and setup.ps1 (2343, 3630, 3916) call these directly, and the
+      # overlay makes them THIS ref's code, so they decide whether a clean machine gets
+      # a native prebuilt or falls back to a toolchain-dependent path. Left off the
+      # list, a change to one of them skipped the only workflow that can see it.
+      - 'studio/install_*_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/node_prebuilt_pins.json'
       - 'studio/backend/requirements/**'
       - '.github/scripts/clean-machine-*.sh'
+      - '.github/scripts/assert-llama-loads.sh'
       # The virgin Windows container lane lives in this workflow too.
       - '.github/scripts/virgin-windows-*.ps1'
       - '.github/scripts/ensure-docker-daemon.ps1'
