@@ -1077,13 +1077,18 @@ class _MLXVLMPromptCacheHistory:
         self._entries.move_to_end(matched_id)
         return state, list(getattr(state, "token_ids", None) or ()), continued_id
 
-    def fetch_exact(self, scope, token_ids, min_prefix_tokens, clone):
+    def fetch_exact(self, scope, token_ids, min_prefix_tokens, max_prefix_tokens, clone):
         matched_id, matched_length = None, 0
         for entry_id, (state, _, entry_scope, _) in self._entries.items():
             stored = list(getattr(state, "token_ids", None) or ())
             if (
                 entry_scope == scope
                 and min_prefix_tokens <= len(stored) < len(token_ids)
+                and (
+                    max_prefix_tokens is None
+                    or max_prefix_tokens <= 0
+                    or len(stored) <= max_prefix_tokens
+                )
                 and len(stored) > matched_length
                 and list(token_ids[: len(stored)]) == stored
             ):
@@ -1191,7 +1196,7 @@ class _StudioVLMExactCacheManager:
         max_prefix_tokens = None,
         min_prefix_tokens = 0,
     ):
-        del extra_hash, max_prefix_tokens
+        del extra_hash
         self._token_ids = list(token_ids)
         self._watermark = (
             (len(self._token_ids) - self._step_size - 1) // self._step_size
@@ -1201,6 +1206,7 @@ class _StudioVLMExactCacheManager:
             self._scope,
             self._token_ids,
             min_prefix_tokens,
+            max_prefix_tokens,
             self._clone,
         )
         self._continued_id = entry_id

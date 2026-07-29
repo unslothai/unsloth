@@ -1420,6 +1420,10 @@ def test_mlx_vlm_exact_manager_commits_only_aligned_completed_snapshots():
     assert manager.store_exact_cache(tokens[:8], cache)
     assert not manager.store_exact_cache(tokens, full_cache)
     assert manager.commit() and len(history._entries) == 1
+    limited = module._StudioVLMExactCacheManager(history, scope, "limited", clone, 4)
+    assert limited.lookup_exact_cache(tokens, max_prefix_tokens = 7) == (None, 0)
+    allowed = module._StudioVLMExactCacheManager(history, scope, "allowed", clone, 4)
+    assert allowed.lookup_exact_cache(tokens, max_prefix_tokens = 8)[1] == 8
 
     mismatched = module._StudioVLMExactCacheManager(
         type(history)(2, 1000, step_size = 4), scope, "expanded", clone, 4
