@@ -47,10 +47,15 @@ class FakeClient:
         self.dead = False
         # A server still stuck on an abandoned call fails its ping.
         self.ping_ok = True
+        self.ping_error = False  # ping unsupported, but the server still works
+        self.pings = 0
         self.transport = SimpleNamespace(_is_session_dead = lambda: self.dead)
         FakeClient.instances.append(self)
 
     async def ping(self) -> bool:
+        self.pings += 1
+        if self.ping_error:
+            raise RuntimeError("ping not supported")
         if not self.ping_ok:
             await asyncio.sleep(30)
         return True
@@ -218,6 +223,44 @@ def test_dirty_session_ping_stays_inside_the_caller_timeout(fake_clients):
     started = time.monotonic()
     call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.2, scope = "chat")
     assert time.monotonic() - started < mcp_client._STDIO_PING_TIMEOUT
+
+
+def test_unsupported_ping_keeps_the_session_and_is_not_repeated(fake_clients):
+    # A ping that errors (rather than hanging) proves the server is talking, so
+    # the session is kept -- and the probe is not retried on every later call.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].ping_error = True
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-2"
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-3"
+    assert len(fake_clients) == 1
+    assert fake_clients[0].pings == 1
+
+
+def test_unwind_wait_is_stdio_only(fake_clients, monkeypatch):
+    # Only a cached session needs the cancelled call to finish unwinding; a
+    # one-shot client is discarded, so a Stop there must not wait for it.
+    seen = []
+    real = mcp_client._race_tool_call
+
+    async def spy(coro, timeout, cancel_event, unwind_timeout = 0.0):
+        seen.append(unwind_timeout)
+        return await real(coro, timeout, cancel_event, unwind_timeout)
+
+    monkeypatch.setattr(mcp_client, "_race_tool_call", spy)
+    call_tool_sync(HTTP_URL, None, "t", {})
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    assert seen == [0.0, mcp_client._CANCEL_UNWIND_TIMEOUT]
 
 
 def test_cancel_preserves_stateful_session(fake_clients):

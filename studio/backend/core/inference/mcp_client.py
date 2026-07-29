@@ -329,9 +329,12 @@ def _session_responsive(session, budget: Optional[float] = None) -> bool:
         # A ping that fails for any other reason still proves the server is
         # talking, so fall back to the transport probe instead of discarding a
         # live session (and with it the state this whole path protects).
-        return not _transport_dead(session)
-    if answered is False:
-        return False
+        if _transport_dead(session):
+            return False
+    else:
+        if answered is False:
+            return False
+    # Accepted: clear the flag so later calls don't repeat the probe.
     session.dirty = False
     return True
 
@@ -883,9 +886,13 @@ def _flatten_result(result: Any) -> str:
     return body
 
 
-async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> Any:
+async def _race_tool_call(
+    call_coro, timeout: Optional[float], cancel_event, unwind_timeout: float = 0.0
+) -> Any:
     """Await ``call_coro`` under ``timeout``, polling ``cancel_event`` so a
-    /cancel POST interrupts even mid-network-read."""
+    /cancel POST interrupts even mid-network-read. ``unwind_timeout`` waits that
+    long for a cancelled call to finish unwinding; only callers that hand the
+    client back to a cache need it (one-shot clients are discarded anyway)."""
 
     async def _watch_cancel() -> None:
         while cancel_event is not None and not cancel_event.is_set():
@@ -912,7 +919,8 @@ async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> 
         # the next call can't be dispatched while this one is still on the
         # transport. Bounded: a coroutine that ignores cancellation leaves the
         # session dirty, and the ping gate decides whether it is reusable.
-        await asyncio.wait({call_task, watch_task}, timeout = _CANCEL_UNWIND_TIMEOUT)
+        if unwind_timeout:
+            await asyncio.wait({call_task, watch_task}, timeout = unwind_timeout)
     if not done:
         raise asyncio.TimeoutError
     if call_task in done:
@@ -1017,6 +1025,7 @@ def _call_stdio_tool(
                     session.client.call_tool(name, args, raise_on_error = False),
                     rem,
                     cancel_event,
+                    _CANCEL_UNWIND_TIMEOUT,
                 )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
