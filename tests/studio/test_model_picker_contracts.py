@@ -1686,7 +1686,7 @@ def test_a_repo_id_ending_in_gguf_keeps_its_quant():
     identity = " ".join(_read("features/hub/lib/model-identity.ts").split())
     assert "if (modelId == null || !GGUF_SUFFIX_RE.test(modelId)) { return false; }" in identity
     assert "PUBLIC_ID_PATH_PREFIX_RE.test(modelId) ||" in identity
-    assert "modelId.split(\"/\").length - 1 >= 2 ||" in identity
+    assert 'modelId.split("/").length - 1 >= 2 ||' in identity
     assert "isNativeFileLabel(modelId)" in identity
 
 

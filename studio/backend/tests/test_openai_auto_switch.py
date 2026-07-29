@@ -4765,7 +4765,9 @@ def test_forget_clears_the_bare_repo_entry_the_quant_inherited_from(override_sto
     # place, and the loader falls back to it when the qualified key misses. Clearing only
     # the qualified key hands the same flags straight back on the next load.
     settings.set_model_override(
-        "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 8192,
+        "unsloth/B-GGUF",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 8192,
     )
     _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
     _put("unsloth/B-GGUF:Q4_K_M", remove = True)
