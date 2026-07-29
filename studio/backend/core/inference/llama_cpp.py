@@ -4368,9 +4368,7 @@ class LlamaCppBackend:
         """
         if not self._n_kv_heads_by_layer or not self._n_layers or not self._kda_head_dim:
             return 0
-        n_recurrent = sum(
-            1 for i in range(self._n_layers) if self._kv_heads_for_layer(i, 1) == 0
-        )
+        n_recurrent = sum(1 for i in range(self._n_layers) if self._kv_heads_for_layer(i, 1) == 0)
         if n_recurrent == 0:
             return 0
         head_dim, n_head = self._kda_head_dim, self._n_heads or 1

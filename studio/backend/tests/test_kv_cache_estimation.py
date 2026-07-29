@@ -861,8 +861,11 @@ class TestMLAEstimation:
         pattern = [1 if (i % 4) == 3 else 0 for i in range(93)]
         pattern[92] = 1
         b = self._mla_backend(
-            _n_layers = 93, _n_kv_heads_by_layer = pattern, _n_heads = 96,
-            _kda_head_dim = 128, _ssm_conv_kernel = 4,
+            _n_layers = 93,
+            _n_kv_heads_by_layer = pattern,
+            _n_heads = 96,
+            _kda_head_dim = 128,
+            _ssm_conv_kernel = 4,
         )
         # 69 recurrent layers * (3*3*96*128 + 128*128*96) * 4 B
         rs = 69 * (110592 + 1572864) * 4
