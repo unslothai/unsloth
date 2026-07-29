@@ -1774,3 +1774,60 @@ def test_empty_blocks_do_not_inflate_the_header_size():
     )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Genuine full article body" in out
+
+
+def test_blockquoted_heading_is_not_counted_as_retained_prose():
+    stub = "<article><blockquote><header><h1>%s</h1><ul>%s</ul></header></blockquote></article>" % (
+        "A Long Title That Exceeds Fifty Characters Easily Here",
+        _interlanguage_list(300),
+    )
+    real = "<article><p>%s</p></article>" % ("Genuine full article body text. " * 20)
+    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content = True)
+    assert "Genuine full article body" in out
+
+
+def test_list_left_open_in_a_header_does_not_indent_the_body():
+    body = "<main><header><h1>T</h1><ul>%s</header><ul><li>Body item one</li></ul></main>" % (
+        _interlanguage_list(300)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    item = next(line for line in out.split("\n") if "Body item one" in line)
+    assert item.startswith("*"), item
+
+
+def test_link_wrapping_a_heading_keeps_the_title():
+    body = (
+        "<main><header><a href='/post'><h1>Page Title</h1></a><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Lang0" not in out
+
+
+def test_deeply_nested_headers_do_not_blow_up_quadratically():
+    # Header sizing must not rescan each parent's cumulative buffer.
+    chunk = "<p>%s</p>" % ("filler text here. " * 100)
+
+    def build(depth):
+        return (
+            "<body><main>"
+            + "".join(f"<header>{chunk}" for _ in range(depth))
+            + "</header>" * depth
+            + "<p>body</p></main></body>"
+        )
+
+    import time
+
+    timings = []
+    for depth in (20, 80):
+        html = build(depth)
+        start = time.perf_counter()
+        html_to_markdown(html, main_content = True)
+        timings.append(time.perf_counter() - start)
+    # Four times the depth and payload must not cost far more than four times
+    # the work; a quadratic implementation lands well above this.
+    assert timings[1] < timings[0] * 12, timings

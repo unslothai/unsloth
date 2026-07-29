@@ -212,20 +212,33 @@ class _HeaderFrame:
         "heading_parts",
         "text_chars",
         "link_chars",
+        "stripped",
+        "rendered_chars",
+        "heading_chars",
+        "outer_list_depth",
         "outer_link_seq",
         "outer_cell_seq",
         "outer_in_pre",
         "outer_bq_depth",
     )
 
-    def __init__(self, depth: int, link_seq: int, cell_seq: int, in_pre: bool, bq_depth: int):
+    def __init__(
+        self, depth: int, link_seq: int, cell_seq: int, in_pre: bool, bq_depth: int, list_depth: int
+    ):
         self.depth = depth
         self.parts: list[str] = []
         # Heading output, teed so a heading routed through a nested buffer survives.
         self.heading_parts: list[str] = []
+        # Visible chars tallied as they are emitted. Counting here keeps nested
+        # headers linear; re-cleaning each parent's cumulative buffer is quadratic.
+        # Set by render() so the caller need not re-measure its output.
+        self.stripped: bool = False
+        self.rendered_chars: int = 0
+        self.heading_chars: int = 0
         # Side buffers open at this point enclose the frame; later ones are nested.
         # Links and cells are held by sequence number, not a flag: an inner one
         # replaces the outer in the renderer's single slot, so identity is needed.
+        self.outer_list_depth = list_depth
         self.outer_link_seq = link_seq
         self.outer_cell_seq = cell_seq
         self.outer_in_pre = in_pre
@@ -240,15 +253,17 @@ class _HeaderFrame:
 
         Without a matching ``</header>`` the header may have adopted the page
         body, so keep it whole."""
+        self.stripped = False
         if not closed_by_own_tag:
             return "".join(self.parts)
         headings = "".join(self.heading_parts)
-        # Both sizes measure only the droppable part, cleaned: a heading is kept
-        # either way, and raw tokens count blank lines that _cleanup collapses,
-        # so 500 empty <div>s must not make a tiny header look huge.
-        droppable = len(_cleanup("".join(self.parts))) - len(_cleanup(headings))
+        # Only the droppable part, and only its visible characters: a heading is
+        # kept either way, and blank structure that _cleanup collapses (500 empty
+        # <div>s) must not make a tiny header look huge.
+        droppable = self.rendered_chars - self.heading_chars
         big_enough = self.text_chars >= _HEADER_MIN_CHARS or droppable >= _HEADER_MAX_RENDERED_CHARS
         if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
+            self.stripped = True
             # The closing tag's blank line is emitted after the heading mark is
             # popped, so terminate the heading or the body runs into it.
             return headings + "\n\n" if headings.strip() else headings
@@ -302,6 +317,10 @@ class _MarkdownRenderer(HTMLParser):
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
         self._link_seq: int = 0
+        # A link wrapping a heading emits after the heading mark is gone, so the
+        # tee is told to treat that one emit as heading output.
+        self._link_had_heading: bool = False
+        self._emit_as_heading: bool = False
         # Text under the open <a>, credited only at </a>: an <a> left open adopts
         # body prose, which is not furniture.
         self._link_header_chars: int = 0
@@ -354,8 +373,12 @@ class _MarkdownRenderer(HTMLParser):
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
         )
-        if frame is not None and self._heading_marks and not in_nested_link:
+        as_heading = (self._heading_marks and not in_nested_link) or self._emit_as_heading
+        if frame is not None and as_heading:
             frame.heading_parts.append(text)
+            frame.heading_chars += len(text.strip())
+        if frame is not None:
+            frame.rendered_chars += len(text.strip())
         if frame is not None and not self._nested_buffer_open(frame):
             frame.parts.append(text)
             return
@@ -416,12 +439,15 @@ class _MarkdownRenderer(HTMLParser):
         href = self._link_href or ""
         self._in_link = False
         self._link_text_parts = []
+        self._emit_as_heading = self._link_had_heading
+        self._link_had_heading = False
         # Recovery paths reach here without </a>, so drop the uncredited tally.
         self._link_header_chars = 0
         if href and text:
             self._emit(f"[{text}]({href})")
         elif text:
             self._emit(text)
+        self._emit_as_heading = False
 
     # ------------------------------------------------------------------
     # Tag handlers
@@ -471,8 +497,10 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack[-1].text_chars += frame.text_chars
                 self._header_stack[-1].link_chars += frame.link_chars
                 self._header_stack[-1].heading_parts.extend(frame.heading_parts)
+                self._header_stack[-1].heading_chars += frame.heading_chars
             out = frame.render(closed_by_own_tag)
-            self._dropped_chars += max(0, len(_cleanup("".join(frame.parts))) - len(_cleanup(out)))
+            if frame.stripped:
+                self._dropped_chars += max(0, frame.rendered_chars - frame.heading_chars)
             self._emit(out)
             closed_by_own_tag = False
 
@@ -500,6 +528,11 @@ class _MarkdownRenderer(HTMLParser):
             prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
             if prefixed:
                 self._emit("\n\n" + prefixed + "\n\n")
+        # A list left open inside the header would otherwise indent the body's
+        # own lists under phantom nesting.
+        while len(self._list_stack) > frame.outer_list_depth:
+            if self._list_stack.pop() == "ol" and self._ol_counter:
+                self._ol_counter.pop()
 
     def _flush_header_frames(self) -> None:
         """Emit every open header unchanged, abandoning the strip."""
@@ -534,6 +567,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._hidden_marks.append(len(self._open_tags) - 1)
             if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
                 self._heading_marks.append(len(self._open_tags) - 1)
+                if self._in_link:
+                    self._link_had_heading = True
             if self._strip_header and tag == "header" and not self._hidden_marks:
                 self._header_stack.append(
                     _HeaderFrame(
@@ -542,6 +577,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._cell_seq if self._in_cell else -1,
                         self._in_pre,
                         len(self._bq_stack),
+                        len(self._list_stack),
                     )
                 )
         elif _is_hidden_element(attr_dict):
@@ -998,9 +1034,15 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
 _MIN_RETAINED_CHARS = 50
 
 
+_HEADING_LINE = re.compile(r"^(?:\s*(?:[>*+-]|\d+\.)\s*)*#")
+
+
 def _non_heading_chars(text: str) -> int:
-    """Length of *text* ignoring heading lines and blanks."""
-    return sum(len(line) for line in text.split("\n") if line.strip() and not line.startswith("#"))
+    """Length of *text* ignoring blanks and heading lines, including headings
+    behind blockquote or list prefixes (``> # Title``)."""
+    return sum(
+        len(line) for line in text.split("\n") if line.strip() and not _HEADING_LINE.match(line)
+    )
 
 
 # A scoped conversion below this size is judged not to be the page's main
