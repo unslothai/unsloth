@@ -276,6 +276,7 @@ def test_v1_models_exposes_real_context_window(monkeypatch):
     assert entry["context_length"] == 67584
     assert entry["max_context_length"] == 262144
 
+
 def _conversation_with_big_trace(trace_chars = 40000):
     """A normal turn list whose last assistant turn carries a huge reasoning trace.
 

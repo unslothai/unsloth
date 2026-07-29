@@ -666,9 +666,7 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     if dropped:
         body["messages"] = new_messages
     if _estimate_messages_tokens(body.get("messages") or []) > target_est:
-        clipped += _clip_long_contents(
-            body.get("messages") or [], target_est, reasoning = False
-        )
+        clipped += _clip_long_contents(body.get("messages") or [], target_est, reasoning = False)
     if not dropped and not clipped:
         return False
     if n_ctx:
