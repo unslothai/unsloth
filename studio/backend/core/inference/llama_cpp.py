@@ -92,6 +92,7 @@ from utils.subprocess_compat import (
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
+    NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
@@ -1697,9 +1698,20 @@ def _kv_unified_from_args(
     return enabled
 
 
-def _flash_attn_enabled_from_args(args: Optional[Iterable[str]], default: bool = True) -> bool:
-    """Resolve llama.cpp's last-wins flash-attention CLI setting."""
+def _flash_attn_enabled_from_args(
+    args: Optional[Iterable[str]],
+    default: bool = True,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Resolve llama.cpp's environment and last-wins flash-attention settings."""
     enabled = default
+    # llama.cpp applies LLAMA_ARG_FLASH_ATTN before parsing argv (arg.cpp set_env),
+    # so the CLI still wins. --flash-attn has no args_neg, so no LLAMA_ARG_NO_ twin.
+    value = (os.environ if env is None else env).get("LLAMA_ARG_FLASH_ATTN")
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        enabled = False
+    elif value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+        enabled = True
     values = [str(arg) for arg in args] if args else []
     for i, raw in enumerate(values):
         if _flag_name(raw) not in {"-fa", "--flash-attn"}:
@@ -2181,6 +2193,8 @@ class LlamaCppBackend:
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
         self._effective_parallel_slots: int = 1
+        # --parallel the last load asked for, before any fit-time reduction.
+        self._requested_n_parallel: int = 1
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
         self._supports_reasoning: bool = False
@@ -2418,6 +2432,17 @@ class LlamaCppBackend:
         return max(1, slots)
 
     @property
+    def requested_parallel_slots(self) -> int:
+        """--parallel the last load asked for, before any fit-time reduction.
+        The reload dedupe compares requested-vs-requested (like requested_n_ctx);
+        the effective count would reload forever after a fitter reduction."""
+        try:
+            slots = int(getattr(self, "_requested_n_parallel", 1))
+        except (TypeError, ValueError):
+            slots = 1
+        return max(1, slots)
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -2442,6 +2467,8 @@ class LlamaCppBackend:
 
     def _reset_effective_parallel_slots(self) -> None:
         self._effective_parallel_slots = 1
+        # Cleared with the effective count so a stale value can't skew the dedupe.
+        self._requested_n_parallel = 1
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -6787,6 +6814,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                n_parallel = n_parallel,
                 preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
             ):
                 logger.info(
@@ -9038,7 +9066,8 @@ class LlamaCppBackend:
                     int(self._DEFAULT_N_UBATCH if _effective_ubatch is None else _effective_ubatch),
                 )
                 self._flash_attn_enabled = (
-                    _flash_attn_enabled_from_args(_last_spawn_cmd) and self._architecture != "grok"
+                    _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)
+                    and self._architecture != "grok"
                 )
                 self._effective_cache_types = _effective_main_cache_types(
                     _last_spawn_cmd,
@@ -9066,6 +9095,8 @@ class LlamaCppBackend:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
+                # Local n_parallel may have been reduced above; the snapshot has the ask.
+                self._requested_n_parallel = max(1, int(_pending_load_kwargs["n_parallel"]))
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_kwargs = _pending_load_kwargs
@@ -9478,6 +9509,7 @@ class LlamaCppBackend:
         tensor_split: Optional[List[float]] = None,
         gpu_ids: Optional[List[int]] = None,
         mtp_draft_path: Optional[str] = None,
+        n_parallel: int = 1,
         preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
@@ -9541,6 +9573,10 @@ class LlamaCppBackend:
                 return False
             # A GPU-memory-mode flip (Unsloth / manual) must always reload.
             if self._gpu_memory_mode != gpu_memory_mode:
+                return False
+            # Requested-vs-requested (like n_ctx): comparing the effective count
+            # would reload forever whenever the fitter launched fewer slots.
+            if self._requested_n_parallel != max(1, int(n_parallel)):
                 return False
             # Manual: a layer-count change always reloads (covers Auto(-1) <-> a
             # pinned count); MoE/split only matter with an explicit offload.
@@ -12384,7 +12420,10 @@ class LlamaCppBackend:
                             _it_r = _iter_timings or {}
                             _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                            # Blank first (the route resets its text cursor only on an
+                            # empty status), then the badge so the retry is not a hang.
                             yield {"type": "status", "text": ""}
+                            yield {"type": "status", "text": _NUDGE_TOOL_CALLS_STATUS}
                             continue
 
                         if _forced_tool_call_pending:

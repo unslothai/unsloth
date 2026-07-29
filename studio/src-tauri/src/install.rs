@@ -783,6 +783,14 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
     }
 }
 
+/// True while an installer runs; quitting now would leave a broken venv.
+pub fn is_install_running(state: &InstallState) -> bool {
+    state
+        .lock()
+        .map(|install| install.child.is_some())
+        .unwrap_or(false)
+}
+
 /// Stop a running install process gracefully.
 /// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL
 /// Windows: hidden taskkill /T /F to terminate the installer tree

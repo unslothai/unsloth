@@ -26,6 +26,7 @@ from core.inference.llama_cpp import (
     _PROVISIONAL_ARGS_MIN_CHARS,
     LlamaCppBackend,
 )
+from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
@@ -1839,6 +1840,140 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     assert content_texts == ["I will use render_html now.", "Final note after tool."]
     assert not any(event.get("type") == "reasoning_summary" for event in events)
     assert len(payloads) == 3
+
+
+def _status_texts(events: list[dict]) -> list[str]:
+    return [event["text"] for event in events if event.get("type") == "status"]
+
+
+_WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+}
+
+
+def _nudge_then_search_streams() -> list[list[str]]:
+    """Stall, then a re-prompted turn that finally searches, then the answer."""
+
+    return [
+        [_sse({"content": "I will search the web now."}), _done()],
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_search",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
+    ]
+
+
+def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatch):
+    """The re-prompted turn is hidden, so without a badge the UI looks frozen."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    statuses = _status_texts(events)
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
+    # Blank first: the route resets its text cursor only on an empty status.
+    # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
+    assert index > 0 and statuses[index - 1] == ""
+    assert statuses[index + 1].startswith("Searching:")
+    assert statuses[-1] == ""
+
+
+def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(monkeypatch):
+    streams = [
+        [_sse({"content": "I will search the web now."}), _done()],
+        [_sse({"content": "No search needed. Final answer: the square is red."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    statuses = _status_texts(events)
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    assert statuses[-1] == ""
+
+
+def test_direct_answer_never_shows_the_nudge_status(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "The square is red."}), _done()]],
+        payloads,
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+
+
+def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+            nudge_tool_calls = False,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    assert len(payloads) == 1
 
 
 def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
