@@ -225,9 +225,9 @@ def test_dirty_session_ping_stays_inside_the_caller_timeout(fake_clients):
     assert time.monotonic() - started < mcp_client._STDIO_PING_TIMEOUT
 
 
-def test_unsupported_ping_keeps_the_session_and_is_not_repeated(fake_clients):
-    # A ping that errors (rather than hanging) proves the server is talking, so
-    # the session is kept -- and the probe is not retried on every later call.
+def test_failed_ping_replaces_the_session(fake_clients):
+    # Only a completed round-trip proves the abandoned call is done, so a ping
+    # that errors is not enough to reuse the session.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
     fake_clients[0].ping_error = True
@@ -241,10 +241,58 @@ def test_unsupported_ping_keeps_the_session_and_is_not_repeated(fake_clients):
         scope = "chat",
     )
     fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
+    assert len(fake_clients) == 2
+    assert fake_clients[0].exited == 1
+
+
+def test_successful_ping_is_not_repeated(fake_clients):
+    # Once a round-trip clears the flag, later calls dispatch without probing.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    fake_clients[0].call_delay = 0.0
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-2"
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-3"
-    assert len(fake_clients) == 1
     assert fake_clients[0].pings == 1
+
+
+def test_stop_interrupts_a_hanging_dirty_ping(fake_clients):
+    # The recovery probe honors Stop like connect and the call itself do.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].ping_ok = False  # ping hangs for 30s
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+    started = time.monotonic()
+    out = call_tool_sync(
+        STDIO_URL,
+        None,
+        "t",
+        {},
+        scope = "chat",
+        cancel_event = cancel,
+        timeout = 30,
+    )
+    assert out == "Error: MCP tool 't' cancelled"
+    assert time.monotonic() - started < mcp_client._STDIO_PING_TIMEOUT
 
 
 def test_unwind_wait_is_stdio_only(fake_clients, monkeypatch):

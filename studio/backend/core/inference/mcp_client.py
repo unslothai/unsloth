@@ -310,31 +310,29 @@ def _transport_dead(session) -> bool:
     return False
 
 
-def _session_responsive(session, budget: Optional[float] = None) -> bool:
-    """Whether a session left dirty by an abandoned call can be reused: the
-    server must answer a ping, proving it is not still stuck on that call.
+def _session_responsive(session, budget: Optional[float] = None, cancel_event = None) -> bool:
+    """Whether a session left dirty by an abandoned call can be reused. Only a
+    completed ping round-trip proves the server is no longer working on that
+    call, so anything short of one -- an error, a wedge, or no budget left to
+    ask -- rejects the session instead of guessing from local state.
+
     ``budget`` is the caller's remaining deadline, so recovery stays inside the
-    one timeout window rather than adding to it."""
+    one timeout window rather than adding to it, and ``cancel_event`` lets Stop
+    interrupt the probe like it interrupts connect and the call itself."""
     client = session.client
     if client is None:
         return False
     window = _STDIO_PING_TIMEOUT if budget is None else min(_STDIO_PING_TIMEOUT, budget)
     if window <= 0:
-        return not _transport_dead(session)
-    try:
-        answered = session.run(asyncio.wait_for(client.ping(), window), window)
-    except (asyncio.TimeoutError, _SessionWedged):
         return False
+    try:
+        answered = session.run(_race_tool_call(client.ping(), window, cancel_event), window)
+    except _MCPCancelled:
+        raise
     except Exception:  # noqa: BLE001
-        # A ping that fails for any other reason still proves the server is
-        # talking, so fall back to the transport probe instead of discarding a
-        # live session (and with it the state this whole path protects).
-        if _transport_dead(session):
-            return False
-    else:
-        if answered is False:
-            return False
-    # Accepted: clear the flag so later calls don't repeat the probe.
+        return False
+    if answered is False:
+        return False
     session.dirty = False
     return True
 
@@ -1014,7 +1012,7 @@ def _call_stdio_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
-            elif session.dirty and not _session_responsive(session, _remaining()):
+            elif session.dirty and not _session_responsive(session, _remaining(), cancel_event):
                 # Still stuck on the abandoned call; only now is a fresh one needed.
                 discard_session = True
                 if attempt == 0:
