@@ -923,12 +923,20 @@ def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset(
         and _subscript_key(node.args[1]) == "modules"
     ):
         return True
-    return (
-        isinstance(node.func, ast.Name)
-        and node.func.id in {"globals", "locals", "vars"}
-        and (not node.args or (node.func.id == "vars" and len(node.args) == 1))
-        and not node.keywords
-    )
+    if not (isinstance(node.func, ast.Name) and not node.keywords):
+        return False
+    if node.func.id in {"globals", "locals"}:
+        return not node.args
+    if node.func.id != "vars":
+        return False
+    if not node.args:
+        return True
+    if len(node.args) != 1:
+        return False
+    module = node.args[0]
+    while isinstance(module, ast.Attribute):
+        module = module.value
+    return isinstance(module, ast.Name) and module.id in dynamic_namespace_aliases
 
 
 def _is_yaml_string(node) -> bool:
@@ -1121,6 +1129,30 @@ def _pyyaml_loader_is_safe(
 ) -> bool:
     if isinstance(node, ast.Name):
         return node.id in safe_loader_aliases
+    if isinstance(node, ast.Subscript):
+        mro = node.value
+        if (
+            isinstance(mro, ast.Call)
+            and isinstance(mro.func, ast.Attribute)
+            and mro.func.attr == "mro"
+            and not mro.args
+            and not mro.keywords
+        ):
+            return _pyyaml_loader_is_safe(
+                mro.func.value,
+                yaml_aliases,
+                safe_loader_aliases,
+                dynamic_import_aliases,
+                dynamic_namespace_aliases,
+            )
+        if isinstance(mro, ast.Attribute) and mro.attr == "__mro__":
+            return _pyyaml_loader_is_safe(
+                mro.value,
+                yaml_aliases,
+                safe_loader_aliases,
+                dynamic_import_aliases,
+                dynamic_namespace_aliases,
+            )
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -5572,6 +5604,7 @@ def _check_signal_escape_patterns(code: str):
                 "__builtins__",
                 "builtins",
                 "sys",
+                "yaml",
             }
             self.pyyaml_resolver_aliases: set[str] = set()
             self.yaml_object_aliases: set[str] = set()
@@ -5614,7 +5647,9 @@ def _check_signal_escape_patterns(code: str):
                 elif alias.name == "sys":
                     self.dynamic_namespace_aliases.add(alias.asname or alias.name)
                 elif alias.name.split(".", 1)[0] == "yaml":
-                    self.yaml_aliases.add(alias.asname or "yaml")
+                    yaml_alias = alias.asname or "yaml"
+                    self.yaml_aliases.add(yaml_alias)
+                    self.dynamic_namespace_aliases.add(yaml_alias)
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -5657,6 +5692,7 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_module_mutator_aliases.update(_PYYAML_SAFE_LOADER_MUTATORS)
                     elif alias.name in _PYYAML_SUBMODULE_NAMES:
                         self.yaml_aliases.add(bound)
+                        self.dynamic_namespace_aliases.add(bound)
                     elif alias.name in _PYYAML_LOAD_NAMES:
                         self.yaml_load_aliases.add(bound)
                     elif alias.name in _PYYAML_UNSAFE_LOAD_NAMES:
@@ -5968,6 +6004,7 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_registry_setter_aliases.update(names)
             if yaml_alias:
                 self.yaml_aliases.update(names)
+                self.dynamic_namespace_aliases.update(names)
             if reference_kind in _PYYAML_LOAD_NAMES:
                 self.yaml_load_aliases.update(names)
             elif reference_kind in _PYYAML_UNSAFE_LOAD_NAMES:

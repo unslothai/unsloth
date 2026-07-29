@@ -783,6 +783,18 @@ class TestPyYamlDeserialization:
     def test_unrelated_importer_and_module_namespace_names_allowed(self, code):
         _ok(code)
 
+    def test_safe_loader_recovered_through_mro_blocked(self):
+        _blocked(
+            "import yaml\n"
+            "loader = yaml.SafeLoader.mro()[0]\n"
+            "loader.add_constructor('!run', run)\n"
+            "yaml.safe_load('!run x')",
+            expect_phrase = "Unsafe PyYAML deserialization",
+        )
+
+    def test_vars_of_unrelated_object_allowed(self):
+        _ok("for key, value in vars(model).items():\n    consume(key, value)")
+
     @pytest.mark.parametrize(
         "code",
         [
