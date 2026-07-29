@@ -76,7 +76,13 @@ def _load_bootstrap_password() -> Optional[str]:
     global _bootstrap_password
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
-        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
+        # No caller handles a raise, so an unreadable file has to mean "no bootstrap
+        # password", not a dead backend. We write UTF-8, so bytes that will not
+        # decode are damage whose plaintext is worthless anyway.
+        try:
+            bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return _bootstrap_password
         if bootstrap_password:
             _bootstrap_password = bootstrap_password
     return _bootstrap_password

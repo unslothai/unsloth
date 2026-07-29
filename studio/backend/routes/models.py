@@ -722,7 +722,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
             stem_hash = hashlib.sha256(manifest_key.encode()).hexdigest()[:10]
 
             try:
-                manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
+                manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
             except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                 logger.debug(
                     "Skipping unreadable/invalid Ollama manifest %s: %s",
@@ -738,7 +738,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                 config_blob = blobs_dir / config_digest.replace(":", "-")
                 if config_blob.is_file():
                     try:
-                        cfg = json.loads(config_blob.read_text(encoding = "utf-8"))
+                        cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
                         model_type = cfg.get("model_type", "")
                         file_type = cfg.get("file_type", "")
                     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
@@ -1042,7 +1042,7 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                 if not m.is_file():
                     continue
                 try:
-                    manifest = json.loads(m.read_text(encoding = "utf-8"))
+                    manifest = json.loads(m.read_text(encoding = "utf-8-sig"))
                 except (json.JSONDecodeError, OSError, ValueError):
                     continue
                 for layer in manifest.get("layers") or []:
@@ -3360,6 +3360,8 @@ def _wsl_reveal_in_explorer(path: Path) -> bool:
             ["wslpath", "-w", str(path)],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             check = True,
             timeout = 10,
         ).stdout.strip()
