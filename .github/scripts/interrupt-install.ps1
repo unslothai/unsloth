@@ -53,13 +53,24 @@ $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList `
   -PassThru -NoNewWindow
 Write-Host "[interrupt] installer pid=$($proc.Id) marker='$Marker' deadline=${KillAtSeconds}s"
 
+# Proof that the signal was DELIVERED, not merely attempted. The installer can also fail
+# on its own between the last HasExited check and Stop-Tree, and a natural failure carries
+# a non-zero exit code just like a kill does, so the exit status alone cannot separate the
+# two on Windows. Stop-Process throws on a process that has already gone, so this flag is
+# false exactly when there was nothing left to interrupt.
+$script:rootKilled = $false
+
 function Stop-Tree([int]$RootId) {
   # Depth-first, so a parent cannot respawn a child we already killed. CIM gives the
   # parent link Windows does not expose via process groups.
   $kids = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootId" -ErrorAction SilentlyContinue)
   foreach ($k in $kids) { Stop-Tree ([int]$k.ProcessId) }
-  try { Stop-Process -Id $RootId -Force -ErrorAction Stop; Write-Host "[interrupt] killed pid=$RootId" }
-  catch { }
+  try {
+    Stop-Process -Id $RootId -Force -ErrorAction Stop
+    Write-Host "[interrupt] killed pid=$RootId"
+    if ($RootId -eq $proc.Id) { $script:rootKilled = $true }
+  }
+  catch { if ($RootId -eq $proc.Id) { Write-Host "[interrupt] installer pid=$RootId was already gone: $_" } }
 }
 
 # A leg can be aimed at either kind of phase the installer prints, and only one of them is
@@ -152,7 +163,7 @@ if ($killed) {
 
 try { $proc.WaitForExit(30000) | Out-Null } catch { }
 $rc = if ($proc.HasExited) { $proc.ExitCode } else { 'running' }
-Write-Host "[interrupt] installer exit=$rc reason=$reason killed=$killed"
+Write-Host "[interrupt] installer exit=$rc reason=$reason killed=$killed root_killed=$($script:rootKilled)"
 Write-Host '[interrupt] last log lines:'
 Get-Content $LogPath -Tail 15 -ErrorAction SilentlyContinue
 
@@ -173,6 +184,7 @@ if ($mismatch) {
 @(
   "interrupt_reason=$reason"
   "interrupt_killed=$killed"
+  "interrupt_root_killed=$(if ($script:rootKilled) { 'true' } else { 'false' })"
   "installer_exit=$rc"
   "interrupt_phase_mismatch=$(if ($mismatch) { 'true' } else { 'false' })"
 ) | Set-Content -Path (Join-Path (Split-Path -Parent $LogPath) 'interrupt.env') -Encoding utf8

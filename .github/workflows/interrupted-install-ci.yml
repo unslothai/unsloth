@@ -65,7 +65,6 @@ jobs:
     name: ${{ matrix.os }} kill@${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
@@ -77,28 +76,35 @@ jobs:
           # one. A flat 3s beat is what made 5 of the 12 legs of staging run 30419729244
           # interrupt a later phase than their label claims.
           #
+          # Every leg is a hard gate. There is no continue-on-error cell: a leg allowed to
+          # fail is a warning wearing a red icon, and this workflow's entire claim is that
+          # a killed install cannot report itself healthy.
+          #
           # The exact reported case: killed during the sub-step that installs structlog.
-          - {os: macos-14, label: studio-deps, marker: 'studio deps', beat: 0, experimental: false}
+          - {os: macos-14, label: studio-deps, marker: 'studio deps', beat: 0}
           # Coarse phases, earliest to latest -- each leaves a different partial venv.
-          # venv is experimental: the step takes ~0.1s (30419729244 logged 03:31:07.371 ->
-          # 07.478 between its line and "Installing PyTorch"), shorter than any log poll, so
-          # the kill usually lands in the next phase and the landing check FAILS it. It
-          # still probes the earliest torn state when it does land.
-          - {os: macos-14, label: venv,        marker: '\[TAURI:STEP\] Creating virtual environment', beat: 0, experimental: true}
-          - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch',           beat: 3, experimental: false}
-          - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth',           beat: 3, experimental: false}
-          - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup',        beat: 3, experimental: false}
-          # Other dependency-pass sub-steps around the named one. pip-bootstrap is
-          # experimental for the same reason as venv: in 30419729244 it landed in "2/10
-          # unsloth extras", producing a log byte-identical to the unsloth-extras leg.
-          - {os: macos-14, label: pip-bootstrap,  marker: 'pip bootstrap',     beat: 0, experimental: true}
+          # No venv cell. "Creating virtual environment" ran 0.107s in staging run
+          # 30419729244 (03:31:07.371 -> 07.478 to "Installing PyTorch"), shorter than any
+          # poll that watches the log, so the kill landed in the NEXT phase every time it
+          # was tried (30423181897 and 30424366953 both). It was the torch leg with a
+          # different label. Lost with it: a venv caught half-written. That state is not
+          # reachable by interruption at this resolution, and it is the only thing lost --
+          # the torch leg's signal lands ~3s into a multi-minute download, so what it
+          # leaves behind is already a complete venv with nothing installed into it.
+          - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch',           beat: 3}
+          - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth',           beat: 3}
+          - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup',        beat: 3}
+          # Other dependency-pass sub-steps around the named one. No pip-bootstrap cell for
+          # the same reason as venv: "1/10 pip bootstrap" is over before a poll can see it,
+          # so in both 30419729244 and 30424366953 the signal landed in "2/10 unsloth
+          # extras", which is the next cell down.
           # No base-packages cell: --local sets skip_base, so install_python_stack returns
           # before "base packages" ever prints -- that leg ran to completion, proving nothing.
-          - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras',    beat: 0, experimental: true}
-          - {os: macos-14, label: data-designer,  marker: 'data designer deps', beat: 0, experimental: true}
+          - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras',    beat: 0}
+          - {os: macos-14, label: data-designer,  marker: 'data designer deps', beat: 0}
           # Linux: same teardown path, different package manager and process semantics.
-          - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps', beat: 0, experimental: false}
-          - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', beat: 3, experimental: false}
+          - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps', beat: 0}
+          - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', beat: 3}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -149,6 +155,23 @@ jobs:
             tail -30 logs/install.log || true
             exit 1
           fi
+          # ...and it must have died from OUR signal rather than on its own. The installer
+          # can also fail naturally in the same window -- a dependency error exits 1 -- and
+          # that leg would test a broken installer while claiming to test an interrupted
+          # one. Recording whether `kill` returned 0 does not separate them: the leader is
+          # still an unreaped member of its own group, so signalling the group succeeds
+          # even when every process in it is already a zombie. The exit status does: every
+          # POSIX leg of staging run 30424366953 reported 143.
+          case "$installer_exit" in
+            143|137) ;;
+            *)
+              echo "::error::installer exited $installer_exit, which is neither SIGTERM"
+              echo "::error::(143, install.sh's trap at install.sh:716) nor SIGKILL (137)."
+              echo "::error::It died on its own, so this leg interrupted nothing."
+              tail -30 logs/install.log || true
+              exit 1
+              ;;
+          esac
           # ...and the signal must land in the phase this leg is NAMED for. Warning-only
           # left staging run 30419729244 fully green with the venv leg's install.log
           # byte-identical to the torch leg's, and both "studio deps" legs killed past
@@ -180,10 +203,9 @@ jobs:
           exit "$rc"
 
       - name: A re-run must repair, not short-circuit
-        # NO_CLI included: a kill at venv or torch lands before "Installing Unsloth"
+        # NO_CLI included: a kill at torch lands before "Installing Unsloth"
         # (install.sh:2125 / :3667 / :3961), so those legs always take NO_CLI and skipping
-        # the re-run left three non-experimental legs asserting only that a marker
-        # appeared. The bug's second half is `install.sh` seeing a "current" version and
+        # the re-run left three of them asserting only that a marker appeared. The bug's second half is `install.sh` seeing a "current" version and
         # no-opping over a broken venv. HEALTHY also needs the install reported complete,
         # so the data-designer leg (killed before the manifest is written last,
         # install_python_stack.py:3255) arrives here instead of skipping that assertion.
@@ -269,7 +291,7 @@ jobs:
             $kv = $line -split '=', 2
             if ($kv.Count -eq 2) { $vals[$kv[0]] = $kv[1] }
           }
-          Write-Host "reason=$($vals['interrupt_reason']) killed=$($vals['interrupt_killed']) exit=$($vals['installer_exit'])"
+          Write-Host "reason=$($vals['interrupt_reason']) killed=$($vals['interrupt_killed']) root_killed=$($vals['interrupt_root_killed']) exit=$($vals['installer_exit'])"
           if ($vals['interrupt_reason'] -ne 'marker-hit') {
             Write-Host "::error::installer never reached '${{ matrix.marker }}' (reason=$($vals['interrupt_reason']))."
             Write-Host '::error::This leg proves nothing: without this check it passes via the'
@@ -287,6 +309,19 @@ jobs:
           if ($vals['installer_exit'] -eq '0' -or $vals['installer_exit'] -notmatch '^-?\d+$') {
             Write-Host "::error::installer exit=$($vals['installer_exit']) -- it completed or never"
             Write-Host '::error::died inside the kill window, so this leg asserts nothing.'
+            Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+          }
+          # ...and the signal has to have been DELIVERED. A non-zero code is weaker proof
+          # here than on POSIX, where only a signal produces 143/137: install.ps1 failing
+          # on its own also exits non-zero, so a natural failure landing between the
+          # driver's last HasExited check and Stop-Tree would otherwise read as a kill.
+          # Stop-Process throws on a process that is already gone, so the driver records
+          # false exactly when it found nothing left to interrupt.
+          if ($vals['interrupt_root_killed'] -ne 'true') {
+            Write-Host '::error::the driver never terminated the installer -- it was already'
+            Write-Host '::error::gone when Stop-Tree reached it, so it failed on its own and'
+            Write-Host '::error::this leg interrupted nothing.'
             Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
             exit 1
           }
