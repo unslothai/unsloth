@@ -418,6 +418,46 @@ function readableForeground(hex: string): string {
     : FOREGROUND_LIGHT;
 }
 
+/** Palette backgrounds, for an accent chosen without a custom background. */
+const PALETTE_BACKGROUND: Record<ResolvedTheme, string> = {
+  light: "#ffffff",
+  dark: "#181818",
+};
+
+/**
+ * The accent is not only a fill: text-primary and text-control-accent paint it
+ * straight onto the page. A pale pick in light mode, or a near-black one in
+ * dark, then disappears. The shipped green reads at 2.52:1 against its own
+ * background, so hold custom accents to that same bar. Every palette accent
+ * already clears it, so ordinary picks are returned untouched.
+ */
+const ACCENT_TEXT_FLOOR = 2.5;
+const MIX_STEPS = 24;
+
+function mixToward(hex: string, target: number, amount: number): string {
+  const channel = (index: number) => {
+    const value = Number.parseInt(hex.slice(index, index + 2), 16);
+    return Math.round(value + (target - value) * amount)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+function legibleAccent(accent: string, background: string): string {
+  const backgroundLuminance = hexLuminance(background);
+  const clears = (hex: string) =>
+    contrastRatio(hexLuminance(hex), backgroundLuminance) >= ACCENT_TEXT_FLOOR;
+  if (clears(accent)) return accent;
+  // Walk toward the far end of the page, so the hue survives the correction.
+  const target = backgroundLuminance > 0.5 ? 0 : 255;
+  for (let step = 1; step <= MIX_STEPS; step += 1) {
+    const candidate = mixToward(accent, target, step / MIX_STEPS);
+    if (clears(candidate)) return candidate;
+  }
+  return target === 0 ? "#000000" : "#ffffff";
+}
+
 /**
  * FontFaces registered for imported fonts, keyed by family name. The dataUrl is
  * tracked too so a re-import under the same name (new bytes) replaces the face.
@@ -500,9 +540,16 @@ export function applyCustomizationToDocument(
 
   const colors = c.colors[resolved];
 
-  for (const name of ACCENT_VARS) setVar(name, colors.accent);
+  const accent = colors.accent
+    ? legibleAccent(
+        colors.accent,
+        colors.background ?? PALETTE_BACKGROUND[resolved],
+      )
+    : null;
+  for (const name of ACCENT_VARS) setVar(name, accent);
   for (const name of ACCENT_FG_VARS) {
-    setVar(name, colors.accent ? readableForeground(colors.accent) : null);
+    // Keyed off the corrected accent, since that is the color labels sit on.
+    setVar(name, accent ? readableForeground(accent) : null);
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
