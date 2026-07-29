@@ -319,11 +319,13 @@ def test_resume_token_identity_is_guarded_through_preflight():
     assert "this.cancel(TRAINING_SETUP_CHANGED_ERROR)" in attempt
 
     load = source.split("async function loadResumePayload", 1)[1].split(
-        "function getResumeHfToken", 1
+        "async function prepareResumeHfToken", 1
     )[0]
     assert load.index("await getTrainingRun(runId)") < load.index(
         "attempt.isPreflightActive()"
     )
+    assert "payload.hf_token = attempt.hfToken || null" in load
+    assert "getResumeHfToken" not in source
 
     token = source.split("async function prepareResumeHfToken", 1)[1].split(
         "async function confirmResumeRemoteCode", 1

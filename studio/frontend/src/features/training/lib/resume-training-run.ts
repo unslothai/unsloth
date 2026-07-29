@@ -168,20 +168,10 @@ async function loadResumePayload(
   const payload = {
     ...(detail.config as Partial<TrainingStartRequest>),
   } as TrainingStartRequest;
-  payload.hf_token = getResumeHfToken(payload.hf_token, attempt.hfToken);
+  payload.hf_token = attempt.hfToken || null;
   payload.wandb_token = null;
   payload.resume_from_checkpoint = outputDir;
   return payload;
-}
-
-function getResumeHfToken(
-  savedToken: unknown,
-  currentToken: string,
-): string | null {
-  if (typeof savedToken === "string") {
-    return savedToken;
-  }
-  return currentToken || null;
 }
 
 async function prepareResumeHfToken(
