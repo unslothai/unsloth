@@ -977,7 +977,9 @@ class TestHfOfflineIfUnreachable:
             assert did_set is False
             assert "HF_HUB_OFFLINE" not in os.environ
 
-    def test_user_set_hf_hub_offline_is_preserved(self, dns, reachable, clean_offline_env, monkeypatch):
+    def test_user_set_hf_hub_offline_is_preserved(
+        self, dns, reachable, clean_offline_env, monkeypatch
+    ):
         # User explicitly set offline before launching Unsloth.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         dns.fail()
@@ -987,7 +989,9 @@ class TestHfOfflineIfUnreachable:
         # Helper must not pop a variable it did not set.
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
 
-    def test_user_set_transformers_offline_is_preserved(self, dns, reachable, clean_offline_env, monkeypatch):
+    def test_user_set_transformers_offline_is_preserved(
+        self, dns, reachable, clean_offline_env, monkeypatch
+    ):
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
         dns.fail()
         with _hf_offline_if_unreachable():
@@ -1021,7 +1025,6 @@ class TestHfUnreachableProbe:
 
     def _patch_probe(self, monkeypatch, result, calls):
         import utils.transformers_version as tv
-
         def _probe(*_a, **_k):
             calls.append(1)
             if isinstance(result, Exception):

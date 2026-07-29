@@ -561,7 +561,6 @@ def _hf_offline_if_unreachable():
     force_ctx = None
     try:
         from utils.utils import force_hf_offline
-
         force_ctx = force_hf_offline()
         force_ctx.__enter__()
     except Exception:

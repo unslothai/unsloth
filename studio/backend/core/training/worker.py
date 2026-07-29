@@ -2368,7 +2368,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             try:
                 from utils.transformers_version import hf_endpoint_unreachable
                 from utils.utils import hf_probe_disabled
-
                 if not hf_probe_disabled() and hf_endpoint_unreachable():
                     _result[0] = True
             except Exception:
