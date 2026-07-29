@@ -1290,3 +1290,24 @@ def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
     assert "UNSLOTH_RETURN_LOGITS" in messages[0]
     assert "custom data collator" not in messages[0]
     assert "4096" not in messages[0] and "512" not in messages[0]
+
+
+def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
+    # A passed collator must still be named as the cause; the env-var fallback is only for
+    # the case where nothing else blocks packing.
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
+        fake_trainer(
+            model = _warn_text_model(),
+            args = config,
+            data_collator = lambda features: features,
+            train_dataset = Dataset.from_dict({"text": ["sample"]}),
+        )
+
+    messages = [r.message for r in caplog.records if "Sample packing skipped" in r.message]
+    assert len(messages) == 1
+    assert "custom data collator" in messages[0]
+    assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
