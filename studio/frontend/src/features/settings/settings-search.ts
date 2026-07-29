@@ -103,6 +103,21 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
   ],
+  agents: [
+    // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
+    "settings.agents.title",
+    "settings.agents.description",
+    "settings.agents.intro",
+    "settings.agents.agent",
+    "settings.agents.model",
+    "settings.agents.quantization",
+    // subagent.title is deliberately absent: its label only mounts for the agents
+    // that support subagents, so a hit would have nothing to scroll to otherwise.
+    "settings.agents.options.title",
+    "settings.agents.remote.title",
+    "settings.agents.passthrough.title",
+    "settings.agents.dryRun.title",
+  ],
   connections: [],
   voice: [
     "settings.voice.dictation.sectionTitle",
@@ -130,4 +145,16 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.about.dangerZone",
     "settings.about.shutDownStudio",
   ],
+};
+
+/**
+ * Extra terms a row matches on, beyond its own label. The value is a
+ * translation key holding space-separated synonyms; it is never rendered.
+ * Search matched labels only, so "models folder" or "directory" found nothing.
+ */
+export const SETTINGS_SEARCH_KEYWORDS: Partial<
+  Record<TranslationKey, TranslationKey>
+> = {
+  "settings.resources.storage.modelsFolder":
+    "settings.resources.storage.modelsFolderKeywords",
 };

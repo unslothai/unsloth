@@ -23,7 +23,7 @@ FRONTEND = WORKDIR / "studio" / "frontend" / "src"
 def _read(rel: str) -> str:
     path = FRONTEND / rel
     assert path.exists(), f"missing source file: {path}"
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def test_models_api_sends_token_via_header_not_query():
@@ -71,6 +71,75 @@ def test_autoload_records_backend_loaded_model_identity():
     assert "setCheckpoint(loadedModelId," in autoload
     assert "id: loadedModelId" in autoload
     assert "m.id === loadedModelId" in autoload
+
+
+def test_chat_autoload_toast_is_persistent_and_dismissible():
+    """Send-triggered autoload stays visible until it settles but remains
+    dismissible, matching the explicit model-loading toast's lifetime."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    auto_load = auto_load.split("export function createOpenAIStreamAdapter", 1)[0]
+    assert "toast.loading(" not in auto_load
+    assert "const updateAutoLoadToast =" in auto_load
+    assert "if (autoLoadToastDismissed) return;" in auto_load
+    assert auto_load.count("toast.message(") == 2
+    assert auto_load.count("updateAutoLoadToast(") >= 4
+    assert "duration: Number.POSITIVE_INFINITY" in auto_load
+    assert "closeButton: true" in auto_load
+    assert "icon: createLoadingToastIcon()" in auto_load
+    assert "onDismiss:" in auto_load
+    # Terminal success uses a fresh finite toast after manual progress dismissal.
+    assert "showAutoLoadSuccess" in auto_load
+    assert "description: undefined" in auto_load
+    assert "icon: undefined" in auto_load
+    assert "duration: 5000" in auto_load
+    assert "duration: 30000" not in auto_load
+    assert auto_load.count("toast.dismiss(toastId)") >= 4
+
+    explicit_load = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "duration: Infinity" in explicit_load
+
+
+def test_chat_autoload_validates_server_active_model_capability_before_adoption():
+    """A fresh chat must not adopt an already-loaded ASR/TTS model before the
+    cached chat-model fallback gets a chance to run."""
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    auto_load = adapter.split("async function autoLoadSmallestModel", 1)[1]
+    auto_load = auto_load.split("const store = useChatRuntimeStore.getState()", 1)[0]
+    assert "tryAdoptServerActiveModel({" in auto_load
+    assert "acceptStatus: async (status)" in auto_load
+    assert "validation.is_chat_capable !== false" in auto_load
+
+    adoption = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    adopt_fn = adoption.split(
+        "export async function tryAdoptServerActiveModel", 1
+    )[1]
+    assert "acceptStatus?:" in adopt_fn
+    assert "await options.acceptStatus(status)" in adopt_fn
+
+
+def test_recipe_model_load_toast_is_persistent_and_dismissible():
+    """Recipe model loading uses the same dismissible persistent lifecycle as
+    chat loading because both call the non-abortable loadModel API."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    model_load = src.split("async function loadLocalModelSelection", 1)[1]
+    model_load = model_load.split("function getLocalModelLoadPlanForPayload", 1)[0]
+    assert "toast.loading(" not in model_load
+    assert "toast.message(" in model_load
+    assert "duration: Number.POSITIVE_INFINITY" in model_load
+    assert "closeButton: true" in model_load
+    assert "icon: createLoadingToastIcon()" in model_load
+    assert "onDismiss:" in model_load
+    assert "description: undefined" in model_load
+    assert "icon: undefined" in model_load
+    assert "duration: 2000" in model_load
+
+    toast_lib = _read("lib/toast.ts")
+    assert "createElement(Spinner" in toast_lib
+    assert 'className: "size-4 text-muted-foreground"' in toast_lib
+
+    sonner = _read("components/ui/sonner.tsx")
+    assert "loading: createLoadingToastIcon()" in sonner
 
 
 def test_rollback_restores_native_lease_expiry_with_token():
@@ -217,6 +286,24 @@ def test_local_picker_rows_require_chat_capability():
     assert "row.capabilities.canChat" in memo.group(0)
 
 
+def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
+    """The content-sized section tabs and fixed-width dropdowns must reflow,
+    while an oversized tab group must shrink labels but preserve its icons."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert '"flex flex-wrap items-center gap-2"' in picker
+    assert 'hasConnected ? "-mr-4" : "-mr-2"' in picker
+    assert '"flex max-w-full min-w-0 flex-wrap items-center gap-2"' in picker
+
+    tabs = _read("features/model-picker/components/model-selector/pill-tabs.tsx")
+    assert 'fit ? "min-w-0 shrink" : "min-w-0 flex-1"' in tabs
+    assert '<span className="min-w-0 truncate">{tab.label}</span>' in tabs
+
+    selector = _read("features/model-picker/components/model-selector.tsx")
+    assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
+    assert 'icon={Download01Icon} className="size-3.5 shrink-0"' in selector
+    assert 'icon={CloudIcon} className="size-3.5 shrink-0"' in selector
+
+
 def test_native_picked_gguf_template_read_through_lease():
     """A native (picked / drag-drop) GGUF's path lives only in its signed lease,
     and the picker chat-template GET has no lease plumbing, so the default
@@ -328,6 +415,36 @@ def test_fixed_layer_gguf_pins_displayed_context():
     assert "customContextLength: activeLoadedContext" in src
 
 
+def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
+    """pinFixedLayerContext is computed from the render-time config, before a
+    same-click GPU Layers draft is committed. handleRun must recompute it from the
+    committed effectiveConfig; otherwise typing a positive GPU Layers value on an
+    auto-fit GGUF and clicking Reload saves customContextLength: null, so a later
+    fresh load sends the native context with fixed layers (the OOM the pin avoids)."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectivePinFixedLayerContext =" in src
+    assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
+    assert "effectiveConfig.gpuLayers != null" in src
+    assert "effectiveConfig.customContextLength == null" in src
+    assert "{ ...effectiveConfig, customContextLength: activeLoadedContext }" in src
+
+
+def test_blur_cache_cleared_on_every_settled_render():
+    """The lastBlurCommittedRef bridge is valid only across the single synchronous
+    same-click gesture that set it. Keying its clear on [value] missed a Reset (or
+    external edit) that restores the shown value unchanged after the blur dispatched
+    onChange: value nets back to its prior number, the effect never re-ran, and a
+    later Load/Save replayed the override Reset removed. Clear it on every settled
+    render instead."""
+    src = _read("features/model-picker/components/numeric-value-input.tsx")
+    # The clearing effect must run on every commit, not be gated on [value] alone.
+    assert not re.search(r"lastBlurCommittedRef\.current = null;\s*\}, \[value\]\);", src)
+    assert re.search(
+        r"useEffect\(\(\) => \{\s*lastBlurCommittedRef\.current = null;\s*\}\);",
+        src,
+    )
+
+
 def test_auto_defaults_not_persisted_as_overrides():
     """Auto GPU memory mode and Auto/default speculative type are follow-global
     defaults; normalization must not persist them as per-model overrides, else a
@@ -364,13 +481,88 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     Reset) so isDefaultConfig can clear a remembered override; the concrete
     fallback is substituted only into the load request, not the saved record."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    # Load-only substitution of the resolved value.
-    assert "maxSeqLength: maxSeqLengthValue" in src
-    assert "const loadConfig" in src
-    # The persisted record is loaded via onRun(loadConfig), and save uses the
-    # untouched runtimeConfig (so a reset/default config stays default).
-    assert "onRun(loadConfig)" in src
+    # Load-only substitution of the resolved value (recomputed from any committed
+    # same-click Max Seq Length draft, so it is never dropped).
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
+    assert "const effectiveLoadConfig" in src
+    # The persisted record is saved from effectiveRuntimeConfig; the load request
+    # carries effectiveLoadConfig (with any committed context input).
+    assert "onRun(effectiveLoadConfig)" in src
     assert "savePerModelConfig(" in src
+
+
+def test_initial_load_uses_staged_config_payload():
+    """Run-settings Load must pass the staged config through to /load even when
+    React has not flushed NumericValueInput blur commits into the store yet."""
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "const pendingLoadConfig =" in runtime
+    assert "pendingLoadConfig?.kvCacheDtype" in runtime
+    assert "pendingLoadConfig?.customContextLength" in runtime
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "contextInputRef" in page
+    assert "contextInputRef.current?.commit()" in page
+    numeric = _read("features/model-picker/components/numeric-value-input.tsx")
+    assert "export type NumericValueInputHandle" in numeric
+    assert "commit:" in numeric
+    # P1: commit returns null unless the user actually edited the field,
+    # so Load/Save with untouched Auto does not pin native context.
+    assert "dirtyRef.current" in numeric
+    assert "return null;" in numeric
+    # P2: blur clears dirtyRef after commit so Reset/slider cannot be
+    # overwritten by a stale draft on a later Load.
+    assert "dirtyRef.current = false;" in numeric
+    assert "draftRef.current = String(final);" in numeric
+    # Same-click Load after blur still sees the committed draft.
+    assert "lastBlurCommittedRef" in numeric
+    # Invalid drafts must not turn Auto into an explicit pin.
+    assert "const commitDraft = (raw: string): number | null" in numeric
+    assert re.search(r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;", numeric)
+    assert re.search(
+        r"if \(final == null\) \{\s*"
+        r"draftRef\.current = String\(value\);\s*"
+        r"lastBlurCommittedRef\.current = null;",
+        numeric,
+    )
+    # handleRun only promotes commit() when non-null.
+    assert "committedContext != null" in page
+    assert "pendingPatch.customContextLength = committedContext;" in page
+
+
+def test_same_click_commit_covers_all_numeric_inputs():
+    """The same-click blur bridge must flush every NumericValueInput-backed
+    setting, not just Context Length. Max Seq Length (non-GGUF), GPU Layers and
+    MoE Layers (GGUF) also stage their draft only on blur, so handleRun must
+    imperatively commit each and fold the value into the staged load config;
+    otherwise a value the user typed right before clicking Load/Reload is lost."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # Each numeric input owns an imperative handle that handleRun commits, and the
+    # handle is forwarded down to the actual NumericValueInput.
+    for ref in ("maxSeqLengthInputRef", "gpuLayersInputRef", "moeLayersInputRef"):
+        assert f"const {ref} = useRef<NumericValueInputHandle>(null);" in page
+        assert f"{ref}.current?.commit()" in page
+        assert f"inputRef={{{ref}}}" in page
+    # The leaf sub-components accept and forward the handle as a ref.
+    assert page.count("inputRef?: Ref<NumericValueInputHandle>;") >= 2
+    assert "ref={inputRef}" in page
+    # Committed drafts are folded into the staged config, gated on non-null so an
+    # untouched field never fabricates an override.
+    assert "committedMaxSeqLength != null" in page
+    assert "committedGpuLayers != null" in page
+    assert "committedMoeLayers != null" in page
+    assert "pendingPatch.gpuLayers = committedGpuLayers;" in page
+    assert "pendingPatch.nCpuMoe = committedMoeLayers;" in page
+    # The non-GGUF load path substitutes the committed Max Seq Length draft.
+    assert "const effectiveMaxSeqLengthValue =" in page
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
+
+
+def test_context_commit_rechecks_persistence_only_shortcut():
+    """Committed context changes must bypass persistence-only saves."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectiveConfig =" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "const effectivePersistenceOnly =" in src
+    assert "if (effectivePersistenceOnly)" in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
@@ -455,3 +647,271 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_parallel_slots_setting_wired_end_to_end():
+    """The per-load Parallel Slots knob (llama-server --parallel) must flow from
+    the run-settings form through persistence, every /load builder, the validate
+    preflight and the cross-model reset; a lost hop silently reverts the model to
+    the server-wide slot default."""
+    config = _read("features/model-picker/model-config/per-model-config.ts")
+    # Persisted per model, clamped on every read/write, and null (= server
+    # default) counts as default so blank configs are not stored.
+    assert '"nParallel",' in config
+    assert "N_PARALLEL_MAX, Math.round(partial.nParallel)" in config
+    assert "config.nParallel == null &&" in config
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # Rendered in the GGUF advanced section, which a remembered override reopens.
+    assert "Parallel Slots" in page
+    assert "config.nParallel != null ||" in page
+    assert 'aria-label="Parallel decode slots"' in page
+    api_types = _read("features/chat/types/api.ts")
+    assert "n_parallel?: number | null;" in api_types
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    # Click-time snapshot, /load body, validate preflight, cross-model reset and
+    # failed-switch rollback all carry the value.
+    assert "pendingLoadConfig?.nParallel" in runtime
+    # GGUF-gated, like the compare pane: a transformers load has no slots.
+    assert "n_parallel: isGguf ? loadNParallel : null," in runtime
+    assert "n_parallel: validateNParallel," in runtime
+    assert "loadNParallel = pendingLoadConfig?.nParallel ?? null;" in runtime
+    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+    chat_api = _read("features/chat/api/chat-api.ts")
+    assert "n_parallel: payload.n_parallel," in chat_api
+    composer = _read("features/chat/shared-composer.tsx")
+    # The compare pane is a second /load builder; its preflight sizes like its load.
+    assert composer.count("n_parallel: ownConfig.nParallel ?? null,") == 2
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    # The startup auto-load is a third builder reading the remembered config.
+    assert adapter.count("n_parallel: config.nParallel ?? null,") == 2
+    # ... and records it as loaded through the diffusion-gated local below.
+    assert "loadedNParallel: committedSlots," in adapter
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    # Hydration seeds the rollback BASELINE only; adopting the resolved echo into
+    # the control would pin a blank "server default" to a number.
+    assert "loadedNParallel: status.requested_parallel_slots," in status
+    assert "nParallel: status.requested_parallel_slots," not in status
+    sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
+    # The sidebar form remounts when an external change lands.
+    assert 'config.nParallel ?? "",' in sidebar
+
+
+def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
+    """`nParallel` is the editable control ("blank = follow the server default")
+    and `loadedNParallel` the rollback baseline. A success path that sends no
+    slot count must blank the control, or a value staged for another model shows
+    as applied, is persisted into this model's config (`isDefaultConfig` keys on
+    nParallel) and is re-sent by the next Apply. Each assertion below is the only
+    thing pinning one such path."""
+    status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
+    # A model/variant swap underneath this tab must reset the control like
+    # performLoad's cross-model reset, or model A's count follows onto model B.
+    # Narrowly gated -- see test_hydration_keeps_the_slot_control_when_readopting_the_running_model.
+    assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
+    # ... while still never adopting the RESOLVED echo into the control.
+    assert "nParallel: status.requested_parallel_slots," not in status
+
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    # Slice the two success branches apart, bounding the second at the shared tail
+    # so it cannot swallow the fresh-default path below and stay green.
+    candidate = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    gguf_branch, non_gguf_rest = candidate.split('if (candidate.kind === "gguf") {', 1)[1].split(
+        "\n    } else {\n", 1
+    )
+    non_gguf_branch = non_gguf_rest.split("if (!(loadResp.is_lora ?? false)) {", 1)[0]
+    # The cached-GGUF branch keeps the remembered override via the gated local...
+    assert "nParallel: committedSlots," in gguf_branch
+    assert "nParallel: null," not in gguf_branch
+    # ... the safetensors fallback sends no slots, so it clears both, or the count
+    # survives on a model whose form does not even render the field.
+    assert "nParallel: null," in non_gguf_branch
+    assert "loadedNParallel: null," in non_gguf_branch
+
+    fresh_default = adapter.split("No downloaded models found. Fetching", 1)[1].split(
+        'showAutoLoadSuccess("Loaded Qwen', 1
+    )[0]
+    # The fresh-default download omits the slots, so its success state clears both,
+    # or the control reads as an unapplied edit against the seeded baseline.
+    assert "n_parallel" not in fresh_default.split("saveSpeculativeType", 1)[0]
+    assert "nParallel: null," in fresh_default
+    assert "loadedNParallel: null," in fresh_default
+
+
+def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
+    """The baseline is what a rollback re-sends and what preset capture reads, so
+    a model that cannot have slots must not inherit the previous GGUF's count.
+    /status omits the echo for non-GGUF and sends an explicit null for diffusion;
+    an absent field on a GGUF is an older backend and must NOT wipe it."""
+    src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert (
+        "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
+    ), "the slotless clear must key on is_gguf or an explicit null echo"
+    clear = src.index("status.is_gguf === false || status.requested_parallel_slots === null")
+    assert "loadedNParallel: null," in src[clear : clear + 200]
+    # Never `!= null`: that also matches the absent field an older backend sends.
+    assert "status.requested_parallel_slots !== null && {" not in src
+
+
+def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
+    """`hydratingExistingModel` is true whenever the incoming status disagrees
+    with what this tab last recorded, which includes RE-ADOPTING a model the tab
+    never lost: the resident-adopt branch restores the model's own per-model
+    config and only then hydrates, passing the EXTERNAL id as
+    `previousCheckpoint`. An ungated clear there wipes the slot count that branch
+    just restored, and the blank persists into `savePerModelConfig`, so a Save
+    the user reads as a no-op erases their remembered override.
+
+    Only that branch knows the model is unchanged, so it says so explicitly.
+    Slot counts cannot stand in: the echo falls back to the server-wide default,
+    so a genuine A->B swap can echo exactly A's explicit count."""
+    status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
+    assert (
+        "const slotsModelChanged = hydratingExistingModel && !options.readoptingSameModel;"
+        in status
+    )
+    assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
+    # Never a slot-count proxy for "same model".
+    assert "prevState.loadedNParallel === (status.requested_parallel_slots" not in status
+    # The baseline seed stays ungated, or a rollback after a tab reload restores
+    # the model at the server default slots.
+    assert "loadedNParallel: status.requested_parallel_slots," in status
+
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
+    resident = runtime.split("if (!forceReload && isExternalModelId(selectedCheckpoint)) {", 1)[
+        1
+    ].split("const stopDecision", 1)[0]
+    # What makes the scenario reachable: the branch restores the model's own
+    # config, then hydrates against the external id.
+    assert "applyPerModelConfigToRuntime(selection.previousConfig);" in resident
+    assert "previousCheckpoint: selectedCheckpoint," in resident
+    # Only reachable because the branch matched the id AND the variant first.
+    assert "resolveInferenceCheckpointId(residentStatus) === modelId" in resident
+    assert "readoptingSameModel: true," in resident
+    # The refresh() hydrate must NOT claim it: there the model really can change.
+    poll = runtime.split("setModels(listRes.models.map(toChatModelSummary));", 1)[1].split(
+        "} else if (!statusRes.active_model", 1
+    )[0]
+    assert "applyActiveModelStatusToStore(statusRes, {" in poll
+    assert "readoptingSameModel" not in poll
+
+
+def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
+    """A DiffusionGemma GGUF answers ``is_gguf: true``, but its runner ignores
+    ``--parallel``, so ``_parallel_slot_echo`` reports null slots for it. The
+    three load success paths must gate on ``is_diffusion`` too, or they record a
+    click-time count the load never committed.
+
+    That phantom does not stay put: ``capturePresetLoadConfig`` snapshots
+    ``nParallel`` with no model gate and a preset carries no model identity, so
+    applying it over a TEXT GGUF sends the count as a real ``n_parallel``.
+    """
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
+    # One gated local feeds the control and the baseline, so they cannot drift.
+    assert "(loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)" in runtime
+    assert "nParallel: committedSlots," in runtime
+    assert "loadedNParallel: committedSlots," in runtime
+
+    adapter = " ".join(_read("features/chat/api/chat-adapter.ts").split())
+    assert (
+        "const committedSlots = (loadResp.is_diffusion ?? false) ? null "
+        ": (config.nParallel ?? null);" in adapter
+    )
+    assert "nParallel: committedSlots," in adapter
+    assert "loadedNParallel: committedSlots," in adapter
+
+    composer = " ".join(_read("features/chat/shared-composer.tsx").split())
+    assert "targetIsGguf && !(resp.is_diffusion ?? false)" in composer
+    assert "nParallel: committedSlots," in composer
+    assert "loadedNParallel: committedSlots," in composer
+
+
+def test_hydration_restores_a_remembered_slot_override():
+    """The control is never seeded from the status echo, so a model running on a
+    remembered override shows a BLANK slot control after a browser reload or a
+    tab move to another GGUF. `ModelConfigPage.resolveInitial` prefers the live
+    store for the active model, so that blank is what the form edits: the next
+    Apply reloads at the server default and a Save writes the blank over the
+    remembered count.
+
+    The seed is deliberately narrow: storage is read only on a fresh store or a
+    model change, never on a steady poll, and the value is adopted only when the
+    server already runs that exact count, which proves it is this model's own.
+    """
+    src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    status = " ".join(src.split())
+    assert (
+        "resolveInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+    ), "the remembered override comes from per-model storage, not the echo"
+    assert (
+        "const slotsUnseeded = prevState.loadedNParallel === null && "
+        "prevState.nParallel === null;" in status
+    )
+    assert (
+        "status.is_gguf && (slotsUnseeded || slotsModelChanged)" in status
+    ), "storage is read on a fresh store or a model change, never on a steady poll"
+    assert (
+        "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
+    ), "the seed fires in both cases the clear leaves the control blank"
+    assert (
+        "rememberedNParallel != null && rememberedNParallel === "
+        "status.requested_parallel_slots && { nParallel: rememberedNParallel, }" in status
+    )
+    # Both cases trip the model-change clear, so the seed only survives by
+    # being spread after it.
+    assert src.index("slotsModelChanged && { nParallel: null }") < src.index(
+        "nParallel: rememberedNParallel,"
+    )
+
+
+def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
+    """`loadedNParallel` holds a RESOLVED count even for a load that sent no
+    slots (the echo falls back to the server-wide default), so it is the right
+    value to re-send when recreating the previous server and the wrong one to put
+    back in the control: it turns "follow the server default" into an explicit
+    override that a later Save or preset capture pins. The outer catch only
+    repairs that for a staged config, so a plain string pick keeps the phantom.
+
+    The intent comes from the picker's own pre-switch snapshot when there is one:
+    chat-page pre-applies the TARGET's config before calling selectModel, so the
+    live control describes the outgoing model only for a bare pick."""
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
+    assert (
+        'const previousNParallel = typeof selection !== "string" && '
+        "selection.previousConfig ? (selection.previousConfig.nParallel ?? null) "
+        ": useChatRuntimeStore.getState().nParallel;" in runtime
+    )
+    assert runtime.index("const previousNParallel") < runtime.index(
+        "applyPerModelConfigToRuntime(pendingLoadConfig);"
+    ), "a config staged on the selection must not replace it either"
+    picker = " ".join(_read("features/chat/chat-page.tsx").split())
+    assert (
+        "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, }); "
+        "const hasAppliedConfig = applyModelLoadConfigToRuntime(" in picker
+    ), "the snapshot must be taken before the target's config is applied"
+    rollback = runtime.split("const rollbackSpeculativeType", 1)[1]
+    assert "nParallel: previousNParallel," in rollback
+    # Baseline and reload payload keep the resolved count, or the rollback
+    # recreates the previous model at a different slot count.
+    assert "loadedNParallel: stateBeforeUnload.loadedNParallel ?? null," in rollback
+    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+
+
+def test_vulkan_inference_devices_are_the_pickable_set():
+    """GGUF loads run through llama-server, so on a Vulkan build the picker must
+    offer the inference inventory (ggml ordinals, the space `--device Vulkan<i>`
+    pins) rather than the torch view, which can miss cards llama-server drives.
+    The XPU ban must not apply there: it is about torch-xpu ordinals no
+    applicator speaks, and a Vulkan pick does not use them.
+    """
+    src = " ".join(_read("hooks/use-gpu-info.ts").split())
+    # The Vulkan inventory is consulted first, and only when it has devices.
+    assert (
+        "const inference = data?.inference_gpu; "
+        'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
+    )
+    # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
+    assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
+    assert 'physicalIndex: picksAccepted && d.index_kind === "vulkan",' in src
+    # The torch fallback keeps its physical-only gate and the XPU ban.
+    assert 'data?.device_backend !== "xpu" &&' in src
+    assert 'physicalIndex: pinnableBackend && d.index_kind === "physical",' in src

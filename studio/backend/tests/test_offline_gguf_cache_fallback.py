@@ -85,6 +85,9 @@ from core.inference.llama_cpp import (
     _probe_dns_dead,
     _resolve_repo_id_casing,
 )
+from hub.utils.gguf import (
+    list_gguf_variants_from_hf_cache as list_hub_gguf_variants_from_hf_cache,
+)
 from utils.models.model_config import (
     _compatible_cached_mmproj,
     _detect_gguf_from_hf_cache,
@@ -787,7 +790,7 @@ class TestResolveRepoIdCasing:
             is None
         )
 
-    def test_newer_matching_projector_can_pair_with_cached_weights(self, hf_cache):
+    def test_newer_matching_projector_without_same_weight_blob_is_rejected(self, hf_cache):
         old = _build_cache(
             hf_cache,
             "unsloth/qwen-GGUF",
@@ -803,10 +806,51 @@ class TestResolveRepoIdCasing:
         os.utime(old, (1000, 1000))
         os.utime(new, (2000, 2000))
 
+        assert (
+            _compatible_cached_mmproj(
+                "unsloth/qwen-GGUF",
+                str(old / "qwen-Q4_K_M.gguf"),
+            )
+            is None
+        )
+
+    def test_newer_matching_projector_can_pair_with_same_cached_weight_blob(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "b" * 40,
+        )
+        os.link(old / "qwen-Q4_K_M.gguf", new / "qwen-Q4_K_M.gguf")
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
         assert _compatible_cached_mmproj(
             "unsloth/qwen-GGUF",
             str(old / "qwen-Q4_K_M.gguf"),
         ) == str(new / "mmproj-qwen-F16.gguf")
+
+    def test_implausible_split_total_does_not_expand_declared_range(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/hostile-GGUF",
+            {"model-Q4_K_M-001-of-100000000000.gguf": 1},
+        )
+
+        assert _list_gguf_variants_from_hf_cache("unsloth/hostile-GGUF") is None
+        assert (
+            list_hub_gguf_variants_from_hf_cache(
+                "unsloth/hostile-GGUF",
+                root = hf_cache,
+            )
+            is None
+        )
 
 
 class TestListGgufVariantsOffline:

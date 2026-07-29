@@ -351,16 +351,17 @@ def list_gguf_variants_from_hf_cache(
             else:
                 prefix = match.group("prefix").casefold()
                 total_text = match.group("total")
-                expected = set(range(1, int(total_text) + 1))
+                total = int(total_text)
                 present = {
                     int(found.group("index"))
                     for sibling in candidate.parent.iterdir()
                     if (found := _GGUF_SPLIT_FILE_RE.match(sibling.name))
                     and found.group("prefix").casefold() == prefix
                     and found.group("total") == total_text
+                    and 1 <= int(found.group("index")) <= total
                     and sibling.is_file()
                 }
-                complete = present == expected
+                complete = len(present) == total
             if not complete:
                 continue
             complete_variants.append(variant)

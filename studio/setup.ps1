@@ -74,6 +74,20 @@ $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
 $script:CudaArch = $null
 
+function Exit-SetupFailure {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [int]$Code = 1
+    )
+    if ($Code -eq 0) { $Code = 1 }
+    if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
+        $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
+        [Console]::Out.WriteLine("[TAURI:ERROR] $singleLine")
+        [Console]::Out.Flush()
+    }
+    exit $Code
+}
+
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
@@ -484,7 +498,7 @@ function Redact-InstallOutput {
 # the install-spec path below and the other installers; other leaves ship <2.11 and stay default.
 function Test-RocmGfx211Leaf {
     param([string]$Leaf)
-    return @('gfx120x-all', 'gfx1151', 'gfx1150') -contains $Leaf
+    return @('gfx120x-all', 'gfx1151', 'gfx1150', 'gfx1152') -contains $Leaf
 }
 
 # rocmX.Y versions KNOWN to ship torch 2.11: rocm7.2 only today. Do NOT floor an unknown newer
@@ -851,16 +865,26 @@ function Ensure-BuildToolsForLlamaSourceBuild {
         Write-Host "        Manual install:" -ForegroundColor Red
         Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
         Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
-        exit 1
+        Exit-SetupFailure "Visual Studio Build Tools are required for the llama.cpp source build"
     }
 }
 
-# Detect the VC++ 2015-2022 Redistributable that the prebuilt llama-server and
-# PyTorch need (they link VCRUNTIME140_1.dll etc., which the Universal CRT lacks).
-# Signal is System32\vcruntime140_1.dll (VS 2019+), registry as fallback.
+# Machine arch: PROCESSOR_ARCHITECTURE describes this PROCESS, so an emulated x64 shell on
+# ARM64 reports AMD64; PROCESSOR_ARCHITEW6432 is ARM64 in exactly that case.
+function Get-HostMachineArch {
+    $osArch = ""
+    try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { }
+    foreach ($s in @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)) {
+        if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
+    }
+    return "other"
+}
+
+# Detect the VC++ 2015-2022 Redistributable prebuilt llama-server and PyTorch need (they
+# link VCRUNTIME140_1.dll, absent from the Universal CRT). Registry first: Runtimes\x64 is
+# the only x64-specific proof; System32\vcruntime140_1.dll is arch-blind and on ARM64 may
+# be the ARM64-only package, unloadable under x64 emulation.
 function Test-VCRedistInstalled {
-    $sys = $env:SystemRoot
-    if ($sys -and (Test-Path (Join-Path $sys 'System32\vcruntime140_1.dll'))) { return $true }
     foreach ($k in @(
         'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
@@ -870,10 +894,14 @@ function Test-VCRedistInstalled {
             if ($r.Installed -eq 1 -and [int]$r.Major -ge 14 -and [int]$r.Minor -ge 20) { return $true }
         } catch { }
     }
+    if ((Get-HostMachineArch) -eq "arm64") { return $false }
+    $sys = $env:SystemRoot
+    if ($sys -and (Test-Path (Join-Path $sys 'System32\vcruntime140_1.dll'))) { return $true }
     return $false
 }
 
-# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op).
+# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op). Unlike CMake
+# and Build Tools torch cannot import without it, and winget is absent on LTSC/Server images.
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -882,6 +910,45 @@ function Ensure-VCRedist {
             Invoke-SetupCommand { winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
             Refresh-Environment
         } catch { substep "VCRedist install failed: $($_.Exception.Message)" "Yellow" }
+    }
+    if (-not (Test-VCRedistInstalled)) {
+        # Evergreen link; /quiet /norestart so it never blocks or reboots an unattended run.
+        # Always the x64 package, deliberately: Microsoft ships it as the Arm64X superset of
+        # both ARM64 and X64 binaries and documents it as the one for ARM64 devices, while
+        # the arm64 package is ARM64-only (learn.microsoft.com/cpp/windows/latest-supported-vc-redist).
+        # PROCESSOR_ARCHITECTURE is wrong twice here: it reports the process, and the runtime
+        # must match the interpreter loading the DLLs, an emulated x64 Python not yet created.
+        $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+        $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.x64.exe"
+        substep "winget unavailable or failed; downloading the runtime directly..."
+        # Windows PowerShell 5.1 on an old image can carry a .NET default protocol set that
+        # predates TLS 1.2, which aka.ms refuses -- exactly the no-winget host this fallback
+        # exists for. SystemDefault (0) means "let the OS choose" and already covers TLS 1.2+,
+        # so only an explicit legacy set is upgraded, and it is restored afterwards.
+        $_prevProtocol = $null
+        try {
+            $_cur = [System.Net.ServicePointManager]::SecurityProtocol
+            if ([int]$_cur -ne 0 -and ([int]$_cur -band [int][System.Net.SecurityProtocolType]::Tls12) -eq 0) {
+                [System.Net.ServicePointManager]::SecurityProtocol = $_cur -bor [System.Net.SecurityProtocolType]::Tls12
+                $_prevProtocol = $_cur
+            }
+        } catch { $_prevProtocol = $null }
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing -TimeoutSec 300
+            $p = Start-Process -FilePath $dst -ArgumentList '/quiet', '/norestart' -Wait -PassThru
+            # 3010 = success, reboot required; usable either way.
+            if ($p.ExitCode -notin @(0, 3010)) {
+                substep "VC++ runtime installer exited $($p.ExitCode)" "Yellow"
+            }
+            Refresh-Environment
+        } catch {
+            substep "Direct VC++ runtime download failed: $($_.Exception.Message)" "Yellow"
+        } finally {
+            if ($null -ne $_prevProtocol) {
+                try { [System.Net.ServicePointManager]::SecurityProtocol = $_prevProtocol } catch { }
+            }
+            Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+        }
     }
     if (Test-VCRedistInstalled) { step "vcredist" "installed" }
     else {
@@ -1496,12 +1563,14 @@ if (-not $HasNvidiaSmi) {
         #    (gfx120X/110X/1151/1150/103X); unknown names fall back cleanly to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
-                @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (Radeon RX 9070 XT / 9080)
-                @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (Radeon RX 9070 / 9060)
+                @{ P = "9070|9080";                                           A = "gfx1201" }  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080)
+                @{ P = "9060";                                                A = "gfx1200" }  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
                 @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-                @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-                @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
-                @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
+                @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+                @{ P = "860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1152" }  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+                @{ P = "RX 7900|PRO W7900|PRO W7800";                         A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
+                @{ P = "RX 7800|RX 7700(?!S)|PRO W7700|PRO V710";             A = "gfx1101" }  # RDNA 3 (Navi 32)
+                @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500";        A = "gfx1102" }  # RDNA 3 (Navi 33)
                 @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
                 @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
                 @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
@@ -1634,11 +1703,42 @@ if ($LongPathsEnabled) {
 }
 
 # ============================================
-# 1b. Git (required by pip for git+https:// deps and by npm)
+# 1b. Git (only required for --local / source installs)
 # ============================================
+# Was fatal as "required by pip and npm", but the consumer path uses neither: the
+# unsloth-zoo git+https URL is STUDIO_LOCAL_INSTALL only, node is a pinned prebuilt, and the
+# frontend lockfile has no VCS deps. Being fatal blocked clean no-winget Windows boxes.
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
-    Write-Host "Git not found -- installing via winget..." -ForegroundColor Yellow
+    # Fatal only where git is used: --local and the opt-in llama.cpp source build. A local
+    # llama.cpp dir overrides those opt-ins, but only once it holds a reusable binary:
+    # pointing at the canonical install location with nothing built there falls through to
+    # the normal install, so an explicit source build still needs git. The automatic
+    # fallback after a failed prebuilt download is not knowable here; Phase 4 handles it.
+    $gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')
+    $_localLlamaDir = if ($env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR.Trim() } else { "" }
+    $_localLlamaBuilt = $false
+    if ($_localLlamaDir) {
+        # Same layout candidates as the reuse check in Phase 4.
+        foreach ($_c in @("llama-server.exe", "build\bin\llama-server.exe", "build\bin\Release\llama-server.exe")) {
+            if (Test-Path -LiteralPath (Join-Path $_localLlamaDir $_c)) { $_localLlamaBuilt = $true; break }
+        }
+    }
+    if (-not $_localLlamaBuilt) {
+        $_prForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
+        $_llamaSrc = $DefaultLlamaSource -replace '\.git$', ''
+        # Same tag resolution as Phase 4. "master" is a branch, never a release, so the
+        # prebuilt lookup always misses and Phase 4 rebuilds it from source.
+        $_llamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
+        if ($_llamaTag -eq "master") { $gitNeeded = $true }
+        if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq '1') { $gitNeeded = $true }
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_LLAMA_PR)) { $gitNeeded = $true }
+        # Same positive-integer predicate as the PR_FORCE promotion below: 0 or non-numeric
+        # never forces a source build, so it must not demand git.
+        if ($_prForce -match '^\d+$' -and [int]$_prForce -gt 0) { $gitNeeded = $true }
+        if ($_llamaSrc -ne "https://github.com/ggml-org/llama.cpp") { $gitNeeded = $true }
+    }
+    Write-Host "Git not found -- attempting install via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
@@ -1648,11 +1748,18 @@ if (-not $HasGit) {
         } catch { }
     }
     if (-not $HasGit) {
-        Write-Host "[ERROR] Git is required but could not be installed automatically." -ForegroundColor Red
-        Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
-        exit 1
+        if ($gitNeeded) {
+            Write-Host "[ERROR] Git is required for --local and llama.cpp source-build installs but could not be installed." -ForegroundColor Red
+            Write-Host "        --local clones unsloth-zoo, and a source build clones llama.cpp." -ForegroundColor Red
+            Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
+            Exit-SetupFailure "Git is required for --local / source-build installs but could not be installed"
+        }
+        step "git" "not found (not required)" "Yellow"
+        substep "Unsloth installs prebuilt binaries and wheels, so git is not needed."
+        substep "Install it only for --local/source installs: https://git-scm.com/download/win"
+    } else {
+        step "git" "$(git --version)"
     }
-    step "git" "$(git --version)"
 } else {
     step "git" "$(git --version)"
 }
@@ -1819,7 +1926,7 @@ if (-not $NvccPath -and $IncompatibleToolkit) {
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host "[ERROR] CUDA source build cannot use the installed toolkit with this driver." -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
-    exit 1
+    Exit-SetupFailure "The installed CUDA toolkit is incompatible with the current driver"
 }
 
 # -- No toolkit at all: install via winget (only when a source build needs it) --
@@ -1891,7 +1998,7 @@ if (-not $NvccPath) {
     } else {
         Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
     }
-    exit 1
+    Exit-SetupFailure "A compatible CUDA Toolkit could not be found or installed"
 }
 
 # -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
@@ -2041,7 +2148,7 @@ if (-not $IsPipInstall) {
         if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
             Write-Host "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
             Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-            exit 1
+            Exit-SetupFailure "UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist"
         }
         $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
         # An override pointing at the legacy default maps to the legacy sibling
@@ -2225,7 +2332,7 @@ if ($PythonOk) {
     if (-not $HasPython) {
         Write-Host "[ERROR] Python could not be installed automatically." -ForegroundColor Red
         Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-        exit 1
+        Exit-SetupFailure "Python could not be installed automatically"
     }
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
@@ -2235,7 +2342,7 @@ if ($PythonOk) {
     Write-Host "[ERROR] No supported Python (3.11-3.13) found on this system." -ForegroundColor Red
     Write-Host "        py.exe could not locate -3.11/-3.12/-3.13 and `python` on PATH is unsupported." -ForegroundColor Yellow
     Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-    exit 1
+    Exit-SetupFailure "No supported Python 3.11-3.13 was found"
 }
 
 # Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
@@ -2317,7 +2424,7 @@ if ($NeedNodeForSetup) {
             if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
                 Write-Host "[ERROR] $NodeDir already exists and is not an Unsloth-owned Node install." -ForegroundColor Red
                 Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
-                exit 1
+                Exit-SetupFailure "$NodeDir is not an Unsloth-owned Node install"
             }
         }
         substep "installing isolated Node (system Node/npm left untouched)..."
@@ -2329,12 +2436,12 @@ if ($NeedNodeForSetup) {
         if ($nodeExit -eq 3) {
             Write-Host $nodeOut -ForegroundColor DarkGray
             step "node" "install blocked by another active Unsloth install" "Red"
-            exit 3
+            Exit-SetupFailure "Node install is blocked by another active Unsloth install" 3
         } elseif ($nodeExit -ne 0) {
             Write-Host $nodeOut -ForegroundColor DarkGray
             Write-Host "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
             Write-Host "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
-            exit 1
+            Exit-SetupFailure "Could not install an isolated Node runtime"
         }
         if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
             New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
@@ -2454,7 +2561,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
             Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
             Show-NpmRegistryHint
-            exit 1
+            Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
     }
 
@@ -2465,7 +2572,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         $ErrorActionPreference = $prevEAP_npm
         foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
         Write-Host "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
@@ -2496,7 +2603,7 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
         $ErrorActionPreference = $prevEAP_oxc
         Write-Host "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
         Show-NpmRegistryHint
-        exit 1
+        Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
@@ -2595,7 +2702,7 @@ if (-not $PythonCmd) {
     Write-Host "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
     Write-Host "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
     Write-Host "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
-    exit 1
+    Exit-SetupFailure "No standalone Python 3.11-3.13 was found"
 }
 
 substep "Python found: $PythonCmd"
@@ -2628,12 +2735,12 @@ if ($_studioOverride) {
             Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
         } catch {
             Write-Host "ERROR: $_studioOverrideVar=$StudioHome is not writable." -ForegroundColor Red
-            exit 1
+            Exit-SetupFailure "$_studioOverrideVar=$StudioHome is not writable"
         }
     } else {
         Write-Host "ERROR: $_studioOverrideVar=$_studioOverride does not exist." -ForegroundColor Red
         Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "$_studioOverrideVar=$_studioOverride does not exist"
     }
 } else {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
@@ -2645,6 +2752,8 @@ $VenvDir = Join-Path $StudioHome "unsloth_studio"
 # the canonical comparison so an override pointing at the legacy default
 # still behaves like a default install.
 $StudioOwnedMarker = ".unsloth-studio-owned"
+# Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
+$NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 $_studioHomeCanon = $StudioHome
 if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
@@ -2677,7 +2786,7 @@ function Assert-StudioOwnedOrAbsent {
         }
         Write-Host "[ERROR] $Path already exists and is not marked as an Unsloth-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
-        exit 1
+        Exit-SetupFailure "$Label path is not an Unsloth-owned install: $Path"
     }
 }
 function Mark-StudioOwned {
@@ -2688,13 +2797,71 @@ function Mark-StudioOwned {
     } catch {}
 }
 
+# The mode this venv was installed with. install.ps1 exports UNSLOTH_NO_TORCH for
+# its own run only, so a later `unsloth studio update` (which exports nothing) has
+# no other way to know. Two sources, because the completion manifest is dropped
+# before every dependency pass and so cannot answer for a run killed mid-pass:
+# the manifest key first, then .unsloth-no-torch, which outlives the pass. Neither
+# present reads as "install torch" -- the pre-existing behavior.
+function Get-PersistedNoTorch {
+    param([Parameter(Mandatory = $true)][string]$VenvPath)
+    $manifestPath = Join-Path $VenvPath "unsloth_install_manifest.json"
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $payload = $null
+        try {
+            $payload = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        } catch {
+            $payload = $null
+        }
+        if ($null -ne $payload -and $null -ne $payload.no_torch) {
+            return ("$($payload.no_torch)" -match '^\s*(?i:true|1|yes|on)\s*$')
+        }
+    }
+    return (Test-Path -LiteralPath (Join-Path $VenvPath $NoTorchMarker) -PathType Leaf)
+}
+
+# Written before anything that could be interrupted, and cleared when torch is
+# wanted so migrating out of no-torch leaves nothing stale behind.
+function Set-PersistedNoTorch {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvPath,
+        [Parameter(Mandatory = $true)][bool]$NoTorch
+    )
+    if (-not (Test-Path -LiteralPath $VenvPath -PathType Container)) { return }
+    $markerPath = Join-Path $VenvPath $NoTorchMarker
+    try {
+        if ($NoTorch) {
+            [System.IO.File]::WriteAllText($markerPath, "")
+        } elseif (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+            Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+        }
+    } catch {}
+}
+
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, repair according to invocation context.
 # - install.ps1 sets UNSLOTH_INSTALL_ROLLBACK_MANAGED=1 so setup can delegate
 #   to the installer-level rollback that restores the previous environment.
 # - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
 # In no-torch mode, a missing torch package is expected.
-$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes)$'
+$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^\s*(?i:true|1|yes|on)\s*$'
+# No env var at all means `unsloth studio update` / `studio setup` / setup.bat,
+# none of which export one. Without the manifest fallback the check below reads a
+# GGUF-only venv's missing torch as a stale venv and tries to delete the venv this
+# script is itself running out of, which fails on a locked python.exe.
+if (-not $NoTorchMode -and [string]::IsNullOrWhiteSpace($env:UNSLOTH_NO_TORCH)) {
+    $NoTorchMode = Get-PersistedNoTorch -VenvPath $VenvDir
+    if ($NoTorchMode) {
+        substep "no-torch install detected -- keeping this environment GGUF-only." "Yellow"
+    }
+}
+# Persist before the torch install and the dependency pass below, either of which
+# can be interrupted; install_python_stack.py refreshes the same marker.
+Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
+# install_python_stack.py drops the manifest before its dependency pass, so it
+# cannot repeat the lookup above; hand it the resolved answer. This also collapses
+# every accepted spelling to one value both sides parse identically.
+$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
@@ -2773,7 +2940,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # for those or a correct CPU venv rebuilds every update.
             $_rocmWheelArches = @(
                 "gfx1201", "gfx1200",           # RDNA 4
-                "gfx1151", "gfx1150",           # RDNA 3.5 (Strix Halo/Point)
+                "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
                 "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
                 "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
                 "gfx90a", "gfx908"              # MI200 / MI100
@@ -2813,7 +2980,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             substep "Stale venv detected ($reason)." "Yellow"
             Write-Host "   [ERROR] The existing Unsloth environment needs repair." -ForegroundColor Red
             Write-Host "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
-            exit 1
+            Exit-SetupFailure "The existing Unsloth environment needs repair"
         }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
@@ -2827,14 +2994,14 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         ) {
             Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
-            exit 1
+            Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
         }
         try {
             Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
             Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "           Close any running Unsloth/Python processes and re-run setup." -ForegroundColor Red
-            exit 1
+            Exit-SetupFailure "Could not remove the stale environment at $VenvDir"
         }
     }
 }
@@ -2843,7 +3010,7 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
     Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
     Write-Host "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
     Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
-    exit 1
+    Exit-SetupFailure "Virtual environment not found at $VenvDir"
 } else {
     substep "reusing existing virtual environment at $VenvDir"
     $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
@@ -2961,6 +3128,26 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
+        # An interrupted install leaves $_PkgName current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        $_studioInstallIncomplete = $false
+        try {
+            & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
+sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+" "$PSScriptRoot" 2>$null
+            if ($LASTEXITCODE -ne 0) { $_studioInstallIncomplete = $true }
+        } catch {}
+        if ($_studioInstallIncomplete) {
+            substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
@@ -3006,6 +3193,28 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
 if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
 
 if (-not $SkipPythonDeps) {
+
+# install_python_stack.py drops the manifest before its own dependency pass, but
+# pip, torch and triton are replaced first here. Drop it now so a run killed in
+# those leaves the venv marked half-built, not behind a marker that verifies.
+$_ManifestDropped = $true
+try {
+    & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper
+sys.exit(0 if install_manifest.remove_manifest() else 1)
+" "$PSScriptRoot" 2>$null
+    if ($LASTEXITCODE -ne 0) { $_ManifestDropped = $false }
+} catch { $_ManifestDropped = $false }
+if (-not $_ManifestDropped) {
+    Write-Host "[ERROR] Could not remove the stale unsloth_install_manifest.json." -ForegroundColor Red
+    Write-Host "        Refusing to install behind a marker that still reports this venv as complete." -ForegroundColor Red
+    Exit-SetupFailure "Could not remove the stale unsloth_install_manifest.json"
+}
 
 if ($script:UnslothVerbose) {
     Fast-Install --upgrade pip
@@ -3064,6 +3273,7 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     $archFamilyMap = @{
         "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
         "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
+        "gfx1152" = "gfx1152"                                 # RDNA 3.5 (Krackan Point)
         "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
         "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
         "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"  # RDNA 2 (RX 6000)
@@ -3078,6 +3288,7 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     $torchFloorMap = @{
         "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
         "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+        "gfx1152" = "torch>=2.11.0,<2.12.0"
     }
     # Companion ranges for torchvision/torchaudio -- must stay in sync with the
     # torch ceiling so pip can always find a consistent trio on AMD's per-arch
@@ -3089,10 +3300,12 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     $torchvisionFloorMap = @{
         "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
         "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1152" = "torchvision>=0.26.0,<0.27.0"
     }
     $torchaudioFloorMap = @{
         "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
         "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
     }
     $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
     $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
@@ -3104,7 +3317,7 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
         # GPU arch detected but not in the supported wheel map — warn explicitly
         # so the user knows why they are getting CPU PyTorch instead of ROCm.
         substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
-        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx90a, gfx908" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx90a, gfx908" "Yellow"
     } else {
         # HIP SDK present ($HasROCm=true via amd-smi) but gcnArchName was not
         # readable — warn rather than silently falling back to CPU PyTorch.
@@ -3152,18 +3365,33 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 # goes through $ROCmIndexUrl; on failure the fallback uses the CPU index, not the ROCm pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
+if (-not $NoTorchMode) {
+# Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
+# so every branch below drops it. Ask the interpreter uv resolves for, not
+# PROCESSOR_ARCHITECTURE, which describes the host process. Inside the no-torch guard
+# because all three uses are, and no-torch installs nothing to skip.
+$_setupPlatform = ""
+try {
+    $_setupPlatform = (& python -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+} catch { $_setupPlatform = "" }
+$WinArm64NoAudio = ($_setupPlatform -eq "win-arm64")
+if ($WinArm64NoAudio) { substep "windows on arm: skipping torchaudio (no win_arm64 wheel upstream)" }
+
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
     if ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
+    # Built above the verbose branch: a splat assigned inside it is unset on the other.
+    $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)
+    if ($WinArm64NoAudio) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
     if ($script:UnslothVerbose) {
-        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | Out-String
+        $output = Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -3199,18 +3427,20 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
+    $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec, $cpuAudioSpec)
+    if ($WinArm64NoAudio) { $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec) }
     if ($script:UnslothVerbose) {
-        Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        Fast-Install @_torchTrio @cpuForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install @_torchTrio @cpuForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch install failed (exit code $torchInstallExit)" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "PyTorch installation failed (exit code $torchInstallExit)"
     }
 } elseif (-not $ROCmIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
@@ -3231,18 +3461,22 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cudaVisionSpec = "torchvision>=0.19,<0.26.0"
         $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
     }
+    # A custom pin whose leaf is not cpu (a corporate /simple mirror) lands an ARM64 host
+    # here, so this branch drops torchaudio too.
+    $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)
+    if ($WinArm64NoAudio) { $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec) }
     if ($script:UnslothVerbose) {
-        Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        Fast-Install @_cudaTrio @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install @_cudaTrio @cudaForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch CUDA install failed (exit code $torchInstallExit)" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "PyTorch CUDA installation failed (exit code $torchInstallExit)"
     }
 
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
@@ -3262,6 +3496,9 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         substep "Triton for Windows installed (enables torch.compile)"
     }
 }
+} else {
+    substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
+}
 
 # No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
 # running launcher only ever failed (WinError 32) and printed a scary warning. It's
@@ -3278,7 +3515,7 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
-    exit 1
+    Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
 } else {
@@ -3356,7 +3593,7 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
-        exit 1
+        Exit-SetupFailure "Could not install $pkg into .venv_t5_530"
     }
 }
 if ($script:UnslothVerbose) {
@@ -3391,7 +3628,7 @@ foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
-        exit 1
+        Exit-SetupFailure "Could not install $pkg into .venv_t5_550"
     }
 }
 if ($script:UnslothVerbose) {
@@ -3426,7 +3663,7 @@ foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_510/" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
-        exit 1
+        Exit-SetupFailure "Could not install $pkg into .venv_t5_510"
     }
 }
 if ($script:UnslothVerbose) {
@@ -3541,7 +3778,7 @@ if (-not $LlamaPr -and $LlamaPrForce -and $LlamaPrForce -match '^\d+$' -and [int
 if ($LlamaPr) {
     if ($LlamaPr -notmatch '^\d+$' -or [int]$LlamaPr -le 0) {
         Write-Host "[ERROR] UNSLOTH_LLAMA_PR=$LlamaPr is not a valid PR number" -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "UNSLOTH_LLAMA_PR=$LlamaPr is not a valid PR number"
     }
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$LlamaPr -- will build from PR head" "Yellow"
     $ResolvedLlamaTag = "pr-$LlamaPr"
@@ -3557,7 +3794,7 @@ $LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
 if ($LocalLlamaCppSrc) {
     if (-not (Test-Path -LiteralPath $LocalLlamaCppSrc -PathType Container)) {
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc" "Red"
-        exit 1
+        Exit-SetupFailure "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc"
     }
     $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
     # Reusing a local dir disables both the prebuilt download and the source
@@ -3588,7 +3825,7 @@ if ($LocalLlamaCppSrc) {
         # and leave Unsloth with no usable binary.
         if (-not $LocalLlamaServerFound) {
             step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
-            exit 1
+            Exit-SetupFailure "No llama-server.exe was found under $ResolvedLocal"
         }
         # If the target is already a junction/symlink (e.g. a previous
         # --with-llama-cpp-dir run), delete only the link via DirectoryInfo.Delete().
@@ -3614,7 +3851,7 @@ if ($LocalLlamaCppSrc) {
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
                 substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-                exit 3
+                Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
             }
         }
         cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
@@ -3756,7 +3993,19 @@ if ($LocalLlamaCppLinked) {
                 substep "Existing install was restored" "Yellow"
             }
             substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-            exit 3
+            Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
+        } elseif ($prebuiltExit -eq 4) {
+            step "llama.cpp" "not enough disk space to install llama.cpp" "Yellow"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            substep "Free up disk or move UNSLOTH_STUDIO_HOME/TEMP to a larger volume, then re-run" "Yellow"
+            $PreservedLlamaServerFound = $false
+            foreach ($_cand in @(
+                    (Join-Path $LlamaCppDir "llama-server.exe"),
+                    (Join-Path $LlamaCppDir "build\bin\llama-server.exe"),
+                    (Join-Path $LlamaCppDir "build\bin\Release\llama-server.exe"))) {
+                if (Test-Path -LiteralPath $_cand) { $PreservedLlamaServerFound = $true; break }
+            }
+            if (-not $PreservedLlamaServerFound) { $script:LlamaCppDegraded = $true }
         } else {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
@@ -3910,6 +4159,7 @@ $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
 $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+$HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
@@ -3935,9 +4185,27 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
     -not ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
 if ($WillBuildLlamaFromSource) {
-    Ensure-BuildToolsForLlamaSourceBuild
-    # refresh so the chain below sees a newly installed cmake
-    $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+    if (-not $HasGitForBuild) {
+        # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt
+        # download arrives here without it. Last chance to install: Invoke-SetupCommand
+        # returns 0 for command-not-found, so a git-less clone misreports as a cmake failure.
+        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+            try {
+                Invoke-SetupCommand { winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                Refresh-Environment
+            } catch { }
+        }
+        $HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+    }
+    # Git first, then the toolchain: Ensure-BuildToolsForLlamaSourceBuild exits setup when
+    # Build Tools cannot be installed, so running it first made the degraded path below
+    # unreachable on a no-winget box, and elsewhere spent a multi-GB download on a clone
+    # that cannot happen.
+    if ($HasGitForBuild) {
+        Ensure-BuildToolsForLlamaSourceBuild
+        # refresh so the chain below sees a newly installed cmake
+        $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+    }
 }
 
 if ($LocalLlamaCppLinked) {
@@ -3955,6 +4223,16 @@ if ($LocalLlamaCppLinked) {
     # up new model architecture support (e.g. Gemma 4).
     Write-Host ""
     step "llama.cpp" "already built"
+} elseif (-not $HasGitForBuild) {
+    # Before cmake: the toolchain install is skipped without git, so cmake may be missing
+    # purely as a consequence. Degrade rather than abort; the opt-in source triggers already
+    # required git in Phase 1, so only the automatic fallback lands here.
+    Write-Host ""
+    step "llama.cpp" "build skipped (git not available)" "Yellow"
+    substep "The prebuilt download failed and a source build clones llama.cpp." "Yellow"
+    substep "GGUF inference and export will not be available." "Yellow"
+    substep "Install Git from https://git-scm.com/download/win and re-run setup." "Yellow"
+    $script:LlamaCppDegraded = $true
 } elseif (-not $HasCmakeForBuild) {
     Write-Host ""
     if (-not $HasNvidiaSmi) {
@@ -4007,7 +4285,7 @@ if ($LocalLlamaCppLinked) {
                 } else {
                     Write-Host "[ERROR] CMake 4.2+ is required to build llama.cpp with the Visual Studio 2026 generator, and no older Visual Studio toolchain was found to fall back to." -ForegroundColor Red
                     Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run, or use a prebuilt llama.cpp bundle." -ForegroundColor Red
-                    exit 1
+                    Exit-SetupFailure "CMake cannot drive the Visual Studio 2026 generator"
                 }
             }
         }
@@ -4514,5 +4792,5 @@ Write-Host ""
 # failure. Direct 'unsloth studio update' does not set SKIP_STUDIO_BASE,
 # so it keeps degraded installs successful.
 if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
-    exit 1
+    Exit-SetupFailure "llama.cpp setup did not produce a usable server"
 }

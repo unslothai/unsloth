@@ -301,12 +301,12 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
     label: "Recommended",
-    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5" />,
+    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5 shrink-0" />,
   },
   {
     value: "downloaded",
     label: "On Device",
-    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5" />,
+    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />,
   },
 ];
 
@@ -384,7 +384,9 @@ function ModelSelectorContent({
             {
               value: "connected",
               label: "Connected",
-              icon: <HugeiconsIcon icon={CloudIcon} className="size-3.5" />,
+              icon: (
+                <HugeiconsIcon icon={CloudIcon} className="size-3.5 shrink-0" />
+              ),
             },
           ]
         : HUB_SECTION_TABS,

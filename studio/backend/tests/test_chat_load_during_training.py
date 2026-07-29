@@ -451,6 +451,9 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         decision,
         gpu_memory_mode = "auto",
         requested_gpu_ids = None,
+        llama_extra_args = None,
+        cache_type_kv = None,
+        tensor_parallel = False,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -463,6 +466,9 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 load_in_4bit = True,
                 max_seq_length = 0,
                 requested_gpu_ids = requested_gpu_ids,
+                llama_extra_args = llama_extra_args,
+                cache_type_kv = cache_type_kv,
+                tensor_parallel = tensor_parallel,
                 gpu_memory_mode = gpu_memory_mode,
             )
 
@@ -596,6 +602,32 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(captured[0]["is_gguf"], True)
         self.assertEqual(captured[0]["required_override_gb"], 12.5)
+
+    def test_vulkan_gguf_estimate_keeps_tensor_cache_coercion(self):
+        config = SimpleNamespace(is_gguf = True)
+        estimate_kwargs = {}
+        with (
+            patch.object(
+                self.route,
+                "_estimate_gguf_required_gb",
+                side_effect = lambda *args, **kwargs: estimate_kwargs.update(kwargs) or 12.5,
+            ),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_effective_gpu_count",
+                return_value = 0,
+            ),
+            patch.object(self.route.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        ):
+            self._guard(
+                config = config,
+                training_active = True,
+                decision = (True, {}),
+                llama_extra_args = ["--split-mode", "tensor"],
+                cache_type_kv = "q4_0",
+            )
+        self.assertEqual(estimate_kwargs["cache_type_kv"], "q4_0")
+        self.assertTrue(estimate_kwargs["tensor_parallel"])
 
 
 class TestEffectiveLoadIn4bit(unittest.TestCase):
@@ -745,7 +777,12 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         # /load then 409s after the frontend has already unloaded.
         from models.inference import ValidateModelRequest
 
-        request = ValidateModelRequest(model_path = "unsloth/Qwen3-1.7B", max_seq_length = 4096)
+        request = ValidateModelRequest(
+            model_path = "unsloth/Qwen3-1.7B",
+            max_seq_length = 4096,
+            cache_type_kv = "f32",
+            tensor_parallel = True,
+        )
         cfg = SimpleNamespace(
             identifier = "unsloth/Qwen3-1.7B",
             display_name = "Qwen3-1.7B",
@@ -774,6 +811,8 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             asyncio.run(self.route.validate_model(request, current_subject = "u"))
         self.assertEqual(captured.get("llama_extra_args"), ["-c", "32768"])
         self.assertIn("n_parallel", captured)
+        self.assertEqual(captured.get("cache_type_kv"), "f32")
+        self.assertTrue(captured.get("tensor_parallel"))
 
     def test_metadata_probe_skips_training_guard(self):
         # A header-only probe (include_context_length) allocates no VRAM, so the
@@ -1010,6 +1049,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         class _FakeBackend:
             _context_length = 2048
+            _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
+            supports_kv_unified = True
 
             def _read_gguf_metadata(self, path):
                 pass
@@ -1017,13 +1058,27 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             def _can_estimate_kv(self):
                 return True
 
+            @classmethod
+            def probe_server_capabilities(cls):
+                return {"supports_kv_unified": cls.supports_kv_unified}
+
             def _estimate_kv_cache_bytes(
                 self,
                 ctx,
+                cache_type = None,
                 n_parallel = 1,
+                swa_full = False,
+                kv_unified = False,
+                n_ubatch = None,
+                flash_attn = True,
             ):
                 seen["ctx"] = ctx
+                seen["cache_type"] = cache_type
                 seen["n_parallel"] = n_parallel
+                seen["swa_full"] = swa_full
+                seen["kv_unified"] = kv_unified
+                seen["n_ubatch"] = n_ubatch
+                seen["flash_attn"] = flash_attn
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
@@ -1034,6 +1089,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
+            self.assertFalse(seen["swa_full"])
+            self.assertFalse(seen["flash_attn"])
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
@@ -1045,6 +1102,50 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             # --parallel slots scale the cache the same way the launcher does
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
+            self.assertTrue(seen["kv_unified"])
+            # User extras are appended after Studio's managed default.
+            r._estimate_gguf_kv_gb("m", 4096, ["--no-kv-unified"], 4)
+            self.assertFalse(seen["kv_unified"])
+            # An older binary without the flag keeps separate KV streams.
+            _FakeBackend.supports_kv_unified = False
+            r._estimate_gguf_kv_gb("m", 4096, None, 4)
+            self.assertFalse(seen["kv_unified"])
+            r._estimate_gguf_kv_gb("m", 4096, None, 1, "f32")
+            self.assertEqual(seen["cache_type"], "f32")
+            r._estimate_gguf_kv_gb("m", 4096, ["--cache-type-v", "f32"])
+            self.assertEqual(seen["cache_type"], "f32")
+            with patch.dict(self.route.os.environ, {"LLAMA_ARG_CACHE_TYPE_K": "f32"}):
+                r._estimate_gguf_kv_gb("m", 4096)
+            self.assertEqual(seen["cache_type"], "f32")
+            with patch.dict(
+                self.route.os.environ,
+                {
+                    "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+                    "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+                },
+            ):
+                r._estimate_gguf_kv_gb("m", 4096)
+            self.assertEqual(seen["cache_type"], "q4_0")
+            r._estimate_gguf_kv_gb(
+                "m",
+                4096,
+                ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"],
+                tensor_parallel = True,
+            )
+            self.assertEqual(seen["cache_type"], "f16")
+            r._estimate_gguf_kv_gb(
+                "m",
+                4096,
+                ["--cache-type-k", "f32", "--cache-type-v", "q4_0"],
+                tensor_parallel = True,
+            )
+            self.assertEqual(seen["cache_type"], "f32")
+            # Full SWA mode follows the same pass-through args as the launcher.
+            r._estimate_gguf_kv_gb("m", 4096, ["--swa_full"])
+            self.assertTrue(seen["swa_full"])
+            r._estimate_gguf_kv_gb("m", 4096, ["--kv_unified", "--ubatch_size", "256"])
+            self.assertTrue(seen["kv_unified"])
+            self.assertEqual(seen["n_ubatch"], 256)
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──
