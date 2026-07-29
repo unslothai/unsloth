@@ -387,6 +387,11 @@ async function syncInferenceStatusToStore(options?: {
       // stale tabs: hydrate the concrete identity the backend will restore.
       if (statusRes.idle_unloaded && statusRes.model_identifier) {
         setCheckpoint(statusRes.model_identifier, statusRes.gguf_variant);
+        syncModelCapabilities(statusRes.model_identifier, statusRes);
+        useChatRuntimeStore.setState({
+          loadedIsMultimodal: isMultimodalResponse(statusRes),
+          loadedIsDiffusion: statusRes.is_diffusion ?? false,
+        });
       } else if (
         // Another client may own a normal no-active interval while its model
         // loads, so do not erase this tab's selection until the backend is idle.
@@ -658,6 +663,14 @@ export function useChatModelRuntime() {
       const run = activeLoadRunRef.current ?? sharedModelLoadHandle?.run;
       pendingExternalReplacement = { intentId, config: run?.rollbackConfig };
       const stopped = await cancelLoadingWithCheckpointPolicy(true);
+      // The load can finish after the caller observes its store flags but
+      // before cancellation captures the run. With no owner left there is
+      // nothing uncertain to stop, so the hosted replacement may proceed.
+      const runStillActive =
+        activeLoadRunRef.current ?? sharedModelLoadHandle?.run;
+      if (!stopped && !runStillActive) {
+        return true;
+      }
       if (!stopped && pendingExternalReplacement?.intentId === intentId) {
         pendingExternalReplacement = null;
       }

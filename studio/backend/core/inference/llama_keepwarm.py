@@ -31,6 +31,9 @@ _last_active = time.monotonic()
 # otherwise 503 against an empty backend can reload it (set on unload, cleared on
 # reload). Storing the quant means the reload restores the exact freed variant.
 _last_unloaded_model = None
+# Capability flags are cleared by llama_backend.unload_model(), so retain the
+# UI-relevant snapshot alongside the reload identity.
+_last_unloaded_capabilities = None
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
 # Guards inflight bumps against the idle-check-then-unload race, and blocks new
@@ -190,11 +193,24 @@ def get_last_unloaded_model():
         return _last_unloaded_model
 
 
-def _set_last_unloaded(value) -> None:
-    global _last_unloaded_model, _kv_resume
+def get_last_unloaded_state():
+    with _lock:
+        capabilities = (
+            dict(_last_unloaded_capabilities)
+            if _last_unloaded_capabilities is not None
+            else {}
+        )
+        return _last_unloaded_model, capabilities
+
+
+def _set_last_unloaded(value, capabilities = None) -> None:
+    global _last_unloaded_model, _last_unloaded_capabilities, _kv_resume
     stale = None
     with _lock:
         _last_unloaded_model = value
+        _last_unloaded_capabilities = (
+            dict(capabilities) if value is not None and capabilities else None
+        )
         if value is None and _kv_resume is not None:
             stale, _kv_resume = _kv_resume, None
     if stale:
@@ -391,6 +407,13 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
+                    capabilities = {
+                        "is_vision": backend.is_vision,
+                        "is_diffusion": backend.is_diffusion,
+                        "is_audio": getattr(backend, "_is_audio", False),
+                        "audio_type": getattr(backend, "_audio_type", None),
+                        "has_audio_input": getattr(backend, "_has_audio_input", False),
+                    }
                     manifest = None
                     if get_auto_unload_keep_kv():
                         try:
@@ -416,7 +439,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed)  # let an alias request reload it
+                    # unload_model clears these flags; stash them with the
+                    # identity so /status can hydrate a newly opened client.
+                    _set_last_unloaded(freed, capabilities)
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")

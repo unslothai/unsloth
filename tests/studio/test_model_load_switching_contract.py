@@ -253,10 +253,18 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
     )
     assert "idle_unloaded?: boolean;" in frontend_types
     assert "idle_unloaded: bool" in backend_model
-    assert "last_unloaded_model = (" in backend_route
+    keepwarm = (
+        ROOT / "studio" / "backend" / "core" / "inference" / "llama_keepwarm.py"
+    ).read_text(encoding="utf-8")
+    assert "get_last_unloaded_state()" in backend_route
     assert "idle_model_identifier, idle_gguf_variant = last_unloaded_model[:2]" in backend_route
     assert "model_identifier = backend.active_model_name or idle_model_identifier" in backend_route
+    assert '_last_unloaded_capabilities = None' in keepwarm
+    assert '_set_last_unloaded(freed, capabilities)' in keepwarm
     assert "statusRes.idle_unloaded && statusRes.model_identifier" in runtime
+    assert "syncModelCapabilities(statusRes.model_identifier, statusRes);" in runtime
+    assert "loadedIsMultimodal: isMultimodalResponse(statusRes)" in runtime
+    assert "loadedIsDiffusion: statusRes.is_diffusion ?? false" in runtime
     assert "statusRes.loading.length === 0" in runtime
 
 
@@ -269,6 +277,17 @@ def test_native_rollback_rechecks_cancellation_after_token_lease():
     assert rollback.index("if (abortCtrl.signal.aborted)") > rollback.index(
         "consumeNativePathToken("
     )
+
+
+def test_hosted_replacement_treats_a_completed_load_as_already_stopped():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    replacement = runtime.split(
+        "const cancelLoadingForReplacement = useCallback(",
+        1,
+    )[1].split("const invalidatePendingModelSelection", 1)[0]
+    assert "activeLoadRunRef.current ?? sharedModelLoadHandle?.run" in replacement
+    assert "if (!stopped && !runStillActive)" in replacement
+    assert "return true;" in replacement
 
 
 def test_hosted_selection_restores_cancelled_local_config():

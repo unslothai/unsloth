@@ -7361,9 +7361,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         inference_config = (
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
-        from core.inference.llama_keepwarm import get_last_unloaded_model
-        last_unloaded_model = (
-            get_last_unloaded_model() if backend.active_model_name is None else None
+        from core.inference.llama_keepwarm import get_last_unloaded_state
+        last_unloaded_model, idle_capabilities = (
+            get_last_unloaded_state()
+            if backend.active_model_name is None
+            else (None, {})
         )
         idle_unloaded = last_unloaded_model is not None
         idle_model_identifier = None
@@ -7379,14 +7381,17 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             # same checkpoint instead of preserving arbitrary local state.
             model_identifier = backend.active_model_name or idle_model_identifier,
             gguf_variant = idle_gguf_variant,
-            is_vision = is_vision,
-            is_gguf = False,
+            is_vision = idle_capabilities.get("is_vision", is_vision),
+            is_gguf = idle_unloaded,
             is_local_model = bool(
                 backend.active_model_name and is_local_path(backend.active_model_name)
             ),
-            is_audio = is_audio,
-            audio_type = audio_type,
-            has_audio_input = has_audio_input,
+            is_diffusion = idle_capabilities.get("is_diffusion", False),
+            is_audio = idle_capabilities.get("is_audio", is_audio),
+            audio_type = idle_capabilities.get("audio_type", audio_type),
+            has_audio_input = idle_capabilities.get(
+                "has_audio_input", has_audio_input
+            ),
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
             inference = inference_config,
