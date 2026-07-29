@@ -653,9 +653,7 @@ def resolve_model_override_keys(model_id: str) -> list[str]:
     """
     overrides = get_model_overrides()
     keys = [model_id] if isinstance(overrides.get(model_id), dict) else []
-    keys.extend(
-        key for key in _folded_override_matches(model_id, overrides) if key not in keys
-    )
+    keys.extend(key for key in _folded_override_matches(model_id, overrides) if key not in keys)
     return keys
 
 
