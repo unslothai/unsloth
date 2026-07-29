@@ -1109,8 +1109,16 @@ class TestAllProxyIsHonoured:
 
     @pytest.fixture(autouse = True)
     def _clean_proxy_env(self, monkeypatch):
-        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-                    "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ):
             monkeypatch.delenv(key, raising = False)
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
 
@@ -1137,12 +1145,10 @@ class TestAllProxyIsHonoured:
 
     def test_direct_egress_resolves_to_none(self):
         from utils.utils import hf_proxy_for_endpoint
-
         assert hf_proxy_for_endpoint() is None
 
     def test_connect_target_follows_all_proxy(self, monkeypatch):
         from utils.utils import hf_connect_target
-
         monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
         assert hf_connect_target() == ("proxy.internal", 3128)
 
@@ -1173,7 +1179,8 @@ class TestAllProxyIsHonoured:
 
         monkeypatch.setattr(urllib.request, "build_opener", _spy)
         monkeypatch.setattr(
-            urllib.request, "urlopen",
+            urllib.request,
+            "urlopen",
             lambda *a, **k: pytest.fail("probe bypassed the proxy"),
         )
         assert hf_endpoint_unreachable(timeout = 1) is False
@@ -1185,7 +1192,8 @@ class TestAllProxyIsHonoured:
         from utils.transformers_version import hf_endpoint_unreachable
 
         monkeypatch.setattr(
-            urllib.request, "build_opener",
+            urllib.request,
+            "build_opener",
             lambda *a, **k: pytest.fail("built a proxy opener with no proxy configured"),
         )
 
@@ -1210,7 +1218,8 @@ class TestEnvOfflineSkipsTheProbe:
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
         monkeypatch.setattr(
-            llama_cpp, "_hf_unreachable",
+            llama_cpp,
+            "_hf_unreachable",
             lambda: pytest.fail("probed the network in an explicitly offline process"),
         )
         with llama_cpp._hf_offline_if_unreachable() as engaged:
@@ -1224,7 +1233,9 @@ class TestEnvOfflineSkipsTheProbe:
         monkeypatch.setenv("HF_HUB_OFFLINE", "0")
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
         monkeypatch.setattr(
-            llama_cpp, "_hf_unreachable", lambda: pytest.fail("probed despite an opt-out"),
+            llama_cpp,
+            "_hf_unreachable",
+            lambda: pytest.fail("probed despite an opt-out"),
         )
         with llama_cpp._hf_offline_if_unreachable() as engaged:
             assert engaged is False
@@ -1236,7 +1247,9 @@ class TestEnvOfflineSkipsTheProbe:
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
         calls = []
         monkeypatch.setattr(
-            llama_cpp, "_hf_unreachable", lambda: (calls.append(1), False)[1],
+            llama_cpp,
+            "_hf_unreachable",
+            lambda: (calls.append(1), False)[1],
         )
         with llama_cpp._hf_offline_if_unreachable() as engaged:
             assert engaged is False
