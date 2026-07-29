@@ -63,7 +63,12 @@ jobs:
   interrupt:
     name: ${{ matrix.os }} kill@${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Above the deadlines this leg actually configures, or a slow runner is cancelled
+    # mid-assertion and the leg proves nothing: 25 min to the marker
+    # (KILL_AT_SECONDS=1500), then two probe passes of up to 17 min each (two 60s
+    # --help checks, two 300s deep checks, a 300s backend wait) around a repair
+    # install. Legs land in 6-10 min in practice; this is the ceiling, not the target.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -269,7 +274,7 @@ jobs:
     # only printed by Write-TauriLog (install.ps1:2440), so the torch leg's marker could
     # never appear. The runner is ephemeral, so the default root is safe to install into.
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
