@@ -51,6 +51,16 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     ("<tool_response|>", f"<{_THINK_NEUTRAL_ZW}tool_response|>"),
     ("<|tool>", f"<|{_THINK_NEUTRAL_ZW}tool>"),
     ("<tool|>", f"<{_THINK_NEUTRAL_ZW}tool|>"),
+    # Qwen renders the same two blocks with plain XML tags instead
+    # (unsloth/chat_templates.py qwen3/qwen2.5: assistant calls as
+    # <tool_call>{...}</tool_call>, tool results as <tool_response>...</tool_response>),
+    # so raw ones close their own block or forge a call / result (#7334). Qwen3 also
+    # reads a user turn wrapped in the tool_response pair as a tool result, which
+    # moves last_query_index and republishes the previous turn's <think> block.
+    ("<tool_call>", f"<{_THINK_NEUTRAL_ZW}tool_call>"),
+    ("</tool_call>", f"</{_THINK_NEUTRAL_ZW}tool_call>"),
+    ("<tool_response>", f"<{_THINK_NEUTRAL_ZW}tool_response>"),
+    ("</tool_response>", f"</{_THINK_NEUTRAL_ZW}tool_response>"),
     # gemma-4.jinja turns thinking on with <|think|> in the first system turn, so a
     # raw one in non-assistant text switches reasoning mode.
     ("<|think|>", f"<|{_THINK_NEUTRAL_ZW}think|>"),

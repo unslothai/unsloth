@@ -369,6 +369,20 @@ _FINAL_ANSWER_SIGNAL = re.compile(
 )
 
 
+def _replayed_assistant_content(content):
+    """Neutralize turn boundaries in generated text before it re-enters the prompt.
+
+    The tool loop appends its own output to ``conversation`` and sends that back
+    to llama-server, so a boundary the model echoed (out of a tool result, say)
+    would render raw and truncate or forge a turn on the next pass. Only the
+    boundary sentinels go; the assistant's own think / channel / tool markup is
+    structural and stays, exactly as on the API replay path (#7334).
+    """
+    from core.inference.chat_template_helpers import neutralize_message_content_for_role
+
+    return neutralize_message_content_for_role("assistant", content)
+
+
 def _gguf_active_tool_names(active_tools: list[dict]) -> list[str]:
     names = [
         (tool.get("function") or {}).get("name")
@@ -12517,7 +12531,7 @@ class LlamaCppBackend:
                             conversation.append(
                                 {
                                     "role": "assistant",
-                                    "content": _stripped,
+                                    "content": _replayed_assistant_content(_stripped),
                                 }
                             )
                             available_tool_names = [
@@ -12699,7 +12713,10 @@ class LlamaCppBackend:
                 if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
                     tool_calls = tool_calls[:1]
 
-                assistant_msg: dict = {"role": "assistant", "content": content_text}
+                assistant_msg: dict = {
+                    "role": "assistant",
+                    "content": _replayed_assistant_content(content_text),
+                }
                 assistant_appended = False
                 # Collect no-op nudges and flush them after the batch, so a no-op
                 # doesn't abort it and drop the parallel calls that follow.

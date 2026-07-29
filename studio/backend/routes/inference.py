@@ -14683,7 +14683,10 @@ async def openai_responses(
                     param = "tool_choice",
                 ),
             )
-    _reject_schema_control_markup(payload.tools)
+    # Same disabled-tool gate as chat: both /responses paths render through
+    # _build_openai_passthrough_body, which forwards no tools in this shape (#7334).
+    if not _schema_never_reaches_template(payload, messages):
+        _reject_schema_control_markup(payload.tools)
     # After input validation so a 400 never triggers a load. Switches the
     # streaming path; non-streaming re-checks via the idempotent chat handler.
     # require_vision rejects a swap to a text-only target before it runs, so an
@@ -16229,8 +16232,8 @@ def _reject_schema_control_markup(tools) -> None:
         raise HTTPException(status_code = 400, detail = detail)
 
 
-def _schema_never_reaches_template(payload) -> bool:
-    """True when this chat request's tool schemas are dropped before rendering.
+def _schema_never_reaches_template(payload, messages = None) -> bool:
+    """True when this request's tool schemas are dropped before rendering.
 
     Refusing a byte-exact marker in a catalog nothing renders would fail a
     request that explicitly disabled tools (#7334), so mirror the gate
@@ -16239,8 +16242,13 @@ def _schema_never_reaches_template(payload) -> bool:
     zeroes ``tools`` for any ``tool_choice="none"``, and ``_select_request_tools``
     only ever returns Unsloth's own built-ins plus MCP tools, which carry their
     own check where they are appended.
+
+    ``messages`` overrides ``payload.messages`` for /responses, whose own input
+    items are already normalised to the chat shape this reads.
     """
-    return payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages)
+    if messages is None:
+        messages = payload.messages
+    return payload.tool_choice == "none" and not _has_openai_tool_history(messages)
 
 
 def _align_forced_tool_choice(tool_choice, tools):
