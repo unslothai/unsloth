@@ -3,11 +3,10 @@
 
 # The `nobuild` contract from clean-machine-assert.sh, for Windows.
 #
-# Why a port and not `shell: bash`: the clean-machine scrub drops every `*\Git\*`
-# entry from PATH and from the Machine/User registry copies, and the bash version
-# needs sed/grep/tr/sort out of C:\Program Files\Git\usr\bin. This also runs inside
-# the servercore container, which has no bash at all. Both Windows lanes call this
-# one file so the sdist allowlist cannot drift between them.
+# A port and not `shell: bash`: the clean-machine scrub drops every `*\Git\*` PATH
+# entry, and the bash version needs sed/grep/tr/sort out of Git's usr/bin. It also runs
+# inside the servercore container, which has no bash at all. Both Windows lanes call
+# this one file so the sdist allowlist cannot drift.
 #
 # Usage: assert-nobuild.ps1 -LogPath logs/install.log   (exit 1 = a source build)
 [CmdletBinding()]
@@ -18,10 +17,9 @@ if (-not (Test-Path -LiteralPath $LogPath)) {
     exit 1
 }
 
-# "Built an sdist" is NOT "needed a compiler". Every name here was checked against
-# its own sdist: setuptools.build_meta backend, no ext_modules, no .c/.cpp/.pyx/.rs
-# file, so its PEP 517 build is a pure-Python copy step. UNSLOTH_ALLOW_SDIST extends
-# the list. Kept identical to clean-machine-assert.sh's `_allow`.
+# "Built an sdist" is NOT "needed a compiler": every name here has a
+# setuptools.build_meta backend, no ext_modules and no .c/.cpp/.pyx/.rs file, so its
+# PEP 517 build is a pure-Python copy step. Identical to clean-machine-assert.sh.
 $allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'triton-kernels')
 if ($env:UNSLOTH_ALLOW_SDIST) {
     $allow += ($env:UNSLOTH_ALLOW_SDIST -split '\s+' | Where-Object { $_ })
@@ -30,20 +28,18 @@ if ($env:UNSLOTH_ALLOW_SDIST) {
 # prints can disagree on the separator (triton_kernels vs triton-kernels).
 $allow = @($allow | ForEach-Object { $_.ToLowerInvariant() -replace '_', '-' })
 
-# [char]27, not "`e": the `e escape is PowerShell 6+, and this runs under Windows
-# PowerShell 5.1 too, where "`e" degrades to a literal "e" and the strip would eat
-# real text instead of ANSI codes.
+# [char]27, not "`e": that escape is PowerShell 6+, and under Windows PowerShell 5.1
+# it degrades to a literal "e" and the strip eats real text instead of ANSI codes.
 $esc = [char]27
 $text = (Get-Content -LiteralPath $LogPath -Raw) -replace "$esc\[[0-9;]*[A-Za-z]", ''
 $built = @()
 foreach ($line in ($text -split "`r?`n")) {
     # A local-path build is something the caller pointed at (the CI source overlay),
-    # never something dependency resolution chose. Index dependencies always print
-    # `<name>==<version>`, so no signal is lost.
+    # never something resolution chose; index dependencies always print `==<version>`.
     if ($line -imatch 'building [a-z0-9._-]+ @ file://') { continue }
     # pip prints `Building wheel for <pkg>`, uv prints `Building <pkg>==<ver>`
-    # (astral-sh/uv#11165). Requiring `==` or ` @ ` after the name keeps this off the
-    # installer's own lowercase "building frontend..." progress text.
+    # (astral-sh/uv#11165); the `==` or ` @ ` requirement keeps this off the
+    # installer's own lowercase "building frontend..." text.
     foreach ($m in [regex]::Matches($line, '(?i)building wheel for ([a-z0-9._-]+)|building ([a-z0-9._-]+)(==| @ )')) {
         $name = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
         $built += ($name.ToLowerInvariant() -replace '_', '-')

@@ -10,12 +10,11 @@
 # running its bundled Contents/Resources/install.sh, which no CI job exercised.
 #
 # Hosted runners have no interactive desktop session, so "runs" means: the bundle
-# installs / mounts / extracts, the binary is present, of the right architecture, and
-# clears the gatekeeper checks a user would hit (macOS quarantine + codesign, Windows
-# installer exit); the process STAYS UP past its preflight (where an unhappy app dies);
-# and it writes tauri.log with a preflight disposition -- the field that read
-# `ManagedReady` over an unbootable venv in the bug report. Linux gets the strongest
-# check: a real webview under Xvfb.
+# installs, the binary is present, of the right architecture, and clears the gatekeeper
+# checks a user hits (macOS quarantine + codesign, Windows installer exit); the process
+# STAYS UP past its preflight, where an unhappy app dies; and it writes tauri.log with a
+# preflight disposition, the field that read `ManagedReady` over an unbootable venv in
+# the bug report. Linux gets the strongest check: a real webview under Xvfb.
 
 name: Desktop app clean machine
 
@@ -61,12 +60,11 @@ env:
   # one frozen release, so the schedule was re-testing the same fixture forever.
   REL_REPO: ${{ inputs.release_repo || github.repository }}
   # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against
-  # it could never catch a newly published broken bundle. Each download step resolves
-  # the newest desktop-v* release when this is empty -- drafts included, because that is
-  # how every desktop-v* release here is cut (desktop-v0.1.50-beta, desktop-v0.1.471-beta
-  # are both drafts), so --exclude-drafts matched nothing and every leg died resolving.
-  # A draft has no tag ref and releases/tags/<tag> 404s for one, but gh looks drafts up
-  # over GraphQL, so `gh release download <tag>` still fetches their assets.
+  # it could never catch a newly published broken bundle. Each download step then
+  # resolves the newest desktop-v* release, drafts included -- every desktop-v* release
+  # here is cut as a draft, so --exclude-drafts matched nothing and every leg died
+  # resolving. releases/tags/<tag> 404s for a draft, but gh looks drafts up over GraphQL,
+  # so `gh release download <tag>` still fetches their assets.
   REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
@@ -180,11 +178,11 @@ jobs:
           set -o pipefail
           APP="$(ls -d /Applications/*Unsloth*.app | head -1)"
           # A headless runner never clicks Install: preflight sets `not_installed` and
-          # returns (use-tauri-backend.ts:252-254) while startup-screen.tsx:388-389
-          # waits for the button, so launching alone sits on that screen for 90s and
-          # passes without ever running the bundled installer. Invoke it as
-          # src-tauri/src/install.rs does: --tauri, stdin closed, no tty. --tauri
-          # rejects a custom studio home (install.sh:102-114), so drop the override.
+          # returns (use-tauri-backend.ts:252-254) while startup-screen.tsx:388-389 waits
+          # for the button, so launching alone sits there for 90s without ever running
+          # the bundled installer. Invoke it as src-tauri/src/install.rs does: --tauri,
+          # stdin closed, no tty. --tauri rejects a custom studio home
+          # (install.sh:102-114), so drop the override.
           # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547.
           # REL_TAG predates #7547, so the bundle's own install.sh still hard-exits on
           # the Xcode CLT gate that #7547 replaced with a warning. No change to this PR
@@ -328,18 +326,14 @@ jobs:
           ls -la dl
 
       - name: Strip the developer toolchain
-        # Same gate as macOS. Without this the Linux rows ignored strip_toolchain
-        # entirely and ran the bundled installer with the runner's git, gcc, cmake and
-        # make in /usr/bin, so a bundle that needs a toolchain passed the one workflow
-        # whose premise is that it must not.
+        # Same gate as macOS: without it the Linux rows ignored strip_toolchain and ran
+        # the bundled installer with the runner's git, gcc, cmake and make in /usr/bin.
         #
         # BEFORE the bundle install, as macOS and Windows already do: dpkg runs the
-        # package's own maintainer scripts, and installing first meant they ran with the
-        # hosted image's git, compilers and cmake in /usr/bin, so a release whose scripts
-        # reached for one would pass here and fail on a clean machine. Nothing in that
-        # install needs a masked tool -- clean-machine-env.sh moves aside only $TOOLS
-        # (compilers, git, cmake, make, brew, cargo), leaving apt, dpkg and sudo -- and
-        # the current bundle ships a postrm and no install-time script at all.
+        # package's own maintainer scripts, so installing first let them see the hosted
+        # image's toolchain. Nothing in that install needs a masked tool --
+        # clean-machine-env.sh moves aside only $TOOLS, leaving the package manager
+        # itself -- and the current bundle ships a postrm and no install-time script.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
@@ -660,13 +654,11 @@ jobs:
       - name: Run the bundled installer, the path first launch takes
         shell: pwsh
         run: |
-          # The launch step below only proves the process stayed alive. On a fresh
-          # profile preflight reports not_installed and the app waits for a click on
-          # Install (use-tauri-backend.ts:252-254, startup-screen.tsx:388-389), so this
-          # job passed on a bundle whose embedded install.ps1 was missing or broken --
-          # the packaged-app failure the workflow exists to catch.
-          # tauri.conf.json:56-59 ships it as a bundle resource, so find it where NSIS
-          # put it and invoke it as install.rs:326-341 does.
+          # The launch step below only proves the process stayed alive: on a fresh
+          # profile the app waits for a click on Install (use-tauri-backend.ts:252-254,
+          # startup-screen.tsx:388-389), so this job passed on a bundle whose embedded
+          # install.ps1 was missing or broken. tauri.conf.json:56-59 ships it as a bundle
+          # resource, so find it where NSIS put it and invoke it as install.rs:326-341.
           $root = Split-Path -Parent $env:APP_EXE
           $ps1 = Get-ChildItem -Path $root -Recurse -Filter 'install.ps1' -ErrorAction SilentlyContinue |
                  Select-Object -First 1
@@ -734,12 +726,11 @@ jobs:
                     -SimpleMatch -Quiet) { $disposition = $true }
             }
           }
-          # Same acceptance criterion macOS and Linux already enforce. Test-Path,
-          # Get-Content and Select-String cannot fail, so without these two lines the
-          # step was decoration and the 90s liveness check was the whole bar.
-          # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally
-          # at process start, so no log means the binary never got that far, and an app
-          # that hangs before preflight completes would otherwise pass.
+          # Same acceptance criterion macOS and Linux enforce. Test-Path, Get-Content and
+          # Select-String cannot fail, so without these two lines the step was decoration.
+          # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally at
+          # process start, so no log means the binary never got that far, and an app that
+          # hangs before preflight would otherwise pass.
           if (-not $found) {
             Write-Host '::error::the app wrote no tauri.log; it never reached setup_logging'
             exit 1

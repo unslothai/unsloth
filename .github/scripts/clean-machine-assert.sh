@@ -30,9 +30,8 @@ for check in "$@"; do
   case "$check" in
 
     absent)
-      # Deliberately NOT `command -v`: on a virgin Mac /usr/bin/{git,cc} EXIST as CLT
-      # stubs, so `command -v` succeeds and only RUNNING them fails ("invalid active
-      # developer path"). The honest invariant is: must not WORK.
+      # NOT `command -v`: on a virgin Mac /usr/bin/{git,cc} EXIST as CLT stubs, so it
+      # succeeds and only RUNNING them fails. The invariant is: must not WORK.
       if xcode-select -p >/dev/null 2>&1; then
         fail "xcode-select -p still resolves to $(xcode-select -p 2>/dev/null); not a clean Mac"
       else
@@ -74,10 +73,9 @@ for check in "$@"; do
         while IFS=$'\t' read -r tool rest; do
           [ -n "$tool" ] || continue
           case " $allow " in *" $tool "*) continue ;; esac
-          # `xcode-select -p` only ASKS whether a toolchain is selected; the installer
-          # has to ask, and the fix is that it carries on without one. Counting the
-          # question as USE would fail the very leg proving the toolchain went
-          # untouched. `--install`, which pops the CLT installer, stays a hit.
+          # `xcode-select -p` only ASKS whether a toolchain is selected, and the fix
+          # is that the installer carries on without one, so the question is not USE.
+          # `--install`, which pops the CLT installer, stays a hit.
           if [ "$tool" = "xcode-select" ]; then
             case "$rest" in
               -p|--print-path|-v|--version|"") continue ;;
@@ -95,9 +93,8 @@ for check in "$@"; do
       ;;
 
     nobuild)
-      # "Built an sdist" is NOT "needed a compiler", so the contract is "nothing
-      # needing a COMPILER was built". Every name below was checked against its
-      # actual sdist: setuptools.build_meta backend, no ext_modules, not one
+      # "Built an sdist" is NOT "needed a compiler". Every name below was checked
+      # against its own sdist: setuptools.build_meta backend, no ext_modules, no
       # .c/.cpp/.pyx/.rs file, so its PEP 517 build is a pure-Python copy step.
       #   openai-whisper, argbind, randomname  -- no version ever ships a wheel
       #   antlr4-python3-runtime==4.9.3        -- pinned below the 4.13.2 wheel
@@ -110,23 +107,19 @@ for check in "$@"; do
       # UNSLOTH_ALLOW_SDIST extends the allowlist.
       #
       # Lowercased and underscore-folded on both sides: a distribution name and the
-      # name uv prints can disagree on the separator (requirement triton_kernels vs
-      # build line triton-kernels), and a one-spelling allowlist silently misses.
+      # name uv prints can disagree on the separator (triton_kernels vs triton-kernels).
       _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
       if [ ! -f "$LOG" ]; then
         fail "nobuild requested but $LOG is missing"
       else
-        # uv does NOT use pip's phrasing: it prints `Building <name>==<version>` to
-        # stderr (astral-sh/uv#11165), so the pip-only pattern left _built empty on
-        # every uv source build. Match both. Requiring `==` or ` @ ` after the name
-        # keeps this off the installer's own lowercase "building frontend..."
-        # progress text. Strip ANSI first so a coloured run (FORCE_COLOR) parses.
-        #
-        # `Building <name> @ file://...` is dropped first: a local-path build is
-        # something the caller pointed at (install.sh --local, or the
-        # UNSLOTH_CI_SOURCE_OVERLAY editable overlay), never a dependency resolution
-        # chose. Index dependencies always print `<name>==<version>`, so no signal is
-        # lost: a genuine sdist from PyPI is still caught, including one named unsloth.
+        # uv prints `Building <name>==<version>`, pip prints `Building wheel for
+        # <name>` (astral-sh/uv#11165), so match both; the `==` or ` @ ` requirement
+        # keeps this off the installer's own lowercase "building frontend..." text, and
+        # ANSI is stripped first so a coloured run (FORCE_COLOR) parses.
+        # `Building <name> @ file://...` is dropped: a local-path build is something the
+        # caller pointed at (--local, or the editable overlay), never something
+        # resolution chose. Index dependencies always print `<name>==<version>`, so a
+        # genuine PyPI sdist is still caught, including one named unsloth.
         _esc=$(printf '\033')
         _built="$(sed -E "s/${_esc}\[[0-9;]*[A-Za-z]//g" "$LOG" 2>/dev/null \
                   | grep -viE "building [a-z0-9._-]+ @ file://" \
@@ -157,10 +150,9 @@ for check in "$@"; do
     macho)
       # The one thing masking cannot reproduce: Rosetta 2 is preinstalled on hosted
       # runners and absent from a factory-fresh Mac, so an x86_64-only payload runs
-      # green here and dies with "bad CPU type in executable" for the user. Assert the
-      # architecture rather than hope the runner lacks Rosetta.
-      # `lipo` is an xcrun shim and is gone after masking, so read `file -b`, exactly
-      # as the desktop lane does. Keyed off `uname -m`, since macos-15-intel is x86_64.
+      # green here and dies with "bad CPU type in executable" for the user. `lipo` is an
+      # xcrun shim and gone after masking, so read `file -b`, keyed off `uname -m`
+      # (macos-15-intel is x86_64).
       #
       # SCOPE: all of $MACHO_ROOT, including the .venv_t5_510/_530/_550 sidecars.
       # Those are payload, not scratch: setup.sh:579-581 creates them during a
@@ -203,20 +195,17 @@ for check in "$@"; do
             *) bad_arch="$bad_arch $f [$desc]" ;;
           esac
 
-          # Signature: MAIN EXECUTABLES ONLY. Asserting it for every Mach-O failed
-          # the mask/pipe leg on 29 ordinary PyPI extension modules (lxml,
-          # charset_normalizer, cygrpc, fontTools, ...) plus libportaudio.dylib.
-          # The premise was wrong: those are MH_BUNDLE/MH_DYLIB images dlopen'd
-          # into a process without library validation and ship unsigned, and the
-          # run that flagged them had already imported them with the installer
-          # exiting 0. Enforcement lands on main executables and gatekept .app
-          # bundles, so that is all this asserts.
+          # Signature: MAIN EXECUTABLES ONLY. Asserting it for every Mach-O failed the
+          # mask/pipe leg on 29 ordinary PyPI extension modules plus libportaudio.dylib:
+          # those are MH_BUNDLE/MH_DYLIB images dlopen'd without library validation and
+          # ship unsigned, and that run had already imported them with the installer
+          # exiting 0. macOS enforces on main executables and gatekept .app bundles.
           #
-          # Key off the filetype `file` reports, not the path or extension: a .so
-          # may be a bundle or a dylib, and an executable may have no extension.
-          # The library veto is second so a mixed-type fat file counts as a
-          # library. Substring tests are order-independent: Apple's `file` prints
-          # `Mach-O 64-bit executable arm64`, GNU's `Mach-O 64-bit arm64 executable`.
+          # Key off the filetype `file` reports, not the path: a .so may be a bundle or a
+          # dylib, and an executable may have no extension. The library veto is second so
+          # a mixed-type fat file counts as a library. Substring tests are
+          # order-independent (Apple prints `... executable arm64`, GNU `... arm64
+          # executable`).
           _is_exe=0
           case "$desc" in *executable*) _is_exe=1 ;; esac
           case "$desc" in *"shared library"*|*bundle*) _is_exe=0 ;; esac
@@ -229,16 +218,14 @@ for check in "$@"; do
           # ("Killed: 9"), while x86_64 execs it happily, so an unsigned x86_64
           # payload is not the same defect.
           if [ "$want" = "arm64" ] && [ "$_is_exe" = 1 ]; then
-            # Ad-hoc counts as signed: arm64 linkers apply an ad-hoc seal by
-            # default, so the test is "has a seal that verifies", not "has an
-            # identity". `spctl`/`--strict` would demand an authority and reject
-            # ad-hoc, so neither is used.
+            # Ad-hoc counts as signed: arm64 linkers seal ad-hoc by default, so the
+            # test is "has a seal that verifies", not "has an identity". `spctl` and
+            # `--strict` would demand an authority and reject ad-hoc.
             if ! codesign -v "$f" >/dev/null 2>&1; then
-              # Nothing to verify and a seal that does not match mean different
-              # things. Captured, not piped into grep: `codesign -dvv` exits
-              # non-zero on an unsigned file, and under the `pipefail` above that
-              # status is what `codesign ... | grep -q` returns even on a match,
-              # reporting every unsigned binary as a broken signature.
+              # Nothing to verify and a seal that does not match mean different things.
+              # Captured, not piped into grep: `codesign -dvv` exits non-zero on an
+              # unsigned file, and under `pipefail` that status is what the pipeline
+              # returns even on a match.
               _sig="$(codesign -dvv "$f" 2>&1 || true)"
               case "$_sig" in
                 *"not signed at all"*) unsigned="$unsigned $f" ;;
