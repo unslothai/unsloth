@@ -316,16 +316,32 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
 def list_gguf_variants_from_hf_cache(
     repo_id: str, root: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+    # Imported here, not at module scope: inventory_scan imports this module.
+    from hub.utils.inventory_scan import snapshot_variants_all_complete
+
     snapshots = (
         iter_hf_cache_snapshots(repo_id, root = root)
         if root is not None
         else iter_hf_cache_snapshots(repo_id)
     )
+    # The inventory row hands out the newest snapshot whose quants are all on
+    # disk as its load id, and a local load reads only that one directory. A
+    # plain newest-first walk reports a half-downloaded split quant from a newer
+    # snapshot as downloaded while /load points at an older snapshot that does
+    # not hold it, so the same preference is applied here, exactly as
+    # _repo_gguf_payload_snapshots does. The vision flag is OR-ed in because a
+    # skipped newer snapshot can be a projector fetched on its own; when nothing
+    # is complete the first snapshot with anything wins, as it did before.
+    any_vision = False
+    fallback: Optional[tuple[list[GgufVariantInfo], bool]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
-        if variants or has_vision:
-            return variants, has_vision
-    return None
+        any_vision = any_vision or has_vision
+        if variants and snapshot_variants_all_complete(str(snapshot)):
+            return variants, any_vision
+        if fallback is None and (variants or has_vision):
+            fallback = (variants, has_vision)
+    return fallback
 
 
 def list_partial_gguf_variants_from_state(

@@ -585,11 +585,17 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
 
     # Weights are pooled across revisions, so the newest snapshot need not hold
     # any: the load id has to name one that classifies the same way on its own,
-    # otherwise the load fails on a fully cached model.
+    # otherwise the load fails on a fully cached model. Untrusted here on
+    # purpose: the repo-level classification may rest on transformer-named
+    # weights alone, but a pinned load id names ONE directory and
+    # from_pretrained needs config.json inside it. A snapshot that only
+    # qualifies through that trust is not self-contained, so it must not become
+    # the load id; the row then keeps the repo id, which can still fill the
+    # config in from the hub.
     payload_snapshots = [
         snapshot
         for snapshot, flags in revision_flags
-        if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = True) == model_format
+        if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == model_format
     ]
     return _CachedNonGgufPayload(
         size_bytes = sum(size for size, _mtime in selected_blobs.values()),

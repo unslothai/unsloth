@@ -577,3 +577,131 @@ def test_a_genuinely_incomplete_download_is_still_partial(tmp_path, monkeypatch)
 
     assert rows[0].get("partial") is True
     assert rows[0]["capabilities"].get("can_chat") is False
+
+
+# --- everything the row advertises must resolve under its load id ------------
+
+
+def _local_gguf_variants_for_autoload(row: dict, cache_root: Path) -> list[str]:
+    """The quants chat auto-load is offered: GET /api/models/gguf-variants with
+    ``preferLocalCache`` and the row's ``cache_path``, exactly as chat-adapter
+    calls it before handing ``load_id`` to /load."""
+    import asyncio
+
+    from hub.services.models import gguf_variants
+
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            row["repo_id"],
+            prefer_local_cache = True,
+            local_path = row["cache_path"],
+        )
+    )
+    return [variant.quant for variant in response.variants if variant.downloaded]
+
+
+def test_gguf_variants_are_scoped_to_the_snapshot_the_row_advertises(tmp_path, monkeypatch):
+    """The load id now names the newest snapshot whose quants are all on disk,
+    but the variant lookup still walked snapshots newest-first, so a half
+    downloaded split quant in a newer snapshot was offered as downloaded while
+    /load pointed at an older snapshot that does not hold it. Auto-load then
+    failed on a cache that has a perfectly usable quant."""
+    from hub.utils.gguf import list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    load_dir = Path(rows[0]["load_id"])
+    assert load_dir == repo_dir / "snapshots" / OLDER
+    offered = _local_gguf_variants_for_autoload(rows[0], tmp_path)
+    resolvable = {v.quant for v in list_local_gguf_variants(str(load_dir))[0]}
+    # Behavioural: every quant offered as downloaded has to resolve under the
+    # load id, and the complete one must not be shadowed by the broken one.
+    assert set(offered) <= resolvable, (
+        f"auto-load is offered {sorted(offered)} but load_id {load_dir.name[:8]} "
+        f"resolves only {sorted(resolvable)}"
+    )
+    assert offered == ["Q4_K_M"]
+
+
+def test_gguf_variants_still_list_when_no_snapshot_is_complete(tmp_path, monkeypatch):
+    """The completeness preference must not empty the list: with nothing
+    complete anywhere, the newest snapshot holding quants is still reported,
+    which is what shipped before, and it still agrees with the load id."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
+        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+    assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == ["Q8_0"]
+
+
+def test_partial_ignores_an_incomplete_blob_left_by_a_newer_revision(tmp_path, monkeypatch):
+    """The manifest walk was pinned to the advertised snapshot but the legacy
+    signal still scanned the whole repo, so the interrupted re-download this
+    branch is meant to prevent left an ``.incomplete`` blob that flipped
+    ``can_chat`` off for the complete snapshot the row hands out."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}"},
+    )
+    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("partial") is False
+    assert rows[0]["capabilities"].get("can_chat") is True
+
+
+def test_an_incomplete_blob_against_the_advertised_snapshot_is_still_partial(
+    tmp_path, monkeypatch
+):
+    """Negative side of the same rule: when the row advertises the newest
+    snapshot, the ``.incomplete`` blob does belong to it and must still count."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+    )
+    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+    assert rows[0].get("partial") is True
+    assert rows[0]["capabilities"].get("can_chat") is False
+
+
+def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkeypatch):
+    """The repo-level format is allowed to rest on transformer-named weights
+    alone, but a pinned load id names one directory and from_pretrained needs
+    ``config.json`` inside it. Pinning a weight-only snapshot advertised the row
+    as loadable while the load could only fail; keep the repo id, which can
+    still fill the config in from the hub."""
+    _two_snapshot_repo(
+        tmp_path,
+        older_files = {"model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}"},
+        ref = NEWER,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["model_format"] == "safetensors"
+    load_id = rows[0]["load_id"]
+    assert load_id == "Org/Model", (
+        f"load_id {Path(load_id).name[:8]} holds no config.json, so a local "
+        "from_pretrained on it cannot resolve the architecture"
+    )

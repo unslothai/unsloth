@@ -516,25 +516,37 @@ def _repo_cache_dir_incomplete_hashes(repo_cache_dir: Path) -> set[str]:
     return hashes
 
 
-def _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(repo_cache_dir: Path) -> bool:
-    latest = latest_snapshot_dir(repo_cache_dir)
-    if latest is None:
+def _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(
+    repo_cache_dir: Path, snapshot_dir: Optional[Path] = None
+) -> bool:
+    target = snapshot_dir if snapshot_dir is not None else latest_snapshot_dir(repo_cache_dir)
+    if target is None:
         return False
     try:
-        entries = list(latest.rglob("*"))
+        entries = list(target.rglob("*"))
     except OSError:
         return False
     for entry in entries:
         try:
             if not entry.is_symlink() or entry.exists():
                 continue
-            rel = entry.relative_to(latest).as_posix()
+            rel = entry.relative_to(target).as_posix()
             if is_gguf_filename(rel):
                 continue
             return True
         except OSError:
             continue
     return False
+
+
+def _is_latest_snapshot(repo_cache_dir: Path, snapshot_dir: Path) -> bool:
+    latest = latest_snapshot_dir(repo_cache_dir)
+    if latest is None:
+        return False
+    try:
+        return latest.resolve() == snapshot_dir.resolve()
+    except OSError:
+        return latest == snapshot_dir
 
 
 def _gguf_variant_manifest_blob_hashes(
@@ -564,18 +576,28 @@ def _gguf_variant_manifest_blob_hashes(
 
 
 def _repo_cache_dir_has_snapshot_legacy_partial(
-    repo_cache_dir: Path, *, ignored_blob_hashes: frozenset[str]
+    repo_cache_dir: Path,
+    *,
+    ignored_blob_hashes: frozenset[str],
+    snapshot_dir: Optional[Path] = None,
 ) -> bool:
-    incomplete_hashes = _repo_cache_dir_incomplete_hashes(repo_cache_dir)
-    if any(blob_hash not in ignored_blob_hashes for blob_hash in incomplete_hashes):
+    if _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(repo_cache_dir, snapshot_dir):
         return True
-    return _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(repo_cache_dir)
+    # ``.incomplete`` blobs sit in ``blobs/`` with no revision of their own, so
+    # they can only be charged to the revision a download is currently writing,
+    # which is the newest one. A row that advertises an older, already complete
+    # snapshot must not go partial (and lose ``can_chat``) over a separate fetch.
+    if snapshot_dir is not None and not _is_latest_snapshot(repo_cache_dir, snapshot_dir):
+        return False
+    incomplete_hashes = _repo_cache_dir_incomplete_hashes(repo_cache_dir)
+    return any(blob_hash not in ignored_blob_hashes for blob_hash in incomplete_hashes)
 
 
 def _snapshot_legacy_partial(
     repo_type: str,
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
+    snapshot_dir: Optional[Path] = None,
 ) -> bool:
     if repo_type != "model":
         return _legacy_partial(repo_type, repo_id, repo_cache_dir)
@@ -584,7 +606,10 @@ def _snapshot_legacy_partial(
         return _repo_cache_dir_has_snapshot_legacy_partial(
             repo_cache_dir,
             ignored_blob_hashes = ignored_hashes,
+            snapshot_dir = snapshot_dir,
         )
+    # Without a repo dir the snapshot cannot be attributed to one of the roots
+    # below, so the repo-wide signal is kept rather than applied to the wrong dir.
     return any(
         _repo_cache_dir_has_snapshot_legacy_partial(
             entry,
@@ -741,10 +766,11 @@ def is_snapshot_partial(
     A manifest without a resolvable snapshot is partial: the worker got
     far enough to record expectations but did not leave a usable snapshot.
 
-    *snapshot_dir* pins the manifest walk to the snapshot the row will hand out
-    as its load identity. Without it the walk uses the newest snapshot, so a
-    weightless metadata-only revision beside a complete download flags the row
-    partial and ``can_chat`` goes false for a model that loads fine."""
+    *snapshot_dir* pins both the legacy and the manifest walk to the snapshot the
+    row will hand out as its load identity. Without it they use the newest
+    snapshot, so a weightless metadata-only revision beside a complete download
+    flags the row partial and ``can_chat`` goes false for a model that loads
+    fine."""
     from hub.utils import download_manifest
     return _compose_partial(
         lambda: download_manifest.has_cancel_marker(
@@ -753,7 +779,7 @@ def is_snapshot_partial(
             None,
             hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
         ),
-        lambda: _snapshot_legacy_partial(repo_type, repo_id, repo_cache_dir),
+        lambda: _snapshot_legacy_partial(repo_type, repo_id, repo_cache_dir, snapshot_dir),
         lambda: _manifest_partial(
             repo_type,
             repo_id,
