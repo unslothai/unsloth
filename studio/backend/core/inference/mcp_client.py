@@ -263,6 +263,7 @@ _STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
 _STDIO_CLOSE_TIMEOUT = 10.0
 _STDIO_WEDGE_MARGIN = 15.0
 _STDIO_PING_TIMEOUT = 5.0
+_CANCEL_UNWIND_TIMEOUT = 2.0
 # Cap concurrent persistent sessions: each owns a subprocess + loop thread, and
 # the scope includes a caller-supplied thread_id, so an unbounded cache is a
 # resource-exhaustion surface. Overridable via env for large deployments.
@@ -309,18 +310,26 @@ def _transport_dead(session) -> bool:
     return False
 
 
-def _session_responsive(session) -> bool:
+def _session_responsive(session, budget: Optional[float] = None) -> bool:
     """Whether a session left dirty by an abandoned call can be reused: the
-    server must answer a ping, proving it is not still stuck on that call."""
+    server must answer a ping, proving it is not still stuck on that call.
+    ``budget`` is the caller's remaining deadline, so recovery stays inside the
+    one timeout window rather than adding to it."""
     client = session.client
     if client is None:
         return False
+    window = _STDIO_PING_TIMEOUT if budget is None else min(_STDIO_PING_TIMEOUT, budget)
+    if window <= 0:
+        return not _transport_dead(session)
     try:
-        answered = session.run(
-            asyncio.wait_for(client.ping(), _STDIO_PING_TIMEOUT), _STDIO_PING_TIMEOUT
-        )
-    except Exception:  # noqa: BLE001
+        answered = session.run(asyncio.wait_for(client.ping(), window), window)
+    except (asyncio.TimeoutError, _SessionWedged):
         return False
+    except Exception:  # noqa: BLE001
+        # A ping that fails for any other reason still proves the server is
+        # talking, so fall back to the transport probe instead of discarding a
+        # live session (and with it the state this whole path protects).
+        return not _transport_dead(session)
     if answered is False:
         return False
     session.dirty = False
@@ -899,6 +908,11 @@ async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> 
         for t in (call_task, watch_task):
             if not t.done():
                 t.cancel()
+        # Wait for the cancelled call to unwind before its session is reused, so
+        # the next call can't be dispatched while this one is still on the
+        # transport. Bounded: a coroutine that ignores cancellation leaves the
+        # session dirty, and the ping gate decides whether it is reusable.
+        await asyncio.wait({call_task, watch_task}, timeout = _CANCEL_UNWIND_TIMEOUT)
     if not done:
         raise asyncio.TimeoutError
     if call_task in done:
@@ -989,7 +1003,7 @@ def _call_stdio_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
-            elif session.dirty and not _session_responsive(session):
+            elif session.dirty and not _session_responsive(session, _remaining()):
                 # Still stuck on the abandoned call; only now is a fresh one needed.
                 discard_session = True
                 if attempt == 0:

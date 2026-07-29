@@ -200,6 +200,26 @@ def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
     assert key in mcp_client._stdio_sessions
 
 
+def test_dirty_session_ping_stays_inside_the_caller_timeout(fake_clients):
+    # The ping that gates reuse shares the call's deadline; it must not add a
+    # window of its own on top of it.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].ping_ok = False  # ping hangs for 30s
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    started = time.monotonic()
+    call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.2, scope = "chat")
+    assert time.monotonic() - started < mcp_client._STDIO_PING_TIMEOUT
+
+
 def test_cancel_preserves_stateful_session(fake_clients):
     # Pressing Stop must not tear down the server and its state.
     call_tool_sync(STDIO_URL, None, "browser_navigate", {}, scope = "chat")
