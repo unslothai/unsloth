@@ -321,10 +321,25 @@ _gfx906_bnb_prune() {
         || "$_VENV_PY" -m pip uninstall -y bitsandbytes >/dev/null 2>&1 || true
 }
 
-# Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
-# wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
-# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
-# pre-release URL is unreachable. Drop the pin once bnb 0.50+ ships on PyPI.
+# Install bitsandbytes on AMD ROCm hosts. bnb <= 0.49.2 NaNs at 4-bit decode
+# shape on every AMD GPU; the fix (bnb #1887) ships in continuous-release_main
+# and, on PyPI, first in 0.50.0. Keep this floor in step with the amd extra in
+# pyproject.toml and studio/install_python_stack.py.
+_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
+# bitsandbytes ships no ROCm binary in its aarch64 wheel at any version: the PyPI
+# 0.50.0 and continuous-release_main aarch64 wheels both carry only
+# libbitsandbytes_cpu.so plus CUDA variants. So neither install path below gives
+# aarch64 a 4-bit backend, and the messages must not claim one. Cf. gfx906.
+_bnb_rocm_arch_has_binary() {
+    case "$_ARCH" in
+        aarch64|arm64) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+_warn_bnb_no_rocm_binary() {
+    _bnb_rocm_arch_has_binary && return 0
+    substep "[WARN] aarch64: bitsandbytes ships no ROCm kernels on this arch; 4-bit QLoRA needs a source build -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+}
 _install_bnb_rocm() {
     _label="$1"
     _venv_py="$2"
@@ -339,9 +354,8 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
-    # uv rejects the continuous-release_main bitsandbytes wheel because the
-    # filename version (1.33.7rc0) does not match the embedded metadata version
-    # (0.50.0.dev0). pip accepts the mismatch, so bootstrap pip and use it.
+    # uv rejects the pre-release wheel: filename version (1.33.7rc0) does not
+    # match metadata (0.50.x.dev0). pip accepts it, so bootstrap pip and use it.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
             run_maybe_quiet uv pip install --python "$_venv_py" pip || \
@@ -357,6 +371,7 @@ _install_bnb_rocm() {
             --retries 8 --timeout 90 \
             "$_bnb_whl_url" >"$_bnb_log" 2>&1; then
             rm -f "$_bnb_log"
+            _warn_bnb_no_rocm_binary
             return 0
         fi
         _bnb_rc=$?
@@ -365,10 +380,17 @@ _install_bnb_rocm() {
         fi
         rm -f "$_bnb_log"
         step "warning" "$_label (pre-release) failed (exit code $_bnb_rc)" "$C_WARN" >&2
-        substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+        if _bnb_rocm_arch_has_binary; then
+            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK, which carries the ROCm 4-bit fix" "$C_WARN"
+        else
+            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK" "$C_WARN"
+        fi
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
-        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+        --force-reinstall --no-cache-dir --no-deps "$_BNB_ROCM_PYPI_FALLBACK"
+    _bnb_pypi_rc=$?
+    _warn_bnb_no_rocm_binary
+    return $_bnb_pypi_rc
 }
 
 if [ "$_next_is_package" = true ]; then

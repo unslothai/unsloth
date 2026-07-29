@@ -35,6 +35,7 @@ from core.inference.tool_call_parser import (
     _strip_mistral_reasoning,
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS,
+    NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
@@ -1032,9 +1033,10 @@ def run_safetensors_tool_loop(
                             "content": reprompt_to_act_message(tool_hint),
                         }
                     )
-                    # Empty status clears the badge and resets the route's
-                    # per-turn text cursor before the re-prompted turn streams.
+                    # Blank first: it clears the badge and resets the route's per-turn
+                    # text cursor. The badge then shows the pause is a re-prompt, not a stall.
                     yield {"type": "status", "text": ""}
+                    yield {"type": "status", "text": NUDGE_TOOL_CALLS_STATUS}
                     continue
 
                 # Final answer. If a literal tool marker in prose was buffered but
