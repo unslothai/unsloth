@@ -495,7 +495,7 @@ export function ResourcesTab() {
               // pane's, so it reads as one device's usage, not a rule.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3"
+                className="flex min-w-0 items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">
@@ -518,9 +518,11 @@ export function ResourcesTab() {
                   </div>
                 </div>
                 {/* Meter under the figures, so it spans their width instead of
-                    being squeezed into the gap beside them. The min width
-                    starts the block further left than its text alone would. */}
-                <div className="flex min-w-[19rem] shrink-0 flex-col items-stretch gap-1.5">
+                    being squeezed into the gap beside them. Same 392px as the
+                    Model downloads control, so both blocks start on one edge.
+                    Below 992px the dialog stops filling its 960px cap and the
+                    device name would truncate, so the row stacks instead. */}
+                <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
                   {/* Ruled between the three readings: run together they are
                       easy to misread as one number. */}
                   <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
