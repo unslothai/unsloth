@@ -200,6 +200,11 @@ _HEADER_MIN_CHARS = 150
 _HEADER_MAX_RENDERED_CHARS = 800
 
 
+# Real pages nest headers one or two deep. Past this they are left as ordinary
+# content, so closing a frame can never copy an unbounded chain of ancestors.
+_MAX_HEADER_NESTING = 8
+
+
 class _HeaderFrame:
     """Buffered ``<header>`` output plus the link tally used to judge it.
 
@@ -300,6 +305,9 @@ class _MarkdownRenderer(HTMLParser):
         # where a hidden element started. End tags pop to the matching tag, so
         # an omitted </p>/<li> close cannot leave the renderer stuck hidden.
         self._open_tags: list[str] = []
+        # How many open tags can be closed implicitly. Zero means _close_implicit
+        # has nothing to find, so it can skip scanning the stack entirely.
+        self._closable_open: int = 0
         self._hidden_marks: list[int] = []
 
         # Open <header> buffers, innermost last. Empty unless strip_header.
@@ -377,7 +385,7 @@ class _MarkdownRenderer(HTMLParser):
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(text.strip())
-        if frame is not None:
+        if frame is not None and not in_nested_link:
             frame.rendered_chars += len(text.strip())
         if frame is not None and not self._nested_buffer_open(frame):
             frame.parts.append(text)
@@ -453,6 +461,13 @@ class _MarkdownRenderer(HTMLParser):
     # Tag handlers
     # ------------------------------------------------------------------
     # Structural bookkeeping shared by every start tag (skip/hidden/scope).
+    def _truncate_open_tags(self, index: int) -> None:
+        """Drop the open-tag stack above *index*, keeping the closable count."""
+        for name in self._open_tags[index:]:
+            if name in _IMPLICIT_CLOSERS:
+                self._closable_open -= 1
+        del self._open_tags[index:]
+
     def _close_implicit(self, tag: str) -> None:
         """HTML5 optional-end-tag recovery for a start tag about to open.
 
@@ -461,6 +476,8 @@ class _MarkdownRenderer(HTMLParser):
         ``<span>``. Stops at a ``_CLOSE_BARRIERS`` container so recovery never crosses
         a nested list/table/dl and leaks the outer item's hidden content. Runs even
         for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
+        if not self._closable_open:
+            return
         barriers = _CLOSE_BARRIERS.get(tag, ())
         while True:
             close_at = None
@@ -474,7 +491,7 @@ class _MarkdownRenderer(HTMLParser):
                     break
             if close_at is None:
                 break
-            del self._open_tags[close_at:]
+            self._truncate_open_tags(close_at)
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
             while self._heading_marks and self._heading_marks[-1] >= close_at:
@@ -563,13 +580,20 @@ class _MarkdownRenderer(HTMLParser):
         first so recovery also fires for skipped tags."""
         if tag not in _VOID_TAGS:
             self._open_tags.append(tag)
+            if tag in _IMPLICIT_CLOSERS:
+                self._closable_open += 1
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
             if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
                 self._heading_marks.append(len(self._open_tags) - 1)
                 if self._in_link:
                     self._link_had_heading = True
-            if self._strip_header and tag == "header" and not self._hidden_marks:
+            if (
+                self._strip_header
+                and tag == "header"
+                and not self._hidden_marks
+                and len(self._header_stack) < _MAX_HEADER_NESTING
+            ):
                 self._header_stack.append(
                     _HeaderFrame(
                         len(self._open_tags) - 1,
@@ -615,7 +639,7 @@ class _MarkdownRenderer(HTMLParser):
             # Pop to the innermost matching open tag (recovers omitted closes).
             for i in range(len(self._open_tags) - 1, -1, -1):
                 if self._open_tags[i] == tag:
-                    del self._open_tags[i:]
+                    self._truncate_open_tags(i)
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
                     while self._heading_marks and self._heading_marks[-1] >= i:
@@ -1034,15 +1058,40 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
 _MIN_RETAINED_CHARS = 50
 
 
-_HEADING_LINE = re.compile(r"^(?:\s*(?:[>*+-]|\d+\.)\s*)*#")
+def _is_heading_line(line: str) -> bool:
+    """True when *line* is a heading, allowing blockquote and list prefixes.
+
+    Scanned rather than matched with a regex: nested prefixes make adjacent
+    whitespace patterns backtrack catastrophically on ``> > > prose``."""
+    i, n = 0, len(line)
+    while i < n:
+        char = line[i]
+        if char in " \t>*+-":
+            i += 1
+        elif char.isdigit():
+            j = i
+            while j < n and line[j].isdigit():
+                j += 1
+            if j >= n or line[j] != ".":
+                return False
+            i = j + 1
+        else:
+            break
+    return i < n and line[i] == "#"
 
 
 def _non_heading_chars(text: str) -> int:
     """Length of *text* ignoring blanks and heading lines, including headings
-    behind blockquote or list prefixes (``> # Title``)."""
-    return sum(
-        len(line) for line in text.split("\n") if line.strip() and not _HEADING_LINE.match(line)
-    )
+    behind blockquote or list prefixes (``> # Title``). Fenced code counts in
+    full: a ``#`` there is a comment, not a heading."""
+    total, in_fence = 0, False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if line.strip() and (in_fence or not _is_heading_line(line)):
+            total += len(line)
+    return total
 
 
 # A scoped conversion below this size is judged not to be the page's main

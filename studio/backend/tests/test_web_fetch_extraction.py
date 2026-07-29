@@ -1831,3 +1831,63 @@ def test_deeply_nested_headers_do_not_blow_up_quadratically():
     # Four times the depth and payload must not cost far more than four times
     # the work; a quadratic implementation lands well above this.
     assert timings[1] < timings[0] * 12, timings
+
+
+def test_linked_heading_text_is_counted_once_for_the_size_floor():
+    body = (
+        "<article><header><h1><a href='/p'>%s</a></h1>"
+        "<a href='/author'>Jane</a></header><p>%s</p></article>"
+        % ("Headline word " * 60, "Article body. " * 30)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Jane" in out
+
+
+def test_fenced_code_counts_as_retained_content():
+    # A leading # inside a fence is a comment, not a heading.
+    code = "<pre># comment line one\n# comment line two\n# comment line three</pre>"
+    article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
+        _interlanguage_list(300),
+        code,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "comment line one" in out
+
+
+def test_nested_blockquote_prose_does_not_backtrack():
+    # Heading detection must scan linearly: a regex with adjacent whitespace
+    # groups goes exponential on "> > > ... prose".
+    import time
+
+    html = (
+        "<body><main>"
+        + "<blockquote>" * 40
+        + "<p>prose text here</p>"
+        + "</blockquote>" * 40
+        + "</main></body>"
+    )
+    start = time.perf_counter()
+    html_to_markdown(html, main_content = True)
+    assert time.perf_counter() - start < 1.0
+
+
+def test_deeply_nested_tags_stay_linear():
+    # _close_implicit must not rescan the whole open-tag stack per start tag.
+    import time
+
+    def build(count):
+        return (
+            "<body><main>"
+            + "<header><h1>T</h1>" * count
+            + "</header>" * count
+            + "<p>body</p></main></body>"
+        )
+
+    timings = []
+    for count in (1000, 4000):
+        start = time.perf_counter()
+        html_to_markdown(build(count), main_content = True)
+        timings.append(time.perf_counter() - start)
+    # Four times the tags, well under sixteen times the work.
+    assert timings[1] < timings[0] * 12, timings
