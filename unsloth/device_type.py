@@ -118,13 +118,10 @@ DEVICE_COUNT: int = get_device_count()
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
-# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader
-# reads before it selects a 4bit checkpoint. A guarded import rather than a
-# find_spec probe, so an installed-but-broken wheel counts as unavailable - and
-# importable is not the same as usable either. From bitsandbytes 0.46 a wheel whose
-# native library never loaded still imports and resolves every ctypes handle to a
-# closure that raises only when called, so without the kernel check the flags stay
-# true and 4bit dies inside a kernel instead of falling back to 16bit here.
+# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader reads
+# before it picks a 4bit checkpoint. A guarded import, not find_spec, since importable
+# is not usable - from 0.46 a dead native library still resolves every ctypes handle to
+# a closure that raises only when called, so 4bit would die mid-run, not fall back here.
 try:
     import bitsandbytes as _bnb_probe
 except Exception:

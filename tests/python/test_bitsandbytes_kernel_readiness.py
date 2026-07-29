@@ -4,11 +4,9 @@
 """`ALLOW_BITSANDBYTES` must follow the kernels, not the mere presence of the module.
 
 From bitsandbytes 0.46 a wheel whose native library never loaded still imports and
-resolves every ctypes handle: `BNBNativeLibrary.__getattr__` returns a `throw_on_call`
-closure, and a dead library is replaced wholesale by `ErrorHandlerMockBNBNativeLibrary`,
-which does the same for every name. Nothing raises while `kernels/utils.py` binds them,
-so a probe made of attribute reads alone sees a healthy wheel, the loader selects a 4bit
-checkpoint, and the failure lands inside a kernel mid-run instead of degrading to 16bit.
+resolves every ctypes handle to a `throw_on_call` closure, so a probe made of attribute
+reads alone sees a healthy wheel, the loader selects a 4bit checkpoint, and the failure
+lands inside a kernel mid-run instead of degrading to 16bit.
 """
 
 from __future__ import annotations
@@ -22,10 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_probe():
-    """Import unsloth/bnb_availability.py by path, not as ``unsloth.bnb_availability``,
-    which would run the package __init__ and pull in torch. Works only because the
-    module is a leaf - the property that lets device_type.py, imported very early, use
-    it without a cycle."""
+    """Import by path, not as ``unsloth.bnb_availability``, which would run the package
+    __init__ and pull in torch. Works only because the module is a leaf - the property
+    that lets device_type.py, imported very early, use it without a cycle."""
     path = REPO_ROOT / "unsloth" / "bnb_availability.py"
     spec = importlib.util.spec_from_file_location("_unsloth_bnb_availability", path)
     module = importlib.util.module_from_spec(spec)
@@ -66,8 +63,7 @@ class _RealHandleLib:
 
 
 def test_probe_covers_every_module_scope_ctypes_bind():
-    """kernels/utils.py binds these off ``bnb.functional.lib`` at import time, so a
-    probe that misses one lets that shape through."""
+    """A probe that misses one of the import-time binds lets a dead wheel through."""
     tree = ast.parse((REPO_ROOT / "unsloth" / "kernels" / "utils.py").read_text(encoding = "utf-8"))
     bound = {
         node.attr
@@ -80,8 +76,7 @@ def test_probe_covers_every_module_scope_ctypes_bind():
     xpu = set(probe.bitsandbytes_symbols("xpu"))
     cuda = set(probe.bitsandbytes_symbols("cuda"))
     assert bound == xpu | cuda, f"probe and module-scope binds differ: {bound ^ (xpu | cuda)}"
-    # xpu binds the gemv pair, every other device the naive gemm pair; neither probes
-    # the other's names, which its wheel will not export.
+    # xpu probes the gemv pair, every other device the naive gemm pair, never both.
     assert xpu - cuda and cuda - xpu, "the device split collapsed"
 
 
@@ -106,13 +101,8 @@ def test_a_lib_that_never_loaded_is_not_ready():
 
 
 def test_a_partially_exporting_library_stays_ready():
-    """One missing symbol does not mean a dead library.
-
-    ``ALLOW_BITSANDBYTES`` gates 8bit as well as 4bit - loader.py clears both - so
-    writing the wheel off here would silently downgrade a working LLM.int8 request.
-    The missing symbol raises where kernels/utils.py binds it, which is a crash no
-    flag can rescue, not something to trade 8bit for.
-    """
+    """``ALLOW_BITSANDBYTES`` gates 8bit as well as 4bit, so writing a wheel off over
+    one missing symbol would silently downgrade a working LLM.int8 request."""
 
     class _MissingOne(_RealHandleLib):
         def __getattr__(self, name):
@@ -142,15 +132,10 @@ def test_device_type_gates_the_flags_on_the_kernels():
 
 
 def test_the_ctypes_binds_are_gated_on_the_same_verdict():
-    """Clearing the flag is not enough on its own.
-
-    ``bnb is None`` was the only guard on the ``bnb.functional.lib.*`` binds, so an
-    importable-but-dead wheel still reached them at module scope - 0.45.5, the floor in
-    pyproject.toml, sets ``functional.lib = None`` on a native-load failure, and
-    ``None.cdequantize_blockwise_fp32`` raises there. That kills ``import unsloth``
-    outright instead of degrading to 16bit, which is the fallback the cleared flag is
-    supposed to reach.
-    """
+    """Clearing the flag is not enough on its own: ``bnb is None`` alone let an
+    importable-but-dead wheel reach the binds, and 0.45.5 sets ``functional.lib = None``
+    on a native-load failure, so they killed ``import unsloth`` outright instead of
+    degrading to 16bit."""
     source = (REPO_ROOT / "unsloth" / "kernels" / "utils.py").read_text(encoding = "utf-8")
     assert "from ..bnb_availability import native_kernels_ready" in source
     assert (
@@ -161,9 +146,9 @@ def test_the_ctypes_binds_are_gated_on_the_same_verdict():
 
 
 def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
-    """A bitsandbytes whose __init__ died part way leaves the parent without
-    ``functional`` while the submodule stays in sys.modules, so the check has to go
-    through ``import bitsandbytes.functional``, which reads sys.modules directly."""
+    """A part-initialised bitsandbytes leaves the parent without ``functional`` while
+    the submodule stays in sys.modules, which ``import bitsandbytes.functional`` reads
+    directly."""
     probe = _load_probe()
     bnb = types.ModuleType("bitsandbytes")  # zombie: parent has no `functional`
     bnb.__version__ = "0.50.0"
@@ -172,6 +157,5 @@ def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
     real = sys.modules.get("bitsandbytes.functional")
     if real is None:
         return  # bitsandbytes not importable here; the fallback has nothing to read
-    # Must not raise AttributeError on the missing parent attribute: it falls back
-    # to the cached submodule and returns a verdict either way.
+    # Falls back to the cached submodule instead of raising on the missing attribute.
     assert probe.native_kernels_ready(bnb, "cuda") in (True, False)
