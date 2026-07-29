@@ -3058,6 +3058,12 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
     return inventory_scan.snapshot_variants_all_complete(snapshot)
 
 
+def snapshot_has_complete_variants(snapshot: str) -> bool:
+    """Re-export of the predicate every load-id pin shares; see above."""
+    from hub.utils import inventory_scan
+    return inventory_scan.snapshot_has_complete_variants(snapshot)
+
+
 def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     """Snapshot dir holding the newest primary GGUF, for a repo outside the active
     hub cache that does not resolve by id. ``None`` when the id works or no
@@ -3088,11 +3094,15 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
             mtime = 0.0
         candidates.append((mtime, str(snapshot)))
     candidates.sort(key = lambda c: c[0], reverse = True)
-    # Newest first, but skip one holding only part of a split quant: an interrupted
-    # download would otherwise beat an older snapshot that can still load. Scanning
-    # stops at the first usable snapshot, so the usual case walks one directory.
+    # Newest first, but skip one holding no whole quant at all: an interrupted
+    # download would otherwise beat an older snapshot that can still load. One
+    # whole quant is enough, matching _repo_gguf_payload_snapshots and the lister
+    # behind /gguf-variants, which trims its offer to the completed subset --
+    # demanding the whole directory pinned an older revision while the variants
+    # route advertised a quant only the newer one holds. Scanning stops at the
+    # first usable snapshot, so the usual case walks one directory.
     for _, snapshot in candidates:
-        if snapshot_variants_all_complete(snapshot):
+        if snapshot_has_complete_variants(snapshot):
             return snapshot
     # Nothing complete anywhere: publishing a half-downloaded snapshot would put that
     # path in the copied command and fail on load. Drop the id so the repo id is used,

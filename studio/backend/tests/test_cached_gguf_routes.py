@@ -262,8 +262,13 @@ def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch
     assert "load_id" not in rows[0]
 
 
-def test_list_cached_gguf_skips_snapshot_with_one_incomplete_variant(monkeypatch, tmp_path):
-    """A good quant beside a half-downloaded one is still not a safe load target."""
+def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monkeypatch, tmp_path):
+    """One whole quant beside a half-downloaded one is still a safe load target.
+
+    The lister behind /gguf-variants trims its offer to the completed subset, so
+    demanding a wholly complete directory pinned the older revision while that
+    offer advertised a quant only the newer one holds.
+    """
     import os
 
     active = tmp_path / "active"
@@ -271,9 +276,8 @@ def test_list_cached_gguf_skips_snapshot_with_one_incomplete_variant(monkeypatch
     older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
     for path in (older, newer):
         path.mkdir(parents = True)
-    (older / "Model-Q8_0.gguf").write_bytes(b"\0")
-    # rev-b has a complete Q8_0 AND a half-downloaded split Q4_K_M. The picker
-    # enumerates the whole directory, so it would offer the broken one.
+    (older / "Model-Q4_K_M.gguf").write_bytes(b"\0")
+    # rev-b has a complete Q8_0 AND a half-downloaded split Q4_K_M.
     (newer / "Model-Q8_0.gguf").write_bytes(b"\0")
     (newer / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
     os.utime(older, (1_000, 1_000))
@@ -284,7 +288,7 @@ def test_list_cached_gguf_skips_snapshot_with_one_incomplete_variant(monkeypatch
         [],
         repo_dir,
         revisions = [
-            SimpleNamespace(files = [_file("Model-Q8_0.gguf", 5_000)], snapshot_path = older),
+            SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 5_000)], snapshot_path = older),
             SimpleNamespace(
                 files = [
                     _file("Model-Q8_0.gguf", 5_000),
@@ -302,7 +306,16 @@ def test_list_cached_gguf_skips_snapshot_with_one_incomplete_variant(monkeypatch
 
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
-    assert rows[0]["load_id"] == str(older)
+    assert rows[0].get("load_id") == str(newer)
+    # Every quant that offer advertises is on disk in the snapshot it pinned.
+    from hub.utils.gguf import list_local_gguf_variants
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    pinned = rows[0]["load_id"]
+    offered = {v.quant for v in list_local_gguf_variants(pinned)[0] if v.quant}
+    advertised = offered & complete_snapshot_variants(pinned)
+    assert advertised == {"Q8_0"}
+    assert advertised - {v.quant for v in list_local_gguf_variants(str(older))[0] if v.quant}
 
 
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
