@@ -4,9 +4,8 @@
 """Opt-in auto-download of a GGUF a /v1 request names but this server lacks.
 
 No network: huggingface_hub, the consent probe and the Hub download service are
-all mocked. The invariant these guard is that with the setting off nothing here
-runs at all, and with it on a name that isn't shaped like a repo still falls
-through to the resident model.
+all mocked. The invariant: with the setting off nothing here runs at all, and
+with it on a name not shaped like a repo still falls through to the resident model.
 """
 
 import asyncio
@@ -87,10 +86,9 @@ def _gated_error():
 def _hub_error(error_type, status_code: int, message: str):
     """Build a Hub exception across huggingface_hub majors.
 
-    huggingface_hub 1.x made ``response`` a required keyword-only argument, and
-    the project floor is 0.34, so construct positionally and fall back. The
-    positional form carries no response, and hf_error_status reads the status off
-    it for the types that do not encode it in their name, so attach one either way.
+    huggingface_hub 1.x made ``response`` a required keyword-only argument and the
+    project floor is 0.34, so construct positionally and fall back. The positional
+    form carries no response, which hf_error_status reads, so attach one either way.
     """
     try:
         exc = error_type(message)
@@ -113,9 +111,8 @@ def _hub_error(error_type, status_code: int, message: str):
 
 
 def test_the_hub_error_helper_carries_a_status_on_both_majors():
-    # CI runs huggingface_hub 1.x and this box runs 0.x, and only one of the two
-    # constructor shapes works on each. hf_error_status reads the status off the
-    # response, so a helper that silently produced one without it would make an
+    # CI runs huggingface_hub 1.x and this box 0.x, and each takes only one of the
+    # constructor shapes. A helper that silently dropped the response would make an
     # error-mapping test pass here and fail there.
     from hub.utils.hf_errors import hf_error_status
 
@@ -553,10 +550,9 @@ def test_an_unknown_state_still_reports_the_download_to_a_retry(hub, monkeypatch
 
 
 def test_a_hanging_code_probe_does_not_pin_the_slot(hub, monkeypatch):
-    # hf_hub_download and auth_check take no timeout, and both run while the provisional
-    # slot is held, so an unresponsive Hub stalled the request far past the metadata
-    # budget and reported every other model busy meanwhile. Unchecked is not cleared,
-    # so the bounded probe refuses rather than admitting the repo.
+    # hf_hub_download and auth_check take no timeout and run while the provisional slot
+    # is held, so an unresponsive Hub stalled the request and reported every other model
+    # busy. Unchecked is not cleared, so the bounded probe refuses instead of admitting.
     import threading
 
     entered, release = threading.Event(), threading.Event()
@@ -610,10 +606,9 @@ def test_a_hanging_auth_check_falls_through_to_the_download(hub, monkeypatch):
 
 
 def test_a_companion_only_repo_is_not_held_at_busy(hub):
-    # mmproj and MTP files are companions, not quants, so admission classifies such a
-    # repo as non-servable and lets the label fall through to the resident model. The
-    # busy probe accepted any .gguf, which stranded that ordinary traffic behind an
-    # unrelated multi-hour download.
+    # mmproj and MTP files are companions, not quants, so such a repo is non-servable
+    # and falls through to the resident model. The busy probe accepted any .gguf, which
+    # stranded that ordinary traffic behind an unrelated multi-hour download.
     assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
     gb = 1024**3
     hub["info"] = _Info([_Sibling("mmproj-F16.gguf", gb), _Sibling("mtp-model.gguf", gb)])
@@ -1242,9 +1237,8 @@ def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
 
 
 def test_a_cold_index_is_scanned_rather_than_read_as_nothing_here(monkeypatch):
-    # Before the first scan there is no cached evidence, and treating that as "not
-    # downloaded" answers a named local model with the resident one. The scan is paid
-    # once, off the loop; every later request reads the built index instead.
+    # With no cached evidence yet, reading that as "not downloaded" answers a named
+    # local model with the resident one. Pay the scan once, off the loop.
     from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("org/other", "/srv/models/org--other", ("Q4_K_M",))
@@ -1280,9 +1274,8 @@ def test_a_cold_index_is_scanned_rather_than_read_as_nothing_here(monkeypatch):
 
 
 def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch):
-    # The scan is bounded so a pathological install cannot hold the request open, but
-    # an unfinished scan knows nothing about the name, and falling through would put
-    # the resident model behind it. Answer "not yet", with a Retry-After.
+    # The scan is bounded, but an unfinished one knows nothing about the name, and
+    # falling through would put the resident model behind it: answer "not yet".
     import threading
 
     from core.inference import local_model_resolver as resolver
@@ -1312,8 +1305,8 @@ def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch
 
 def test_a_refusal_is_never_swallowed_by_the_cannot_verify_handler(monkeypatch):
     # The checks run inside a broad `except Exception` that turns a failure to decide
-    # into a fallthrough. An HTTPException raised in there is a decision, and was
-    # being logged as a failure and answered by the resident model instead.
+    # into a fallthrough. An HTTPException there is a decision, but was logged as a
+    # failure and answered by the resident model.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -1435,9 +1428,8 @@ def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatc
 
 
 def test_a_rejected_token_says_so_instead_of_asking_for_a_retry(hub):
-    # Hugging Face answers an expired or invalid X-Unsloth-HF-Token with 401. Only
-    # 403 and 404 were handled, so it fell through to "could not reach Hugging Face"
-    # with a 503, telling the caller to retry something that cannot start working.
+    # Hugging Face 401s an expired X-Unsloth-HF-Token. Only 403/404 were handled, so it
+    # fell through to a 503 telling the caller to retry something that cannot work.
     from huggingface_hub.utils import HfHubHTTPError
 
     hub["raise"] = _hub_error(HfHubHTTPError, 401, "unauthorized")
@@ -1448,9 +1440,8 @@ def test_a_rejected_token_says_so_instead_of_asking_for_a_retry(hub):
 
 
 def test_an_image_request_does_not_download_a_text_only_model(hub):
-    # The capability guard only ever sees an already-local target, so without this
-    # an image request would spend gigabytes on weights that cannot answer it and
-    # then 400 on every retry.
+    # The capability guard only ever sees an already-local target, so without this an
+    # image request spends gigabytes on weights that then 400 on every retry.
     gb = 1024**3
     hub["info"] = _Info([_Sibling("model-UD-Q5_K_XL.gguf", 5 * gb)])
     refusal = asyncio.run(
@@ -1489,10 +1480,9 @@ def test_two_models_differing_only_in_case_are_not_the_same_weights(monkeypatch)
 
 
 def test_a_quant_request_is_not_satisfied_by_transformers_weights(monkeypatch):
-    # A Transformers model active from a directory that also holds GGUF exports
-    # resolves to that same directory, and the path match let admission answer an
-    # explicit quant with the safetensors weights. Only llama.cpp has a quant
-    # identity, which is why _loaded_satisfies already refuses this by name.
+    # A Transformers model active from a directory that also holds GGUF exports resolves
+    # to that directory, so the path match let admission answer an explicit quant with
+    # the safetensors weights. Only llama.cpp has a quant identity.
     from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("alias", "/srv/models/tuned", ("Q4_K_M",))
@@ -1564,9 +1554,8 @@ def test_a_timed_out_download_stops_holding_the_slot_once_unprobeable(monkeypatc
 
 
 def test_a_sibling_quant_in_the_same_directory_is_not_the_resident_one(monkeypatch):
-    # Quants of one repo share a directory, so the path match alone cannot tell
-    # them apart, and an explicit :Q8_0 was answered by a resident Q4_K_M that
-    # _loaded_satisfies had already refused by name.
+    # Quants of one repo share a directory, so the path match alone cannot tell them
+    # apart, and an explicit :Q8_0 was answered by a resident Q4_K_M.
     from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("org/model", "/hf/org--model/snap", ("Q4_K_M", "Q8_0"))
@@ -1587,9 +1576,8 @@ def test_a_sibling_quant_in_the_same_directory_is_not_the_resident_one(monkeypat
 
 
 def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
-    # ":latest" and ":8b" name no quant, so remote admission must default-select
-    # like a bare repo id instead of 404ing on a quant that never existed. Matches
-    # what the local resolver now does with the same tag.
+    # ":latest" and ":8b" name no quant, so remote admission must default-select like a
+    # bare repo id (as the local resolver does) instead of 404ing on a non-quant.
     assert _run("unsloth/x-GGUF").code == "model_downloading"
     bare_repo, bare_variant, _ = hub["started"][0]
     for tag in (":latest", ":8b"):
@@ -1608,9 +1596,9 @@ def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
 
 
 def test_a_generic_gguf_advertises_the_label_the_worker_resolves(hub):
-    # With no recognized quant token the label extractors part ways: one takes the
-    # last hyphenated segment, the plan and the worker key the whole stem. Dispatching
-    # ours made the worker exit with "No GGUF shards matching variant".
+    # With no recognized quant token the extractors part ways: one takes the last
+    # hyphenated segment, the plan and worker key the whole stem. Dispatching ours
+    # made the worker exit with "No GGUF shards matching variant".
     from hub.utils.gguf import extract_quant_label as canonical
     from hub.utils.gguf_plan import build_gguf_variant_plans
 
@@ -1624,9 +1612,9 @@ def test_a_generic_gguf_advertises_the_label_the_worker_resolves(hub):
 
 
 def test_windows_style_paths_still_match_their_own_directory(monkeypatch):
-    # normcase folds case and rewrites the separator to a backslash on Windows, so
-    # normalizing to "/" before it left the descendant checks comparing a "/" against
-    # a path that had none, and a resident model read as a different one.
+    # normcase rewrites "/" to a backslash on Windows, so normalizing before it left the
+    # descendant checks comparing against a path with none, and a resident model read
+    # as a different one.
     import ntpath
 
     monkeypatch.setattr(inference_route.os.path, "normcase", ntpath.normcase)
@@ -1646,9 +1634,8 @@ def test_windows_style_paths_still_match_their_own_directory(monkeypatch):
 
 
 def test_a_bare_request_for_a_just_downloaded_model_is_refused(monkeypatch):
-    # End of the same chain: the note has to reach admission, or a bare request in
-    # the window between the download landing and the scan is served by the resident
-    # model, which is the whole failure this hook exists to stop.
+    # End of the same chain: the note has to reach admission, or a bare request between
+    # the download landing and the scan is served by the resident model.
     from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {}))
@@ -1668,9 +1655,9 @@ def test_a_bare_request_for_a_just_downloaded_model_is_refused(monkeypatch):
 
 
 def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
-    # _already_serving split on ":" rather than on whether the suffix names a quant,
-    # so org/model:latest against a serving Q8_0 counted as a quant mismatch and
-    # swapped in the preferred Q4_K_M, for a request either one satisfies.
+    # _already_serving split on ":" rather than on whether the suffix names a quant, so
+    # org/model:latest against a serving Q8_0 counted as a mismatch and swapped in the
+    # preferred Q4_K_M, for a request either one satisfies.
     from core.inference import local_model_resolver as resolver
 
     entry = resolver._LocalGgufEntry("org/model", "/hf/org--model/snap", ("Q4_K_M", "Q8_0"))
@@ -1698,9 +1685,9 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
 
 
 def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatch):
-    # huggingface_hub treats None as "use the cached login", so only an explicit
-    # False is anonymous. The metadata probe and the worker already pass one; this
-    # probe did not, so a caller-named repo was read with the server's identity.
+    # huggingface_hub treats None as "use the cached login", so only an explicit False
+    # is anonymous. This probe passed None, so a caller-named repo was read with the
+    # server's identity.
     seen: list = []
 
     def _probe(model_name, hf_token = None):
@@ -1718,9 +1705,8 @@ def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatc
 
 
 def test_a_foreign_label_is_not_told_to_wait_for_someone_elses_download(hub):
-    # The busy refusal fired before the probe, so any namespaced label a drop-in
-    # client sends (LiteLLM/OpenRouter style) was told to wait out a download that
-    # has nothing to do with it, for as long as that download runs.
+    # The busy refusal fired before the probe, so any namespaced label a drop-in client
+    # sends (LiteLLM/OpenRouter style) was told to wait out an unrelated download.
     assert _run("unsloth/first-GGUF").code == "model_downloading"
 
     hub["info"] = _Info([_Sibling("README.md", 1024)])  # real repo, no GGUF
@@ -1733,9 +1719,8 @@ def test_a_foreign_label_is_not_told_to_wait_for_someone_elses_download(hub):
 
 
 def test_a_failed_download_keeps_the_slot_until_someone_is_told(monkeypatch):
-    # The watcher freed the slot the moment it saw the error, but Retry-After is 30s
-    # and the poll is 2s, so the client came back to an empty slot and started the
-    # identical failing download again instead of being told it had failed.
+    # The watcher freed the slot on the error, but Retry-After is 30s and the poll 2s,
+    # so the client came back to an empty slot and restarted the same failing download.
     monkeypatch.setattr(auto_dl, "_MAX_WATCH_S", 60.0)
     monkeypatch.setattr(auto_dl, "_WATCH_POLL_S", 0.001)
 
@@ -1782,9 +1767,8 @@ def test_a_completed_download_does_not_restage_the_scan_it_just_warmed(monkeypat
 
 
 def test_an_exact_generic_variant_beats_the_default_pick(hub):
-    # Canonicalizing generic labels made them real worker keys, but the matcher still
-    # read anything non-quant-shaped as a tag, so repo:llama-13b default-selected and
-    # fetched llama-7b instead of the model that was actually asked for.
+    # Canonicalizing generic labels made them real worker keys, but the matcher read
+    # anything non-quant-shaped as a tag, so repo:llama-13b default-selected llama-7b.
     gb = 1024**3
     hub["info"] = _Info([_Sibling("llama-7b.gguf", 4 * gb), _Sibling("llama-13b.gguf", 8 * gb)])
     assert _run("unsloth/generic-GGUF:llama-13b").code == "model_downloading"

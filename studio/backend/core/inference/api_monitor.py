@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -17,6 +18,14 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+
+# Opt-in startup kill switch for Studio's in-memory API monitor.
+_DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _api_monitor_disabled() -> bool:
+    return os.environ.get(_DISABLE_ENV, "").strip().lower() in _TRUE_VALUES
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -104,10 +113,22 @@ class ApiMonitorEntry:
 
 
 class ApiMonitor:
-    def __init__(self, max_entries: int = _MAX_ENTRIES):
+    def __init__(
+        self,
+        max_entries: int = _MAX_ENTRIES,
+        *,
+        enabled: bool = True,
+    ):
         self._entries: deque[ApiMonitorEntry] = deque()
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self._enabled = enabled
+
+    @property
+    def enabled(self) -> bool:
+        """Whether rows are being recorded. Read-only: the kill switch is a
+        startup env var, so nothing may flip it on a live monitor."""
+        return self._enabled
 
     def start(
         self,
@@ -119,6 +140,8 @@ class ApiMonitor:
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
     ) -> str:
+        if not self._enabled:
+            return ""
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apireq_{uuid.uuid4().hex[:12]}",
@@ -148,11 +171,12 @@ class ApiMonitor:
     ) -> str:
         """Record a model load/unload alongside the request traffic that caused it.
 
-        ``running=True`` opens the row (a load in progress) and the caller closes
-        it with the usual :meth:`finish` / :meth:`fail`; an unload is terminal on
-        arrival. Rows are shared, so every subject sees them, and share the same
-        retention budget as requests.
+        ``running=True`` opens the row for the caller to close with :meth:`finish` /
+        :meth:`fail`; an unload is terminal on arrival. Rows are shared (visible to
+        every subject) and share the request retention budget.
         """
+        if not self._enabled:
+            return ""
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apievt_{uuid.uuid4().hex[:12]}",
@@ -177,8 +201,8 @@ class ApiMonitor:
         return entry.id
 
     def relabel(self, entry_id: Optional[str], model: str) -> None:
-        """Rename an open lifecycle row once the load resolves its real id (the
-        caller only has the load path up front, which may be an HF snapshot dir)."""
+        """Rename an open lifecycle row once the load resolves its real id: up front
+        the caller only has the load path, which may be an HF snapshot dir."""
         if not entry_id or not model:
             return
         with self._lock:
@@ -198,8 +222,7 @@ class ApiMonitor:
                 entry.updated_at = time.time()
 
     def discard(self, entry_id: Optional[str]) -> None:
-        """Drop a row that turned out not to be an event (a load that was already
-        satisfied, so nothing was actually loaded)."""
+        """Drop a row that turned out not to be an event (an already-satisfied load)."""
         if not entry_id:
             return
         with self._lock:
@@ -293,9 +316,8 @@ class ApiMonitor:
             self._trim_terminal_locked()
 
     def fail_open(self, entry_id: Optional[str], error: str) -> None:
-        """Fail only a still-open row. Unlike :meth:`fail` this never touches an
-        entry that already finished, so a catch-all in a ``finally`` cannot stamp
-        an error onto a request that in fact succeeded."""
+        """Fail only a still-open row: unlike :meth:`fail`, a catch-all in a
+        ``finally`` cannot stamp an error onto a request that already succeeded."""
         if not entry_id:
             return
         with self._lock:
@@ -395,4 +417,4 @@ class ApiMonitor:
         self._entries = kept
 
 
-api_monitor = ApiMonitor()
+api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())

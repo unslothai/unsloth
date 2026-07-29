@@ -121,7 +121,14 @@ def _installed_whisper_version(binary: Optional[str]) -> Optional[str]:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
+        proc = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+        )
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"v?(\d+\.\d+\.\d+)", (proc.stderr or "") + (proc.stdout or ""))

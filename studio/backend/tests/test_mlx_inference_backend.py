@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import json
+import subprocess
 import sys
 import types
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -374,6 +377,128 @@ def test_worker_share_object_receives_distributed_payload(monkeypatch):
 
     response = responses[0]
     assert response["object"] == shared_obj
+
+
+def test_worker_activates_mlx_sidecar_before_hardware_detection(tmp_path):
+    backend_dir = Path(__file__).resolve().parent.parent
+    fake_modules = tmp_path / "base"
+    sidecar = tmp_path / ".venv_t5_530"
+    packages = {
+        fake_modules / "transformers" / "__init__.py": '__version__ = "4.57.6"\n',
+        fake_modules / "mlx" / "__init__.py": "",
+        fake_modules / "mlx" / "core.py": "",
+        fake_modules / "mlx_lm" / "__init__.py": "import transformers\n",
+        fake_modules / "mlx_lm" / "sample_utils.py": "",
+        fake_modules / "mlx_vlm" / "__init__.py": "",
+        sidecar / "transformers" / "__init__.py": '__version__ = "5.3.0"\n',
+    }
+    for path, contents in packages.items():
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(contents)
+
+    script = r"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.environ["FAKE_MODULES"])
+from core.inference import worker
+from utils.hardware import hardware
+import utils.mlx_repair as mlx_repair
+import utils.transformers_version as transformers_version
+
+bootstrap_roots = sorted(
+    {
+        name.split(".", 1)[0]
+        for name in sys.modules
+        if name.split(".", 1)[0]
+        in {
+            "huggingface_hub",
+            "mlx",
+            "mlx_lm",
+            "mlx_vlm",
+            "torch",
+            "transformers",
+            "unsloth",
+            "unsloth_zoo",
+        }
+    }
+)
+assert not bootstrap_roots, f"worker bootstrap imported ML modules: {bootstrap_roots}"
+
+worker.is_apple_silicon = lambda: True
+hardware.is_apple_silicon = lambda: True
+hardware._has_torch = lambda: False
+mlx_repair._mlx_versions_satisfy_minimums = lambda: True
+transformers_version._VENV_T5_530_DIR = os.environ["SIDECAR"]
+transformers_version._ensure_venv_t5_530_exists = lambda: True
+
+observed = {"bootstrap_roots": bootstrap_roots}
+
+def capture_active_version(_backend, _config, _responses):
+    module = sys.modules["transformers"]
+    observed["active"] = module.__version__
+    observed["file"] = module.__file__
+    observed["device"] = hardware.DEVICE.value
+
+class CommandQueue:
+    def get(self, timeout):
+        return {"type": "shutdown"}
+
+class ResponseQueue:
+    def put(self, _response):
+        pass
+
+worker._handle_load = capture_active_version
+worker.run_inference_process(
+    cmd_queue = CommandQueue(),
+    resp_queue = ResponseQueue(),
+    cancel_event = None,
+    config = {
+        "model_name": "Ministral-3-regression",
+        "hf_token": "",
+        "resolved_gpu_ids": None,
+        "device_backend": "mlx",
+    },
+)
+observed["tier"] = transformers_version.get_transformers_tier(
+    "Ministral-3-regression"
+)
+print("RESULT " + json.dumps(observed, sort_keys = True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = backend_dir,
+        env = {
+            **__import__("os").environ,
+            "FAKE_MODULES": str(fake_modules),
+            "SIDECAR": str(sidecar),
+            "UNSLOTH_STUDIO_HOME": str(tmp_path),
+            "HF_HOME": str(tmp_path / "hf"),
+            "HF_HUB_CACHE": str(tmp_path / "hf" / "hub"),
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+        },
+        capture_output = True,
+        text = True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    result_line = next(
+        (
+            line.removeprefix("RESULT ")
+            for line in result.stdout.splitlines()
+            if line.startswith("RESULT ")
+        ),
+        None,
+    )
+    assert result_line is not None, result.stdout + result.stderr
+    observed = json.loads(result_line)
+    assert observed["bootstrap_roots"] == []
+    assert observed["tier"] == "530"
+    assert observed["device"] == "mlx"
+    assert observed["active"] == "5.3.0"
+    assert observed["file"] == str(sidecar / "transformers" / "__init__.py")
 
 
 def test_worker_share_object_oversize_notifies_peers(monkeypatch):

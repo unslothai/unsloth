@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
@@ -79,9 +80,10 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
-            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
-            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
-            "physical IDs are unsupported when the parent visibility mask uses "
+            "automatic selection. CUDA/ROCm values are physical GPU indices; "
+            "Vulkan values are ggml device ordinals. Explicit selection is not "
+            "supported on XPU, and physical IDs are unsupported when the parent "
+            "visibility mask uses "
             "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
             "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
             "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
@@ -111,6 +113,18 @@ class LoadRequest(BaseModel):
             "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
             "quants). Only applied when speculative_type resolves to "
             "'mtp' or 'mtp+ngram'."
+        ),
+    )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = (
+            "Parallel decode slots for llama-server (--parallel) for this "
+            f"load ({PARALLEL_MIN}..{PARALLEL_MAX}). Omit for the server-wide "
+            "default set at launch (the --parallel CLI flag). The VRAM fitter "
+            "may launch fewer slots to keep the model fully on GPU. Ignored "
+            "for non-GGUF models."
         ),
     )
     tensor_parallel: bool = Field(
@@ -191,12 +205,26 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. A load "
+            "replaces the llama-server every open conversation decodes on."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. An "
+            "unload takes away the llama-server they are decoding on."
+        ),
+    )
 
 
 class TranscribeRequest(BaseModel):
@@ -240,6 +268,8 @@ class ValidateModelRequest(BaseModel):
     # /load; defaults preserve old behavior for callers that omit them.
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
+    cache_type_kv: Optional[str] = Field(None)
+    tensor_parallel: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
@@ -247,6 +277,16 @@ class ValidateModelRequest(BaseModel):
             "GGUF GPU-memory strategy intended for the follow-up load. Manual "
             "placement bypasses the training coexistence estimate: Auto layers "
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
+        ),
+    )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = (
+            "Parallel decode slots intended for the follow-up load, so the "
+            "coexistence estimate sizes the KV cache like /load. Omit for the "
+            "server-wide --parallel default."
         ),
     )
     include_context_length: bool = Field(
@@ -295,6 +335,9 @@ class ValidateModelResponse(BaseModel):
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether this is a block-diffusion model (DiffusionGemma)"
+    )
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
     requires_trust_remote_code: bool = Field(
@@ -349,6 +392,14 @@ class InstallLatestTransformersRequest(BaseModel):
         max_length = 64,
         description = "Exact transformers version to install; must match the current "
         "latest PyPI release reported by /validate.",
+    )
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. The install "
+            "is a step of the model swap that raised the same prompt, so a client "
+            "that already got consent for that swap can carry it through here."
+        ),
     )
 
 
@@ -510,6 +561,23 @@ class LoadResponse(BaseModel):
         description = (
             "GPU placement pool requested by the user before fit-time narrowing, "
             "or None for automatic selection."
+        ),
+    )
+    requested_parallel_slots: Optional[int] = Field(
+        None,
+        description = (
+            "Parallel decode slots the load was invoked with (per-load "
+            "n_parallel, else the server-wide --parallel default). None for "
+            "non-GGUF loads and for the diffusion runner, which ignores "
+            "--parallel."
+        ),
+    )
+    parallel_slots: Optional[int] = Field(
+        None,
+        description = (
+            "Serving slots the active llama-server actually runs (--parallel "
+            "after any fit-time slot reduction). None for non-GGUF loads and "
+            "for the diffusion runner, which ignores --parallel."
         ),
     )
 
@@ -688,6 +756,23 @@ class InferenceStatusResponse(BaseModel):
         description = (
             "GPU placement pool requested by the user before fit-time narrowing, "
             "or None for automatic selection."
+        ),
+    )
+    requested_parallel_slots: Optional[int] = Field(
+        None,
+        description = (
+            "Parallel decode slots the active load was invoked with (per-load "
+            "n_parallel, else the server-wide --parallel default). None when "
+            "no GGUF model is loaded and for the diffusion runner, which "
+            "ignores --parallel."
+        ),
+    )
+    parallel_slots: Optional[int] = Field(
+        None,
+        description = (
+            "Serving slots the active llama-server actually runs (--parallel "
+            "after any fit-time slot reduction). None when no GGUF model is "
+            "loaded and for the diffusion runner, which ignores --parallel."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(
@@ -2037,7 +2122,8 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    # Client tools have input_schema; server tools may only have type/name.
+    # User-defined client tools have input_schema; Anthropic-schema client tools
+    # and server tools use type/name.
     type: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None

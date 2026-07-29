@@ -1,0 +1,8 @@
+# Model defaults for unsloth/Kimi-K3
+# Also applies to: moonshotai/Kimi-K3, unsloth/Kimi-K3-GGUF
+# Inference values are Moonshot's recommended sampling settings.
+
+inference:
+  temperature: 1.0
+  top_p: 0.95
+  min_p: 0.0

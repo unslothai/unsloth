@@ -11,6 +11,7 @@ interface SidebarModelConfigProps {
   modelId: string;
   ggufVariant: string | null;
   isGguf: boolean;
+  isDiffusion: boolean;
   nativeContextLength: number | null;
   loadedContextLength: number | null;
   loadedConfig: PerModelConfig;
@@ -43,6 +44,7 @@ function configSignature(config: PerModelConfig): string {
     config.kvCacheDtype ?? "",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
+    config.nParallel ?? "",
     config.tensorParallel ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""
@@ -55,6 +57,7 @@ export function SidebarModelConfig({
   modelId,
   ggufVariant,
   isGguf,
+  isDiffusion,
   nativeContextLength,
   loadedContextLength,
   loadedConfig,
@@ -86,6 +89,7 @@ export function SidebarModelConfig({
       loadedConfig={loadedConfig}
       loadedContextLength={loadedContextLength}
       variant="sidebar"
+      isDiffusion={isDiffusion}
     />
   );
 }
