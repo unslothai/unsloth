@@ -161,7 +161,13 @@ export async function refreshContextUsage(options?: {
     // edit the newest stored leaf is a branch the user has switched away from. Only for
     // the thread the store calls active, since that is the one the bar belongs to; the
     // history loader's own call runs before the import, so it falls through below.
+    // A captured null is excluded rather than matched: New Chat leaves the outgoing
+    // conversation mounted and only voids switchToNewThread(), so between
+    // setActiveThreadId(null) and that promise settling the reader still returns the
+    // branch being left behind, and null === null would price it into the empty chat.
+    // A thread with no id is an unpersisted New Chat, whose prompt is the bare template.
     const liveBranch =
+      capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId === capturedThreadId
         ? readActiveBranch?.()
         : null;

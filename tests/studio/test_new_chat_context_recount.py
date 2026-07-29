@@ -385,6 +385,26 @@ LOADED_MODEL = """
         # persisted, so the first render sees checkpoint "" / ggufContextLength null and
         # nothing can be priced until /api/inference/status answers.
         pytest.param("", 0, id = "reload_before_status_hydrates"),
+        # New Chat opened FROM a populated conversation. That conversation is left
+        # running, so its runtime stays mounted and the live branch reader keeps
+        # returning its messages until the voided switchToNewThread() settles -- which
+        # it has not when the recount effect runs in the same flush. The empty chat must
+        # still be priced as a bare template, not as the conversation being left behind.
+        pytest.param(
+            LOADED_MODEL
+            + """
+            seed({
+              activeThreadId: "thread-a",
+              contextUsage: { promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 },
+            });
+            setActiveBranchReader(() => [
+              { id: "m1", role: "user", createdAt: new Date(1), content: [{ type: "text", text: "hi" }] },
+              { id: "m2", role: "assistant", createdAt: new Date(2), content: [{ type: "text", text: "yo" }] },
+            ]);
+            """,
+            1,
+            id = "outgoing_conversation_still_mounted",
+        ),
     ],
 )
 def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
@@ -397,7 +417,13 @@ def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
         textwrap.dedent(
             f"""
             // @ts-nocheck
-            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
+            import {{
+              renderNewChatSwitch,
+              seed,
+              setActiveBranchReader,
+              snapshot,
+              world,
+            }} from "./harness.ts";
             {before_status}
             renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
             await new Promise((resolve) => setTimeout(resolve, 30));
