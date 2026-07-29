@@ -74,3 +74,52 @@ def test_detection_generation_advances_on_every_settled_detection():
     hw.ensure_hardware_detected()
     hw.detect_hardware()
     assert hw.DETECTION_GENERATION > before
+
+
+def test_a_forced_redetect_unpublishes_while_it_runs(monkeypatch):
+    """Health must not read a forced pass's intermediate globals as settled.
+
+    _detect_hardware_locked() resets CHAT_ONLY and CHAT_ONLY_REASON before
+    re-probing. With DETECTION_COMPLETE left set from the first pass, a health
+    request landing mid-repair reports that as authoritative, and the sidebar's
+    MLX recovery poll stops because the reason is no longer "mlx_unavailable".
+    """
+    seen = []
+
+    def _mid_pass():
+        seen.append(hw.DETECTION_COMPLETE.is_set())
+        return hw.DeviceType.CPU
+
+    hw.DETECTION_COMPLETE.set()
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _mid_pass)
+
+    hw.detect_hardware()
+
+    assert seen == [False], "detection was still published while the forced pass ran"
+    assert hw.DETECTION_COMPLETE.is_set(), "the forced pass must republish when it settles"
+
+
+def test_a_failed_forced_redetect_does_not_leave_detection_unpublished(monkeypatch):
+    """Clearing the event must not be able to strand health forever.
+
+    start_background_detection() declines once DEVICE is set, so nothing would
+    republish: /api/health would answer provisionally for the life of the
+    process. That is worse than the intermediate state the clear protects
+    against, so a raising pass restores what was published before it.
+    """
+
+    def _boom():
+        raise RuntimeError("probe exploded mid-pass")
+
+    hw.DETECTION_COMPLETE.set()
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _boom)
+
+    try:
+        hw.detect_hardware()
+    except RuntimeError:
+        pass
+
+    assert hw.DETECTION_COMPLETE.is_set(), (
+        "a failed forced re-detect left detection unpublished; health would stay "
+        "provisional for the rest of the process"
+    )

@@ -255,10 +255,28 @@ def detect_hardware() -> DeviceType:
     """
     global DETECTION_GENERATION
     with _DETECT_LOCK:
-        device = _detect_hardware_locked()
-        # A forced re-detect that returns has a settled value too. Deliberately
-        # not in a finally: if this raises, the branch's partial assignment is
-        # still in place, and that is precisely what the event must not publish.
+        # A forced pass runs while a previous answer is already published, and it
+        # mutates the globals partway through -- _detect_hardware_locked() resets
+        # CHAT_ONLY to True and CHAT_ONLY_REASON to None before re-probing. With
+        # the event left set, /api/health reports that intermediate state as
+        # settled, and the sidebar's MLX recovery poll (which only continues
+        # while chat_only_reason == "mlx_unavailable") caches a reply whose
+        # reason is None and stops polling, leaving Train hidden on a host the
+        # repair just fixed. Clear for the duration, republish once it settles.
+        was_complete = DETECTION_COMPLETE.is_set()
+        DETECTION_COMPLETE.clear()
+        try:
+            device = _detect_hardware_locked()
+        except BaseException:
+            # Restore rather than leave it clear. A permanently unset event is
+            # worse than the intermediate state it would hide: health would go
+            # provisional for the life of the process, because
+            # start_background_detection() declines once DEVICE is set, so
+            # nothing would ever republish. This puts the caller back where a
+            # failed forced re-detect already left it.
+            if was_complete:
+                DETECTION_COMPLETE.set()
+            raise
         DETECTION_GENERATION += 1
         DETECTION_COMPLETE.set()
         return device
