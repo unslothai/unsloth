@@ -579,6 +579,8 @@ export function useChatModelRuntime() {
           applyActiveModelStatusToStore(residentStatus, {
             previousCheckpoint: selectedCheckpoint,
             previousGgufVariant,
+            // Id and variant matched above: same model, only the tab moved.
+            readoptingSameModel: true,
           });
           syncModelCapabilities(modelId, residentStatus);
           return;
@@ -681,6 +683,16 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
+          // The outgoing model's slot INTENT (blank = follow the server
+          // default), which the resolved baseline cannot express. previousConfig
+          // is the snapshot the picker took before pre-applying the target's
+          // config, so the live control is only the outgoing one without it.
+          // Read before the staged-metadata await below so an in-flight change
+          // cannot perturb the outgoing snapshot.
+          const previousNParallel =
+            typeof selection !== "string" && selection.previousConfig
+              ? (selection.previousConfig.nParallel ?? null)
+              : useChatRuntimeStore.getState().nParallel;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -807,6 +819,8 @@ export function useChatModelRuntime() {
               : stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax =
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
+          let loadNParallel =
+            pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -838,6 +852,10 @@ export function useChatModelRuntime() {
             const validateGpuLayers = resetsPerModelSettings
               ? GPU_LAYERS_AUTO
               : loadGpuLayers;
+            // Per-model: the reset re-baselines to the staged config, like the load.
+            const validateNParallel = resetsPerModelSettings
+              ? (pendingLoadConfig?.nParallel ?? null)
+              : loadNParallel;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -866,7 +884,12 @@ export function useChatModelRuntime() {
               cache_type_kv: loadKvCacheDtype,
               tensor_parallel: loadTensorParallel,
               gpu_ids: validateGpuIds ?? undefined,
-              ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
+              ...(isGguf
+                ? {
+                    gpu_memory_mode: loadGpuMemoryMode,
+                    n_parallel: validateNParallel,
+                  }
+                : {}),
             });
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
@@ -949,6 +972,10 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                // Per-model too: a different model follows the server default
+                // unless its staged config overrides it.
+                nParallel: null,
+                loadedNParallel: null,
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
@@ -965,6 +992,7 @@ export function useChatModelRuntime() {
                   ? normalizeSpeculativeType(pendingLoadConfig.speculativeType)
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
+              loadNParallel = pendingLoadConfig?.nParallel ?? null;
               // Keep the click-time snapshot in lock-step with the store reset so
               // the load below sizes against the cleared per-model knobs, not the
               // previous model's (gpuMemoryMode is standing, so left as captured).
@@ -1035,6 +1063,8 @@ export function useChatModelRuntime() {
               cache_type_kv: loadKvCacheDtype,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
+              // GGUF-only: slots mean nothing for a transformers load.
+              n_parallel: isGguf ? loadNParallel : null,
               tensor_parallel: loadTensorParallel,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
@@ -1085,6 +1115,14 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
+            // Slots the load actually committed. Non-GGUF never sends them and
+            // diffusion ignores --parallel, so a click-time count on either
+            // would mint a phantom override a saved preset carries onto a GGUF.
+            const committedSlots =
+              (loadResponse.is_gguf ?? false) &&
+              !(loadResponse.is_diffusion ?? false)
+                ? (loadNParallel ?? null)
+                : null;
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -1160,6 +1198,10 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              // Keep the click-time value: the echo is the resolved count, and
+              // adopting it would pin a blank "server default" control.
+              nParallel: committedSlots,
+              loadedNParallel: committedSlots,
               customContextLength: keepCustomCtx,
               loadedCustomContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
@@ -1262,6 +1304,7 @@ export function useChatModelRuntime() {
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
+                  n_parallel: stateBeforeUnload.loadedNParallel,
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
@@ -1288,6 +1331,9 @@ export function useChatModelRuntime() {
                   // model's; the loaded baselines below come from its reload echo.
                   speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
                   specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
+                  // Control keeps its intent; only the baseline takes the echo.
+                  nParallel: previousNParallel,
+                  loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,

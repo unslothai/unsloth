@@ -862,3 +862,76 @@ class TestNoTorchPersistenceParity:
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
         assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
         assert "install_manifest.NO_TORCH_TRUTHY" in STACK_PY.read_text(encoding = "utf-8")
+
+
+class TestAmdBnbFloorParity:
+    """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
+    4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
+    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    must carry the same floor or an unreachable pre-release wheel silently reinstates
+    the broken range."""
+
+    FLOOR = "0.50.0"
+    PYPROJECT = REPO_ROOT / "pyproject.toml"
+
+    def test_amd_extra_floor(self):
+        text = self.PYPROJECT.read_text(encoding = "utf-8")
+        amd = re.search(r"^amd = \[(.*?)^\]", text, re.S | re.M)
+        assert amd, "pyproject.toml must define an `amd` extra"
+        specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
+        assert specs, "the amd extra must pin bitsandbytes"
+        for spec in specs:
+            assert spec.startswith(
+                f"bitsandbytes>={self.FLOOR}"
+            ), f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
+
+    def test_install_sh_pypi_fallback_floor(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            f'_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>={self.FLOOR}"' in text
+        ), f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
+
+    def test_stack_py_pypi_fallback_floor(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert (
+            f'_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>={self.FLOOR}"' in text
+        ), f"install_python_stack.py PyPI fallback must floor at {self.FLOOR}"
+
+    def test_no_installer_still_allows_the_broken_range(self):
+        for path in (INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY, self.PYPROJECT):
+            text = path.read_text(encoding = "utf-8")
+            for line in text.splitlines():
+                if "bitsandbytes>=0.49" in line and not line.lstrip().startswith(("#", "//")):
+                    raise AssertionError(
+                        f"{path.name} still floors bitsandbytes in the broken ROCm range: {line.strip()!r}"
+                    )
+
+    def test_fallback_is_not_reported_as_broken(self):
+        """The fallback now installs the first fixed release, so neither installer
+        may still call 4-bit decode broken on ROCm."""
+        for path in (INSTALL_SH, STACK_PY):
+            text = path.read_text(encoding = "utf-8")
+            assert (
+                "4-bit decode broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+            assert (
+                "4-bit decode will be broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+
+    def test_aarch64_is_not_told_it_has_a_rocm_backend(self):
+        """bitsandbytes ships no ROCm kernels in its aarch64 wheel at any version, so
+        neither installer may hand aarch64 the x86_64 "carries the ROCm 4-bit fix"
+        message, and both must warn that 4-bit needs a source build there."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_bnb_rocm_arch_has_binary()" in sh
+        assert "_warn_bnb_no_rocm_binary()" in sh
+        assert (
+            sh.count("_warn_bnb_no_rocm_binary\n") >= 2
+        ), "install.sh must warn on aarch64 after both the pre-release and the fallback install"
+        py = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _bnb_rocm_arch_has_binary(" in py
+        assert "_bnb_rocm_arch_has_binary()" in py
+        for text, name in ((sh, "install.sh"), (py, "install_python_stack.py")):
+            assert (
+                "4-bit QLoRA needs a source build" in text
+            ), f"{name} must tell aarch64 users 4-bit needs a source build"

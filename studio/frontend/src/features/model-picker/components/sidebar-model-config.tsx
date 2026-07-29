@@ -44,6 +44,7 @@ function configSignature(config: PerModelConfig): string {
     config.kvCacheDtype ?? "",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
+    config.nParallel ?? "",
     config.tensorParallel ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""

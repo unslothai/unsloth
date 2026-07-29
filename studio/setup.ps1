@@ -3122,7 +3122,7 @@ sys.exit(0 if install_manifest.remove_manifest() else 1)
 if (-not $_ManifestDropped) {
     Write-Host "[ERROR] Could not remove the stale unsloth_install_manifest.json." -ForegroundColor Red
     Write-Host "        Refusing to install behind a marker that still reports this venv as complete." -ForegroundColor Red
-    exit 1
+    Exit-SetupFailure "Could not remove the stale unsloth_install_manifest.json"
 }
 
 if ($script:UnslothVerbose) {
