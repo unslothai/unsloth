@@ -1,31 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opening a New Chat against a resident GGUF must recount the empty prompt (#7453).
+"""Opening a New Chat against a resident GGUF must recount the empty prompt (#7450).
 
-The bar this PR adds is fed by three triggers: the history loader (needs a
-persisted thread), the startup hydration (needs a non-null ``activeThreadId``)
-and the post-load recount. A ``/chat?new=<uuid>`` view has none of them:
-``ThreadNewChatSwitch`` switches to a local thread and writes
-``setActiveThreadId(null)``, which blanks ``contextUsage``, and
-``ActiveThreadSync`` is disabled while ``newThreadNonce`` is present. So loading
-a model on that view shows a bar, while arriving on it with the same model
-already loaded shows nothing until the first completion.
+A ``/chat?new=<uuid>`` view reaches none of the other recount triggers: it has no
+persisted thread for the history loader, and ``ThreadNewChatSwitch`` writes
+``setActiveThreadId(null)``, which blanks ``contextUsage``. On a page RELOAD there is a
+second gap -- that effect runs before ``/api/inference/status`` answers, so the store
+still holds ``checkpoint: ""`` / ``ggufContextLength: null`` and the recount returns
+without counting; the component's dependency array is what retries it.
 
-On a page RELOAD there is a second gap: the New Chat effect runs before
-``/api/inference/status`` has answered, and neither the local checkpoint nor the
-GGUF window is persisted, so the store still holds ``checkpoint: ""`` and
-``ggufContextLength: null`` and ``refreshContextUsage`` returns without counting.
-The status hydration that follows only recounts for a non-null
-``activeThreadId``, and this view's thread is deliberately ``null``. Hence the
-component's second effect, which retries once the resident model is known.
-
-Both effects are sliced verbatim out of the provider and replayed through a small
-React-effect emulator (per-effect dependency arrays, re-run only when a
-dependency changes), so an effect that never re-runs on the store update is
-visible here exactly as it is in the browser. The real ``refreshContextUsage``,
-the real store reducers and the real project resolution are sliced in alongside
-it, since ``studio/frontend`` carries no JS test runner.
+``studio/frontend`` carries no JS test runner, so the effects, the real
+``refreshContextUsage`` and the real store reducers are sliced verbatim out of the
+studio sources and replayed through a small React-effect emulator (per-effect
+dependency arrays, re-run only when a dependency changed) under ``node``.
 """
 
 from __future__ import annotations
@@ -48,11 +36,10 @@ from _node_harness import (
 REFRESH = source_path("studio/frontend/src/features/chat/utils/refresh-context-usage.ts")
 PROVIDER = source_path("studio/frontend/src/features/chat/runtime-provider.tsx")
 STORE = source_path("studio/frontend/src/features/chat/stores/chat-runtime-store.ts")
-ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 
 TEMP = WORKDIR / "temp" / "new_chat_context_recount"
 
-SOURCES = (REFRESH, PROVIDER, STORE, ADAPTER)
+SOURCES = (REFRESH, PROVIDER, STORE)
 
 # Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {"aui", "isLoading", "nonce", "checkpoint", "ggufContextLength", "modelLoading"}
@@ -92,27 +79,11 @@ def _store_reducers() -> str:
     return "  " + active.strip() + "\n  " + usage.strip() + "\n  " + thread_usage.strip()
 
 
-def _project_resolution() -> str:
-    """resolveProjectInstructions + resolveProjectId from the adapter, verbatim."""
-    text = read(ADAPTER)
-    instructions = slice_between(
-        text,
-        "async function resolveProjectInstructions(",
-        "async function resolveChatInstructions(",
-    )
-    project_id = slice_between(
-        text, "async function resolveProjectId(", "async function resolveSandboxSessionId("
-    )
-    return instructions.rstrip() + "\n\n" + project_id.rstrip()
-
-
 HARNESS_PRELUDE = """
 // @ts-nocheck
 // Fixtures the sliced source reads through. Everything below the PRELUDE marker
 // is copied verbatim out of the studio sources.
 export const world: any = {
-  storedThreads: {} as Record<string, any>,
-  storedProjects: {} as Record<string, any>,
   storedMessages: {} as Record<string, any[]>,
   countedMessages: [] as any[][],
   switchedToNewThread: 0,
@@ -121,7 +92,6 @@ export const world: any = {
 
 const state: any = {
   activeThreadId: null,
-  activeProjectId: null,
   contextUsage: null,
   contextUsageByThreadId: {},
   params: { checkpoint: "", systemPrompt: "", systemVariables: "" },
@@ -156,14 +126,6 @@ export function snapshot(): any {
   };
 }
 
-async function getStoredChatThread(id: string): Promise<any> {
-  return world.storedThreads[id];
-}
-
-async function getStoredChatProject(id: string): Promise<any> {
-  return world.storedProjects[id];
-}
-
 async function listStoredChatMessages(id: string): Promise<any[]> {
   return world.storedMessages[id] ?? [];
 }
@@ -176,24 +138,13 @@ function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
 
-// Stands in for the real builder: it forwards the same threadId to the verbatim
-// project resolution below, which is the part under test here.
-async function buildOutboundMessagesForTokenCount(
-  messages: any,
-  threadId: string | undefined,
-): Promise<any[]> {
-  const instructions = await resolveProjectInstructions(threadId);
-  const outbound = messages.map((m: any) => ({ role: m.role, content: "x" }));
-  if (instructions) {
-    outbound.unshift({ role: "system", content: instructions });
-  }
-  return outbound;
+// The adapter's own prompt build is exercised by the request tests; here it only has
+// to turn the reconstructed branch into something countable.
+async function buildOutboundMessagesForTokenCount(messages: any): Promise<any[]> {
+  return messages.map((m: any) => ({ role: m.role, content: "x" }));
 }
 
-async function buildLocalTokenCountExtras(
-  _threadId: string | undefined,
-  _outbound: any[],
-): Promise<Record<string, unknown>> {
+async function buildLocalTokenCountExtras(): Promise<Record<string, unknown>> {
   return {};
 }
 
@@ -278,7 +229,7 @@ def _rendered_effects() -> str:
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
     render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects())
-    return prelude + _project_resolution() + "\n" + _refresh_module_body() + render
+    return prelude + _refresh_module_body() + render
 
 
 def _run(script: str) -> dict:
@@ -334,35 +285,6 @@ def test_new_chat_recounts_against_a_resident_model():
     ), "the bar stays hidden on a New Chat opened against an already-loaded GGUF"
     assert out["contextUsage"].get("totalTokens") == 12
     assert out["contextUsage"].get("completionTokens") == 0
-
-
-def test_new_chat_inside_a_project_prices_the_project_instructions():
-    """A fresh chat in a project has no thread record, so the recount resolves its
-    project through the active-project branch rather than a thread lookup."""
-    out = _run(
-        textwrap.dedent(
-            f"""
-            // @ts-nocheck
-            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
-            {LOADED_MODEL}
-            world.storedProjects["p1"] = {{ id: "p1", archived: false, instructions: "Answer in French." }};
-            seed({{ activeProjectId: "p1" }});
-
-            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
-            await new Promise((resolve) => setTimeout(resolve, 30));
-
-            console.log(JSON.stringify({{
-              contextUsage: snapshot().contextUsage,
-              sent: world.countedMessages.at(-1) ?? [],
-            }}));
-            """
-        )
-    )
-    assert out["contextUsage"] is not None
-    assert any(
-        message["role"] == "system" for message in out["sent"]
-    ), "the project's instructions must be part of the counted prompt"
-    assert out["contextUsage"].get("totalTokens") == 37
 
 
 NO_LOCAL_MODEL = """
@@ -458,19 +380,43 @@ def test_reloaded_new_chat_recounts_once_status_hydrates():
     assert out["promptQueueStops"] == 1, "hydration must not re-stop the prompt queue"
 
 
-def test_hydration_retry_does_not_double_count_an_already_priced_bar():
-    """When the store already has the model, the New Chat effect prices the prompt
-    itself; the hydration retry must leave that single count alone."""
+@pytest.mark.parametrize(
+    ("first_render_seed", "second_render_seed", "expected_counts", "expected_total"),
+    [
+        # A later render with the same store values (e.g. the deferred inventory refresh
+        # re-writing an identical checkpoint) must not re-price an already-priced bar.
+        pytest.param(LOADED_MODEL, "", 1, 12, id = "identical_store_values"),
+        # The user sent a message before the status response landed, so the thread is
+        # persisted and a real completion owns the bar: leave it alone.
+        pytest.param(
+            "",
+            LOADED_MODEL
+            + """
+            seed({
+              activeThreadId: "thread-a",
+              contextUsage: { promptTokens: 640, completionTokens: 40, totalTokens: 680, cachedTokens: 0 },
+            });
+            """,
+            0,
+            680,
+            id = "completion_owns_the_bar",
+        ),
+    ],
+)
+def test_the_hydration_retry_prices_a_blank_bar_only_once(
+    first_render_seed, second_render_seed, expected_counts, expected_total
+):
+    """The second effect re-runs whenever the model fields change, so it needs its own
+    guards: one count per New Chat view, and never over a completion's usage."""
     out = _run(
         textwrap.dedent(
             f"""
             // @ts-nocheck
             import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
-            {LOADED_MODEL}
+            {first_render_seed}
             renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
             await new Promise((resolve) => setTimeout(resolve, 30));
-            // A later render with the same store values (e.g. the deferred inventory
-            // refresh re-writing an identical checkpoint).
+            {second_render_seed}
             renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
             await new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -482,41 +428,9 @@ def test_hydration_retry_does_not_double_count_an_already_priced_bar():
             """
         )
     )
-    assert out["counts"] == 1
-    assert out["switched"] == 1
-    assert out["contextUsage"].get("totalTokens") == 12
-
-
-def test_hydration_retry_stays_out_of_the_way_of_a_started_chat():
-    """The user sent a message before the status response landed: the thread is
-    persisted and the completion owns the bar, so the retry must not overwrite it."""
-    out = _run(
-        textwrap.dedent(
-            f"""
-            // @ts-nocheck
-            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
-
-            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
-            await new Promise((resolve) => setTimeout(resolve, 30));
-
-            // First turn completed against the resident model, on a persisted thread.
-            {LOADED_MODEL}
-            seed({{
-              activeThreadId: "thread-a",
-              contextUsage: {{ promptTokens: 640, completionTokens: 40, totalTokens: 680, cachedTokens: 0 }},
-            }});
-            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
-            await new Promise((resolve) => setTimeout(resolve, 30));
-
-            console.log(JSON.stringify({{
-              counts: world.countedMessages.length,
-              contextUsage: snapshot().contextUsage,
-            }}));
-            """
-        )
-    )
-    assert out["counts"] == 0, "a real completion's usage must not be recounted away"
-    assert out["contextUsage"].get("totalTokens") == 680
+    assert out["counts"] == expected_counts
+    assert out["switched"] == 1, "a re-render must not open a second thread"
+    assert out["contextUsage"].get("totalTokens") == expected_total
 
 
 def test_a_thread_recount_survives_switching_away_and_back():
