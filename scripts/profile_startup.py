@@ -87,11 +87,8 @@ def profile_imports(python: str, top: int = 15) -> dict:
     if not rows:
         return {"ok": False, "error": (proc.stderr or proc.stdout)[-2000:]}
     if proc.returncode != 0:
-        # -X importtime still prints a row for every module that finished
-        # importing before the failure -- including `main` itself when its own
-        # body raises. The surviving rows therefore describe a partial graph,
-        # and the largest cumulative one need not be `import main` at all, so
-        # reporting a total here would publish a plausible but wrong number.
+        # Rows survive for every module imported before the failure, so the graph
+        # is partial and any total from it would be plausible but wrong.
         return {
             "ok": False,
             "error": (proc.stderr or proc.stdout)[-2000:],
@@ -99,14 +96,9 @@ def profile_imports(python: str, top: int = 15) -> dict:
         }
 
     by_cum = sorted(rows, key = lambda r: -r[1])
-    # The total has to come from the row named `main`, not from the largest row.
-    # -X importtime also prints the interpreter's own startup graph (`site`,
-    # `encodings`, and anything a venv's sitecustomize drags in), which is not
-    # part of `import main`. Today main dwarfs those, but the two are not ordered
-    # by construction: with a trivial main this file's old `by_cum[0]` reported
-    # `site`'s 0.027s as `import main` while main actually cost 0.000249s. Read
-    # the labelled row so the headline number cannot silently become a different
-    # module's cost as backend imports get optimized.
+    # Take the total from the row labelled `main`, not by_cum[0]: -X importtime
+    # also prints the interpreter's own startup graph (`site`, `encodings`), which
+    # can outrank a trivial main and report another module's cost as the headline.
     main_row = next((r for r in reversed(rows) if r[2] == "main"), None)
     if main_row is None:
         return {
@@ -158,9 +150,8 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
         except Exception:
             # taskkill missing or timed out; fall through so the stub still dies.
             pass
-        # Nonzero taskkill (access denied, tree partly gone) does not raise under
-        # check=False, so returning here would skip terminate() as well and leave
-        # even the stub running until the wait() timeout.
+        # check=False means a nonzero taskkill does not raise, so fall through to
+        # terminate() instead of leaving even the stub running.
     proc.terminate()
 
 
@@ -183,10 +174,8 @@ def profile_launch(
     )
 
     def _drain() -> None:
-        # Has to run concurrently with the health polling, for two reasons: the
-        # first read is what timestamps the spawn phase, and nothing else reads
-        # this pipe, so a backend that logs more than the OS pipe buffer (64 KiB
-        # on Linux) would block in write() before it ever binds the port.
+        # Must run alongside the health polling: the first read timestamps the
+        # spawn phase, and an undrained pipe blocks the backend before it binds.
         for line in proc.stdout:
             if not first_byte:
                 first_byte.append(time.perf_counter() - t0)
@@ -219,8 +208,8 @@ def profile_launch(
     finally:
         _terminate_tree(proc)
         try:
-            # Safe to wait() rather than communicate(): the reader thread is
-            # already draining the pipe, so the child cannot block on write().
+            # wait() is safe: the reader thread drains the pipe, so the child
+            # cannot block on write().
             proc.wait(timeout = 30)
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -305,13 +294,11 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument("--json", help = "write the full report here")
     a = ap.parse_args(argv)
-    # range(0) launches nothing, so an empty runs list reaches the budget check as
-    # "no healthz measurement", warns and exits 0: a gate that cannot fail. Reject
-    # the value instead, since --repeats comes straight from a dispatch input.
+    # range(0) launches nothing, so the budget check would see no measurement and
+    # exit 0: a gate that cannot fail.
     if a.repeats < 1:
         ap.error("--repeats must be at least 1")
-    # Same reason: --import-only never launches anything, so pairing it with a
-    # budget asks for a gate that can only pass.
+    # Same reason: --import-only never launches anything.
     if a.import_only and a.max_healthz_seconds is not None:
         ap.error("--max-healthz-seconds cannot be combined with --import-only")
 
@@ -374,19 +361,16 @@ def main(argv: list[str]) -> int:
         med = launch.get("healthz_median_seconds")
         failed = launch.get("failed_runs") or 0
         if failed:
-            # A launch that never became healthy has to fail the budget, not be
-            # filtered out of it: dropping it would leave the median and max
-            # computed from the surviving (faster) runs, and dropping all of
-            # them would make the gate exit 0 no matter how broken startup is.
+            # A launch that never became healthy fails the budget rather than
+            # being dropped, which would leave only the surviving faster runs.
             print(
                 f"::error::startup regression: {failed} of {len(launch.get('runs') or [])} "
                 f"launches never became healthy within the timeout"
             )
             return 1
         if med is None:
-            # No measurement at all (the CLI was never found, so the launch phase
-            # was skipped). Warning and exiting 0 made an explicitly requested
-            # budget pass without a single health request, so fail closed.
+            # Nothing measured (no CLI, launch skipped): exiting 0 would pass an
+            # explicitly requested budget without one health request, so fail closed.
             print(
                 "::error::startup regression: no healthz measurement, so the "
                 f"{a.max_healthz_seconds}s budget was never checked "

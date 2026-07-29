@@ -25,8 +25,7 @@ def _load():
 
 
 def _no_subprocesses(mod, monkeypatch):
-    # Keeps the gate tests off the real interpreter and the real CLI, which also
-    # keeps them honest against the pre-fix script instead of shelling out.
+    # Keep the gate tests off the real interpreter and CLI.
     monkeypatch.setattr(mod, "find_bin", lambda: None)
     monkeypatch.setattr(mod, "profile_imports", lambda python, top = 15: {"ok": False, "error": ""})
     monkeypatch.setattr(mod, "python_version_of", lambda python: "3.13.0")
@@ -53,8 +52,7 @@ def _nt(mod, monkeypatch, returncode):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, returncode, "", "")
 
-    # Swap the module's own references rather than mutating the real os and
-    # subprocess modules, which the rest of the test session shares.
+    # Patch the module's own references, not the real os/subprocess the session shares.
     monkeypatch.setattr(mod, "os", SimpleNamespace(name = "nt"))
     monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run = _run))
     return calls
