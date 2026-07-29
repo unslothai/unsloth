@@ -1509,10 +1509,20 @@ jobs:
       - name: Seed the container's trusted root CA store
         shell: pwsh
         run: |
-          docker exec virgin cmd /c "certutil -generateSSTFromWU C:\roots.sst && certutil -addstore -f Root C:\roots.sst" `
-            *>&1 | Select-Object -Last 15
+          # -generateSSTFromWU pulls each root from ctldl.windowsupdate.com, and that
+          # host times out often enough to be the leg's main flake (staging run
+          # 30423072537 died on WinHttp 12002 while the sibling row seeded fine).
+          # Retry, but never tolerate a total failure: without the roots, Node's
+          # urllib download later fails with CERTIFICATE_VERIFY_FAILED.
+          for ($i = 1; $i -le 3; $i++) {
+            docker exec virgin cmd /c "certutil -generateSSTFromWU C:\roots.sst && certutil -addstore -f Root C:\roots.sst" `
+              *>&1 | Select-Object -Last 15
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Host "::warning::root CA seeding attempt $i failed; retrying"
+            Start-Sleep -Seconds 15
+          }
           if ($LASTEXITCODE -ne 0) {
-            Write-Host '::error::could not seed the container root CA store; Python-side HTTPS will fail'
+            Write-Host '::error::could not seed the container root CA store after 3 attempts; Python-side HTTPS will fail'
             exit 1
           }
 
