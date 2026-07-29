@@ -141,6 +141,25 @@ def test_device_type_gates_the_flags_on_the_kernels():
     ), "both the failed-import path and the dead-kernels path must clear the flag"
 
 
+def test_the_ctypes_binds_are_gated_on_the_same_verdict():
+    """Clearing the flag is not enough on its own.
+
+    ``bnb is None`` was the only guard on the ``bnb.functional.lib.*`` binds, so an
+    importable-but-dead wheel still reached them at module scope - 0.45.5, the floor in
+    pyproject.toml, sets ``functional.lib = None`` on a native-load failure, and
+    ``None.cdequantize_blockwise_fp32`` raises there. That kills ``import unsloth``
+    outright instead of degrading to 16bit, which is the fallback the cleared flag is
+    supposed to reach.
+    """
+    source = (REPO_ROOT / "unsloth" / "kernels" / "utils.py").read_text(encoding = "utf-8")
+    assert "from ..bnb_availability import native_kernels_ready" in source
+    assert (
+        "if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):" in source
+    ), "the ctypes bind block must take the _bnb_required branch on a dead library too"
+    guarded = source.split("if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):")[1]
+    assert "bnb.functional.lib" in guarded, "the binds must sit under that guard"
+
+
 def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
     """A bitsandbytes whose __init__ died part way leaves the parent without
     ``functional`` while the submodule stays in sys.modules, so the check has to go
