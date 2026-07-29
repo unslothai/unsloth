@@ -2049,6 +2049,8 @@ const Composer: FC<{
   const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
     const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
     const initialState = aui.threadListItem().getState();
+    const ownsEagerInitialization =
+      !initialState.remoteId && aui.thread().getState().messages.length === 0;
     // switchToNewThread() reuses an uninitialized local thread. Claim its
     // durable identity now so another New Chat cannot merge two parked
     // prompts into the same conversation. Settle (rather than reject) early so
@@ -2131,7 +2133,11 @@ const Composer: FC<{
       }
       void queuedThreadInitialization
         .then((initialization) => {
-          if (initialization.ok && !appendStarted) {
+          if (
+            initialization.ok &&
+            ownsEagerInitialization &&
+            !appendStarted
+          ) {
             return deleteStoredChatThreads([initialization.remoteId]);
           }
         })
@@ -4999,6 +5005,10 @@ const EditComposer: FC = () => {
       return;
     }
     resendAfterCancelRef.current = false;
+    if (!aui.composer().getState().text.trim()) {
+      toast.error("Message cannot be empty");
+      return;
+    }
     if (!reserveInteractiveRun()) return;
     aui.composer().send();
   });
@@ -5031,6 +5041,10 @@ const EditComposer: FC = () => {
               const newText = aui.composer().getState().text;
               const originalText = aui.message().getCopyText();
 
+              if (!newText.trim()) {
+                toast.error("Message cannot be empty");
+                return;
+              }
               if (newText === originalText) {
                 aui.composer().cancel();
                 return;

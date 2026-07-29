@@ -220,6 +220,8 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert "if (!queuedRunSettings)" in CHAT_ADAPTER
     assert "pendingSettingsIds" in target
     assert "const queuedThreadInitialization = initialState.remoteId" in target
+    assert "const ownsEagerInitialization =" in target
+    assert "aui.thread().getState().messages.length === 0" in target
     assert "append: async (prompt) =>" in target
     assert "const initialization = await queuedThreadInitialization;" in target
     assert "if (cancelled)" in target
@@ -230,6 +232,7 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert "if (initialization && !initialization.ok)" in target
     assert "const dispose = () =>" in target
     assert "deleteStoredChatThreads([initialization.remoteId])" in target
+    assert "ownsEagerInitialization" in target
     assert "appendStarted = true;" in target
     assert "dispose," in target
     assert "target.dispose();" in THREAD
@@ -362,3 +365,22 @@ def test_sidebar_distinguishes_running_queues_from_completed_background_chats():
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
     assert "hasActivityIndicator && !isGenerating" in APP_SIDEBAR
+
+
+def test_empty_message_edits_do_not_reserve_generation_capacity():
+    edit_composer = _between(
+        THREAD,
+        "const EditComposer: FC = () =>",
+        "const BranchPicker: FC",
+    )
+    assert edit_composer.count('toast.error("Message cannot be empty")') == 2
+    assert edit_composer.index("if (!newText.trim())") < edit_composer.index(
+        "reserveInteractiveRun(event)"
+    )
+    run_end = _between(
+        edit_composer,
+        'useAuiEvent("thread.runEnd"',
+        "return (",
+    )
+    assert "if (!aui.composer().getState().text.trim())" in run_end
+    assert run_end.index("text.trim())") < run_end.index("reserveInteractiveRun()")
