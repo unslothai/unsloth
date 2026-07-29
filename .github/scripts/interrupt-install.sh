@@ -8,8 +8,7 @@
 # would otherwise finish the dep pass and the leg would prove nothing.
 #
 # Usage: bash .github/scripts/interrupt-install.sh "<marker>" "<logfile>" [-- install args]
-#   <marker>  log regex to wait for before killing, e.g. "studio deps". "" kills at the
-#             deadline.
+#   <marker>  log regex to wait for before killing, e.g. "studio deps"; "" kills at deadline.
 # Env: KILL_AT_SECONDS deadline (default 900), KILL_GRACE grace before SIGKILL (default 10)
 set -uo pipefail
 
@@ -23,10 +22,9 @@ KILL_GRACE="${KILL_GRACE:-10}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 
-# The desktop writes this before spawning the installer (install.rs); we kill the
-# installer directly, so without it #7490's marker is absent for an unrelated reason. Both
-# roots: Rust hardcodes ~/.unsloth/studio, CI overrides UNSLOTH_STUDIO_HOME. Never
-# cleared, being killed is the point.
+# The desktop writes this before spawning the installer (install.rs); we kill the installer
+# directly, so without it #7490's marker is absent for an unrelated reason. Both roots: Rust
+# hardcodes ~/.unsloth/studio, CI overrides UNSLOTH_STUDIO_HOME. Never cleared by design.
 for _marker_dir in "${UNSLOTH_STUDIO_HOME:-}" "$HOME/.unsloth/studio"; do
   [ -n "$_marker_dir" ] || continue
   mkdir -p "$_marker_dir" 2>/dev/null || continue
@@ -62,12 +60,10 @@ for i in $(seq 1 $(( KILL_AT_SECONDS * 2 ))); do
   if [ -n "$MARKER" ] && grep -qE "$MARKER" "$LOG" 2>/dev/null; then
     # A beat into the step so the kill lands mid-work, cut short the moment a later
     # [TAURI:STEP] line appears: the venv takes ~0.1s, so a flat 3s sleep put the venv
-    # leg's signal in "Installing PyTorch", a duplicate of the torch leg. Sub-step
-    # markers ("studio deps") print no step line, so they keep the whole beat.
-    # Skipped entirely when the step is ALREADY over: cutting the beat short cannot help
-    # once the next step's line is in the log before the first sample, which is the normal
-    # case for a 0.1s step, and beating on would only push the signal deeper into the step
-    # after it. Kill now and let the mismatch check below report where it landed.
+    # leg's signal in "Installing PyTorch", a duplicate of the torch leg. Sub-step markers
+    # ("studio deps") print no step line and keep the whole beat. Skipped when the step is
+    # ALREADY over: the cut-short cannot help once the next line is logged and beating on
+    # only pushes the signal deeper, so kill now and let the mismatch check below report.
     if ! marked_step_over; then
       _steps_at_marker="$(grep -cE '^\[TAURI:STEP\]' "$LOG" 2>/dev/null || true)"
       for _ in $(seq 1 $(( ${KILL_AFTER_MARKER_SECONDS:-3} * 5 ))); do

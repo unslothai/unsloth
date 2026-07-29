@@ -4,9 +4,8 @@
 # Windows counterpart of interrupt-install.sh: run install.ps1 and kill it partway
 # through, reproducing a user quitting the desktop app mid-install.
 #
-# Windows has no process groups, which is why the app carries windows_job.rs. This script
-# kills the whole process TREE for the same reason: killing only the leader leaves
-# uv/python children to finish the dependency pass, proving nothing.
+# Windows has no process groups (hence the app's windows_job.rs), so this kills the whole
+# process TREE: killing only the leader leaves uv/python children to finish the dep pass.
 #
 # Usage:
 #   pwsh -File .github/scripts/interrupt-install.ps1 -Marker 'studio deps' `
@@ -25,10 +24,9 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Nu
 Set-Content -Path $LogPath -Value '' -Encoding utf8
 
 # Stand in for the desktop app, which writes this before spawning the installer
-# (install.rs). We kill install.ps1 directly, so without it the marker #7490 relies on is
-# absent for a reason unrelated to #7490 -- exactly what the Windows legs reported. Both
-# locations because the Rust side hardcodes ~/.unsloth/studio while CI overrides
-# UNSLOTH_STUDIO_HOME. Never cleared: being killed is the whole point.
+# (install.rs). We kill install.ps1 directly, so without it #7490's marker is absent for an
+# unrelated reason -- exactly what the Windows legs reported. Both locations: Rust
+# hardcodes ~/.unsloth/studio, CI overrides UNSLOTH_STUDIO_HOME. Never cleared by design.
 foreach ($dir in @($env:UNSLOTH_STUDIO_HOME, (Join-Path $HOME '.unsloth\studio'))) {
   if ([string]::IsNullOrWhiteSpace($dir)) { continue }
   try {
@@ -37,13 +35,12 @@ foreach ($dir in @($env:UNSLOTH_STUDIO_HOME, (Join-Path $HOME '.unsloth\studio')
   } catch { Write-Host "[interrupt] could not seed install marker in ${dir}: $_" }
 }
 
-# Its own host, so stdout can be redirected to the log while we poll. That host is
-# WINDOWS PowerShell 5.1, not pwsh, with install.rs:325-339's exact flags: that is the
-# only host a real desktop install ever uses, and every other Windows job in .github runs
-# install.ps1 under pwsh 7, leaving 5.1 behaviour (.NET Framework, OEM/ANSI console
-# encoding, different native-command and OSArchitecture reporting) covered by nothing.
-# The driver itself stays under pwsh; only the installer child and the repair re-run
-# change.
+# Its own host, so stdout can be redirected to the log while we poll. That host is WINDOWS
+# PowerShell 5.1, not pwsh, with install.rs:325-339's exact flags: the only host a real
+# desktop install ever uses, while every other Windows job in .github runs install.ps1
+# under pwsh 7, leaving 5.1 behaviour (.NET Framework, OEM/ANSI console encoding, different
+# native-command and OSArchitecture reporting) covered by nothing. The driver stays under
+# pwsh; only the installer child and the repair re-run change.
 $argList = @(
   '-NoLogo', '-NoProfile', '-NonInteractive',
   '-WindowStyle', 'Hidden',
@@ -87,18 +84,16 @@ function Test-MarkedStepOver {
 
 $killed = $false
 $reason = ''
-# Half-second slices: a step lasting under a second is over by the time a 1s poll notices
-# its line, and the beat below then cannot help.
+# Half-second slices: a sub-second step is over before a 1s poll sees its line.
 for ($i = 0; $i -lt ($KillAtSeconds * 2); $i++) {
   if ($proc.HasExited) { $reason = 'exited-before-marker'; break }
   if ($Marker) {
     $hit = Select-String -Path $LogPath -Pattern $Marker -SimpleMatch:$false -ErrorAction SilentlyContinue
     if ($hit) {
-      # Same beat as the POSIX driver, waited in slices and cut short once a later
-      # [TAURI:STEP] line appears, so a fast step finishing inside the beat does not send
-      # the signal into the step after it. Skipped when the step is ALREADY over: the
-      # cut-short cannot help once the next step's line is in the log before the first
-      # sample, and beating on would push the signal deeper into the following step.
+      # Same beat as the POSIX driver, in slices and cut short once a later [TAURI:STEP]
+      # line appears, so a fast step does not send the signal into the step after it.
+      # Skipped when the step is ALREADY over: the cut-short cannot help once the next
+      # line is logged, and beating on would push the signal deeper into the next step.
       if (-not (Test-MarkedStepOver)) {
         $stepsAtMarker = Get-StepCount $LogPath
         for ($j = 0; $j -lt ($KillAfterMarkerSeconds * 5); $j++) {
@@ -123,12 +118,11 @@ if ($killed) {
   Write-Host "[interrupt] killing process tree of $($proc.Id) ($reason)"
   Stop-Tree $proc.Id
   # Any straggler uv/python that reparented away from the installer. The old sweep matched
-  # nothing: UNSLOTH_STUDIO_HOME arrives as `D:\a\r\r/.studio-home` (github.workspace
-  # joined with a forward slash) while Process.Path is all backslashes, so the literal
-  # -like missed even the venv's own python. Hence the separator normalisation, and uv by
-  # name (it lives outside the studio home, and the ephemeral runner has no other uv).
-  # Under --tauri there is no UNSLOTH_STUDIO_HOME, so fall back to the root install.ps1
-  # uses then, or the sweep would only ever see uv.
+  # nothing: UNSLOTH_STUDIO_HOME arrives as `D:\a\r\r/.studio-home` (github.workspace joined
+  # with a forward slash) while Process.Path is all backslashes, so the literal -like missed
+  # even the venv's own python. Hence the separator normalisation, and uv by name (it lives
+  # outside the studio home, and the ephemeral runner has no other uv). Under --tauri there
+  # is no UNSLOTH_STUDIO_HOME, so fall back to install.ps1's root or the sweep only sees uv.
   $studioRoot = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { Join-Path $HOME '.unsloth\studio' }
                 else { $env:UNSLOTH_STUDIO_HOME }
   $homeNorm = if ([string]::IsNullOrWhiteSpace($studioRoot)) { $null }
@@ -152,10 +146,9 @@ Get-Content $LogPath -Tail 15 -ErrorAction SilentlyContinue
 if ($Marker -and -not (Select-String -Path $LogPath -Pattern $Marker -ErrorAction SilentlyContinue)) {
   Write-Host "::warning::marker '$Marker' never appeared -- killed at the deadline, not the intended step"
 }
-# Which step the signal actually landed in. A sub-second step can be over before any log
-# poll notices its line, and the leg then silently kills the NEXT step while its matrix
-# label still claims the marked one. Sub-step markers ('studio deps') print no
-# [TAURI:STEP] line of their own, so the test skips them rather than warning every leg.
+# Where the signal actually landed. A sub-second step can end before any poll sees its
+# line, and the leg then kills the NEXT step while its label claims otherwise. Sub-step
+# markers print no [TAURI:STEP] line, so the test skips them instead of always warning.
 $lastStep = Get-LastStep $LogPath
 Write-Host "[interrupt] step at kill: $lastStep"
 $mismatch = Test-MarkedStepOver
