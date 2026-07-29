@@ -165,11 +165,14 @@ def test_upgrade_normalises_the_bootstrap_file():
     assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
 
 
-@pytest.mark.parametrize("other", [
-    b"legacy-bootstrap-secret\r\n",     # only an unreleased build wrote this
-    b"legacy-bootstrap-secret\r",
-    b"legacy-bootstrap-secret   ",
-])
+@pytest.mark.parametrize(
+    "other",
+    [
+        b"legacy-bootstrap-secret\r\n",  # only an unreleased build wrote this
+        b"legacy-bootstrap-secret\r",
+        b"legacy-bootstrap-secret   ",
+    ],
+)
 def test_only_an_exactly_untermimated_bootstrap_file_is_touched(other):
     # Appending is safe precisely because it is restricted to the one shape
     # released code produced. Everything else reads fine and is left alone.
