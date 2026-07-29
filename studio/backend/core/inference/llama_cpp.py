@@ -496,36 +496,16 @@ _SWA_CACHE_LOCK = threading.Lock()
 
 
 def _hf_endpoint_host() -> str:
-    """Host of the configured hub endpoint. Mirror users point HF_ENDPOINT elsewhere, and
-    probing huggingface.co would then report their working mirror as offline."""
-    endpoint = (os.environ.get("HF_ENDPOINT") or "").strip() or "https://huggingface.co"
-    if "://" not in endpoint:
-        endpoint = "https://" + endpoint
-    try:
-        from urllib.parse import urlparse
-        return urlparse(endpoint).hostname or "huggingface.co"
-    except Exception:
-        return "huggingface.co"
+    """Host of the configured hub endpoint (HF_ENDPOINT aware)."""
+    from utils.utils import hf_endpoint_host
+    return hf_endpoint_host()
 
 
 def _probe_dns_dead(host: Optional[str] = None, timeout: float = 2.0) -> bool:
     """Quick DNS check on a daemon thread, so concurrent sockets aren't
     affected by socket.setdefaulttimeout. Defaults to the configured endpoint's host."""
-    host = host or _hf_endpoint_host()
-    result: list[Optional[bool]] = [None]
-
-    def _probe() -> None:
-        try:
-            socket.gethostbyname(host)
-            result[0] = False
-        except Exception:
-            result[0] = True
-
-    t = threading.Thread(target = _probe, daemon = True)
-    t.start()
-    t.join(timeout)
-    # Thread still running -> resolver wedged -> dead.
-    return True if result[0] is None else result[0]
+    from utils.utils import dns_host_dead, hf_endpoint_host
+    return dns_host_dead(host or hf_endpoint_host(), timeout)
 
 
 def _hf_env_offline() -> bool:
@@ -546,14 +526,16 @@ def _hf_unreachable() -> bool:
 
     DNS alone misses the common offline shapes (WAN down behind a live router, captive
     portal, stale DNS cache), leaving every hub call to burn its full retry backoff.
+    The DNS shortcut is skipped when a proxy is configured, since the proxy resolves the
+    hub host and local DNS then says nothing about reachability.
     """
-    if _probe_dns_dead():
-        return True
     try:
-        from utils.utils import hf_unreachable
-        return hf_unreachable()
+        from utils.utils import hf_dns_dead, hf_unreachable
     except Exception:
         return False
+    if hf_dns_dead():
+        return True
+    return hf_unreachable()
 
 
 @contextlib.contextmanager
@@ -597,6 +579,22 @@ def _hf_offline_if_unreachable():
             os.environ.pop("HF_HUB_OFFLINE", None)
             if not transformers_was_set:
                 os.environ.pop("TRANSFORMERS_OFFLINE", None)
+
+
+def _hf_offline_if_unreachable_for(model_name):
+    """Guard, but only for remote repo ids.
+
+    A local path is served from the filesystem and never reaches the hub, so probing
+    would add seconds per request and prevent no retry.
+    """
+    try:
+        from utils.paths import is_local_path
+
+        if isinstance(model_name, str) and is_local_path(model_name):
+            return contextlib.nullcontext()
+    except Exception:
+        pass
+    return _hf_offline_if_unreachable()
 
 
 try:

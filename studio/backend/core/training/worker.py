@@ -2346,37 +2346,23 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     # Offline auto-detect: skip ~25s of HF retries per call when the hub is unreachable.
     if "HF_HUB_OFFLINE" not in os.environ:
-        import socket as _socket
-        import threading as _threading
+        _offline = False
+        try:
+            from utils.utils import hf_dns_dead, hf_probe_disabled
 
-        # Daemon thread so we don't mutate process-wide setdefaulttimeout.
-        _result: list = [None]
-
-        def _probe() -> None:
-            try:
-                _socket.gethostbyname("huggingface.co")
-                _result[0] = False
-            except Exception:
-                _result[0] = True
-
-        _t = _threading.Thread(target = _probe, daemon = True)
-        _t.start()
-        _t.join(2.0)
-        if _result[0] is False:
-            # DNS answers even when there is no egress (WAN down, captive portal), so
-            # confirm with the bounded, proxy-aware reachability probe. HF_ENDPOINT aware.
-            # These flags last the whole job, so only a connection failure counts: a
-            # momentary 502/503 must not block every download for the rest of the run.
-            try:
+            # hf_dns_dead follows HF_ENDPOINT and stands down when a proxy is configured,
+            # so a reachable mirror (or proxy-only egress) is never called offline.
+            _offline = hf_dns_dead()
+            if not _offline and not hf_probe_disabled():
+                # DNS answers even without egress (WAN down, captive portal). These flags
+                # last the whole job, so only a connection failure counts: a momentary
+                # 502/503 must not block every download for the rest of the run.
                 from utils.transformers_version import hf_endpoint_unreachable
-                from utils.utils import hf_probe_disabled
-                if not hf_probe_disabled() and hf_endpoint_unreachable(
-                    gateway_errors_offline = False
-                ):
-                    _result[0] = True
-            except Exception:
-                pass
-        if _result[0] is None or _result[0] is True:
+
+                _offline = hf_endpoint_unreachable(gateway_errors_offline = False)
+        except Exception:
+            _offline = False
+        if _offline:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
             os.environ.setdefault("HF_DATASETS_OFFLINE", "1")

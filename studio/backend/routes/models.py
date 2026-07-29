@@ -1855,12 +1855,13 @@ async def get_model_config(
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
     hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
-    from core.inference.llama_cpp import _hf_offline_if_unreachable
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
     try:
         # Each probe below can reach the hub, so the guard wraps the whole handler:
-        # offline they must all resolve from the HF cache instead of retrying.
-        with _hf_offline_if_unreachable():
+        # offline they must all resolve from the HF cache instead of retrying. Local
+        # paths stay on disk, so they skip the probe entirely.
+        with _hf_offline_if_unreachable_for(model_name):
             if not is_local_path(model_name):
                 resolved = resolve_cached_repo_id_case(model_name)
                 if resolved != model_name:
@@ -2591,9 +2592,10 @@ async def check_vision_model(
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
         # Offline the guard keeps this on the HF cache instead of retrying the hub.
-        from core.inference.llama_cpp import _hf_offline_if_unreachable
+        # A local path resolves from disk, so it skips the probe.
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-        with _hf_offline_if_unreachable():
+        with _hf_offline_if_unreachable_for(model_name):
             is_vision = is_vision_model(model_name, hf_token = hf_token)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")

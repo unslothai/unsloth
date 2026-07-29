@@ -218,6 +218,23 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
             "training worker still calls socket.setdefaulttimeout; "
             "concurrent sockets would inherit the probe timeout"
         )
-        assert (
-            "threading" in block and "Thread" in block
-        ), "training worker probe must run on a daemon thread"
+        # The probe now lives in the shared helper (endpoint- and proxy-aware), so the
+        # worker must delegate to it rather than resolve a hardcoded host itself.
+        assert "hf_dns_dead" in block, "training worker must use the shared DNS helper"
+        assert 'gethostbyname("huggingface.co")' not in block, (
+            "training worker must not hardcode huggingface.co; a reachable HF_ENDPOINT "
+            "mirror would be declared offline"
+        )
+
+    def test_shared_dns_helper_uses_thread_probe(self):
+        """The daemon-thread property moved with the probe; pin it where it now lives."""
+        import inspect
+
+        from utils.utils import dns_host_dead
+
+        src = inspect.getsource(dns_host_dead)
+        assert ".setdefaulttimeout(" not in src, (
+            "shared DNS probe calls socket.setdefaulttimeout; "
+            "concurrent sockets would inherit the probe timeout"
+        )
+        assert "Thread" in src and "daemon" in src, "shared DNS probe must run on a daemon thread"

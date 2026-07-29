@@ -1051,6 +1051,66 @@ class TestEndpointAwareOfflineDetection:
         assert _probe_dns_dead() is True
 
 
+class TestProxyOnlyEgress:
+    """With a proxy, the proxy resolves the hub host, so local DNS proves nothing and
+    must not be used to declare the hub offline."""
+
+    @pytest.fixture
+    def dns_all_dead(self, monkeypatch):
+        def _fail(*a, **k):
+            raise socket.gaierror(-2, "Name or service not known")
+
+        monkeypatch.setattr(socket, "gethostbyname", _fail)
+
+    def test_dns_shortcut_stands_down_when_proxy_configured(self, monkeypatch, dns_all_dead):
+        from utils.utils import hf_dns_dead
+
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("HTTP_PROXY", "http://proxy.internal:3128")
+        assert hf_dns_dead() is False
+
+    def test_dns_shortcut_applies_without_a_proxy(self, monkeypatch, dns_all_dead):
+        from utils.utils import hf_dns_dead
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY"):
+            monkeypatch.delenv(key, raising = False)
+        monkeypatch.setattr("utils.utils.hf_proxy_configured", lambda: False)
+        assert hf_dns_dead() is True
+
+    def test_no_proxy_bypass_restores_the_shortcut(self, monkeypatch, dns_all_dead):
+        """A host listed in NO_PROXY does not go through the proxy, so DNS matters again."""
+        from utils.utils import hf_proxy_configured
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("NO_PROXY", "huggingface.co")
+        assert hf_proxy_configured() is False
+
+
+class TestGuardSkipsLocalPaths:
+    """A local path never reaches the hub, so probing costs time and prevents nothing."""
+
+    def test_local_path_is_a_noop(self, tmp_path, monkeypatch):
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+        called: list = []
+        monkeypatch.setattr(
+            "utils.utils.hf_unreachable", lambda *a, **k: called.append(1) or True
+        )
+        with _hf_offline_if_unreachable_for(str(tmp_path / "model.gguf")) as engaged:
+            assert engaged is None  # nullcontext yields None
+        assert called == [], "probed the hub for a local path"
+
+    def test_remote_id_still_guarded(self, monkeypatch, clean_offline_env):
+        import core.inference.llama_cpp as lc
+
+        monkeypatch.setattr(lc, "_hf_unreachable", lambda: True)
+        with lc._hf_offline_if_unreachable_for("unsloth/Qwen3.5-4B-GGUF") as engaged:
+            assert engaged is True
+            assert os.environ.get("HF_HUB_OFFLINE") == "1"
+
+
 class TestGatewayErrorsAreNotConnectionFailures:
     """Lifetime offline flags must not be set by a momentary 502/503/504."""
 

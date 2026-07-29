@@ -37,6 +37,80 @@ def hf_env_offline() -> bool:
     return False
 
 
+def hf_endpoint_url() -> str:
+    """Configured hub endpoint, scheme-normalised. Mirror users point this elsewhere."""
+    endpoint = (os.environ.get("HF_ENDPOINT") or "").strip() or "https://huggingface.co"
+    return endpoint if "://" in endpoint else "https://" + endpoint
+
+
+def hf_endpoint_host() -> str:
+    """Host of the configured endpoint; probing huggingface.co would misjudge a mirror."""
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(hf_endpoint_url()).hostname or "huggingface.co"
+    except Exception:
+        return "huggingface.co"
+
+
+def hf_proxy_configured() -> bool:
+    """True when egress to the endpoint goes through a proxy.
+
+    The proxy resolves the hub host, so local DNS proves nothing about reachability and
+    must not be used to declare the hub offline.
+    """
+    try:
+        import urllib.request
+        from urllib.parse import urlparse
+
+        url = hf_endpoint_url()
+        proxies = urllib.request.getproxies()
+        scheme = urlparse(url).scheme or "https"
+        if scheme not in proxies and "all" not in proxies:
+            return False
+        host = urlparse(url).hostname or ""
+        try:
+            if host and urllib.request.proxy_bypass(host):
+                return False
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
+    """True when host does not resolve. Runs on a daemon thread so a wedged resolver
+    cannot block past the deadline and so socket.setdefaulttimeout is left alone."""
+    result: list = [None]
+
+    def _probe() -> None:
+        import socket as _socket
+
+        try:
+            _socket.gethostbyname(host)
+            result[0] = False
+        except Exception:
+            result[0] = True
+
+    t = threading.Thread(target = _probe, daemon = True)
+    t.start()
+    t.join(timeout)
+    # Still running -> resolver wedged -> treat as dead.
+    return True if result[0] is None else result[0]
+
+
+def hf_dns_dead(timeout: float = 2.0) -> bool:
+    """Fast offline shortcut: the endpoint's host does not resolve and no proxy is in play.
+
+    Returns False whenever a proxy is configured, so proxy-only setups fall through to the
+    real reachability probe instead of being wrongly declared offline.
+    """
+    if hf_proxy_configured():
+        return False
+    return dns_host_dead(hf_endpoint_host(), timeout)
+
+
 # One load makes many hub calls, so the verdict is shared briefly to avoid re-probing on
 # each. Kept short in BOTH directions: a stale "reachable" misses the plug being pulled
 # (the case this whole path exists for), and a stale "unreachable" sends a load to the
