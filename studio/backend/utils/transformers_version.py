@@ -63,6 +63,12 @@ def _env_offline() -> bool:
     )
 
 
+def _hf_raw_url(model_name: str, filename: str) -> str:
+    """Raw model metadata URL for the configured Hub endpoint."""
+    from utils.utils import hf_endpoint_url
+    return f"{hf_endpoint_url().rstrip('/')}/{model_name}/raw/main/{filename}"
+
+
 def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = True) -> bool:
     """Bounded reachability probe to the HF endpoint. A HEAD request runs in a daemon thread
     joined with a deadline, so a resolver blackhole cannot block past ~timeout+1s. True if
@@ -121,7 +127,7 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
         except urllib.error.URLError as exc:
             # A TLS/cert failure means we DID reach the server; treat as reachable so the real
             # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
-            if isinstance(exc.reason, ssl.SSLError):
+            if isinstance(exc.reason, (ssl.SSLError, ConnectionRefusedError)):
                 result["online"] = True
             elif isinstance(exc.reason, TimeoutError):
                 # Resolved below, off-thread, so the extra probe cannot outrun the join.
@@ -631,8 +637,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     import urllib.error
     import urllib.request
 
-    endpoint = (os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
-    url = f"{endpoint}/{model_name}/raw/main/adapter_config.json"
+    url = _hf_raw_url(model_name, "adapter_config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -700,7 +705,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    url = _hf_raw_url(model_name, "tokenizer_config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -812,7 +817,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     import urllib.error
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    url = _hf_raw_url(model_name, "config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"

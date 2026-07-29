@@ -374,6 +374,33 @@ class TestCheckTokenizerConfigNeedsV5:
         assert seen_auth == [None, "Bearer tok"]
         assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
 
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return json.dumps({"tokenizer_class": "TokenizersBackend"}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        assert _check_tokenizer_config_needs_v5("org/model") is True
+        assert seen["url"] == (
+            "https://hf.mirror.internal/org/model/raw/main/tokenizer_config.json"
+        )
+
 
 # ---------------------------------------------------------------------------
 # needs_transformers_5 — integration-level
@@ -717,6 +744,20 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh  # network wins, not stale cache
+
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _hf_response({"model_type": "llama"})
+
+        with patch("urllib.request.urlopen", side_effect = fake_urlopen):
+            assert _load_config_json("org/model") == {"model_type": "llama"}
+        assert seen["url"] == "https://hf.mirror.internal/org/model/raw/main/config.json"
 
     def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
@@ -2580,6 +2621,15 @@ class TestHfEndpointUnreachable:
 
         monkeypatch.setattr("urllib.request.urlopen", _tls)
         # TLS reached the server: treat as reachable so the load surfaces the cert error.
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_connection_refused_is_reachable(self, monkeypatch):
+        import urllib.error
+
+        def _refused(*a, **k):
+            raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _refused)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
     def test_dns_failure_is_unreachable(self, monkeypatch):

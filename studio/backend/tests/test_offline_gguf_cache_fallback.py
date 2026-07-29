@@ -1660,6 +1660,20 @@ class TestHfUnreachableProbe:
         assert hf_unreachable() is True
         assert len(calls) == 1
 
+    def test_shared_probe_keeps_gateway_errors_online(self, monkeypatch, clean_offline_env):
+        from utils.utils import hf_unreachable
+        import utils.transformers_version as tv
+
+        seen = {}
+
+        def _probe(timeout, *, gateway_errors_offline = True):
+            seen["gateway_errors_offline"] = gateway_errors_offline
+            return gateway_errors_offline
+
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
+        assert hf_unreachable() is False
+        assert seen["gateway_errors_offline"] is False
+
     def test_opt_out_skips_probe(self, monkeypatch, clean_offline_env):
         from utils.utils import hf_unreachable
 

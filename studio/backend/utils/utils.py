@@ -199,7 +199,7 @@ def hf_unreachable(timeout: int = 3) -> bool:
             return cached[1]
         try:
             from utils.transformers_version import hf_endpoint_unreachable
-            unreachable = hf_endpoint_unreachable(timeout)
+            unreachable = hf_endpoint_unreachable(timeout, gateway_errors_offline = False)
         except Exception:
             unreachable = False
         _hf_reachability = (time.monotonic(), unreachable)
