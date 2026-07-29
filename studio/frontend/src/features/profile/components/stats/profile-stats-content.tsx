@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { useT } from "@/i18n";
 import { useProfileStats } from "../../hooks/use-profile-stats";
 import { ActivityInsightsCard, TopModelsCard } from "./insights-card";
-import { HourRhythmCard, WeekdayRhythmCard } from "./rhythm-card";
 import { StatsCard } from "./stat-primitives";
 import { StatsHighlights } from "./stats-highlights";
 import { StatsSkeleton } from "./stats-skeleton";
@@ -14,12 +13,12 @@ import { TrainingHighlightsCard } from "./training-card";
 
 /**
  * Everything below the personalization form on the Profile tab: headline
- * numbers, activity grid, insights, rhythms and training.
+ * numbers, activity grid, insights and training.
  *
  * All of it comes from `/api/profile/stats`, which reads local history only.
  *
- * Loaded lazily by `profile-stats-panel.tsx` to keep recharts, pulled in by the
- * rhythm charts, out of the main bundle.
+ * Loaded lazily by `profile-stats-panel.tsx` so none of it reaches the main
+ * bundle, since the Profile tab is the only place it renders.
  */
 export function ProfileStatsContent() {
   const t = useT();
@@ -69,10 +68,6 @@ export function ProfileStatsContent() {
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <ActivityInsightsCard stats={stats} />
             <TopModelsCard stats={stats} />
-          </div>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <HourRhythmCard stats={stats} />
-            <WeekdayRhythmCard stats={stats} />
           </div>
         </>
       ) : (

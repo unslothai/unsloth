@@ -166,8 +166,6 @@ class _MessageFold:
             "messages": 0,
         }
         self.by_day: dict[date, dict[str, Any]] = {}
-        self.by_hour = [0] * 24
-        self.by_weekday = [0] * 7
         self.models: dict[str, dict[str, Any]] = {}
         self.speed_samples: list[float] = []
         self.best_speed = 0.0
@@ -388,8 +386,6 @@ def _fold_messages(conn, zone) -> _MessageFold:
                 fold.first_token_ms.append(first_token)
 
         if stamp is not None:
-            fold.by_hour[stamp.hour] += 1
-            fold.by_weekday[stamp.weekday()] += 1
             fold.note_day(stamp.date(), message_tokens, conversation_id)
 
     close_thread()
@@ -598,8 +594,6 @@ def compute_profile_stats(
                 else None
             ),
             "daily": daily,
-            "hourly": fold.by_hour,
-            "weekday": fold.by_weekday,
             "models": models,
             "speed": {
                 "averageTokensPerSecond": (

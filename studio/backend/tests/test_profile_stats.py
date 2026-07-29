@@ -482,9 +482,13 @@ def test_recent_run_name_prefers_the_users_rename(stats_db):
 
 
 def test_historical_daylight_saving_offsets_are_respected(stats_db):
-    """A fixed offset would put a winter message in the wrong hour."""
-    # 2026-01-15 02:30 UTC. New York is UTC-5 in January, so 21:30 on the 14th.
-    winter = datetime(2026, 1, 15, 2, 30, tzinfo = timezone.utc)
+    """A fixed offset would put a winter message on the wrong day.
+
+    2026-01-15 04:30 UTC is 23:30 on the 14th in New York, which is UTC-5 in
+    January. Reusing a summer offset of UTC-4 pushes it to 00:30 on the 15th,
+    so the one hour of drift crosses midnight and moves the activity grid.
+    """
+    winter = datetime(2026, 1, 15, 4, 30, tzinfo = timezone.utc)
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -506,11 +510,10 @@ def test_historical_daylight_saving_offsets_are_respected(stats_db):
     invalidate_profile_stats_cache()
     offset_only = compute_profile_stats(days = 366, tz_offset_minutes = 240)
 
-    assert named["hourly"][21] == 1
     assert {day["date"] for day in named["daily"] if day["messages"]} == {"2026-01-14"}
 
     # The fixed offset lands an hour late, which is what the zone name fixes.
-    assert offset_only["hourly"][22] == 1
+    assert {day["date"] for day in offset_only["daily"] if day["messages"]} == {"2026-01-15"}
 
 
 def test_unknown_timezone_falls_back_to_the_offset(stats_db):
@@ -755,11 +758,12 @@ def test_out_of_range_timestamps_do_not_break_the_panel(stats_db):
 
     stats = compute_profile_stats(days = 7)
 
-    # Totals still include the bad row; only its day and hour buckets are
-    # dropped, so the two well-formed messages are all that is placed.
+    # Totals still include the bad row; only its day bucket is dropped, so the
+    # activity grid holds just the one well-formed day.
     assert stats["totals"]["totalTokens"] == 30
     assert stats["totals"]["messages"] == 3
-    assert sum(stats["hourly"]) == 2
+    assert stats["totals"]["activeDays"] == 1
+    assert sum(day["messages"] for day in stats["daily"]) == 2
 
 
 def test_future_dated_history_is_not_a_current_streak(stats_db):
@@ -800,9 +804,6 @@ def test_days_and_hours_use_the_callers_timezone(stats_db):
     at_utc = compute_profile_stats(days = 366, tz_offset_minutes = 0)
     invalidate_profile_stats_cache()
     at_minus_four = compute_profile_stats(days = 366, tz_offset_minutes = 240)
-
-    assert at_utc["hourly"][1] == 1
-    assert at_minus_four["hourly"][21] == 1
 
     utc_days = {day["date"] for day in at_utc["daily"] if day["messages"]}
     local_days = {day["date"] for day in at_minus_four["daily"] if day["messages"]}

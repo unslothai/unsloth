@@ -61,10 +61,6 @@ export type ProfileStats = {
     messages: number;
   } | null;
   daily: ProfileStatsDay[];
-  /** Messages per hour of day, index 0..23. */
-  hourly: number[];
-  /** Messages per weekday, index 0 = Monday. */
-  weekday: number[];
   models: ProfileStatsModel[];
   speed: {
     averageTokensPerSecond: number | null;
