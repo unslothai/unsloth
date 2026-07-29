@@ -748,19 +748,21 @@ def _subscript_key(node) -> str | None:
 
 
 def _literal_container_item(node):
-    """Return the statically selected item from a literal list/tuple."""
-    if not (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.value, (ast.List, ast.Tuple))
-        and isinstance(node.slice, ast.Constant)
-        and isinstance(node.slice.value, int)
-    ):
+    """Return the statically selected item from a literal sequence or mapping."""
+    if not (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)):
         return None
     index = node.slice.value
-    try:
-        return node.value.elts[index]
-    except IndexError:
-        return None
+    if isinstance(node.value, (ast.List, ast.Tuple)) and isinstance(index, int):
+        try:
+            return node.value.elts[index]
+        except IndexError:
+            return None
+    if isinstance(node.value, ast.Dict):
+        # Match Python's last-write-wins semantics for duplicate literal keys.
+        for key, value in reversed(tuple(zip(node.value.keys, node.value.values))):
+            if isinstance(key, ast.Constant) and key.value == index:
+                return value
+    return None
 
 
 def _is_dynamic_import_callable(
@@ -838,6 +840,22 @@ def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset(
         return True
     if not isinstance(node, ast.Call):
         return False
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "copy"
+        and not node.args
+        and not node.keywords
+        and _is_dynamic_namespace(node.func.value, dynamic_namespace_aliases)
+    ):
+        return True
+    if (
+        isinstance(node.func, ast.Name)
+        and node.func.id == "dict"
+        and len(node.args) == 1
+        and not node.keywords
+        and _is_dynamic_namespace(node.args[0], dynamic_namespace_aliases)
+    ):
+        return True
     if (
         isinstance(node.func, ast.Name)
         and node.func.id == "getattr"
@@ -1237,6 +1255,8 @@ def _pyyaml_safe_loader_mutation_call(
         "__ior__",
     }
     func = call.func
+    while isinstance(func, ast.Attribute) and func.attr == "__call__":
+        func = func.value
     if _pyyaml_safe_loader_mutator_reference(
         func,
         yaml_aliases,
@@ -5415,6 +5435,7 @@ def _check_signal_escape_patterns(code: str):
             self.dynamic_import_module_aliases = {"__builtins__", "builtins", "importlib"}
             self.dynamic_namespace_aliases: set[str] = {"__builtins__", "builtins"}
             self.pyyaml_resolver_aliases: set[str] = set()
+            self.yaml_object_aliases: set[str] = set()
             self.function_parameter_aliases: set[str] = set()
             # Direct yaml.load(..., SafeLoader) calls are allowed. References to
             # either callable in any other position fail closed because Python
@@ -5429,6 +5450,8 @@ def _check_signal_escape_patterns(code: str):
             # (e.g. "system" -> "os.system").
             self.shell_exec_aliases: dict[str, str] = {}
             self.loop_depth = 0
+            self.loop_break_states: list[list[tuple[set[str], ...]]] = []
+            self.loop_continue_states: list[list[tuple[set[str], ...]]] = []
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -5500,6 +5523,8 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_safe_loader_aliases.add(bound)
                     elif alias.name in _PYYAML_SAFE_LOADER_MUTATORS:
                         self.yaml_module_mutator_aliases.add(bound)
+                    elif alias.name == "YAMLObject":
+                        self.yaml_object_aliases.add(bound)
             elif node.module in {"importlib", "builtins"}:
                 for alias in node.names:
                     if alias.name in {"import_module", "__import__"}:
@@ -5682,6 +5707,17 @@ def _check_signal_escape_patterns(code: str):
                 if value is not None
                 else None
             )
+            yaml_object_alias = False
+            if value is not None:
+                yaml_object_path = _pyyaml_attribute_path(
+                    value,
+                    self.yaml_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+                yaml_object_alias = (
+                    isinstance(value, ast.Name) and value.id in self.yaml_object_aliases
+                ) or yaml_object_path == ("YAMLObject",)
             reference_kind = _pyyaml_load_reference_kind(
                 value,
                 self.yaml_aliases,
@@ -5712,6 +5748,7 @@ def _check_signal_escape_patterns(code: str):
             self.dynamic_import_module_aliases.difference_update(names)
             self.dynamic_namespace_aliases.difference_update(names)
             self.pyyaml_resolver_aliases.difference_update(names)
+            self.yaml_object_aliases.difference_update(names)
 
             if safe_loader:
                 self.yaml_safe_loader_aliases.update(names)
@@ -5741,6 +5778,8 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_namespace_aliases.update(names)
             if resolver_callable:
                 self.pyyaml_resolver_aliases.update(names)
+            if yaml_object_alias:
+                self.yaml_object_aliases.update(names)
 
         def _pyyaml_scope_state(self):
             return (
@@ -5756,6 +5795,7 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_import_module_aliases.copy(),
                 self.dynamic_namespace_aliases.copy(),
                 self.pyyaml_resolver_aliases.copy(),
+                self.yaml_object_aliases.copy(),
             )
 
         def _restore_pyyaml_scope_state(self, state):
@@ -5772,6 +5812,7 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_import_module_aliases,
                 self.dynamic_namespace_aliases,
                 self.pyyaml_resolver_aliases,
+                self.yaml_object_aliases,
             ) = state
 
         def _merge_pyyaml_scope_states(self, *states):
@@ -5789,6 +5830,7 @@ def _check_signal_escape_patterns(code: str):
             self.dynamic_import_module_aliases = set().union(*(state[9] for state in states))
             self.dynamic_namespace_aliases = set().union(*(state[10] for state in states))
             self.pyyaml_resolver_aliases = set().union(*(state[11] for state in states))
+            self.yaml_object_aliases = set().union(*(state[12] for state in states))
 
         def visit_If(self, node):
             self.visit(node.test)
@@ -5860,8 +5902,13 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Try(self, node):
             base_state = self._pyyaml_scope_state()
+            exceptional_prefix_states = [base_state]
             for statement in node.body:
                 self.visit(statement)
+                # Any statement may raise after earlier bindings in the try
+                # have taken effect. Handlers and finally blocks must see each
+                # reachable prefix, not just the initial and normal-exit state.
+                exceptional_prefix_states.append(self._pyyaml_scope_state())
             body_state = self._pyyaml_scope_state()
 
             self._restore_pyyaml_scope_state(tuple(part.copy() for part in body_state))
@@ -5869,7 +5916,7 @@ def _check_signal_escape_patterns(code: str):
                 self.visit(statement)
             success_state = self._pyyaml_scope_state()
 
-            self._merge_pyyaml_scope_states(base_state, body_state)
+            self._merge_pyyaml_scope_states(*exceptional_prefix_states)
             handler_start = self._pyyaml_scope_state()
             # ``finally`` also runs when the try body raises before its next
             # binding update. Include every possible exceptional prefix, not
@@ -5994,6 +6041,7 @@ def _check_signal_escape_patterns(code: str):
                         (self.dynamic_import_module_aliases, 9),
                         (self.dynamic_namespace_aliases, 10),
                         (self.pyyaml_resolver_aliases, 11),
+                        (self.yaml_object_aliases, 12),
                     )
                     for outer_aliases, state_index in dangerous_scopes:
                         outer_aliases.update(
@@ -6012,6 +6060,17 @@ def _check_signal_escape_patterns(code: str):
             self._visit_function_scope(node)
 
         def visit_ClassDef(self, node):
+            yaml_object_subclass = any(
+                (isinstance(base, ast.Name) and base.id in self.yaml_object_aliases)
+                or _pyyaml_attribute_path(
+                    base,
+                    self.yaml_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+                == ("YAMLObject",)
+                for base in node.bases
+            )
             for decorator in node.decorator_list:
                 self.visit(decorator)
             for base in node.bases:
@@ -6021,12 +6080,49 @@ def _check_signal_escape_patterns(code: str):
             for type_param in getattr(node, "type_params", ()):
                 self.visit(type_param)
             state = self._pyyaml_scope_state()
+            body_state = None
             try:
                 for statement in node.body:
                     self.visit(statement)
+                body_state = self._pyyaml_scope_state()
             finally:
                 self._restore_pyyaml_scope_state(state)
             self._update_pyyaml_bindings([ast.Name(id = node.name, ctx = ast.Store())], None)
+            if body_state is None:
+                return
+
+            dangerous_class_bindings = set().union(
+                *(body_state[index] - state[index] for index in (1, 2, 3, 5, 6, 7, 8, 9, 10, 11))
+            )
+            if dangerous_class_bindings:
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization callable escapes through class namespace",
+                )
+
+            has_yaml_tag = any(
+                (
+                    isinstance(statement, (ast.Assign, ast.AnnAssign))
+                    and any(
+                        isinstance(target, ast.Name) and target.id == "yaml_tag"
+                        for target in (
+                            statement.targets
+                            if isinstance(statement, ast.Assign)
+                            else (statement.target,)
+                        )
+                    )
+                    and not (
+                        isinstance(statement.value, ast.Constant)
+                        and statement.value.value is None
+                    )
+                )
+                for statement in node.body
+            )
+            if yaml_object_subclass and has_yaml_tag and "yaml_loader" in body_state[4]:
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization via YAMLObject SafeLoader registration",
+                )
 
         def _visit_comprehension_scope(self, node, result_nodes):
             state = self._pyyaml_scope_state()
@@ -6192,35 +6288,62 @@ def _check_signal_escape_patterns(code: str):
                 for statement in statements:
                     self.visit(statement)
                 body_state = self._pyyaml_scope_state()
-                self._merge_pyyaml_scope_states(base_state, previous, body_state)
+                continue_states = (
+                    self.loop_continue_states[-1] if self.loop_continue_states else ()
+                )
+                self._merge_pyyaml_scope_states(
+                    base_state, previous, body_state, *continue_states
+                )
                 current = self._pyyaml_scope_state()
                 if current == previous:
                     break
                 previous = current
 
+        def visit_Break(self, node):
+            if self.loop_break_states:
+                self.loop_break_states[-1].append(self._pyyaml_scope_state())
+
+        def visit_Continue(self, node):
+            if self.loop_continue_states:
+                self.loop_continue_states[-1].append(self._pyyaml_scope_state())
+
         def visit_While(self, node):
             self.visit(node.test)
             base_state = self._pyyaml_scope_state()
+            break_states = []
+            self.loop_break_states.append(break_states)
+            self.loop_continue_states.append([])
             self.loop_depth += 1
             try:
                 self._visit_loop_body_to_fixpoint(node.body, base_state)
             finally:
                 self.loop_depth -= 1
+                self.loop_continue_states.pop()
+                self.loop_break_states.pop()
             for statement in node.orelse:
                 self.visit(statement)
+            if break_states:
+                self._merge_pyyaml_scope_states(self._pyyaml_scope_state(), *break_states)
 
         def visit_For(self, node):
             self.visit(node.iter)
             base_state = self._pyyaml_scope_state()
             self._update_pyyaml_bindings([node.target], None)
             self.visit(node.target)
+            break_states = []
+            self.loop_break_states.append(break_states)
+            self.loop_continue_states.append([])
             self.loop_depth += 1
             try:
                 self._visit_loop_body_to_fixpoint(node.body, base_state)
             finally:
                 self.loop_depth -= 1
+                self.loop_continue_states.pop()
+                self.loop_break_states.pop()
             for statement in node.orelse:
                 self.visit(statement)
+            if break_states:
+                self._merge_pyyaml_scope_states(self._pyyaml_scope_state(), *break_states)
 
         def visit_AsyncFor(self, node):
             self.visit_For(node)
@@ -6247,6 +6370,22 @@ def _check_signal_escape_patterns(code: str):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization dynamic module escapes direct policy inspection",
+                )
+            if any(
+                _is_pyyaml_module_expr(
+                    argument,
+                    self.yaml_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+                for argument in (
+                    *node.args,
+                    *(keyword.value for keyword in node.keywords),
+                )
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization module escapes through call arguments",
                 )
             func = node.func
             resolver_target = _pyyaml_resolver_target(node, self.pyyaml_resolver_aliases)

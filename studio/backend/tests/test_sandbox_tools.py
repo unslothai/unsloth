@@ -584,6 +584,56 @@ class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
         [
+            (
+                "import yaml\n"
+                "dict.__setitem__.__call__("
+                "yaml.SafeLoader.yaml_constructors, '!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "try:\n"
+                "    from yaml import unsafe_load as load\n"
+                "    1 / 0\n"
+                "    load = print\n"
+                "except Exception:\n"
+                "    pass\n"
+                "load(payload)"
+            ),
+            (
+                "while True:\n"
+                "    from yaml import unsafe_load as load\n"
+                "    break\n"
+                "    load = print\n"
+                "load(payload)"
+            ),
+            "class X:\n    from yaml import unsafe_load as load\nX.load(payload)",
+            (
+                "import yaml\n"
+                "class X(yaml.YAMLObject):\n"
+                "    yaml_tag = '!run'\n"
+                "    yaml_loader = yaml.SafeLoader\n"
+                "    @classmethod\n"
+                "    def from_yaml(cls, loader, node):\n"
+                "        return run(node)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            "{'im': __import__}['im']('yaml').unsafe_load(payload)",
+            "import yaml\nglobals().copy()['yaml'].unsafe_load(payload)",
+            "import yaml\ndict(globals())['yaml'].unsafe_load(payload)",
+            (
+                "import sys, yaml\n"
+                "def parse(mod):\n"
+                "    return mod.unsafe_load(payload)\n"
+                "parse(sys.modules['yaml'])"
+            ),
+        ],
+    )
+    def test_control_flow_and_namespace_pyyaml_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
             "from yaml import loader as yl\nyl.Loader('a: 1')",
             ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
             "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",
