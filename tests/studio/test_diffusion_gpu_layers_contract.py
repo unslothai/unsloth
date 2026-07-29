@@ -52,6 +52,12 @@ def llama_cpp():
         spec.loader.exec_module(module)
     except Exception as exc:  # missing optional studio dep on a bare checkout
         pytest.skip(f"llama_cpp not importable here: {exc}")
+    finally:
+        # Do not leave studio/backend on the path for the rest of the session: it
+        # shadows generic top-level names (utils, state, models, hub, auth, storage)
+        # for every later test in the same run.
+        if sys.path and sys.path[0] == backend:
+            sys.path.pop(0)
     return module
 
 
@@ -122,12 +128,28 @@ def test_diffusion_server_forwards_ngl_and_gates_it_on_shim_support():
     assert "_shim_supports_ngl" in body
 
 
-def test_zero_layers_masks_the_child_devices():
+def test_zero_layers_masks_the_child_devices(llama_cpp):
     """gpu_layers=0 must CUDA-mask the child, else _gpu_offload_active=False lies to the
-    training VRAM coordinator and a GPU-resident runner survives into a training run."""
-    body = _body("_start_diffusion_server")
-    assert "manual_ngl == 0" in body
-    assert "self._gpu_offload_active = not cpu_only" in body
+    training VRAM coordinator and a GPU-resident runner survives into a training run.
+
+    Behavioural, not a source-text match: the point is the token the child receives,
+    and an explicit GPU pick must not win over a zero-layer request.
+    """
+    arg = llama_cpp.LlamaCppBackend._diffusion_gpu_arg
+    assert arg([3, 1], force_cpu = True) == ""
+    assert arg(None, force_cpu = True) == ""
+
+
+def test_explicit_pick_still_wins_when_layers_are_not_zero(llama_cpp):
+    """force_cpu is the only thing above the picker. A host whose GPU torch cannot see
+    (Metal, Vulkan, Windows-HIP, Intel XPU) still has to honour an explicit pick."""
+    arg = llama_cpp.LlamaCppBackend._diffusion_gpu_arg
+    assert arg([3, 1], cpu_only = True) == "1"
+    assert arg([3, 1]) == "1"
+
+
+def test_no_gpu_and_no_pick_masks_the_child(llama_cpp):
+    assert llama_cpp.LlamaCppBackend._diffusion_gpu_arg(None, cpu_only = True) == ""
 
 
 def test_diffusion_load_passes_the_users_split_through():
@@ -147,19 +169,130 @@ def test_diffusion_no_longer_hardcodes_auto_over_the_users_choice():
 # ── dedup guards must see a split change ──
 
 
-def test_backend_dedup_compares_the_effective_split():
-    """Without this, changing a loaded diffusion model from 10 layers to 8 dedupes to
-    'already loaded' and no new shim is started."""
-    body = _body("_already_in_target_state")
-    assert "_diffusion_manual_ngl" in body
+def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
+    """A backend that looks like a healthy diffusion runner, for the dedup guards."""
+    b = llama_cpp.LlamaCppBackend()
+    b._process, b._healthy, b._is_diffusion = object(), True, True
+    b._model_identifier = "unsloth/DiffusionGemma-GGUF"
+    b._hf_variant = b._gguf_path = b._cache_type_kv = None
+    b._requested_n_ctx = 4096
+    b._tensor_parallel = b._layer_preserves_tensor_intent = False
+    b._gpu_layers = recorded_layers
+    b._gpu_memory_mode = "auto" if recorded_layers < 0 else "manual"
+    b._diffusion_requested_ngl = requested_ngl
+    b._gpu_ids = b._requested_gpu_ids = [0]
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = b._speculative_type = b._spec_draft_n_max = None
+    b._chat_template_override = b._mtp_draft_path = b._extra_args = None
+    return b
 
 
-def test_route_dedup_compares_the_effective_split():
+def _in_target_state(b, *, mode, layers):
+    return b._already_in_target_state(
+        model_identifier = "unsloth/DiffusionGemma-GGUF", hf_variant = None, n_ctx = 4096,
+        cache_type_kv = None, speculative_type = None, chat_template_override = None,
+        extra_args = None, is_vision = False, gpu_memory_mode = mode,
+        gpu_layers = layers, gpu_ids = [0],
+    )
+
+
+@pytest.mark.parametrize(
+    ("recorded", "requested_ngl", "mode", "layers", "expected"),
+    [
+        (-1, None, "auto", -1, True),      # auto -> auto
+        (-1, None, "manual", -1, True),    # inert manual preference must not loop
+        (-1, None, "manual", 8, False),    # a real split must reload
+        (8, 8, "manual", 8, True),         # same split dedupes
+        (8, 8, "manual", 4, False),        # a split change reloads
+        (8, 8, "auto", -1, False),         # manual -> auto reloads
+        (0, 0, "manual", 0, True),         # CPU-only split dedupes with itself
+        # The shim had no --ngl, so -1 is running but 20 is what was asked for.
+        # Comparing against the ask is what stops an endless reload.
+        (-1, 20, "manual", 20, True),
+        (-1, 20, "manual", 8, False),
+    ],
+)
+def test_backend_dedup_compares_the_requested_split(
+    llama_cpp, recorded, requested_ngl, mode, layers, expected
+):
+    b = _loaded_diffusion(llama_cpp, recorded_layers = recorded, requested_ngl = requested_ngl)
+    assert _in_target_state(b, mode = mode, layers = layers) is expected
+
+
+def test_route_dedup_compares_the_requested_split():
+    """The route mirrors the backend guard, so it must read the same field."""
     route_src = ROUTE_PATH.read_text(encoding = "utf-8")
     route_tree = ast.parse(route_src)
     for node in ast.walk(route_tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_request_matches_loaded_settings":
             body = ast.get_source_segment(route_src, node) or ""
-            assert "_diffusion_manual_ngl" in body
+            assert "_diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers)" in body
+            assert "llama_backend.diffusion_requested_ngl" in body
             return
     raise AssertionError("_request_matches_loaded_settings missing")
+
+
+def test_requested_split_survives_a_shim_without_the_flag(llama_cpp):
+    """gpu_layers reports what is running; diffusion_requested_ngl reports the ask."""
+    b = _loaded_diffusion(llama_cpp, recorded_layers = -1, requested_ngl = 20)
+    assert b.gpu_layers == -1
+    assert b.diffusion_requested_ngl == 20
+
+
+# ── the capability probe must read code, not prose ──
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('ap.add_argument("--ngl", type=int)', True),
+        ("ap.add_argument('--ngl', type=int)", True),      # quoting must not matter
+        ('# someday: support "--ngl"', False),             # a comment is not support
+        ('"""usage: --ngl N"""', False),                   # nor is a docstring
+        ('ap.add_argument("--maxtok", type=int)', False),
+    ],
+)
+def test_probe_reads_declarations_not_substrings(llama_cpp, tmp_path, source, expected):
+    shim = tmp_path / "shim.py"
+    shim.write_text(source + "\n", encoding = "utf-8")
+    assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is expected
+
+
+def test_probe_accepts_an_uppercase_extension(llama_cpp, tmp_path):
+    """A Windows UNSLOTH_DG_SHIM override may be SHIM.PY; it must still be the file read."""
+    shim = tmp_path / "SHIM.PY"
+    shim.write_text('ap.add_argument("--ngl", type=int)\n', encoding = "utf-8")
+    assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
+
+
+def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, tmp_path):
+    shim = tmp_path / "shim.py"
+    shim.write_text('ap.add_argument("--ngl"\n', encoding = "utf-8")   # syntax error
+    assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
+
+
+# ── the training guard must not refuse a load that holds no VRAM ──
+
+
+def test_training_guard_sees_the_layer_count():
+    """A manual/0 diffusion load places no layers, so it cannot compete with training."""
+    route_src = ROUTE_PATH.read_text(encoding = "utf-8")
+    route_tree = ast.parse(route_src)
+    fn = next(
+        n for n in ast.walk(route_tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_guard_chat_load_against_training"
+    )
+    names = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
+    assert "gpu_layers" in names
+    body = ast.get_source_segment(route_src, fn) or ""
+    assert "diffusion_ngl == 0" in body
+
+    calls = [
+        n for n in ast.walk(route_tree)
+        if isinstance(n, ast.Call)
+        and any(isinstance(a, ast.Name) and a.id == "_guard_chat_load_against_training"
+                for a in n.args)
+    ]
+    assert len(calls) == 2, "expected the /load and /validate call sites"
+    for call in calls:
+        assert any(kw.arg == "gpu_layers" for kw in call.keywords)
