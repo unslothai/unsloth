@@ -352,14 +352,24 @@ jobs:
 
       # `apt-get install ./dl/*.deb` pulls the bundle's DECLARED dependencies, so a release
       # that adds git, cmake or a compiler to that list puts one back in /usr/bin after the
-      # strip and both required Linux rows still pass. Re-run `absent` here, before the
-      # bundled installer. Today's closure is 65 runtime-lib packages and no toolchain, so
-      # only a new dependency can turn this red.
+      # strip. Re-run `absent` here, before the bundled installer.
       - name: Re-assert the toolchain is still absent after the package install
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         run: |
           set -a; . ./clean-machine.env; set +a
           bash .github/scripts/clean-machine-assert.sh absent
+          # `absent` alone cannot see a NEW toolchain dependency: mask --remove renames the
+          # binaries but leaves their packages installed, so apt treats git or cmake in the
+          # .deb's Depends as already satisfied and never puts the file back. Read the
+          # declared list, which is the thing a release would actually change.
+          if [ "${{ matrix.kind }}" = "deb" ]; then
+            deps="$(dpkg-deb -f dl/*.deb Depends)"
+            echo "declared Depends: $deps"
+            if printf '%s' "$deps" | grep -qE '(^|[ ,])(git|cmake|build-essential|gcc|g\+\+|clang|llvm)([ ,(]|$)'; then
+              echo "::error::the bundle now declares a developer toolchain dependency, so a .deb install no longer leaves a clean machine: $deps"
+              exit 1
+            fi
+          fi
 
       - name: Run the bundled installer, the path first launch takes
         run: |
@@ -692,7 +702,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $found = $false; $disposition = $false
+          $found = $false; $disposition = $false; $dispositions = @()
           foreach ($f in @("$env:UNSLOTH_STUDIO_HOME\tauri.log",
                            "$env:USERPROFILE\.unsloth\studio\tauri.log")) {
             if (Test-Path $f) {
@@ -702,8 +712,11 @@ jobs:
               Select-String -Path $f -Pattern 'disposition=|can_auto_repair=|ModuleNotFoundError' `
                 -ErrorAction SilentlyContinue
               $found = $true
-              if (Select-String -Path $f -Pattern 'desktop_preflight completed disposition=' `
-                    -SimpleMatch -Quiet) { $disposition = $true }
+              $hits = @(Select-String -Path $f -Pattern 'desktop_preflight completed disposition=(\w+)')
+              if ($hits) {
+                $disposition = $true
+                $dispositions += @($hits | ForEach-Object { $_.Matches[0].Groups[1].Value })
+              }
             }
           }
           # Same criterion macOS and Linux enforce: Test-Path, Get-Content and Select-String
@@ -714,6 +727,19 @@ jobs:
           }
           if (-not $disposition) {
             Write-Host '::error::tauri.log records no desktop_preflight disposition; the app never completed preflight'
+            exit 1
+          }
+          # Windows only, and stricter than macOS/Linux: those two accept the bundled
+          # installer's pre-#7547 pinned exit, so no venv exists there and NotInstalled is
+          # the honest answer. Here the installer was required to exit 0, create the venv
+          # and import torch, and the app reads the same default root it wrote
+          # (%USERPROFILE%\.unsloth\studio; it ignores UNSLOTH_STUDIO_HOME, which is why
+          # the log is found at the second path). So anything but a ready disposition means
+          # the app cannot boot what was just installed -- the reported failure, on the very
+          # field the report turned on.
+          Write-Host "dispositions recorded: $($dispositions -join ', ')"
+          if (-not ($dispositions | Where-Object { $_ -match '^(Managed|Owned|Attached)Ready$' })) {
+            Write-Host "::error::preflight never reported a ready disposition (saw: $($dispositions -join ', ')); the app did not recognise the environment the bundled installer just built"
             exit 1
           }
           exit 0

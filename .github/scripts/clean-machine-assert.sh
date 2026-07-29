@@ -142,7 +142,7 @@ for check in "$@"; do
       # The one thing masking cannot reproduce: Rosetta 2 ships on hosted runners and
       # not on a factory-fresh Mac, so an x86_64-only payload runs green here and dies
       # with "bad CPU type in executable" for the user. `lipo` is an xcrun shim and gone
-      # after masking, so read `file -b`, keyed off `uname -m` (macos-15-intel is x86_64).
+      # after masking, so read `file -Lb`, keyed off `uname -m` (macos-15-intel is x86_64).
       #
       # SCOPE: all of $MACHO_ROOT, .venv_t5_510/_530/_550 sidecars included -- payload,
       # not scratch (setup.sh:579-581 creates them, transformers_version.py:338-348 puts
@@ -161,7 +161,7 @@ for check in "$@"; do
         # -L follows that symlink; -maxdepth keeps this a bin/ lookup, not a second walk
         # of site-packages through the venv's lib64 link -- depth 4 covers
         # <root>/unsloth_studio, the .venv_t5_* sidecars and <root>/studio/unsloth_studio.
-        # In a variable so emptiness is its own failure: uv alone would satisfy $nout.
+        # In a variable so it can be counted separately: uv alone would satisfy $nout.
         base_py="$(find -L "$root" -maxdepth 4 -type f -path '*/bin/python' 2>/dev/null)"
         _macho_targets() {
           find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null
@@ -170,12 +170,21 @@ for check in "$@"; do
             [ -n "$_uv" ] && [ -f "$_uv" ] && printf '%s\n' "$_uv"
           done
         }
-        n=0 nexe=0 nout=0 bad_arch="" unsigned="" broken=""
+        n=0 nexe=0 nout=0 nbase=0 bad_arch="" unsigned="" broken=""
         while IFS= read -r f; do
-          desc="$(file -b "$f" 2>/dev/null || true)"
+          # -L: find printed the SYMLINK path for <venv>/bin/python, and plain `file` does
+          # not dereference, so it answered "symbolic link to ..." and the Mach-O test
+          # below dropped the very interpreter this scan exists to check.
+          desc="$(file -Lb "$f" 2>/dev/null || true)"
           case "$desc" in *Mach-O*) ;; *) continue ;; esac
           n=$((n + 1))
           case "$f" in "$root"/*) ;; *) nout=$((nout + 1)) ;; esac
+          # Classified, not merely found: an entry `file` could not read is invisible here.
+          case "
+$base_py
+" in *"
+$f
+"*) nbase=$((nbase + 1)) ;; esac
           # Substring, not equality: a universal binary lists every slice it carries,
           # and one that includes the host arch is fine.
           case "$desc" in
@@ -218,8 +227,8 @@ for check in "$@"; do
         if [ "$n" = "0" ]; then
           # An empty scan reads exactly like a clean one, so a wrong root would pass.
           fail "no Mach-O found under $root; the arch/signature assertion proved nothing"
-        elif [ -z "$base_py" ]; then
-          fail "no */bin/python found under $root, so the venv's base interpreter went unchecked"
+        elif [ "$nbase" = "0" ]; then
+          fail "no */bin/python under $root was classified as Mach-O, so the venv's base interpreter went unchecked (found: ${base_py:-none})"
         elif [ "$nout" = "0" ]; then
           # install.sh always bootstraps uv into $HOME/.local/bin, so zero hits outside
           # $root means the extra scan matched nothing and uv's arch went unproven.
