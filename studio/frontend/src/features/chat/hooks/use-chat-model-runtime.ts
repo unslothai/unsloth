@@ -585,6 +585,11 @@ export function useChatModelRuntime() {
             previousGgufVariant,
           });
           syncModelCapabilities(modelId, residentStatus);
+          // setCheckpoint above blanked the bar (the checkpoint changed), and this path
+          // returns before the post-load recount below. A mounted thread does not rerun
+          // its history loader on the way back, so without this the bar stays empty until
+          // the next completion. Guarded inside: a non-GGUF resident has no window.
+          void refreshContextUsage({ afterModelLoad: true });
           return;
         }
       }

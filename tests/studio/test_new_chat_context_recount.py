@@ -36,10 +36,11 @@ from _node_harness import (
 REFRESH = source_path("studio/frontend/src/features/chat/utils/refresh-context-usage.ts")
 PROVIDER = source_path("studio/frontend/src/features/chat/runtime-provider.tsx")
 STORE = source_path("studio/frontend/src/features/chat/stores/chat-runtime-store.ts")
+RUNTIME = source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runtime.ts")
 
 TEMP = WORKDIR / "temp" / "new_chat_context_recount"
 
-SOURCES = (REFRESH, PROVIDER, STORE)
+SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME)
 
 # Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {"aui", "isLoading", "nonce", "checkpoint", "ggufContextLength", "modelLoading"}
@@ -71,12 +72,35 @@ def _new_chat_effects() -> list[tuple[list[str], str]]:
 
 
 def _store_reducers() -> str:
-    """setActiveThreadId / setContextUsage / setThreadContextUsage, verbatim."""
+    """setCheckpoint / setActiveThreadId / setContextUsage / setThreadContextUsage, verbatim."""
     text = read(STORE)
+    checkpoint = slice_between(
+        text,
+        "setCheckpoint: (modelId, ggufVariant) =>",
+        "  // Re-apply the incoming thread's own usage",
+    )
     active = slice_between(text, "setActiveThreadId: (activeThreadId) =>", "setActiveProjectId:")
     usage = slice_between(text, "setContextUsage: (contextUsage) =>", "setThreadContextUsage:")
     thread_usage = slice_between(text, "setThreadContextUsage: (threadId, usage) =>", "}));")
-    return "  " + active.strip() + "\n  " + usage.strip() + "\n  " + thread_usage.strip()
+    return (
+        "  "
+        + checkpoint.strip()
+        + "\n  "
+        + active.strip()
+        + "\n  "
+        + usage.strip()
+        + "\n  "
+        + thread_usage.strip()
+    )
+
+
+def _resident_fast_path() -> str:
+    """loadModel's already-resident branch, verbatim."""
+    return slice_between(
+        read(RUNTIME),
+        "      // Picking an external provider leaves the local model resident",
+        "      // Every chat decodes on the llama-server this load replaces",
+    )
 
 
 HARNESS_PRELUDE = """
@@ -94,7 +118,8 @@ const state: any = {
   activeThreadId: null,
   contextUsage: null,
   contextUsageByThreadId: {},
-  params: { checkpoint: "", systemPrompt: "", systemVariables: "" },
+  params: { checkpoint: "", systemPrompt: "", systemVariables: "", maxTokens: 4096 },
+  activeGgufVariant: null,
   ggufContextLength: null,
   modelLoading: false,
 };
@@ -102,6 +127,20 @@ const state: any = {
 function set(updater: any): void {
   const patch = typeof updater === "function" ? updater(state) : updater;
   Object.assign(state, patch);
+}
+
+// What the sliced setCheckpoint reducer reads through: nothing is persisted here, and
+// no external provider is configured, so its output-cap clamp is a no-op.
+const CHAT_DEEP_RESEARCH_ENABLED_KEY = "unsloth_deep_research_enabled";
+function saveLastExternalCheckpoint(_id: string | null): void {}
+function saveBool(_key: string, _value: boolean): void {}
+function parseExternalModelId(id: string): any {
+  const [providerId, ...rest] = id.split(":");
+  return rest.length > 0 ? { providerId, modelId: rest.join(":") } : null;
+}
+const useExternalProvidersStore: any = { getState: () => ({ providers: [] }) };
+function getExternalMaxOutputTokens(_providerType: any, _modelId: any): number {
+  return 8192;
 }
 
 const actions: any = {
@@ -210,6 +249,33 @@ __EFFECTS__
 """
 
 
+HARNESS_RESIDENT = """
+
+// Picking the model that never left memory takes loadModel's already-resident branch,
+// sliced verbatim below. It returns early, so it is replayed inside its own function
+// with the surrounding load machinery stubbed.
+export async function adoptResidentModel(props: any): Promise<void> {
+  const forceReload = false;
+  const selection = "pick";
+  const modelId: string = props.modelId;
+  const ggufVariant = props.ggufVariant ?? null;
+  const bailIfLoadInFlight = (): boolean => false;
+  const applyPerModelConfigToRuntime = (_config: any): void => {};
+  const getInferenceStatus = async (): Promise<any> => props.residentStatus;
+  const resolveInferenceCheckpointId = (status: any): string | null =>
+    status?.active_model ?? null;
+  // The real hydration writes the whole status; the recount only reads the window.
+  const applyActiveModelStatusToStore = (status: any, _options: any): void => {
+    set({
+      ggufContextLength: status.is_gguf ? (status.context_length ?? null) : null,
+    });
+  };
+  const syncModelCapabilities = (_id: string, _status: any): void => {};
+__FAST_PATH__
+}
+"""
+
+
 def _rendered_effects() -> str:
     blocks = []
     for deps, body in _new_chat_effects():
@@ -227,7 +293,8 @@ def _rendered_effects() -> str:
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
     render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects())
-    return prelude + _refresh_module_body() + render
+    resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
+    return prelude + _refresh_module_body() + render + resident
 
 
 def _run(script: str) -> dict:
@@ -429,3 +496,54 @@ def test_a_loaded_model_reprices_the_stored_branch_of_an_open_thread():
     assert out["contextUsage"].get("totalTokens") == 62
     assert out["cached"] is not None, "the recount must reach the per-thread cache"
     assert out["cached"].get("totalTokens") == 62
+
+
+def test_adopting_the_resident_gguf_reprices_the_open_thread():
+    """Switching back from an external provider to the local model that never left memory
+    takes loadModel's already-resident branch, which returns before the post-load recount.
+    setCheckpoint blanks the bar on the way through and a mounted thread does not rerun its
+    history loader, so this branch has to recount or the bar stays empty until the next
+    completion."""
+    out = _run(
+        textwrap.dedent(
+            """
+            // @ts-nocheck
+            import { adoptResidentModel, seed, snapshot, world } from "./harness.ts";
+            world.storedMessages["thread-a"] = [
+              { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
+              { id: "m2", role: "assistant", createdAt: 2, content: [{ type: "text", text: "yo" }], metadata: {} },
+            ];
+            // On an external provider, showing the usage that provider's last turn wrote.
+            seed({
+              params: { checkpoint: "openai:gpt-4o", systemPrompt: "", systemVariables: "" },
+              ggufContextLength: null,
+              activeThreadId: "thread-a",
+              contextUsage: { promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 },
+            });
+
+            await adoptResidentModel({
+              modelId: "unsloth/gguf-model",
+              residentStatus: {
+                active_model: "unsloth/gguf-model",
+                gguf_variant: null,
+                is_gguf: true,
+                context_length: 8192,
+              },
+            });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            const after = snapshot();
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length,
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
+            }));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
+        "adopting the resident GGUF must reprice the open thread: setCheckpoint has "
+        "already blanked the external provider's usage"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == 62
