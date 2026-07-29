@@ -19,20 +19,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
-# ── Why the whole installer lives in a function ──────────────────────────────
-# `curl ... | sh` makes sh the READER of a pipe. This file is ~150KB, so a
-# top-level `exit` left sh dead with thousands of lines unread; the write end then
-# failed and curl appended "(56) Failure writing output to destination" after the
-# installer's own message, reading as a network error. 29 of the 35 exits are in
-# the first half, so every early failure looked like a broken download.
+# ── Why the installer lives in a function ──
+# Under `curl ... | sh`, sh is the pipe READER. This file is ~150KB, so a top-level
+# `exit` left most of it unread, the write end failed, and curl tacked
+# "(56) Failure writing output to destination" onto our own error message. Wrapping
+# the body forces sh to parse to the closing brace first, so the pipe always drains
+# (install.ps1 has always had this shape).
 #
-# A function forces sh to parse to the closing brace before running anything, so
-# the pipe always drains. install.ps1 has always had this shape.
-#
-# Deliberately NOT reindented: shell ignores leading whitespace, and reflowing
-# 4000+ lines would bury the change. `exit` still exits the shell from inside a
-# function, so no control flow changes. Do not add `exec < /dev/null` here -- for
-# a piped shell that would close the script's own source.
+# Body is deliberately NOT reindented: reflowing 4000+ lines would bury the change,
+# and `exit` still exits the shell from inside a function. Do not add
+# `exec < /dev/null`: for a piped shell that closes the script's own source.
 _unsloth_main() {
 
 # ── Output style (aligned with studio/setup.sh) ──
@@ -4465,5 +4461,5 @@ fi
 
 }
 
-# Every byte above is parsed before this line runs, which is the entire point.
+# Every byte above is parsed before this line runs, which is the point.
 _unsloth_main "$@"
