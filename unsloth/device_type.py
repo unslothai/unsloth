@@ -27,6 +27,7 @@ import functools
 import inspect
 import os
 from unsloth_zoo.utils import Version
+from .bnb_availability import native_kernels_ready
 
 
 def is_mlx_available():
@@ -117,17 +118,20 @@ DEVICE_COUNT: int = get_device_count()
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
-# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader
-# reads before it selects a 4bit checkpoint. Same guarded import the fallbacks in
-# _gpu_init.py and kernels/utils.py use rather than a find_spec probe, so an
-# installed-but-broken wheel (missing .so, wrong ROCm/CUDA build) is treated as
-# unavailable by all three, not only by the ones that import it.
+# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader reads
+# before it picks a 4bit checkpoint. A guarded import, not find_spec, since importable
+# is not usable - from 0.46 a dead native library still resolves every ctypes handle to
+# a closure that raises only when called, so 4bit would die mid-run, not fall back here.
 try:
     import bitsandbytes as _bnb_probe
-    del _bnb_probe
 except Exception:
     ALLOW_PREQUANTIZED_MODELS = False
     ALLOW_BITSANDBYTES = False
+else:
+    if not native_kernels_ready(_bnb_probe, DEVICE_TYPE):
+        ALLOW_PREQUANTIZED_MODELS = False
+        ALLOW_BITSANDBYTES = False
+    del _bnb_probe
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this
 # legacy GCN arch (ROCm dropped it after 6.3) - compiled graphs crash or miscompile
 # while the eager path trains fine. Default compile off; setdefault so a user

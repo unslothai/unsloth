@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { InfoHint } from "@/components/ui/info-hint";
+import { PanelResizeHandle } from "@/components/ui/panel-resize-handle";
 import {
   InputGroup,
   InputGroupAddon,
@@ -44,7 +45,13 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { NumericValueInput, snapToStep } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import {
+  CHAT_SETTINGS_WIDTH_MIN,
+  clampChatSettingsWidth,
+  useChatSettingsWidth,
+} from "@/hooks/use-chat-settings-width";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -52,7 +59,7 @@ import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { Fragment, type ReactNode } from "react";
+import { type CSSProperties, Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import { PermissionModeDropdown } from "./permission-mode-select";
@@ -363,6 +370,15 @@ export function ChatSettingsPanel({
   onExternalProviderChange,
   externalProviderType = null,
 }: ChatSettingsPanelProps) {
+  const asideRef = useRef<HTMLElement>(null);
+  const t = useT();
+  const {
+    width: settingsWidth,
+    max: settingsMax,
+    stored: settingsStored,
+    setWidth: setSettingsWidth,
+    resetWidth: resetSettingsWidth,
+  } = useChatSettingsWidth();
   // Local models show every knob; providerCapabilities is only consulted when
   // isExternalModel. Unknown providers fall back to the OpenAI-compat shape via
   // getProviderCapabilities, so these flags never undercount support.
@@ -461,6 +477,23 @@ export function ChatSettingsPanel({
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
+  const promptObserverRef = useRef<ResizeObserver | null>(null);
+  const measurePromptRef = useRef<() => void>(() => {});
+  // The section unmounts its textarea when collapsed, so observe through a
+  // callback ref: a stored observer would cling to the detached node and the
+  // remounted one would never be measured.
+  const attachPromptBox = useCallback((node: HTMLTextAreaElement | null) => {
+    systemPromptBoxRef.current = node;
+    promptObserverRef.current?.disconnect();
+    promptObserverRef.current = null;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    // Resizing rewraps the prompt, and a drag changes the width through a
+    // custom property without re-rendering, so watch the box itself.
+    const observer = new ResizeObserver(() => measurePromptRef.current());
+    observer.observe(node);
+    promptObserverRef.current = observer;
+    measurePromptRef.current();
+  }, []);
   const [activePresetBaseline, setActivePresetBaseline] = useState(params);
   const presets = useMemo(() => {
     return getOrderedPresets(customPresets);
@@ -746,14 +779,19 @@ export function ChatSettingsPanel({
   }, [open]);
 
   useEffect(() => {
-    const el = systemPromptBoxRef.current;
-    setSystemPromptOverflows(
-      currentSystemPrompt.length > 0 &&
-        el != null &&
-        el.clientHeight > 0 &&
-        el.scrollHeight > el.clientHeight + 1,
-    );
+    measurePromptRef.current = () => {
+      const el = systemPromptBoxRef.current;
+      setSystemPromptOverflows(
+        currentSystemPrompt.length > 0 &&
+          el != null &&
+          el.clientHeight > 0 &&
+          el.scrollHeight > el.clientHeight + 1,
+      );
+    };
+    measurePromptRef.current();
   }, [currentSystemPrompt, open]);
+
+  useEffect(() => () => promptObserverRef.current?.disconnect(), []);
 
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1124,7 +1162,7 @@ export function ChatSettingsPanel({
             )}
           >
             <textarea
-              ref={systemPromptBoxRef}
+              ref={attachPromptBox}
               value={currentSystemPrompt}
               onChange={(e) => set("systemPrompt")(e.target.value)}
               onMouseDown={(e) => {
@@ -1433,17 +1471,47 @@ export function ChatSettingsPanel({
 
   return (
     <aside
+      ref={asideRef}
       data-tour="chat-settings"
+      data-slot="chat-settings-panel"
       className={cn(
-        "relative z-50 shrink-0 overflow-hidden bg-panel-surface text-panel-surface-fg font-heading",
-        open ? "w-[17rem] border-l border-sidebar-border" : "w-0",
+        "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
+        open
+          ? "w-(--chat-settings-width) border-l border-sidebar-border"
+          : "w-0 overflow-hidden",
       )}
-      style={{
-        height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-        marginTop: "var(--studio-custom-titlebar-height, 0px)",
-      }}
+      style={
+        {
+          "--chat-settings-width": `${settingsWidth}px`,
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+        } as CSSProperties
+      }
     >
-      <div className="h-full w-full">{settingsContent}</div>
+      {open ? (
+      <PanelResizeHandle
+        edge="left"
+        open={open}
+        width={settingsWidth}
+        stored={settingsStored}
+        min={CHAT_SETTINGS_WIDTH_MIN}
+        max={settingsMax}
+        clamp={clampChatSettingsWidth}
+        setWidth={setSettingsWidth}
+        resetWidth={resetSettingsWidth}
+        onToggle={() => onOpenChange?.(!open)}
+        target={() => asideRef.current}
+        cssVar="--chat-settings-width"
+        measure={() => asideRef.current?.getBoundingClientRect().width ?? 0}
+        label={t("shell.aria.resizeRunSettings")}
+        toggleLabel={t("shell.aria.openRunSettings")}
+        collapseHint={t("shell.resize.collapse")}
+        expandHint={t("shell.resize.expand")}
+        dragHint={t("shell.resize.drag")}
+        dataSlot="chat-settings-resize-handle"
+      />
+      ) : null}
+      <div className="h-full w-full overflow-hidden">{settingsContent}</div>
     </aside>
   );
 }
