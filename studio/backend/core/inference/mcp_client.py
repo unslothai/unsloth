@@ -345,7 +345,8 @@ def _session_responsive(
         return False
     probe = getattr(client, "list_tools_mcp", None) or client.list_tools
     try:
-        session.run(_race_tool_call(probe(), window, cancel_event), window)
+        # margin=0: a wedged loop must fail inside the window, not 15s past it.
+        session.run(_race_tool_call(probe(), window, cancel_event), window, margin = 0.0)
     except _MCPCancelled:
         raise
     except Exception:  # noqa: BLE001
@@ -441,14 +442,15 @@ class _StdioSession:
         except Exception:
             return False
 
-    def run(self, coro, timeout: Optional[float]):
+    def run(self, coro, timeout: Optional[float], margin: float = _STDIO_WEDGE_MARGIN):
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         # The coroutine enforces the tool timeout; the margin only catches a
         # wedged loop. No deadline at all when the caller set none -- but poll
         # so a session closed under us (server update/delete) can't hang the
-        # request thread forever on a stopped loop.
-        deadline = None if timeout is None else time.monotonic() + timeout + _STDIO_WEDGE_MARGIN
+        # request thread forever on a stopped loop. Callers whose whole budget is
+        # the timeout (the liveness probe) pass margin=0.
+        deadline = None if timeout is None else time.monotonic() + timeout + margin
         try:
             while True:
                 try:
@@ -901,6 +903,16 @@ def _flatten_result(result: Any) -> str:
     return body
 
 
+def _unwind_budget(unwind_timeout: float, timeout: Optional[float], elapsed: float) -> float:
+    """How long a cancelled call may take to unwind: whatever is left of the
+    caller's window, so the wait is never charged on top of an expired deadline."""
+    if not unwind_timeout:
+        return 0.0
+    if timeout is None:
+        return unwind_timeout
+    return min(unwind_timeout, max(0.0, timeout - elapsed))
+
+
 async def _race_tool_call(
     call_coro,
     timeout: Optional[float],
@@ -908,8 +920,8 @@ async def _race_tool_call(
     unwind_timeout: float = 0.0,
 ) -> Any:
     """Await ``call_coro`` under ``timeout``, polling ``cancel_event`` so a
-    /cancel POST interrupts even mid-network-read. ``unwind_timeout`` waits that
-    long for a cancelled call to finish unwinding; only callers that hand the
+    /cancel POST interrupts even mid-network-read. ``unwind_timeout`` waits up to
+    that long for a cancelled call to finish unwinding; only callers that hand the
     client back to a cache need it (one-shot clients are discarded anyway)."""
 
     async def _watch_cancel() -> None:
@@ -919,6 +931,7 @@ async def _race_tool_call(
     if cancel_event is not None and cancel_event.is_set():
         call_coro.close()
         raise _MCPCancelled
+    started = time.monotonic()
     call_task = asyncio.create_task(call_coro)
     if cancel_event is None:
         return await asyncio.wait_for(call_task, timeout = timeout)
@@ -935,10 +948,12 @@ async def _race_tool_call(
                 t.cancel()
         # Wait for the cancelled call to unwind before its session is reused, so
         # the next call can't be dispatched while this one is still on the
-        # transport. Bounded: a coroutine that ignores cancellation leaves the
-        # session dirty, and the ping gate decides whether it is reusable.
-        if unwind_timeout:
-            await asyncio.wait({call_task, watch_task}, timeout = unwind_timeout)
+        # transport. Comes out of the caller's remaining budget, never on top of
+        # it; a coroutine that outlasts it leaves the session dirty and the
+        # liveness probe decides whether it is reusable.
+        left = _unwind_budget(unwind_timeout, timeout, time.monotonic() - started)
+        if left:
+            await asyncio.wait({call_task, watch_task}, timeout = left)
     if not done:
         raise asyncio.TimeoutError
     if call_task in done:

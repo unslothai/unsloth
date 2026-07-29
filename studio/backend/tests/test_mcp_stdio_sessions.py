@@ -298,6 +298,44 @@ def test_stop_interrupts_a_hanging_dirty_probe(fake_clients):
     assert time.monotonic() - started < mcp_client._STDIO_LIVENESS_TIMEOUT
 
 
+def test_unwind_budget_comes_out_of_the_caller_deadline():
+    budget = mcp_client._unwind_budget
+    assert budget(2.0, 0.05, 0.05) == 0.0  # deadline already spent
+    assert budget(2.0, 300.0, 2.0) == 2.0  # Stop early in a long call
+    assert budget(2.0, 3.0, 2.5) == pytest.approx(0.5)  # only the remainder
+    assert budget(2.0, None, 99.0) == 2.0  # no deadline at all
+    assert budget(0.0, 300.0, 1.0) == 0.0  # one-shot callers never wait
+
+
+def test_liveness_probe_runs_without_the_wedge_margin(fake_clients, monkeypatch):
+    # The probe's whole budget is its window, so a wedged loop must not add the
+    # 15s margin on top of the caller's timeout.
+    margins = []
+    real_run = mcp_client._StdioSession.run
+
+    def spy(self, coro, timeout, margin = mcp_client._STDIO_WEDGE_MARGIN):
+        margins.append(margin)
+        return real_run(self, coro, timeout, margin)
+
+    monkeypatch.setattr(mcp_client._StdioSession, "run", spy)
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    fake_clients[0].call_delay = 0.5
+    call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    fake_clients[0].call_delay = 0.0
+    margins.clear()
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    # The dirty session is probed first, then the call itself dispatches.
+    assert margins == [0.0, mcp_client._STDIO_WEDGE_MARGIN]
+
+
 def test_unwind_wait_is_stdio_only(fake_clients, monkeypatch):
     # Only a cached session needs the cancelled call to finish unwinding; a
     # one-shot client is discarded, so a Stop there must not wait for it.
