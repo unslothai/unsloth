@@ -5384,6 +5384,25 @@ async def get_active_generations(
     }
 
 
+_model_loads_in_progress_lock = threading.Lock()
+_model_loads_in_progress: dict[str, int] = {}
+
+
+def _note_model_load_in_progress(model: str, delta: int) -> None:
+    label = _lifecycle_model_label(model)
+    with _model_loads_in_progress_lock:
+        count = _model_loads_in_progress.get(label, 0) + delta
+        if count > 0:
+            _model_loads_in_progress[label] = count
+        else:
+            _model_loads_in_progress.pop(label, None)
+
+
+def _model_loads_in_progress_snapshot() -> list[str]:
+    with _model_loads_in_progress_lock:
+        return list(_model_loads_in_progress)
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -5445,6 +5464,7 @@ async def _load_model_impl(
         model = _lifecycle_model_label(request.model_path, request.gguf_variant),
         running = True,
     )
+    _note_model_load_in_progress(request.model_path, 1)
 
     native_grant_backed = False
     model_log_label = request.model_path
@@ -6275,6 +6295,7 @@ async def _load_model_impl(
         msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
+        _note_model_load_in_progress(request.model_path, -1)
         gguf_load_stack.close()
         # Catch-all: an error or cancelled load would otherwise leave the row "loading".
         api_monitor.fail_open(_load_event, "Load did not complete")
@@ -7362,7 +7383,14 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
         from core.inference.llama_keepwarm import get_last_unloaded_state
-        loading_models = list(getattr(backend, "loading_models", set()))
+        loading_models = list(
+            dict.fromkeys(
+                [
+                    *getattr(backend, "loading_models", set()),
+                    *_model_loads_in_progress_snapshot(),
+                ]
+            )
+        )
         last_unloaded_model, idle_capabilities = (
             get_last_unloaded_state()
             if backend.active_model_name is None and not loading_models
@@ -7374,6 +7402,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         if last_unloaded_model is not None:
             idle_internal_identifier, idle_gguf_variant = last_unloaded_model[:2]
             idle_model_identifier = idle_capabilities.get("model_identifier")
+            inference_config = load_inference_config(idle_internal_identifier)
             idle_chat_template_override = idle_capabilities.get(
                 "chat_template_override"
             )

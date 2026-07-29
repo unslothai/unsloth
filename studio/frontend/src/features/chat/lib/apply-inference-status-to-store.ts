@@ -442,7 +442,7 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     // Status endpoint unavailable: fall back to the normal auto-load path.
     return false;
   }
-  if (!status.active_model) {
+  if (!status.active_model && !status.idle_unloaded) {
     return false;
   }
 

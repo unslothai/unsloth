@@ -408,12 +408,25 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
+                    internal_identifier = backend.model_identifier
+                    native_display_label = getattr(
+                        backend, "_native_display_label", None
+                    )
+                    advertised_identifier = getattr(
+                        backend, "_openai_advertised_id", None
+                    )
+                    is_direct_local_model = bool(
+                        getattr(backend, "_is_local_model", False)
+                    )
                     capabilities = {
                         "model_identifier": (
-                            getattr(backend, "_native_display_label", None)
-                            or public_model_id(
-                                getattr(backend, "_openai_advertised_id", None)
-                                or backend.model_identifier
+                            native_display_label
+                            or advertised_identifier
+                            or (
+                                internal_identifier
+                                if is_direct_local_model
+                                and str(internal_identifier).lower().endswith(".gguf")
+                                else public_model_id(internal_identifier)
                             )
                         ),
                         "is_vision": backend.is_vision,

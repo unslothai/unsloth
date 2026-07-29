@@ -269,10 +269,23 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
     assert "applyActiveModelStatusToStore(statusRes, {" in runtime
     assert "statusRes.loading.length === 0" in runtime
     assert "backend.active_model_name is None and not loading_models" in backend_route
+    assert "*_model_loads_in_progress_snapshot()" in backend_route
     assert '"cache_type_kv": backend.cache_type_kv' in keepwarm
     assert '"requested_parallel_slots": backend.requested_parallel_slots' in keepwarm
     assert 'cache_type_kv = idle_capabilities.get("cache_type_kv")' in backend_route
     assert 'parallel_slots = idle_capabilities.get("parallel_slots")' in backend_route
+    assert "inference_config = load_inference_config(idle_internal_identifier)" in backend_route
+    assert "if is_direct_local_model" in keepwarm
+    assert 'and str(internal_identifier).lower().endswith(".gguf")' in keepwarm
+
+
+def test_send_time_adoption_accepts_an_idle_unloaded_model():
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    adoption = status.split(
+        "export async function tryAdoptServerActiveModel()",
+        1,
+    )[1]
+    assert "if (!status.active_model && !status.idle_unloaded)" in adoption
 
 
 def test_native_rollback_rechecks_cancellation_after_token_lease():
