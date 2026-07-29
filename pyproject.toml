@@ -128,14 +128,19 @@ huggingfacenotorch = [
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
 # Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
+# torchcodec publishes no sdist and only manylinux_2_28_x86_64, macosx_*_arm64
+# and win_amd64 wheels, so Linux aarch64, Windows ARM64 and Intel Mac have
+# nothing to resolve and pip fails the whole install rather than skipping audio.
+# Gate on the platforms that have a wheel, matching
+# PLATFORM_LACKS_TORCHCODEC_WHEEL in studio/install_python_stack.py.
 audio-torch210 = [
-    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10'",
+    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch290 = [
-    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10'",
+    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch280 = [
-    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9'",
+    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
