@@ -1525,9 +1525,9 @@ def test_a_failed_fetch_keeps_retry_reachable():
     hook = " ".join(
         (FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding="utf-8").split()
     )
-    assert "const failed = !next || (!next.matched && next.error !== null);" in hook, (
-        "the distinction this relies on"
-    )
+    assert (
+        "const failed = !next || (!next.matched && next.error !== null);" in hook
+    ), "the distinction this relies on"
 
 
 def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
