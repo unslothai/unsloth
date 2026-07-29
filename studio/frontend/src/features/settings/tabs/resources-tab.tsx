@@ -525,16 +525,19 @@ export function ResourcesTab() {
                 <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
                   {/* Ruled between the three readings: run together they are
                       easy to misread as one number. */}
+                  {/* min-w-0 on each reading, or truncate cannot fire: a flex
+                      item defaults to min-width:auto and the longest locales
+                      would push past the block instead of ellipsizing. */}
                   <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
-                    <span className="truncate">
+                    <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.used", { value: usedText })}
                     </span>
                     <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
-                    <span className="truncate">
+                    <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.free", { value: freeText })}
                     </span>
                     <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
-                    <span className="truncate">
+                    <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.total", {
                         value: totalText,
                       })}
