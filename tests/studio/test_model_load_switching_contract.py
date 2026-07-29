@@ -30,7 +30,9 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     no_active = runtime.split(
         "} else if (!statusRes.active_model && !isExternalSelectionActive) {", 1
     )[1].split("  } catch (error)", 1)[0]
-    assert "!statusRes.idle_unloaded" in no_active
+    assert "statusRes.idle_unloaded && statusRes.model_identifier" in no_active
+    assert "setCheckpoint(statusRes.model_identifier, statusRes.gguf_variant);" in no_active
+    assert "statusRes.loading.length === 0" in no_active
     assert "clearCheckpoint();" in no_active
     assert "!useChatRuntimeStore.getState().modelLoading" in no_active
     assert "!useChatRuntimeStore.getState().loadingModelPick" in no_active
@@ -251,8 +253,22 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
     )
     assert "idle_unloaded?: boolean;" in frontend_types
     assert "idle_unloaded: bool" in backend_model
-    assert "get_last_unloaded_model() is not None" in backend_route
-    assert "!statusRes.idle_unloaded" in runtime
+    assert "last_unloaded_model = (" in backend_route
+    assert "idle_model_identifier, idle_gguf_variant = last_unloaded_model[:2]" in backend_route
+    assert "model_identifier = backend.active_model_name or idle_model_identifier" in backend_route
+    assert "statusRes.idle_unloaded && statusRes.model_identifier" in runtime
+    assert "statusRes.loading.length === 0" in runtime
+
+
+def test_native_rollback_rechecks_cancellation_after_token_lease():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    rollback = runtime.split(
+        "rollbackNativePathLease = (",
+        1,
+    )[1].split("const rollbackResponse = await loadModel(", 1)[0]
+    assert rollback.index("if (abortCtrl.signal.aborted)") > rollback.index(
+        "consumeNativePathToken("
+    )
 
 
 def test_hosted_selection_restores_cancelled_local_config():

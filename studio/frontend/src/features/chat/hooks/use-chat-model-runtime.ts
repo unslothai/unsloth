@@ -383,10 +383,14 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // An idle-reload stash keeps both the checkpoint and its capabilities;
-      // an in-flight switch also has a normal no-active interval.
-      if (
-        !statusRes.idle_unloaded &&
+      // An idle-reload stash is authoritative even across browser reloads or
+      // stale tabs: hydrate the concrete identity the backend will restore.
+      if (statusRes.idle_unloaded && statusRes.model_identifier) {
+        setCheckpoint(statusRes.model_identifier, statusRes.gguf_variant);
+      } else if (
+        // Another client may own a normal no-active interval while its model
+        // loads, so do not erase this tab's selection until the backend is idle.
+        statusRes.loading.length === 0 &&
         !useChatRuntimeStore.getState().modelLoading &&
         !useChatRuntimeStore.getState().loadingModelPick
       ) {
@@ -1664,6 +1668,9 @@ export function useChatModelRuntime() {
                     "Could not reload the previous local model: please re-select the file.",
                   );
                 }
+              }
+              if (abortCtrl.signal.aborted) {
+                throw new Error("Cancelled");
               }
               try {
                 const rollbackResponse = await loadModel({

@@ -7362,15 +7362,23 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
         from core.inference.llama_keepwarm import get_last_unloaded_model
-        idle_unloaded = (
-            backend.active_model_name is None
-            and get_last_unloaded_model() is not None
+        last_unloaded_model = (
+            get_last_unloaded_model() if backend.active_model_name is None else None
         )
+        idle_unloaded = last_unloaded_model is not None
+        idle_model_identifier = None
+        idle_gguf_variant = None
+        if last_unloaded_model is not None:
+            idle_model_identifier, idle_gguf_variant = last_unloaded_model[:2]
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
             idle_unloaded = idle_unloaded,
-            model_identifier = backend.active_model_name,
+            # Keep active_model null while the server is unloaded, but expose the
+            # concrete reload identity so a fresh/stale client can hydrate the
+            # same checkpoint instead of preserving arbitrary local state.
+            model_identifier = backend.active_model_name or idle_model_identifier,
+            gguf_variant = idle_gguf_variant,
             is_vision = is_vision,
             is_gguf = False,
             is_local_model = bool(
