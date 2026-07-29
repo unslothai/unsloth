@@ -520,10 +520,12 @@ export function ResourcesTab() {
                     </span>
                   </div>
                   <div className="flex min-w-0 items-center gap-4">
+                    {/* Fills the space left by the percentage rather than
+                        claiming the full row, which overflowed once stacked. */}
                     <Progress
                       value={safePercent}
                       aria-label={device.name ?? "GPU"}
-                      className="h-1.5 w-40 shrink-0 rounded-full bg-muted max-lg:w-full dark:bg-black/40"
+                      className="h-1.5 min-w-0 flex-1 rounded-full bg-muted lg:w-40 lg:flex-none dark:bg-black/40"
                       indicatorClassName={usageIndicatorClass(safePercent)}
                     />
                     <div className="w-[5.5rem] shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
