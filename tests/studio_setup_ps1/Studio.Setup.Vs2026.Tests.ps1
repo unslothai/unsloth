@@ -30,7 +30,8 @@ BeforeAll {
     foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools', 'Get-VcBuildCustomizationsDir',
                       'Test-CmakeSupportsGenerator', 'Get-CmakeVersion', 'Test-CmakeListsGenerator',
                       'Test-CmakeCanDriveGenerator', 'Get-FallbackVsGenerator',
-                      'Ensure-BuildToolsForLlamaSourceBuild', 'Test-VCRedistInstalled')) {
+                      'Ensure-BuildToolsForLlamaSourceBuild', 'Test-VCRedistInstalled',
+                      'Get-HostMachineArch')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
