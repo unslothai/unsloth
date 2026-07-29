@@ -664,6 +664,13 @@ html[data-chat-font] .aui-root {
    in the same style pass that swaps the color tokens. Driving it from
    React state paints one frame late while the whole page recalculates,
    which briefly leaves the ring on the previous card. */
+
+/* Dark mode drops the resting border. Same specificity as, and before, the
+   hover/selected rules below so those still paint a visible border. */
+.dark .palette-card {
+	border-color: transparent;
+}
+
 .palette-card:hover {
 	border-color: var(--ring-soft);
 }

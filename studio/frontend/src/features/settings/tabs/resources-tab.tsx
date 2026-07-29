@@ -116,7 +116,7 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
+    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-white/[0.06]">
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-ui-11 font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
@@ -141,7 +141,7 @@ function MetricTile({
       <Progress
         value={percentKnown ? safePercent : 0}
         aria-label={label}
-        className="h-1.5 rounded-full bg-muted"
+        className="h-1.5 rounded-full bg-muted dark:bg-black/40"
         indicatorClassName={usageIndicatorClass(safePercent)}
       />
     </div>
@@ -483,54 +483,46 @@ export function ResourcesTab() {
               ? formatPercent(safePercent)
               : unknownLabel;
             return (
+              // One row per device: a full-width bar under a single GPU read
+              // as a page-wide rule, so the bar is sized to the row instead.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 flex-col gap-2 py-3"
+                className="flex min-w-0 items-center gap-4 py-3 max-md:flex-col max-md:items-stretch max-md:gap-2"
               >
-                <div className="flex min-w-0 items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {device.name ??
-                        t("settings.resources.gpu.unknownDevice")}
-                    </div>
-                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {ordinal === undefined
-                        ? backendLabel
-                        : `${t("settings.resources.gpu.deviceWithIndex", {
-                            index: ordinal,
-                          })}, ${backendLabel}`}
-                    </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-foreground">
+                    {device.name ?? t("settings.resources.gpu.unknownDevice")}
                   </div>
-                  <div className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-                    <span>
-                      {percentText}{" "}
-                      {t("settings.resources.gpu.vramUtilization")}
+                  <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {ordinal === undefined
+                      ? backendLabel
+                      : `${t("settings.resources.gpu.deviceWithIndex", {
+                          index: ordinal,
+                        })}, ${backendLabel}`}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-4 max-md:justify-between">
+                  <div className="flex shrink-0 gap-3 font-mono text-xs tabular-nums text-muted-foreground max-lg:hidden">
+                    <span className="truncate">
+                      {t("settings.resources.gpu.used", { value: usedText })}
+                    </span>
+                    <span className="truncate">
+                      {t("settings.resources.gpu.free", { value: freeText })}
+                    </span>
+                    <span className="truncate">
+                      {t("settings.resources.gpu.total", { value: totalText })}
                     </span>
                   </div>
+                  <Progress
+                    value={safePercent}
+                    aria-label={device.name ?? "GPU"}
+                    className="h-1.5 w-40 shrink-0 rounded-full bg-muted max-md:w-full dark:bg-black/40"
+                    indicatorClassName={usageIndicatorClass(safePercent)}
+                  />
+                  <div className="w-[5.5rem] shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                    {percentText} {t("settings.resources.gpu.vramUtilization")}
+                  </div>
                 </div>
-                <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3 sm:gap-2">
-                  <span className="min-w-0 truncate font-mono tabular-nums">
-                    {t("settings.resources.gpu.used", {
-                      value: usedText,
-                    })}
-                  </span>
-                  <span className="min-w-0 truncate font-mono tabular-nums sm:text-center">
-                    {t("settings.resources.gpu.free", {
-                      value: freeText,
-                    })}
-                  </span>
-                  <span className="min-w-0 truncate font-mono tabular-nums sm:text-right">
-                    {t("settings.resources.gpu.total", {
-                      value: totalText,
-                    })}
-                  </span>
-                </div>
-                <Progress
-                  value={safePercent}
-                  aria-label={device.name ?? "GPU"}
-                  className="h-1.5 rounded-full bg-muted"
-                  indicatorClassName={usageIndicatorClass(safePercent)}
-                />
               </div>
             );
           })
