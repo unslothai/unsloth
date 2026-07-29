@@ -21,6 +21,7 @@ import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -520,9 +521,17 @@ export function ApiMonitorPage(): ReactElement {
       // external provider selected while a local model stays resident, and
       // clearCheckpoint calls saveLastExternalCheckpoint(null), so clearing
       // unconditionally would delete a selection this button never touched.
+      // Both spellings: status reports the concrete load path as the identifier
+      // while the store may hold the advertised repo id, so matching only the
+      // path leaves the store pinned to a model this button just freed.
       const store = useChatRuntimeStore.getState();
       const selected = store.params.checkpoint;
-      if (selected && modelIdsMatch(selected, checkpoint)) {
+      const unloadedAliases = [checkpoint, status.active_model];
+      if (
+        selected &&
+        !isExternalModelId(selected) &&
+        unloadedAliases.some((alias) => modelIdsMatch(selected, alias))
+      ) {
         store.clearCheckpoint();
       }
       setUnloadError(null);
