@@ -56,6 +56,7 @@ _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext
 _npl.run_without_native_path_secret = lambda fn: fn
 _stub("utils.native_path_leases", _npl)
 _pth = _types.ModuleType("utils.paths")
+_pth.is_local_path = lambda *a, **k: False
 _pth.outputs_root = lambda *a, **k: "/tmp/outputs"
 _stub("utils.paths", _pth)
 
