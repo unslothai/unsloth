@@ -69,19 +69,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `beat` is the delay between the marker and the signal, in seconds. It is 0
-          # everywhere except the three steps that provably run for minutes: every phase
-          # label prints BEFORE its work starts, so killing at detection is already inside
-          # the phase, while any beat longer than the phase lands the signal in the NEXT
-          # one. A flat 3s beat is what made 5 of the 12 legs of staging run 30419729244
-          # interrupt a later phase than their label claims.
+          # Only a marker: the driver signals the moment that line appears, and no leg gets
+          # to wait first. Every label prints BEFORE its work starts, so the kill is inside
+          # the phase at detection, and a delay only bets on how long the phase runs. The
+          # bet lost twice, both times turning a leg into a duplicate of the next one: a
+          # flat 3s wait moved 5 of the 12 legs of staging run 30419729244, and in
+          # 30426111484 it carried the macOS torch leg into "Installing Unsloth" because
+          # the PyTorch step, called minutes long here, finished in under three seconds.
           #
           # Every leg is a hard gate. There is no continue-on-error cell: a leg allowed to
           # fail is a warning wearing a red icon, and this workflow's entire claim is that
           # a killed install cannot report itself healthy.
           #
           # The exact reported case: killed during the sub-step that installs structlog.
-          - {os: macos-14, label: studio-deps, marker: 'studio deps', beat: 0}
+          - {os: macos-14, label: studio-deps, marker: 'studio deps'}
           # Coarse phases, earliest to latest -- each leaves a different partial venv.
           # No venv cell. "Creating virtual environment" ran 0.107s in staging run
           # 30419729244 (03:31:07.371 -> 07.478 to "Installing PyTorch"), shorter than any
@@ -89,22 +90,22 @@ jobs:
           # was tried (30423181897 and 30424366953 both). It was the torch leg with a
           # different label. Lost with it: a venv caught half-written. That state is not
           # reachable by interruption at this resolution, and it is the only thing lost --
-          # the torch leg's signal lands ~3s into a multi-minute download, so what it
-          # leaves behind is already a complete venv with nothing installed into it.
-          - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch',           beat: 3}
-          - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth',           beat: 3}
-          - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup',        beat: 3}
+          # the torch leg lands at the top of the PyTorch step, so what it leaves behind is
+          # already a complete venv with nothing installed into it.
+          - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch'}
+          - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth'}
+          - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup'}
           # Other dependency-pass sub-steps around the named one. No pip-bootstrap cell for
           # the same reason as venv: "1/10 pip bootstrap" is over before a poll can see it,
           # so in both 30419729244 and 30424366953 the signal landed in "2/10 unsloth
           # extras", which is the next cell down.
           # No base-packages cell: --local sets skip_base, so install_python_stack returns
           # before "base packages" ever prints -- that leg ran to completion, proving nothing.
-          - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras',    beat: 0}
-          - {os: macos-14, label: data-designer,  marker: 'data designer deps', beat: 0}
+          - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras'}
+          - {os: macos-14, label: data-designer,  marker: 'data designer deps'}
           # Linux: same teardown path, different package manager and process semantics.
-          - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps', beat: 0}
-          - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', beat: 3}
+          - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps'}
+          - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch'}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -121,7 +122,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           KILL_AT_SECONDS: '1500'
-          KILL_AFTER_MARKER_SECONDS: '${{ matrix.beat }}'
         run: |
           # --local is load-bearing. Without it install.sh:3996 resolves
           # `unsloth>=2026.7.5` from PyPI, so the venv gets the PUBLISHED CLI, every
@@ -266,9 +266,8 @@ jobs:
         include:
           # install.ps1:121 parses `--no-torch`; `-SkipTorch` matches no case there and is
           # silently dropped. The torch leg must NOT skip torch or its marker never appears.
-          # `beat` as in the POSIX job: 0 for the sub-step, 3 for the minutes-long torch step.
-          - {label: studio-deps, marker: 'studio deps', beat: 0, installArgs: '--tauri --no-torch --local'}
-          - {label: torch, marker: 'Installing PyTorch', beat: 3, installArgs: '--tauri --local'}
+          - {label: studio-deps, marker: 'studio deps', installArgs: '--tauri --no-torch --local'}
+          - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local'}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -280,8 +279,7 @@ jobs:
         run: |
           pwsh -NoProfile -File .github/scripts/interrupt-install.ps1 `
             -Marker '${{ matrix.marker }}' -LogPath logs/install.log `
-            -InstallArgs '${{ matrix.installArgs }}' -KillAtSeconds 1500 `
-            -KillAfterMarkerSeconds ${{ matrix.beat }}
+            -InstallArgs '${{ matrix.installArgs }}' -KillAtSeconds 1500
 
       - name: The kill must have landed where it was aimed
         shell: pwsh

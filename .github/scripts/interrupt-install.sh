@@ -9,8 +9,7 @@
 #
 # Usage: bash .github/scripts/interrupt-install.sh "<marker>" "<logfile>" [-- install args]
 #   <marker>  log regex to wait for before killing, e.g. "studio deps"; "" kills at deadline.
-# Env: KILL_AT_SECONDS deadline (default 900), KILL_GRACE grace before SIGKILL (default 10),
-#      KILL_AFTER_MARKER_SECONDS beat between the marker and the signal (default 0)
+# Env: KILL_AT_SECONDS deadline (default 900), KILL_GRACE grace before SIGKILL (default 10)
 set -uo pipefail
 
 MARKER="${1:-}"
@@ -83,20 +82,17 @@ for i in $(seq 1 $(( KILL_AT_SECONDS * 5 ))); do
     break
   fi
   if [ -n "$MARKER" ] && grep -qE "$MARKER" "$LOG" 2>/dev/null; then
-    # No beat by default: the label prints before the work, so killing at detection is
-    # already inside the phase, while a flat 3s beat is what pushed 5 of the 12 legs in
-    # staging run 30419729244 into a LATER phase (venv -> torch produced a byte-identical
-    # log to the torch leg). Legs whose phase runs for minutes pass a beat explicitly to
-    # land mid-work; the loop still stops the moment the marked phase ends.
-    for _ in $(seq 1 $(( ${KILL_AFTER_MARKER_SECONDS:-0} * 5 ))); do
-      marked_phase_over && break
-      sleep 0.2
-      kill -0 "$PID" 2>/dev/null || break
-    done
-    # ...but a cached step can FINISH inside the beat. Recording marker-hit before it
-    # handed the landing assertion a COMPLETED install that interrupted nothing.
+    # Signal at detection, never after a delay. Every label prints BEFORE its work starts,
+    # so the kill is inside the phase the moment the line appears, and any wait at all is a
+    # bet on how long that phase runs. The bet loses: a flat 3s wait put 5 of the 12 legs
+    # of staging run 30419729244 into a LATER phase, and in 30426111484 it carried the
+    # macOS torch leg from "Installing PyTorch" into "Installing Unsloth" -- a step the
+    # workflow called minutes long finished in under three seconds.
+    #
+    # Between the grep and the signal the installer can still exit on its own, which would
+    # record marker-hit over an install that interrupted nothing.
     if ! kill -0 "$PID" 2>/dev/null; then
-      reason="exited-during-marker-delay"
+      reason="exited-before-signal"
       break
     fi
     reason="marker-hit"

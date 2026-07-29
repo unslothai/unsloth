@@ -15,8 +15,7 @@ param(
   [string]$Marker = '',
   [string]$LogPath = 'logs/install.log',
   [string]$InstallArgs = '',
-  [int]$KillAtSeconds = 900,
-  [int]$KillAfterMarkerSeconds = 0
+  [int]$KillAtSeconds = 900
 )
 
 $ErrorActionPreference = 'Continue'
@@ -111,30 +110,30 @@ function Test-MarkedPhaseOver {
 
 $killed = $false
 $reason = ''
-# Fifth-of-a-second slices: every phase label prints BEFORE its work starts, so the poll
-# delay is the whole distance between the label and the signal.
+# Fifth-of-a-second slices, matching the POSIX driver: every phase label prints BEFORE its
+# work starts, so this delay IS the whole distance between the label and the signal, and it
+# is the only thing that can push the kill past the end of a short phase. It slept 500ms
+# while the comment claimed a fifth, so it carried 2.5 slices of overshoot the POSIX side
+# does not.
 for ($i = 0; $i -lt ($KillAtSeconds * 5); $i++) {
   if ($proc.HasExited) { $reason = 'exited-before-marker'; break }
   if ($Marker) {
     $hit = Select-String -Path $LogPath -Pattern $Marker -SimpleMatch:$false -ErrorAction SilentlyContinue
     if ($hit) {
-      # Same as the POSIX driver: no beat by default, because the label prints before the
-      # work, so killing at detection is already inside the phase while a flat beat sends
-      # the signal into a LATER phase. The loop stops the moment the marked phase ends.
-      for ($j = 0; $j -lt ($KillAfterMarkerSeconds * 5); $j++) {
-        if (Test-MarkedPhaseOver) { break }
-        Start-Sleep -Milliseconds 200
-        if ($proc.HasExited) { break }
-      }
-      # The installer can finish inside the delay; recording marker-hit before it
-      # let a COMPLETED install satisfy the landing assertion and probe HEALTHY.
-      if ($proc.HasExited) { $reason = 'exited-during-marker-delay'; break }
+      # Same as the POSIX driver: signal at detection, never after a delay. The label
+      # prints before the work, so the kill is inside the phase the moment the line
+      # appears, and any wait is a bet on the phase outlasting it that staging runs
+      # 30419729244 and 30426111484 both lost.
+      #
+      # The installer can still exit on its own between the match and the signal, which
+      # would record marker-hit over an install that interrupted nothing.
+      if ($proc.HasExited) { $reason = 'exited-before-signal'; break }
       $reason = 'marker-hit'
       $killed = $true
       break
     }
   }
-  Start-Sleep -Milliseconds 500
+  Start-Sleep -Milliseconds 200
 }
 if (-not $killed -and -not $proc.HasExited) { if (-not $reason) { $reason = 'deadline' }; $killed = $true }
 
