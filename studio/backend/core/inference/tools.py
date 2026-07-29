@@ -10414,8 +10414,46 @@ def _check_signal_escape_patterns(code: str):
                     return True
             return False
 
+        def _container_holds_dynamic_import_callable(self, node):
+            if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                elements = node.elts
+            elif isinstance(node, ast.Dict):
+                elements = (*node.keys, *node.values)
+            else:
+                return False
+            return any(
+                element is not None
+                and (
+                    _is_dynamic_import_callable(
+                        element,
+                        self.dynamic_import_aliases,
+                        self.dynamic_namespace_aliases,
+                        self.dynamic_import_module_aliases,
+                    )
+                    or self._container_holds_dynamic_import_callable(element)
+                )
+                for element in elements
+            )
+
         def visit_Assign(self, node):
             self.visit(node.value)
+            if (
+                _is_dynamic_import_callable(
+                    node.value,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                    self.dynamic_import_module_aliases,
+                )
+                and any(
+                    isinstance(target, (ast.Attribute, ast.Subscript))
+                    for assignment_target in node.targets
+                    for target in ast.walk(assignment_target)
+                )
+            ) or self._container_holds_dynamic_import_callable(node.value):
+                self._record_unsafe_pyyaml(
+                    node.value,
+                    "Unsafe PyYAML deserialization import callable escapes through storage",
+                )
             if _pyyaml_loader_is_safe(
                 node.value,
                 self.yaml_aliases,
@@ -10470,6 +10508,22 @@ def _check_signal_escape_patterns(code: str):
                 self.visit(node.annotation)
             if node.value is not None:
                 self.visit(node.value)
+                if (
+                    _is_dynamic_import_callable(
+                        node.value,
+                        self.dynamic_import_aliases,
+                        self.dynamic_namespace_aliases,
+                        self.dynamic_import_module_aliases,
+                    )
+                    and any(
+                        isinstance(target, (ast.Attribute, ast.Subscript))
+                        for target in ast.walk(node.target)
+                    )
+                ) or self._container_holds_dynamic_import_callable(node.value):
+                    self._record_unsafe_pyyaml(
+                        node.value,
+                        "Unsafe PyYAML deserialization import callable escapes through storage",
+                    )
                 if _pyyaml_loader_is_safe(
                     node.value,
                     self.yaml_aliases,
@@ -10590,6 +10644,22 @@ def _check_signal_escape_patterns(code: str):
                 return self._is_pyyaml_callable_reference(contained)
             if isinstance(node, ast.Name):
                 return node.id in self.pyyaml_callable_aliases
+            reflected = _reflected_member(node)
+            loader_base = (
+                reflected[0]
+                if reflected is not None
+                else node.value
+                if isinstance(node, ast.Attribute)
+                else None
+            )
+            if loader_base is not None and _pyyaml_loader_is_safe(
+                loader_base,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                return True
             path = _pyyaml_attribute_path(
                 node,
                 self.yaml_aliases,
@@ -11507,7 +11577,13 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_Attribute(self, node):
-            if node.attr in {"__mro__", "mro", "__subclasses__"} and _pyyaml_loader_is_safe(
+            if node.attr in {
+                "__base__",
+                "__bases__",
+                "__mro__",
+                "mro",
+                "__subclasses__",
+            } and _pyyaml_loader_is_safe(
                 node.value,
                 self.yaml_aliases,
                 self.yaml_safe_loader_aliases,

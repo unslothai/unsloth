@@ -1122,6 +1122,30 @@ class TestPyYamlDeserialization:
                 ")\n"
                 "Loader(payload).get_single_data()"
             ),
+            (
+                "import yaml\n"
+                "S = yaml.SafeLoader\n"
+                "Base = S.__base__\n"
+                "Loader = next(\n"
+                "    cls for cls in Base.__subclasses__() if cls.__name__ == 'Loader'\n"
+                ")\n"
+                "Loader(payload).get_single_data()"
+            ),
+            (
+                "import yaml\n"
+                "S = yaml.SafeLoader\n"
+                "importer = S.__init__.__globals__['__builtins__']['__import__']\n"
+                "Loader = importer('yaml').Loader\n"
+                "Loader(payload).get_single_data()"
+            ),
+            (
+                "import importlib\n"
+                "class Box:\n"
+                "    pass\n"
+                "Box.import_module = importlib.import_module\n"
+                "module = Box.import_module('yaml')\n"
+                "module.Loader(payload).get_single_data()"
+            ),
         ],
     )
     def test_callable_class_factory_and_storage_pyyaml_bypasses_blocked(self, code):
