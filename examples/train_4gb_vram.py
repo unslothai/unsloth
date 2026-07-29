@@ -3,7 +3,7 @@
 Optimized QLoRA Fine-Tuning Script for 4GB VRAM Consumer GPUs (GTX 1650 / RTX 3050)
 Author: Kunwar Satyam Singh (dante@5ingularity)
 
-Compatible with: unsloth 2025+, trl 1.x (SFTConfig API), transformers 4.45+
+Compatible with: unsloth 2025+, trl>=0.18.2,<=0.24.0 (SFTConfig API), transformers>=4.51.3
 """
 
 import os
@@ -55,7 +55,17 @@ def main():
     )
 
     # ── 3. Load & format dataset ──────────────────────────────────────────────
-    alpaca_prompt = (
+    # yahma/alpaca-cleaned rows carry instruction/input/output; many rows have a
+    # non-empty `input` holding context (a passage, table, etc.) the instruction
+    # refers to. Dropping it teaches the model to answer without context it was
+    # actually given, so we branch on whether `input` is present.
+    prompt_with_input = (
+        "Below is an instruction that describes a task, paired with an input "
+        "that provides further context. Write a response that appropriately "
+        "completes the request.\n\n"
+        "### Instruction:\n{}\n\n### Input:\n{}\n\n### Response:\n{}"
+    )
+    prompt_no_input = (
         "Below is an instruction that describes a task. "
         "Write a response that appropriately completes the request.\n\n"
         "### Instruction:\n{}\n\n### Response:\n{}"
@@ -64,18 +74,22 @@ def main():
     EOS_TOKEN = tokenizer.eos_token
 
     def format_alpaca(examples):
-        return {
-            "text": [
-                alpaca_prompt.format(inst, out) + EOS_TOKEN
-                for inst, out in zip(examples["instruction"], examples["output"])
-            ]
-        }
+        texts = []
+        for inst, inp, out in zip(
+            examples["instruction"], examples["input"], examples["output"]
+        ):
+            if inp.strip():
+                text = prompt_with_input.format(inst, inp, out)
+            else:
+                text = prompt_no_input.format(inst, out)
+            texts.append(text + EOS_TOKEN)
+        return {"text": texts}
 
     dataset = load_dataset("yahma/alpaca-cleaned", split = "train[:500]")
     dataset = dataset.map(format_alpaca, batched = True)
 
     # ── 4. Training configuration locked for 4GB VRAM ────────────────────────
-    # NOTE: In trl 1.x the SFT-specific params (dataset_text_field, max_length,
+    # NOTE: In trl>=0.18 the SFT-specific params (dataset_text_field, max_length,
     # packing, dataset_num_proc) moved from SFTTrainer into SFTConfig.
     sft_config = SFTConfig(
         output_dir = "outputs_4gb_run",
@@ -96,17 +110,17 @@ def main():
         logging_steps = 10,
         seed = 3407,
         report_to = "none",
-        # SFT-specific (trl 1.x: these live in SFTConfig, not SFTTrainer)
+        # SFT-specific (trl>=0.18: these live in SFTConfig, not SFTTrainer)
         dataset_text_field = "text",
         max_length = max_seq_length,
         dataset_num_proc = 2,
         packing = False,  # True can spike VRAM on variable-length samples
         padding_free = False,  # Unsloth auto-enables this when unset, which conflicts
-        # with an explicit max_length + packing=False (trl 1.6+)
+        # with an explicit max_length + packing=False (trl>=0.18)
     )
 
     # ── 5. Initialize trainer ─────────────────────────────────────────────────
-    # NOTE: In trl 1.x 'tokenizer' param was renamed to 'processing_class'.
+    # NOTE: In trl>=0.18 'tokenizer' param was renamed to 'processing_class'.
     trainer = SFTTrainer(
         model = model,
         processing_class = tokenizer,
