@@ -13,7 +13,9 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 
 from __future__ import annotations
 
+import json
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -61,6 +63,19 @@ def test_context_length_alias_is_registered():
     flags = set(getattr(opt, "param_decls", None) or [])
     assert "--max-seq-length" in flags
     assert "--context-length" in flags
+
+
+def test_gpu_memory_mode_option_is_registered_with_auto_default():
+    """The GPU placement policy is a first-class model option."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    opt = sig.parameters["gpu_memory_mode"].default
+    flags = set(getattr(opt, "param_decls", None) or [])
+    assert flags == {"--gpu-memory-mode"}
+    assert getattr(opt, "default", None) == "auto"
+    assert getattr(opt, "rich_help_panel", None) == "Model"
 
 
 def test_parallel_default_is_four():
@@ -375,6 +390,75 @@ def test_reexec_forwards_context_length_alias(monkeypatch):
     argv = captured[0]["argv"]
     assert _value_after(argv, "--max-seq-length") == "8192", argv
     assert "--context-length" not in argv, argv
+
+
+def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
+    """An explicit manual policy must survive the Studio venv re-exec."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--gpu-memory-mode", "manual"],
+    )
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--gpu-memory-mode") == "manual", argv
+
+
+def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
+    """The default stays compatible with older Studio venv launchers."""
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    assert "--gpu-memory-mode" not in captured[0]["argv"]
+
+
+def test_run_rejects_invalid_gpu_memory_mode(monkeypatch):
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--gpu-memory-mode", "invalid"],
+    )
+    assert result.exit_code != 0
+    assert captured == []
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("auto", {"model_path": "owner/model-GGUF", "max_seq_length": 0, "load_in_4bit": True}),
+        (
+            "manual",
+            {
+                "model_path": "owner/model-GGUF",
+                "max_seq_length": 0,
+                "load_in_4bit": True,
+                "gpu_memory_mode": "manual",
+                "gpu_layers": -1,
+            },
+        ),
+    ],
+)
+def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected):
+    """Manual plus untouched layer and context settings matches the UI payload."""
+    studio_mod = _load_run_command()
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return BytesIO(b'{"model": "owner/model-GGUF"}')
+
+    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    result = studio_mod._load_model_via_http(
+        port = 8888,
+        api_key = "sk-test",
+        model = "owner/model-GGUF",
+        gguf_variant = None,
+        max_seq_length = 0,
+        load_in_4bit = True,
+        gpu_memory_mode = mode,
+    )
+
+    assert result == {"model": "owner/model-GGUF"}
+    assert json.loads(captured["request"].data) == expected
+    assert captured["request"].get_header("Authorization") == "Bearer sk-test"
 
 
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):

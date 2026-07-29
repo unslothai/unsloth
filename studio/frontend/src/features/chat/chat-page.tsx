@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -86,6 +87,7 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
+  Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -112,6 +114,10 @@ import {
 } from "./artifacts/store";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import {
+  ResearchActivityPanel,
+  ResearchActivitySheet,
+} from "./components/research-activity-panel";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -174,6 +180,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
+import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
@@ -285,6 +292,19 @@ const SingleContent = memo(function SingleContent({
 }): ReactElement {
   const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const isMobile = useIsMobile();
+  const chatActive = useChatActive();
+  const openResearchRunId = useResearchRunStore((state) => state.openRunId);
+  const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
+  useEffect(() => {
+    if (!activeThreadId || !openResearchRunId) return;
+    const openRun =
+      useResearchRunStore.getState().sessions[openResearchRunId]?.run;
+    if (openRun && openRun.threadId !== activeThreadId) closeResearchPanel();
+  }, [activeThreadId, openResearchRunId, closeResearchPanel]);
+  const openResearchRun = useResearchRunStore((state) =>
+    openResearchRunId ? state.sessions[openResearchRunId]?.run : undefined,
+  );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
@@ -293,18 +313,24 @@ const SingleContent = memo(function SingleContent({
     useState(false);
   const [isArtifactSurfaceVisible, setIsArtifactSurfaceVisible] =
     useState(false);
+  const researchMatchesThread = Boolean(
+    openResearchRun &&
+      openResearchRun.threadId === (threadId ?? activeThreadId),
+  );
+  const showResearchPanel = researchMatchesThread && !isMobile;
   // Without a URL threadId the artifact must belong to the active thread.
-  const showArtifactPanel = Boolean(
+  const showArtifactPanel = !showResearchPanel && Boolean(
     artifact &&
       artifactSurface === "panel" &&
       (threadId
         ? !artifact.threadId || artifact.threadId === threadId
         : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
+  const showContextPanel = showResearchPanel || showArtifactPanel;
 
-  const artifactLayoutActive = showArtifactPanel || isArtifactPanelLayoutActive;
+  const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
-    showArtifactPanel &&
+    showContextPanel &&
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
 
@@ -316,7 +342,7 @@ const SingleContent = memo(function SingleContent({
 
     if (!hasInitializedArtifactPanelRef.current) {
       hasInitializedArtifactPanelRef.current = true;
-      if (!showArtifactPanel) {
+       if (!showContextPanel) {
         panel.resize("0%");
         return;
       }
@@ -327,17 +353,17 @@ const SingleContent = memo(function SingleContent({
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
       resizeFrameId = window.requestAnimationFrame(() => {
-        panel.resize(showArtifactPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+        panel.resize(showContextPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
       });
     });
-    const surfaceTimerId = showArtifactPanel
+    const surfaceTimerId = showContextPanel
       ? window.setTimeout(() => {
           setIsArtifactSurfaceVisible(true);
         }, ARTIFACT_SURFACE_POP_DELAY_MS)
       : 0;
     const timeoutId = window.setTimeout(() => {
       setIsArtifactLayoutAnimating(false);
-      if (!showArtifactPanel) {
+      if (!showContextPanel) {
         setIsArtifactPanelLayoutActive(false);
       }
     }, ARTIFACT_PANEL_TRANSITION_MS + 60);
@@ -351,7 +377,13 @@ const SingleContent = memo(function SingleContent({
       }
       window.clearTimeout(timeoutId);
     };
-  }, [showArtifactPanel]);
+  }, [showContextPanel]);
+
+  useEffect(() => {
+    if (!researchMatchesThread) return;
+    onCloseArtifact();
+    useChatRuntimeStore.getState().setSettingsPanelOpen(false);
+  }, [researchMatchesThread, onCloseArtifact]);
 
   const threadPane = (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
@@ -388,29 +420,51 @@ const SingleContent = memo(function SingleContent({
           withHandle={false}
           className={cn(
             "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
-            !artifactLayoutActive && "pointer-events-none -ml-0 -mr-0 w-0",
+            !artifactLayoutActive &&
+              "pointer-events-none -ml-0 -mr-0 w-0",
           )}
         />
         <ResizablePanel
           panelRef={artifactPanelRef}
           id="chat-artifact"
           defaultSize="0%"
-          minSize={artifactPanelSettledOpen ? "30%" : "0%"}
-          maxSize={artifactLayoutActive ? "58%" : "0%"}
-          collapsible={true}
+          minSize={
+            showResearchPanel
+              ? "30%"
+              : artifactPanelSettledOpen
+                ? "30%"
+                : "0%"
+          }
+          maxSize={
+            showResearchPanel
+              ? "58%"
+              : artifactLayoutActive
+                ? "58%"
+                : "0%"
+          }
+          collapsible={showArtifactPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
-            !showArtifactPanel && "pointer-events-none",
+            !showContextPanel && "pointer-events-none",
           )}
         >
           <div
             data-artifact-surface-visible={
               isArtifactSurfaceVisible ? "true" : "false"
             }
-            className="chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible"
+            className={cn(
+              "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
+              showResearchPanel && "border-l border-border/70",
+            )}
           >
-            {showArtifactPanel && artifact ? (
+             {showResearchPanel && openResearchRunId ? (
+               <ResearchActivityPanel
+                 key={openResearchRunId}
+                 runId={openResearchRunId}
+                 onClose={closeResearchPanel}
+               />
+             ) : showArtifactPanel && artifact ? (
               <ArtifactSurface
                 artifact={artifact}
                 variant="panel"
@@ -423,6 +477,15 @@ const SingleContent = memo(function SingleContent({
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
+      {openResearchRunId && researchMatchesThread ? (
+        <ResearchActivitySheet
+          runId={openResearchRunId}
+          open={chatActive && isMobile}
+          onOpenChange={(open) => {
+            if (!open) closeResearchPanel();
+          }}
+        />
+      ) : null}
     </ChatRuntimeProvider>
   );
 });
@@ -718,6 +781,7 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+
   const { pinned } = useSidebar();
   return (
     <div
@@ -1851,6 +1915,15 @@ export function ChatPage({
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
   const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const latestResearchRunId = useResearchRunStore((state) =>
+    activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
+  );
+  const latestResearchRun = useResearchRunStore((state) =>
+    latestResearchRunId ? state.sessions[latestResearchRunId]?.run : undefined,
+  );
+  const openResearchPanel = useResearchRunStore((state) => state.openPanel);
+  const openResearchRunId = useResearchRunStore((state) => state.openRunId);
+  const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(
     search.project ?? null,
   );
@@ -2610,9 +2683,10 @@ export function ChatPage({
           ggufNativeContextLength: null,
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          // Clear previous-model counters, else the relaxed external-provider
-          // render gate shows stale stats until the next completion.
+          // Clear previous-model counters, else the relaxed external-provider render gate shows
+          // stale stats. The per-thread copies go too, so a switch back cannot re-apply.
           contextUsage: null,
+          contextUsageByThreadId: {},
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,
@@ -2834,7 +2908,13 @@ export function ChatPage({
           ) {
             return;
           }
-          store.setContextUsage(usage);
+          // Key by the thread this restore read, like the history loader: the await above can
+          // outlast a switch away, and an unkeyed write would file this thread's usage under
+          // the incoming one.
+          store.setThreadContextUsage(threadId, usage);
+          if (store.activeThreadId === threadId) {
+            store.setContextUsage(usage);
+          }
         })
         .catch((error) => {
           if (!isExpectedBackgroundChatStorageError(error)) {
@@ -3113,7 +3193,7 @@ export function ChatPage({
     // Provides `active` to ChatRuntimeProvider (drops the message views/composers
     // while off-route, keeping the runtime alive) and to the compare chrome.
     <ChatActiveContext.Provider value={active}>
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces render to document.body, escaping the parent's hidden
           wrapper, so gate them on `active` to keep them off other tabs. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -3291,12 +3371,48 @@ export function ChatPage({
                 </TooltipContent>
               </Tooltip>
             )}
+            {view.mode === "single" && latestResearchRun ? (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (openResearchRunId === latestResearchRun.id) {
+                        closeResearchPanel();
+                        return;
+                      }
+                      setSettingsOpen(false);
+                      closeArtifactSurface();
+                      openResearchPanel(latestResearchRun.id);
+                    }}
+                    className="relative flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    aria-label="Open research activity"
+                    aria-pressed={openResearchRunId === latestResearchRun.id}
+                  >
+                    <HugeiconsIcon
+                      icon={Telescope02Icon}
+                      className="size-icon"
+                      strokeWidth={1.75}
+                    />
+                    {!['completed', 'failed', 'cancelled'].includes(latestResearchRun.status) ? (
+                      <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary ring-2 ring-background" />
+                    ) : null}
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+                  Research activity
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
             {!settingsOpen && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
-                    onClick={() => setSettingsOpen(true)}
+                    onClick={() => {
+                      useResearchRunStore.getState().closePanel();
+                      setSettingsOpen(true);
+                    }}
                     className="flex size-[var(--studio-chat-control-height,34px)] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >

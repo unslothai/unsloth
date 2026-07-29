@@ -26,6 +26,7 @@ from core.inference.llama_cpp import (
     _PROVISIONAL_ARGS_MIN_CHARS,
     LlamaCppBackend,
 )
+from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
@@ -602,7 +603,7 @@ def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
-    _patch_monotonic(monkeypatch, [200.0, 201.0, 203.0, 300.0, 400.0, 405.0, 405.0])
+    _patch_monotonic(monkeypatch, [200.0, 201.0, 203.0, 300.0, 400.0, 405.0, 410.0])
 
     def fake_execute_tool(name, arguments, **_kwargs):
         return "Rendered HTML canvas: Done."
@@ -1906,6 +1907,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     streams = [
         [_sse({"content": "I will use render_html now."}), _done()],
         [
+            _sse({"reasoning_content": "I reconsidered the request."}),
             _sse({"content": "No tool is needed. Final answer: use a red square."}),
             _done(),
         ],
@@ -1942,8 +1944,19 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == [
         "I will use render_html now.",
-        "No tool is needed. Final answer: use a red square.",
+        (
+            "<think>I reconsidered the request.</think>"
+            "No tool is needed. Final answer: use a red square."
+        ),
     ]
+    summaries = [event for event in events if event.get("type") == "reasoning_summary"]
+    assert len(summaries) == 1
+    visible_answer_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("type") == "content" and "No tool is needed" in event.get("text", "")
+    )
+    assert visible_answer_index < events.index(summaries[0])
     assert len(payloads) == 2
 
 
@@ -2185,24 +2198,14 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     streams = [
         [_sse({"content": "I will use render_html now."}), _done()],
         [
+            _sse({"reasoning_content": "I should render the requested HTML."}),
             _sse(
                 {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_forced",
-                            "type": "function",
-                            "function": {
-                                "name": "render_html",
-                                "arguments": json.dumps(
-                                    {
-                                        "code": "<html><body>forced</body></html>",
-                                        "title": "Forced",
-                                    }
-                                ),
-                            },
-                        }
-                    ]
+                    "content": (
+                        '<tool_call>{"name":"render_html","arguments":'
+                        '{"code":"<html><body>forced</body></html>",'
+                        '"title":"Forced"}}</tool_call>'
+                    )
                 }
             ),
             _done(),
@@ -2246,7 +2249,142 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     assert len(calls) == 1
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now.", "Final note after tool."]
+    assert not any(event.get("type") == "reasoning_summary" for event in events)
     assert len(payloads) == 3
+
+
+def _status_texts(events: list[dict]) -> list[str]:
+    return [event["text"] for event in events if event.get("type") == "status"]
+
+
+_WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+}
+
+
+def _nudge_then_search_streams() -> list[list[str]]:
+    """Stall, then a re-prompted turn that finally searches, then the answer."""
+
+    return [
+        [_sse({"content": "I will search the web now."}), _done()],
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_search",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
+    ]
+
+
+def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatch):
+    """The re-prompted turn is hidden, so without a badge the UI looks frozen."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    statuses = _status_texts(events)
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
+    # Blank first: the route resets its text cursor only on an empty status.
+    # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
+    assert index > 0 and statuses[index - 1] == ""
+    assert statuses[index + 1].startswith("Searching:")
+    assert statuses[-1] == ""
+
+
+def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(monkeypatch):
+    streams = [
+        [_sse({"content": "I will search the web now."}), _done()],
+        [_sse({"content": "No search needed. Final answer: the square is red."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    statuses = _status_texts(events)
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    assert statuses[-1] == ""
+
+
+def test_direct_answer_never_shows_the_nudge_status(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "The square is red."}), _done()]],
+        payloads,
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+
+
+def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+            nudge_tool_calls = False,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    assert len(payloads) == 1
 
 
 def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
@@ -2277,6 +2415,8 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
             tools = [{"type": "function", "function": {"name": "python"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
+            # Unset defaults to "auto", which would not prompt this safe print(1).
+            permission_mode = "ask",
             session_id = "sess",
         )
     )
@@ -2309,6 +2449,8 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
         tools = [{"type": "function", "function": {"name": "python"}}],
         max_tool_iterations = 1,
         confirm_tool_calls = True,
+        # Unset defaults to "auto", which would not prompt this safe print(1).
+        permission_mode = "ask",
         session_id = "sess",
     )
     try:
@@ -2342,6 +2484,9 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
+            # "ask" gates every call so autoinject waits; unset defaults to
+            # "auto", where this safe retrieval never gates.
+            permission_mode = "ask",
             session_id = "sess",
             rag_scope = {"thread_id": "t1"},
         )
@@ -2431,6 +2576,8 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
             tools = [{"type": "function", "function": {"name": "python"}}],
             max_tool_iterations = 2,
             confirm_tool_calls = True,
+            # Unset defaults to "auto", which would not prompt this safe print(1).
+            permission_mode = "ask",
             session_id = "sess",
         )
     )
@@ -2521,6 +2668,50 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
 
     assert calls == [("python", {"code": big_code})]
     assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
+
+
+def test_gated_python_call_still_streams_its_arguments(monkeypatch):
+    """A call awaiting approval still streams its code into the card.
+
+    Suppressing it left the chat completely blank for as long as the model took
+    to write the payload, which for a large file is minutes. Nothing runs before
+    the decision either way, and the code is what the user is approving.
+    """
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    assert len(json.dumps({"code": big_code})) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "write code"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            confirm_tool_calls = True,
+            permission_mode = "ask",
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["tool_call_id"] == "call_gated"
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert args_events, "gated call streamed no arguments"
+    assert "total += 119" in "".join(e["text"] for e in args_events)
+
+    # The approval prompt still fires, and it comes after the code is on screen.
+    gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
+    assert gated, tool_starts
+    assert events.index(provisional[0]) < events.index(gated[0])
 
 
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
@@ -3124,7 +3315,7 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypat
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -3181,7 +3372,7 @@ def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monk
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -3208,7 +3399,7 @@ def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkey
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -3265,7 +3456,7 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -3448,7 +3639,7 @@ def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -3485,7 +3676,7 @@ def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch)
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -3518,7 +3709,7 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -3553,7 +3744,7 @@ def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypa
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "result"),
+        lambda n, a, **_k: calls.append((n, a)) or "result",
     )
 
     events = list(
@@ -3587,7 +3778,7 @@ def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -3619,7 +3810,7 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -3653,7 +3844,7 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -3713,7 +3904,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
     )
 
     events = list(
@@ -3777,7 +3968,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
     )
 
     list(
@@ -3804,7 +3995,7 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
     )
 
     list(
@@ -3829,7 +4020,7 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
         calls: list[tuple[str, dict]] = []
         monkeypatch.setattr(
             "core.inference.tools.execute_tool",
-            lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+            lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
         )
         events = list(
             backend.generate_chat_completion_with_tools(
@@ -3864,7 +4055,7 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     list(

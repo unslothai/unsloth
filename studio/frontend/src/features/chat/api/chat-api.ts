@@ -129,6 +129,27 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
+export interface ActiveGenerationsResponse {
+  count: number;
+  /** Conversations with a generation in flight. Shorter than `count` when a
+   *  first turn started before its thread id was persisted. */
+  thread_ids: string[];
+  /** One entry per in-flight request. `kind` is "chat" unless it is an
+   *  embeddings / completions / audio call, which has no conversation. */
+  active?: { thread_id: string | null; kind?: string }[];
+  parallel_slots: number;
+}
+
+/**
+ * Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
+ * that map is per-tab, empty after a reload and blind to a second tab, and /load and /unload
+ * 409 on these.
+ */
+export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
+  const response = await authFetch("/api/inference/active-generations");
+  return parseJsonOrThrow<ActiveGenerationsResponse>(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
@@ -164,11 +185,15 @@ export async function validateModel(
       // /load. Default placement is sized against the selected GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      cache_type_kv: payload.cache_type_kv ?? null,
+      tensor_parallel: payload.tensor_parallel ?? false,
       gpu_ids: payload.gpu_ids,
       // Manual placement is an explicit override: Auto layers use llama.cpp
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
+      // Slots scale the KV estimate; keep validate sized like the load.
+      n_parallel: payload.n_parallel,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
@@ -348,6 +373,9 @@ export interface LocalModelInfo {
   // Backend-detected weights format ("gguf" when known), so the UI can
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
+  // Set when a cached snapshot holds an incomplete download, so consumers can skip
+  // weights that cannot load yet.
+  partial?: boolean;
   updated_at?: number | null;
 }
 

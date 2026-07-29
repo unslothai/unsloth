@@ -19,9 +19,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 import typer
 
+from unsloth_cli import _studio_deps
 from unsloth_cli.commands import _password_prompt
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -229,6 +230,15 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
+def _install_state() -> dict:
+    """verify_install() result for this install root.
+
+    STUDIO_HOME is an extra search root so a CLI installed outside the managed
+    venv still inspects the venv the desktop app launches.
+    """
+    return _studio_deps.install_state(extra_roots = (STUDIO_HOME / "unsloth_studio",))
+
+
 _RUN_MODULE = None
 
 
@@ -295,7 +305,9 @@ def _find_setup_script() -> Optional[Path]:
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded for `unsloth studio run`
-_PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective for plain `unsloth studio`
+# New Chat leaves the previous conversation generating and the admission queue caps decodes at
+# the slot count, so at 1 every extra chat queues. _slots_that_fit_on_gpu() may cut it back.
+_PARALLEL_DEFAULT_PLAIN = 4
 
 
 def _resolve_secure(secure: bool, not_secure: bool) -> bool:
@@ -335,7 +347,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
@@ -719,7 +731,7 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             # credential after a later reset-password deletes auth.db. Mirrors
             # backend clear_bootstrap_password().
             try:
-                stale_path.write_text("")
+                stale_path.write_text("", encoding = "utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -1172,6 +1184,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
     tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
@@ -1188,6 +1201,9 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if gpu_memory_mode == "manual":
+        payload["gpu_memory_mode"] = "manual"
+        payload["gpu_layers"] = -1
     if tensor_parallel:
         payload["tensor_parallel"] = True
     if llama_extra_args:
@@ -1247,8 +1263,8 @@ def studio_default(
         max = _PARALLEL_MAX,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` "
-            f"defaults to {_PARALLEL_DEFAULT_RUN}."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            "(Parallel Slots) override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -1551,7 +1567,8 @@ def studio_default(
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    run_mod = _load_run_module()
+    with _studio_deps.studio_backend_imports("unsloth studio"):
+        run_mod = _load_run_module()
     run_server = run_mod.run_server
 
     if not silent:
@@ -1728,6 +1745,16 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
     ),
+    gpu_memory_mode: Literal["auto", "manual"] = typer.Option(
+        "auto",
+        "--gpu-memory-mode",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "GPU memory strategy for GGUF models. Auto lets Unsloth select GPUs "
+            "and cap context to fit VRAM. Manual with default layers and context "
+            "delegates placement and sizing to llama.cpp --fit."
+        ),
+    ),
     load_in_4bit: bool = typer.Option(
         True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
@@ -1854,7 +1881,8 @@ def run(
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
+            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Studio "
+            "run settings (Parallel Slots) can override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -2127,6 +2155,8 @@ def run(
             "--host",
             host,
         ]
+        if gpu_memory_mode != "auto":
+            args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
         # Forward the explicit polarity; a future default flip on one
@@ -2185,7 +2215,8 @@ def run(
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
-    run_mod = _load_run_module()
+    with _studio_deps.studio_backend_imports("unsloth studio"):
+        run_mod = _load_run_module()
     run_server = run_mod.run_server
 
     # Match the route handlers' import path: run.py adds studio/backend/ to
@@ -2244,6 +2275,7 @@ def run(
                 gguf_variant = gguf_variant,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
+                gpu_memory_mode = gpu_memory_mode,
                 tensor_parallel = tensor_parallel,
                 llama_extra_args = extra_llama_args,
             )
@@ -2406,7 +2438,7 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    pid_text = _PID_FILE.read_text().strip()
+    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
     if not pid_text.isdigit():
         typer.echo(f"Invalid PID file contents: {pid_text}")
         _PID_FILE.unlink(missing_ok = True)
@@ -2787,12 +2819,18 @@ def desktop_capabilities(
         help = "Emit machine-readable JSON.",
     ),
 ):
+    state = _install_state()
     payload = {
         "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
+        # 2 adds studio_install_ok; the desktop treats < 2 as stale rather than
+        # guess at an absent field.
+        "desktop_manageability_version": 2,
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,
         "supports_desktop_backend_ownership": True,
+        # Did the install finish and are the backend's boot deps still there.
+        "studio_install_ok": bool(state["ok"]),
+        "studio_install_reason": state["reason"],
         "version": "unknown",
     }
     try:
@@ -2807,6 +2845,36 @@ def desktop_capabilities(
 
     for key, value in payload.items():
         typer.echo(f"{key}: {value}")
+
+
+@studio_app.command("verify-install")
+def verify_install(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help = "Emit machine-readable JSON.",
+    ),
+):
+    """Check that the Unsloth Studio dependency install completed.
+
+    Exits 0 when complete, 1 otherwise. setup.sh / setup.ps1 use the exit code
+    to decide whether the "already up to date" fast path may be taken.
+    """
+    state = _install_state()
+
+    if json_output:
+        typer.echo(json.dumps(state, sort_keys = True))
+        raise typer.Exit(0 if state["ok"] else 1)
+
+    if state["ok"]:
+        typer.echo("Unsloth Studio install is complete.")
+        raise typer.Exit(0)
+
+    typer.echo(f"Unsloth Studio install is incomplete ({state['reason']}).")
+    if state["missing"]:
+        typer.echo(f"  missing packages: {', '.join(state['missing'])}")
+    typer.echo("  repair with: unsloth studio update")
+    raise typer.Exit(1)
 
 
 @studio_app.command("provision-desktop-auth", hidden = True)
@@ -2863,7 +2931,7 @@ def reset_password():
             path.unlink(missing_ok = True)
         except OSError:
             try:
-                path.write_text("")
+                path.write_text("", encoding = "utf-8")
             except OSError as exc:
                 typer.echo(
                     f"Error: could not remove or clear {path.name} ({exc}); delete "

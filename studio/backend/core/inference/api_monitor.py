@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -17,6 +18,14 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+
+# Opt-in startup kill switch for Studio's in-memory API monitor.
+_DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _api_monitor_disabled() -> bool:
+    return os.environ.get(_DISABLE_ENV, "").strip().lower() in _TRUE_VALUES
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -52,6 +61,13 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
+    # "request" (HTTP call) or "lifecycle" (model load/unload: event/reason, not a prompt; shared).
+    kind: str = "request"
+    event: Optional[str] = None
+    reason: Optional[str] = None
+    shared: bool = False
+    # 0-100 for a running download row; None when not applicable.
+    progress: Optional[float] = None
 
     def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         duration_ms = None
@@ -85,6 +101,10 @@ class ApiMonitorEntry:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "error": self.error,
+            "kind": self.kind,
+            "event": self.event,
+            "reason": self.reason,
+            "progress": self.progress,
         }
         if include_details:
             payload["prompt"] = self.prompt
@@ -93,10 +113,16 @@ class ApiMonitorEntry:
 
 
 class ApiMonitor:
-    def __init__(self, max_entries: int = _MAX_ENTRIES):
+    def __init__(
+        self,
+        max_entries: int = _MAX_ENTRIES,
+        *,
+        enabled: bool = True,
+    ):
         self._entries: deque[ApiMonitorEntry] = deque()
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self._enabled = enabled
 
     def start(
         self,
@@ -108,6 +134,8 @@ class ApiMonitor:
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
     ) -> str:
+        if not self._enabled:
+            return ""
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apireq_{uuid.uuid4().hex[:12]}",
@@ -126,6 +154,75 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
         return entry.id
+
+    def record_lifecycle(
+        self,
+        *,
+        event: str,
+        model: str,
+        reason: Optional[str] = None,
+        running: bool = False,
+    ) -> str:
+        """Record a model load/unload alongside the request traffic that caused it.
+
+        ``running=True`` opens the row for the caller to close with :meth:`finish` /
+        :meth:`fail`; an unload is terminal on arrival. Rows are shared (visible to
+        every subject) and share the request retention budget.
+        """
+        if not self._enabled:
+            return ""
+        now = time.time()
+        entry = ApiMonitorEntry(
+            id = f"apievt_{uuid.uuid4().hex[:12]}",
+            endpoint = f"model.{event}",
+            method = "",
+            model = model or "default",
+            prompt = "",
+            status = "running" if running else "completed",
+            started_at = now,
+            updated_at = now,
+            started_monotonic = time.monotonic(),
+            finished_at = None if running else now,
+            finished_monotonic = None if running else time.monotonic(),
+            kind = "lifecycle",
+            event = event,
+            reason = reason,
+            shared = True,
+        )
+        with self._lock:
+            self._entries.appendleft(entry)
+            self._trim_terminal_locked()
+        return entry.id
+
+    def relabel(self, entry_id: Optional[str], model: str) -> None:
+        """Rename an open lifecycle row once the load resolves its real id: up front
+        the caller only has the load path, which may be an HF snapshot dir."""
+        if not entry_id or not model:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None:
+                entry.model = model
+                entry.updated_at = time.time()
+
+    def set_progress(self, entry_id: Optional[str], progress: Optional[float]) -> None:
+        """Update an open download row's percentage (clamped to 0-100)."""
+        if not entry_id or progress is None:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None and entry.status == "running":
+                entry.progress = min(100.0, max(0.0, float(progress)))
+                entry.updated_at = time.time()
+
+    def discard(self, entry_id: Optional[str]) -> None:
+        """Drop a row that turned out not to be an event (an already-satisfied load)."""
+        if not entry_id:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None:
+                self._entries.remove(entry)
 
     def append_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id or not text:
@@ -212,6 +309,18 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
 
+    def fail_open(self, entry_id: Optional[str], error: str) -> None:
+        """Fail only a still-open row: unlike :meth:`fail`, a catch-all in a
+        ``finally`` cannot stamp an error onto a request that already succeeded."""
+        if not entry_id:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.finished_at is not None:
+                return
+            # Same lock as the check, so a finish() cannot land in between.
+            self._fail_locked(entry, error)
+
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
@@ -224,15 +333,18 @@ class ApiMonitor:
                 if error:
                     entry.error = _trim(error, 1000)
                 return
-            now = time.time()
-            entry.status = "error"
-            entry.error = _trim(error, 1000)
-            entry.updated_at = now
-            entry.finished_at = now
-            entry.finished_monotonic = time.monotonic()
-            self._entries.remove(entry)
-            self._entries.appendleft(entry)
-            self._trim_terminal_locked()
+            self._fail_locked(entry, error)
+
+    def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
+        now = time.time()
+        entry.status = "error"
+        entry.error = _trim(error, 1000)
+        entry.updated_at = now
+        entry.finished_at = now
+        entry.finished_monotonic = time.monotonic()
+        self._entries.remove(entry)
+        self._entries.appendleft(entry)
+        self._trim_terminal_locked()
 
     def snapshot(
         self,
@@ -244,7 +356,7 @@ class ApiMonitor:
             return [
                 entry.snapshot(include_details = include_details)
                 for entry in self._entries
-                if subject is None or entry.subject == subject
+                if self._visible(entry, subject)
             ]
 
     def get(
@@ -257,21 +369,28 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return None
-            if subject is not None and entry.subject != subject:
+            if not self._visible(entry, subject):
                 return None
             return entry.snapshot(include_details = True)
 
     def active_count(self, *, subject: Optional[str] = None) -> int:
+        # Lifecycle rows show as "running" while loading but are not in-flight API requests.
         with self._lock:
             return sum(
                 1
                 for entry in self._entries
-                if entry.status == "running" and (subject is None or entry.subject == subject)
+                if entry.status == "running"
+                and entry.kind != "lifecycle"
+                and (subject is None or entry.subject == subject)
             )
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+
+    @staticmethod
+    def _visible(entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
+        return subject is None or entry.subject == subject or entry.shared
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:
@@ -292,4 +411,4 @@ class ApiMonitor:
         self._entries = kept
 
 
-api_monitor = ApiMonitor()
+api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())

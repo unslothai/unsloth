@@ -11,9 +11,11 @@ export {
   fetchGgufStagedMetadata,
   getCachedModelPath,
   getInferenceStatus,
+  listCachedGguf,
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listModels,
   listRecommendedFolders,
   listScanFolders,
   loadModel,
@@ -28,7 +30,11 @@ export {
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
-export type { GgufVariantDetail } from "./types/api";
+export type {
+  BackendModelDetails,
+  GgufVariantDetail,
+  InferenceStatusResponse,
+} from "./types/api";
 export {
   ChatSettingsPanel,
   ParamSlider,
@@ -49,8 +55,12 @@ export {
 export {
   preferFullToolOutput,
   toolOutputKey,
+  toolThreadScope,
+  useToolOutputFor,
+  useUnresolvedToolPaneScope,
   useToolPaneScope,
 } from "./tool-output-scope";
+export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
@@ -74,12 +84,20 @@ export {
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
+export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { listStoredChatThreads } from "./utils/chat-history-storage";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ResearchMessage } from "./components/research-message";
+export {
+  ResearchActivityPanel,
+  ResearchActivitySheet,
+} from "./components/research-activity-panel";
 export {
   useChatArtifactsStore,
   useSelectedChatArtifact,

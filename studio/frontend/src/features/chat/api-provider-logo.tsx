@@ -40,7 +40,6 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-// Monochrome logos vanish on a dark background.
 const DARK_INVERT_LOGOS = new Set(["openai", "ollama", "openrouter"]);
 
 /** Provider logo from `public/provider-logos/`; monochrome ones invert in dark mode. */

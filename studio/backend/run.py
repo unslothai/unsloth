@@ -111,13 +111,26 @@ from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
 
+DISABLE_PUBLIC_CHECK_ENV = "UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK"
+
+
+def public_check_disabled() -> bool:
+    """True when the operator has turned off the third-party startup lookups.
+
+    On a wildcard bind Unsloth asks ifconfig.me for the public IP and check-host.net
+    whether the port is reachable. Both are useful for sharing a Studio but both tell
+    an outside service this machine is running one, which lab and privacy-sensitive
+    deployments do not want (#7307 Problem 8). Set the var to opt out.
+    """
+    return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
+
 
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
-    2. ifconfig.me (anywhere with internet)
+    2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
     3. LAN IP via UDP socket trick (fallback)
     """
     import urllib.request
@@ -136,14 +149,15 @@ def _resolve_external_ip() -> str:
     except Exception:
         pass
 
-    # 2. Public IP service.
-    try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
-            ip = resp.read().decode().strip()
-            if ip:
-                return ip
-    except Exception:
-        pass
+    # 2. Public IP service. Third-party, so skippable; the LAN address below still works.
+    if not public_check_disabled():
+        try:
+            with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
+                ip = resp.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            pass
 
     # 3. Fallback: LAN IP via UDP socket trick
     try:
@@ -304,7 +318,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the
     public internet. Synchronous so output lands between the banner URLs and the
     stop hint. Bounded at ~15s; failures swallowed (verifier failing != Unsloth
-    failing). Only meaningful for a wildcard bind."""
+    failing). Only meaningful for a wildcard bind, and skipped entirely by
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -343,6 +358,11 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     except ValueError:
         # Not an IP literal; probe by hostname.
         pass
+
+    # The probe hands display_host:port to a third party and asks it to connect.
+    if public_check_disabled():
+        logger.debug("Skipping the check-host.net probe (%s).", DISABLE_PUBLIC_CHECK_ENV)
+        return
 
     try:
         qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
@@ -754,7 +774,7 @@ def _write_pid_file():
     """Write the current process PID to the studio PID file."""
     try:
         _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
-        _PID_FILE.write_text(str(os.getpid()))
+        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         pass
 
@@ -763,10 +783,10 @@ def _remove_pid_file():
     """Remove the PID file if it belongs to this process."""
     try:
         if _PID_FILE.is_file():
-            stored = _PID_FILE.read_text().strip()
+            stored = _PID_FILE.read_text(encoding = "utf-8").strip()
             if stored == str(os.getpid()):
                 _PID_FILE.unlink(missing_ok = True)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
 
 
@@ -914,7 +934,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single/multi-line dict literals; [^}]* rejects nested
                 # dicts, which the setuptools editable template never emits.
@@ -1357,13 +1377,21 @@ def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     set_tool_policy(enable_tools)
 
 
+# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*: the admission queue caps concurrent
+# chats at the slot count, so a direct launch matches the CLI (VRAM fit may still cut it
+# back). Defined above run_server() so embedders that omit it do not serialise every chat.
+_PARALLEL_MIN = 1
+_PARALLEL_MAX = 64
+_PARALLEL_DEFAULT_PLAIN = 4
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
     frontend_path: Path = _DEFAULT_FRONTEND_PATH,
     silent: bool = False,
     api_only: bool = False,
-    llama_parallel_slots: int = 1,
+    llama_parallel_slots: int = _PARALLEL_DEFAULT_PLAIN,
     cloudflare: "Optional[bool]" = None,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
@@ -1379,7 +1407,8 @@ def run_server(
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
         api_only: API server only, no frontend (for Tauri desktop app)
-        llama_parallel_slots: parallel slots for llama-server
+        llama_parallel_slots: parallel slots for llama-server (default
+            _PARALLEL_DEFAULT_PLAIN, matching the CLI entry points)
         cloudflare: opt in to the public Cloudflare HTTPS tunnel for a wildcard
             bind. Tri-state: None (unset) and False both mean off; True enables it.
             --secure implies it (True) and rejects an explicit False.
@@ -1797,13 +1826,6 @@ def run_server(
     return app
 
 
-# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
-# backend launches; `unsloth studio run` always passes its own value (4).
-_PARALLEL_MIN = 1
-_PARALLEL_MAX = 64
-_PARALLEL_DEFAULT_PLAIN = 1
-
-
 def _build_arg_parser():
     """Build the backend CLI argument parser.
 
@@ -1898,7 +1920,8 @@ def _build_arg_parser():
         default = _PARALLEL_DEFAULT_PLAIN,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            "(Parallel Slots) override it per load."
         ),
     )
     return parser

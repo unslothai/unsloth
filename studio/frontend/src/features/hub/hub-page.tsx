@@ -29,7 +29,7 @@ import {
   resolveInitialConfig,
 } from "@/features/model-picker";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { useGpuInfo } from "@/hooks/use-gpu-info";
+import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -334,11 +334,14 @@ function selectedRepoMatchesRuntime(
 export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
+  const inferenceGpu = useInferenceGpuInfo();
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
   const urlModel = hubSearch.model ?? null;
+  const preferredGgufFile = hubSearch.file ?? null;
 
+  const preferredGgufFileIntent = hubSearch.intent ?? 0;
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -757,7 +760,10 @@ export function ModelsPage() {
         // matching the chat model selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
-          hfModelFitsDevice(row.result, gpu)),
+          hfModelFitsDevice(
+            row.result,
+            row.result.isGguf ? inferenceGpu : gpu,
+          )),
     );
   }, [
     discoverRows,
@@ -769,6 +775,7 @@ export function ModelsPage() {
     activeChannel,
     fitOnDeviceOnly,
     gpu,
+    inferenceGpu,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -799,7 +806,7 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, gpu),
+            hfModelFitsDevice(row.result, inferenceGpu),
         ),
     [
       hubFeed.trending.results,
@@ -807,6 +814,7 @@ export function ModelsPage() {
       modelDiscoveryInventorySignature,
       fitOnDeviceOnly,
       gpu,
+      inferenceGpu,
     ],
   );
   const feedRows = useMemo(() => {
@@ -1025,7 +1033,7 @@ export function ModelsPage() {
       setSelected(id);
       void navigate({
         to: "/hub",
-        search: (prev) => ({ ...prev, model: id }),
+        search: (prev) => ({ ...prev, model: id, file: undefined }),
       });
     },
     [setSelected, navigate],
@@ -1111,7 +1119,7 @@ export function ModelsPage() {
     setSelected(firstId);
     void navigate({
       to: "/hub",
-      search: (prev) => ({ ...prev, model: firstId }),
+      search: (prev) => ({ ...prev, model: firstId, file: undefined }),
       replace: true,
     });
   }, [
@@ -1254,9 +1262,11 @@ export function ModelsPage() {
       loadingPhase: loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpuGb: gpu.available ? gpu.memoryTotalGb : undefined,
+      gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       systemRamGb:
-        gpu.systemRamAvailableGb > 0 ? gpu.systemRamAvailableGb : undefined,
+        inferenceGpu.systemRamAvailableGb > 0
+          ? inferenceGpu.systemRamAvailableGb
+          : undefined,
     }),
     [
       isActive,
@@ -1265,9 +1275,9 @@ export function ModelsPage() {
       loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpu.available,
-      gpu.memoryTotalGb,
-      gpu.systemRamAvailableGb,
+      inferenceGpu.available,
+      inferenceGpu.memoryTotalGb,
+      inferenceGpu.systemRamAvailableGb,
     ],
   );
 
@@ -1596,6 +1606,9 @@ export function ModelsPage() {
             <div className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1">
               <HubDetailView
                 model={selectedModel}
+                preferredGgufFile={preferredGgufFile}
+
+                preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
                 selectionHiddenByFilters={selectionHiddenByFilters}
@@ -1615,6 +1628,9 @@ export function ModelsPage() {
             <div className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col">
               <HubDetailView
                 model={selectedModel}
+                preferredGgufFile={preferredGgufFile}
+
+                preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
                 selectionHiddenByFilters={selectionHiddenByFilters}

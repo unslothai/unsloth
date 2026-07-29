@@ -8,6 +8,7 @@ mod desktop_update_policy;
 mod diagnostics;
 mod install;
 mod native_backend_lease;
+mod native_clipboard;
 mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
@@ -16,7 +17,7 @@ mod process;
 mod update;
 mod windows_job;
 
-use log::info;
+use log::{info, warn};
 use process::new_backend_state;
 use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
@@ -175,9 +176,11 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+                let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -218,6 +221,8 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             diagnostics::collect_support_diagnostics,
+            native_clipboard::read_native_clipboard_files,
+            native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::pick_native_chat_import,
             native_intents::drain_native_intents,
@@ -231,6 +236,13 @@ fn main() {
             has_saved_window_state,
         ])
         .setup(|app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    warn!("Failed to register deep-link handlers: {error}");
+                }
+            }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
             setup_tray(app)?;
