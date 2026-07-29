@@ -133,10 +133,11 @@ export function PanelResizeHandle({
   )
 
   const endDrag = React.useCallback(() => {
-    // Any sequence that reached the element already decided the outcome, so the
-    // click the browser fires next must not toggle again. A cancelled drag ends
-    // here too, and must not collapse on release.
-    handledRef.current = true
+    // Only a sequence that actually started should suppress the click the
+    // browser sends next, whether it ended in a release or a cancel. This also
+    // runs as the effect cleanup, where no drag happened and a bare click from
+    // assistive tech must still get through.
+    if (dragRef.current) handledRef.current = true
     dragRef.current = null
     if (frameRef.current) {
       cancelAnimationFrame(frameRef.current)
