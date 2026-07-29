@@ -53,18 +53,18 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # structlog is a hard studio.txt requirement imported only lazily, so a bare
 # setdefault here parked an empty placeholder before anything imported the real
 # package and shadowed it for the rest of the session: any later studio module
-# calling structlog.get_logger at import time blew up with AttributeError, but
-# only when this file was collected first, so the test passed alone and failed
-# under `pytest tests/studio`. Stub only a genuinely absent package, with the
-# attribute those callers use. sys.modules is checked FIRST because another test
-# module may have parked its own bare stub and find_spec() raises ValueError on a
-# module whose __spec__ is None.
-if "structlog" not in sys.modules and importlib.util.find_spec("structlog") is None:
-    _structlog_stub = types.ModuleType("structlog")
-    _structlog_stub.get_logger = lambda *args, **kwargs: _logging.getLogger(
+# calling structlog.get_logger at import time blew up with AttributeError.
+# Stub only a genuinely absent package. Whatever is already in sys.modules stays
+# -- another test module parks its own bare stub and find_spec() would raise
+# ValueError on it -- but gets get_logger backfilled, since leaving that stub
+# unrepaired is what breaks the import-time callers.
+_structlog = sys.modules.get("structlog")
+if _structlog is None and importlib.util.find_spec("structlog") is None:
+    _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+if _structlog is not None and not hasattr(_structlog, "get_logger"):
+    _structlog.get_logger = lambda *args, **kwargs: _logging.getLogger(
         args[0] if args else "structlog"
     )
-    sys.modules["structlog"] = _structlog_stub
 
 import httpx  # noqa: E402
 
