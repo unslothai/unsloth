@@ -28,16 +28,18 @@ _GEMMA_TEMPLATE_OPENERS = (
 # Chat-template control markup that must not reach the prompt as raw text from a
 # user / system / tool turn: a literal "</think>" ends the reasoning block early,
 # and "<|start|>assistant<|channel|>final<|message|>" in a tool result forges an
-# assistant turn (#7066). One lookahead over the three shapes the templates emit,
-# so a single sub() breaks every marker by inserting one space after the "<":
+# assistant turn (#7066). One lookahead over the four shapes the templates emit,
+# so a single sub() breaks every marker by inserting one space after the opener:
 #   <|name|> / <|name>   ChatML, Llama-3, Harmony/gpt-oss, Zephyr/Phi-3, Gemma-4,
 #                        Granite (<|start_of_role|>role<|end_of_role|> ... <|end_of_text|>)
 #   <name>   / </name>   Qwen tool XML, Gemma turn delimiters, think tags
 #   <name|>              Gemma-4 closing delimiters
+#   [INST]   / [/INST]   Mistral / Llama-2, the one family delimited by brackets
 # The name list is closed on purpose: bare words match only in the pipe shape, so
 # "<div>", "<End>" and "List<String>" are untouched. The bare words that do match
 # are template delimiters in their own right, so they break even inside a code
-# fence, the same trade the structural parsers make.
+# fence, the same trade the structural parsers make. [INST] is anchored to the
+# exact uppercase pair the templates emit, so "[1]" and "[inst]" stay as typed.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
@@ -47,6 +49,7 @@ _CONTROL_MARKUP = re.compile(
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|think)>"
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
+    r"|\[(?=/?INST\])"
 )
 
 # Turn-boundary subset, for replayed ASSISTANT content: that text is
@@ -57,7 +60,8 @@ _CONTROL_MARKUP = re.compile(
 # and stops on <|call|> / <|return|>, Zephyr / Phi-3 open a turn with a bare
 # <|user|> / <|assistant|> / <|system|>, and Granite opens one with
 # <|start_of_role|>role<|end_of_role|> and ends it on its eos <|end_of_text|>, so
-# those are boundaries too (#7066).
+# those are boundaries too, and Mistral / Llama-2 delimit a turn with the bracket
+# pair [INST] ... [/INST] rather than an angle marker (#7066).
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end)"
@@ -66,27 +70,32 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     r"|(?:start|end)_of_turn>"
     r"|turn\|>"
     r")"
+    r"|\[(?=/?INST\])"
 )
 
 
-def neutralize_control_markup(text: str) -> str:
-    """Break chat-template control markup in free text by spacing out the "<".
-
-    "</think>" becomes "< /think>": still readable, but no longer a delimiter to
-    the template, the think extractor or the stop-sequence matcher (#7066). A
-    plain space, not an invisible joiner: a space is in every tokenizer
-    vocabulary, while U+2060 can fall back to byte junk.
-    """
-    if not text or "<" not in text:
+def _spaced_out(pattern, text: str) -> str:
+    """Insert one space after every marker opener *pattern* found."""
+    if not text or ("<" not in text and "[" not in text):
         return text
-    return _CONTROL_MARKUP.sub("< ", text)
+    # "\g<0>" is the matched opener, so one literal template covers both anchors.
+    return pattern.sub(r"\g<0> ", text)
+
+
+def neutralize_control_markup(text: str) -> str:
+    """Break chat-template control markup in free text by spacing out the opener.
+
+    "</think>" becomes "< /think>" and "[/INST]" becomes "[ /INST]": still
+    readable, but no longer a delimiter to the template, the think extractor or
+    the stop-sequence matcher (#7066). A plain space, not an invisible joiner: a
+    space is in every tokenizer vocabulary, while U+2060 can fall back to byte junk.
+    """
+    return _spaced_out(_CONTROL_MARKUP, text)
 
 
 def neutralize_turn_boundary_markup(text: str) -> str:
     """Break only the turn-boundary sentinels, for replayed assistant text (#7066)."""
-    if not text or "<" not in text:
-        return text
-    return _TURN_BOUNDARY_MARKUP.sub("< ", text)
+    return _spaced_out(_TURN_BOUNDARY_MARKUP, text)
 
 
 def _neutralize_argument_leaves(value):
