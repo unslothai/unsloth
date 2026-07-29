@@ -235,8 +235,15 @@ def test_the_unsloth_zoo_stage_goes_through_the_shim(monkeypatch):
     that cannot find libcudart it raises where startup used to succeed.
     """
     import builtins
+    import importlib
 
-    from utils import hf_xet_fallback, torch_warmup
+    from utils import torch_warmup
+
+    # Through sys.modules, not `from utils import hf_xet_fallback`: another test
+    # in this suite re-imports the shim and leaves the `utils` package attribute
+    # pointing at a different module object than sys.modules holds. The code
+    # under test resolves the name the way import_module does.
+    hf_xet_fallback = importlib.import_module("utils.hf_xet_fallback")
 
     monkeypatch.setattr(torch_warmup, "_torch_installed", lambda: True)
     calls = []
@@ -262,7 +269,7 @@ def test_the_unsloth_zoo_stage_goes_through_the_shim(monkeypatch):
         torch_warmup._warm_unsloth_zoo()
 
 
-def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys):
+def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, caplog):
     """A broken stage must be visible in the log and must not kill the warm."""
     from utils import torch_warmup
 
@@ -281,9 +288,12 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys):
     # The stage after the failure still ran, and the process is still alive.
     assert status["stages"]["after"]["ok"] is True
     assert status["finished"] is True
-    # structlog renders to stdout, not through the stdlib root handler caplog
-    # attaches to, so assert on what the operator would actually see.
-    assert "stage exploded" in capsys.readouterr().out
+    # The operator has to be able to grep it. Which sink structlog is bound to
+    # depends on what configured logging earlier in the session, so accept
+    # either: stdout when it renders directly, the stdlib records when another
+    # test has routed it through logging.
+    logged = capsys.readouterr().out + "\n".join(r.getMessage() for r in caplog.records)
+    assert "stage exploded" in logged
 
 
 # ---------------------------------------------------------------------------
