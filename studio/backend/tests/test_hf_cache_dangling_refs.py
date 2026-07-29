@@ -971,9 +971,7 @@ def test_a_gguf_variant_marker_against_the_advertised_snapshot_is_still_partial(
     assert rows[0]["capabilities"].get("can_chat") is False
 
 
-def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(
-    tmp_path, monkeypatch
-):
+def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(tmp_path, monkeypatch):
     """The Q8+Q4 mixed-state rule still holds across snapshots: a cancelled
     quant that is not the one the load id resolves must not veto the clean one."""
     from hub.utils import download_manifest
@@ -984,9 +982,7 @@ def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(
         newer_files = {"config.json": b"{}"},
         ref = NEWER,
     )
-    download_manifest.write_cancel_marker(
-        "model", "Org/Model", "Q8_0", "http", hub_cache = tmp_path
-    )
+    download_manifest.write_cancel_marker("model", "Org/Model", "Q8_0", "http", hub_cache = tmp_path)
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 

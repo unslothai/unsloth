@@ -899,9 +899,7 @@ def is_gguf_repo_partial(
     # symlink belongs to the revision a download is writing, which is the newest.
     # Variant cancel markers carry no revision either, so they get it too.
     repo_signal_applies = _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
-    has_legacy_partial = repo_signal_applies and _legacy_partial(
-        "model", repo_id, repo_cache_dir
-    )
+    has_legacy_partial = repo_signal_applies and _legacy_partial("model", repo_id, repo_cache_dir)
     variants: set[str] = set(_completed_gguf_variants(snapshot_dir))
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
     for variant, _path in download_manifest.iter_variant_manifests(
