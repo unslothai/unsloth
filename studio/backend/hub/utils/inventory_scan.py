@@ -710,16 +710,12 @@ def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
         return set()
 
 
-def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
-    """Whether every non-GGUF weight family in *snapshot_dir* is short a shard.
+def _weight_family_kind(name: str) -> Optional[str]:
+    """Which payload *name* belongs to: ``"base"`` weights, an ``"adapter"``, or
+    ``None`` for a training artefact such as ``optimizer.bin`` that no row loads.
 
-    ``from_pretrained`` loads one family, so a whole safetensors set beside an
-    interrupted ``.bin`` one still loads and the snapshot serves the row;
-    rejecting it because some optional family is short a shard took auto-load
-    away from a usable payload. Only a snapshot with no complete family cannot
-    serve. Shard groups are keyed per directory, prefix and total because a
-    snapshot may ship more than one set. A base weight file naming no total is a
-    whole family by itself; adapters are not, since they need base weights.
+    Applied to sharded and unsharded names alike, so a complete auxiliary set
+    cannot be counted as a runnable family.
     """
     # hub.services imports hub.utils, so this import stays inside the call.
     from hub.services.models.common import (
@@ -728,8 +724,27 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         _is_transformers_safetensors_weight_name,
     )
 
-    groups: dict[tuple[str, str, int], set[int]] = {}
-    has_whole_family = False
+    if _is_adapter_weight_name(name):
+        return "adapter"
+    if _is_transformers_safetensors_weight_name(name) or _is_transformers_bin_weight_name(name):
+        return "base"
+    return None
+
+
+def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
+    """Whether the payload *snapshot_dir* carries is short a shard.
+
+    ``from_pretrained`` loads one family, so a whole safetensors set beside an
+    interrupted ``.bin`` one still loads and the snapshot serves the row;
+    rejecting it because some optional family is short a shard took auto-load
+    away from a usable payload. Base weights are judged first and alone, since
+    neither a complete adapter nor a training artefact stands in for missing base
+    shards; only an adapter-only snapshot is judged on its adapter. Shard groups
+    are keyed per directory, prefix and total because a snapshot may ship more
+    than one set, and a weight file naming no total is a whole family by itself.
+    """
+    groups: dict[str, dict[tuple[str, str, int], set[int]]] = {"base": {}, "adapter": {}}
+    whole: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
     except OSError:
@@ -740,24 +755,29 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 continue
         except OSError:
             continue
+        kind = _weight_family_kind(path.name)
+        if kind is None:
+            continue
         match = _WEIGHT_SHARD_RE.search(path.name)
         if match is None:
-            if not _is_adapter_weight_name(path.name) and (
-                _is_transformers_safetensors_weight_name(path.name)
-                or _is_transformers_bin_weight_name(path.name)
-            ):
-                has_whole_family = True
+            whole.add(kind)
             continue
         index = int(match.group(1))
         total = int(match.group(2))
         if index <= 0 or total <= 0 or index > total:
             continue
-        groups.setdefault((str(path.parent), path.name[: match.start()], total), set()).add(index)
-    if not groups or has_whole_family:
-        return False
-    return all(
-        indices != set(range(1, total + 1)) for (_dir, _prefix, total), indices in groups.items()
-    )
+        groups[kind].setdefault(
+            (str(path.parent), path.name[: match.start()], total), set()
+        ).add(index)
+    for kind in ("base", "adapter"):
+        if kind in whole:
+            return False
+        if groups[kind]:
+            return all(
+                indices != set(range(1, total + 1))
+                for (_dir, _prefix, total), indices in groups[kind].items()
+            )
+    return False
 
 
 def _snapshot_cannot_serve_its_payload(snapshot_dir: Optional[Path]) -> bool:

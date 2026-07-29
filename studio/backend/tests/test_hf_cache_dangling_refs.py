@@ -1112,6 +1112,28 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
             True,
             id = "half-a-sharded-set-beside-an-adapter",
         ),
+        # A COMPLETE auxiliary set is not a runnable base family either, so it
+        # cannot stand in for the torn base shards beside it.
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "adapter_model-00001-of-00002.safetensors": b"\0" * 8,
+                "adapter_model-00002-of-00002.safetensors": b"\0" * 8,
+            },
+            True,
+            id = "half-a-sharded-set-beside-a-whole-sharded-adapter",
+        ),
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "optimizer-00001-of-00002.bin": b"\0" * 8,
+                "optimizer-00002-of-00002.bin": b"\0" * 8,
+            },
+            True,
+            id = "half-a-sharded-set-beside-a-whole-sharded-optimizer",
+        ),
     ],
 )
 def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapshot(
