@@ -1045,9 +1045,61 @@ class TestPyYamlDeserialization:
                 "        return run()\n"
                 "safe_load('!run x')"
             ),
+            (
+                "import yaml\n"
+                "S = (yaml.SafeLoader,)[0]\n"
+                "S.add_constructor('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "S = None\n"
+                "def expose():\n"
+                "    global S\n"
+                "    S = yaml.SafeLoader\n"
+                "expose()\n"
+                "S.add_constructor('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "S = (lambda: yaml.SafeLoader)()\n"
+                "S.add_constructor('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "constructors = (lambda: yaml.SafeLoader.yaml_constructors)()\n"
+                "constructors['!run'] = run\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "register = (lambda: yaml.SafeLoader.add_constructor)()\n"
+                "register('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "S = yaml.SafeLoader\n"
+                "for S in []:\n"
+                "    pass\n"
+                "S.add_constructor('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
         ],
     )
     def test_callable_class_factory_and_storage_pyyaml_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+        assert _python_is_potentially_unsafe(code)
+
+    def test_import_parameter_analysis_bounds_long_helper_chain(self):
+        helpers = ["def helper_600(importer):\n    return importer('yaml').unsafe_load(payload)"]
+        helpers.extend(
+            f"def helper_{index}(importer):\n" f"    return helper_{index + 1}(importer)"
+            for index in range(599, -1, -1)
+        )
+        code = "\n".join(helpers) + "\nhelper_0(__import__)"
         _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
         assert _python_is_potentially_unsafe(code)
 

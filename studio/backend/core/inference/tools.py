@@ -2876,6 +2876,15 @@ def _pyyaml_loader_is_safe(
     dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
     dynamic_namespace_aliases: set[str] = frozenset(),
 ) -> bool:
+    contained = _literal_container_item(node)
+    if contained is not None:
+        return _pyyaml_loader_is_safe(
+            contained,
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
     if isinstance(node, ast.Name):
         return node.id in safe_loader_aliases
     if isinstance(node, ast.Call):
@@ -9894,6 +9903,23 @@ def _check_signal_escape_patterns(code: str):
                 )
             )
 
+        # Very large generated helper graphs are not a useful sandbox input
+        # and can make even a linear dependency representation expensive.
+        # Fail closed by treating every parameter as import-capable once the
+        # local helper budget is exceeded.
+        if sum(map(len, definitions.values())) > 512:
+            return {
+                name: set().union(
+                    *(
+                        {*positional, *keyword_only}
+                        | ({vararg} if vararg else set())
+                        | ({kwarg} if kwarg else set())
+                        for positional, keyword_only, vararg, kwarg in signatures
+                    )
+                )
+                for name, signatures in definitions.items()
+            }
+
         function_aliases = {name: {name} for name in definitions}
         partial_aliases = {"partial"}
         for candidate in ast.walk(tree):
@@ -9948,97 +9974,119 @@ def _check_signal_escape_patterns(code: str):
         calls = CallCollector()
         calls.visit(tree)
 
-        supplied: dict[str, set[str]] = {}
-
-        def record_arguments(originals, args, keywords, owner):
-            changed = False
-            owner_parameters = supplied.get(owner, set()) if owner is not None else set()
-
-            def is_import_capable(argument):
-                return (
-                    isinstance(argument, ast.Name) and argument.id in owner_parameters
-                ) or _is_dynamic_import_callable(
-                    argument,
-                    import_aliases,
-                    namespace_aliases,
-                    import_module_aliases,
+        function_parameters = {
+            name: set().union(
+                *(
+                    {*positional, *keyword_only}
+                    | ({vararg} if vararg else set())
+                    | ({kwarg} if kwarg else set())
+                    for positional, keyword_only, vararg, kwarg in signatures
                 )
+            )
+            for name, signatures in definitions.items()
+        }
+        all_originals = tuple(definitions)
+        target_cache: dict[tuple[tuple[str, ...], str, object], set[tuple[str, str]]] = {}
 
-            capable_args = [is_import_capable(argument) for argument in args]
-            capable_keywords = [is_import_capable(keyword.value) for keyword in keywords]
-            if not any(capable_args) and not any(capable_keywords):
-                return False
-
+        def parameter_targets(originals, kind, key):
+            originals = tuple(originals)
+            cache_key = (originals, kind, key)
+            if cache_key in target_cache:
+                return target_cache[cache_key]
+            targets = set()
             for original in originals:
                 for positional, keyword_only, vararg, kwarg in definitions[original]:
-                    for index, import_capable in enumerate(capable_args):
-                        if not import_capable:
-                            continue
-                        if index < len(positional):
-                            parameter = positional[index]
-                        elif vararg:
-                            parameter = vararg
-                        else:
-                            continue
-                        parameters = supplied.setdefault(original, set())
-                        if parameter not in parameters:
-                            parameters.add(parameter)
-                            changed = True
-                    for keyword, import_capable in zip(keywords, capable_keywords):
-                        if not import_capable:
-                            continue
-                        if keyword.arg in {*positional, *keyword_only}:
-                            parameter = keyword.arg
-                        elif keyword.arg is None and kwarg:
-                            parameter = kwarg
-                        else:
-                            continue
-                        parameters = supplied.setdefault(original, set())
-                        if parameter not in parameters:
-                            parameters.add(parameter)
-                            changed = True
-            return changed
+                    if kind == "positional":
+                        parameter = positional[key] if key < len(positional) else vararg
+                    elif key in {*positional, *keyword_only}:
+                        parameter = key
+                    elif key is None:
+                        parameter = kwarg
+                    else:
+                        parameter = None
+                    if parameter:
+                        targets.add((original, parameter))
+            target_cache[cache_key] = targets
+            return targets
 
-        # Propagate importer capability to a fixed point. Direct function
-        # aliases retain their exact target; opaque attributes, containers and
-        # higher-order call results conservatively fan out to local helpers.
-        # This prevents moving a helper behind ``box.fn`` or ``handlers[0]``
-        # from hiding a parameter that receives ``__import__``.
-        changed = True
-        while changed:
-            changed = False
-            for owner, candidate in calls.calls:
-                originals = None
-                if isinstance(candidate.func, ast.Name):
-                    originals = function_aliases.get(candidate.func.id)
-                if originals is None:
-                    originals = definitions.keys()
-                changed |= record_arguments(
-                    originals,
-                    candidate.args,
-                    candidate.keywords,
+        edges: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        seeds: set[tuple[str, str]] = set()
+
+        def connect_argument(owner, argument, targets):
+            if not targets:
+                return
+            if _is_dynamic_import_callable(
+                argument,
+                import_aliases,
+                namespace_aliases,
+                import_module_aliases,
+            ):
+                seeds.update(targets)
+                return
+            if (
+                owner is not None
+                and isinstance(argument, ast.Name)
+                and argument.id in function_parameters.get(owner, ())
+            ):
+                edges.setdefault((owner, argument.id), set()).update(targets)
+
+        def connect_call(owner, originals, args, keywords):
+            for index, argument in enumerate(args):
+                connect_argument(
                     owner,
+                    argument,
+                    parameter_targets(originals, "positional", index),
+                )
+            for keyword in keywords:
+                connect_argument(
+                    owner,
+                    keyword.value,
+                    parameter_targets(originals, "keyword", keyword.arg),
                 )
 
-                # functools.partial binds arguments after its callable. Record
-                # those against the wrapped helper rather than partial itself.
-                is_partial = (
-                    isinstance(candidate.func, ast.Name) and candidate.func.id in partial_aliases
-                ) or (
-                    isinstance(candidate.func, ast.Attribute) and candidate.func.attr == "partial"
+        # Build a capability dependency graph once, then traverse each edge at
+        # most once. Opaque attributes, containers and higher-order call
+        # results fan out through cached positional/keyword target groups.
+        for owner, candidate in calls.calls:
+            is_partial = (
+                isinstance(candidate.func, ast.Name) and candidate.func.id in partial_aliases
+            ) or (isinstance(candidate.func, ast.Attribute) and candidate.func.attr == "partial")
+            if (
+                is_partial
+                and candidate.args
+                and isinstance(candidate.args[0], ast.Name)
+                and candidate.args[0].id in function_aliases
+            ):
+                connect_call(
+                    owner,
+                    function_aliases[candidate.args[0].id],
+                    candidate.args[1:],
+                    candidate.keywords,
                 )
-                if (
-                    is_partial
-                    and candidate.args
-                    and isinstance(candidate.args[0], ast.Name)
-                    and candidate.args[0].id in function_aliases
-                ):
-                    changed |= record_arguments(
-                        function_aliases[candidate.args[0].id],
-                        candidate.args[1:],
-                        candidate.keywords,
-                        owner,
-                    )
+                continue
+
+            originals = None
+            if isinstance(candidate.func, ast.Name):
+                originals = function_aliases.get(candidate.func.id)
+            connect_call(
+                owner,
+                originals if originals is not None else all_originals,
+                candidate.args,
+                candidate.keywords,
+            )
+
+        supplied: dict[str, set[str]] = {}
+        queue = list(seeds)
+        reached = set(seeds)
+        cursor = 0
+        while cursor < len(queue):
+            function, parameter = queue[cursor]
+            cursor += 1
+            supplied.setdefault(function, set()).add(parameter)
+            for target in edges.get((function, parameter), ()):
+                if target not in reached:
+                    reached.add(target)
+                    queue.append(target)
         return supplied
 
     import_parameters_by_function = _function_import_parameters()
@@ -10947,6 +10995,7 @@ def _check_signal_escape_patterns(code: str):
                         (self.yaml_load_aliases, 1),
                         (self.yaml_unsafe_load_aliases, 2),
                         (self.yaml_unsafe_loader_aliases, 3),
+                        (self.yaml_safe_loader_aliases, 4),
                         (self.yaml_safe_loader_registry_aliases, 5),
                         (self.yaml_module_mutator_aliases, 6),
                         (self.pyyaml_registry_setter_aliases, 7),
@@ -10975,10 +11024,9 @@ def _check_signal_escape_patterns(code: str):
             self._visit_function_scope(node)
             self._update_pyyaml_bindings([ast.Name(id = node.name, ctx = ast.Store())], None)
 
-        def visit_Lambda(self, node):
-            self._visit_function_scope(node)
+        def _record_pyyaml_return_escape(self, node, value):
             if _is_pyyaml_module_expr(
-                node.body,
+                value,
                 self.yaml_aliases,
                 self.dynamic_import_aliases,
                 self.dynamic_namespace_aliases,
@@ -10987,21 +11035,60 @@ def _check_signal_escape_patterns(code: str):
                     node,
                     "Unsafe PyYAML deserialization module escapes through return value",
                 )
-            if _is_dynamic_namespace(node.body, self.dynamic_namespace_aliases):
+            if _is_dynamic_namespace(value, self.dynamic_namespace_aliases):
                 self._record_unsafe_pyyaml(
                     node,
-                    "Unsafe PyYAML deserialization namespace escapes through lambda",
+                    "Unsafe PyYAML deserialization namespace escapes through return value",
+                )
+            if _pyyaml_loader_is_safe(
+                value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization loader class escapes through return value",
+                )
+            if _pyyaml_safe_loader_registry_reference(
+                value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.yaml_safe_loader_registry_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization registry escapes through return value",
+                )
+            if _pyyaml_safe_loader_mutator_reference(
+                value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+                self.yaml_safe_loader_registry_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization mutator escapes through return value",
                 )
             if _is_dynamic_import_callable(
-                node.body,
+                value,
                 self.dynamic_import_aliases,
                 self.dynamic_namespace_aliases,
                 self.dynamic_import_module_aliases,
             ):
                 self._record_unsafe_pyyaml(
                     node,
-                    "Unsafe PyYAML deserialization import callable escapes through lambda",
+                    "Unsafe PyYAML deserialization import callable escapes through return value",
                 )
+
+        def visit_Lambda(self, node):
+            self._visit_function_scope(node)
+            self._record_pyyaml_return_escape(node, node.body)
 
         @staticmethod
         def _class_bound_names(node):
@@ -11206,66 +11293,7 @@ def _check_signal_escape_patterns(code: str):
             if node.value is None:
                 return
             self.visit(node.value)
-            if _is_pyyaml_module_expr(
-                node.value,
-                self.yaml_aliases,
-                self.dynamic_import_aliases,
-                self.dynamic_namespace_aliases,
-            ):
-                self._record_unsafe_pyyaml(
-                    node,
-                    "Unsafe PyYAML deserialization module escapes through return value",
-                )
-            if _is_dynamic_namespace(node.value, self.dynamic_namespace_aliases):
-                self._record_unsafe_pyyaml(
-                    node,
-                    "Unsafe PyYAML deserialization namespace escapes through return value",
-                )
-            if _pyyaml_loader_is_safe(
-                node.value,
-                self.yaml_aliases,
-                self.yaml_safe_loader_aliases,
-                self.dynamic_import_aliases,
-                self.dynamic_namespace_aliases,
-            ):
-                self._record_unsafe_pyyaml(
-                    node,
-                    "Unsafe PyYAML deserialization loader class escapes through return value",
-                )
-            if _pyyaml_safe_loader_registry_reference(
-                node.value,
-                self.yaml_aliases,
-                self.yaml_safe_loader_aliases,
-                self.yaml_safe_loader_registry_aliases,
-                self.dynamic_import_aliases,
-                self.dynamic_namespace_aliases,
-            ):
-                self._record_unsafe_pyyaml(
-                    node,
-                    "Unsafe PyYAML deserialization registry escapes through return value",
-                )
-            if _pyyaml_safe_loader_mutator_reference(
-                node.value,
-                self.yaml_aliases,
-                self.yaml_safe_loader_aliases,
-                self.dynamic_import_aliases,
-                self.dynamic_namespace_aliases,
-                self.yaml_safe_loader_registry_aliases,
-            ):
-                self._record_unsafe_pyyaml(
-                    node,
-                    "Unsafe PyYAML deserialization mutator escapes through return value",
-                )
-            if _is_dynamic_import_callable(
-                node.value,
-                self.dynamic_import_aliases,
-                self.dynamic_namespace_aliases,
-                self.dynamic_import_module_aliases,
-            ):
-                self._record_unsafe_pyyaml(
-                    node,
-                    "Unsafe PyYAML deserialization import callable escapes through return value",
-                )
+            self._record_pyyaml_return_escape(node, node.value)
 
         def visit_Yield(self, node):
             self.visit_Return(node)
@@ -11480,6 +11508,20 @@ def _check_signal_escape_patterns(code: str):
         def visit_For(self, node):
             self.visit(node.iter)
             base_state = self._pyyaml_scope_state()
+            target_names = {
+                target.id
+                for target in ast.walk(node.target)
+                if isinstance(target, ast.Name) and isinstance(target.ctx, ast.Store)
+            }
+            if target_names.intersection(self.yaml_safe_loader_aliases):
+                # A for-loop may execute zero times, leaving a pre-loop loader
+                # alias live even though the target is rebound on iterations.
+                # Reject that path-dependent capability instead of forgetting
+                # it when the target binding is cleared below.
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization loader alias may survive an empty loop",
+                )
             self._update_pyyaml_bindings([node.target], None)
             self.visit(node.target)
             break_states = []
