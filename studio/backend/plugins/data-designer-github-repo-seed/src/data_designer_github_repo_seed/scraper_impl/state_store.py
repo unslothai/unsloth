@@ -95,15 +95,20 @@ class StateStore:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
-        # Small enough to read whole. Older releases used the locale codepage;
-        # _flush() always rewrites all of it as UTF-8.
+        # Small enough to read whole, and read as UTF-8 only, unlike the shards
+        # below. A checkpoint holds nothing but base64 cursors and booleans, so
+        # one an older locale-encoded release wrote is byte-identical and still
+        # reads here; a codepage retry could therefore only ever add non-ASCII.
+        # That would resume on a mojibaked cursor, which GitHub rejects with
+        # INVALID_CURSOR_ARGUMENTS, and the empty page it returns marks the
+        # stream done and skips the rest of it for good. Dropping a damaged
+        # checkpoint re-scrapes from the first page, which the writers dedup.
         if self.path.exists():
             try:
                 raw = self.path.read_bytes()
             except OSError:
                 raw = b""
-            reading = _read_line(raw, _locale_encoding())
-            data = reading.as_utf8 if reading.as_utf8 is not None else reading.as_legacy
+            data = _parse(raw, "utf-8")
             self._data = data if isinstance(data, dict) else {}
 
     def get(

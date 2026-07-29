@@ -598,6 +598,38 @@ def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     assert storage._load_bootstrap_password() == "correct horse battery staple"
 
 
+def test_a_damaged_checkpoint_resets_instead_of_resuming_on_a_broken_cursor(
+    tmp_path: Path,
+) -> None:
+    """A checkpoint holds only base64 cursors and booleans, so a codepage reading
+    can only ever add non-ASCII, never recover any. Resuming on a mojibaked cursor
+    sends GitHub one it answers with INVALID_CURSOR_ARGUMENTS, and the empty page
+    that comes back marks the stream done and skips the rest of it for good.
+    Dropping the checkpoint only replays pages the writers already dedup."""
+    module = _load_state_store("cp1252")
+    cursor = "Y3Vyc29yOnYyOpK0MjAxMi0wMi0xNlQwNjo1Mzo0MVrOADGL_A=="
+    healthy = json.dumps({"issues_cursor": cursor, "issues_done": False}, indent = 2)
+    path = tmp_path / "octocat__Hello-World.json"
+
+    path.write_text(healthy, encoding = "utf-8")
+    assert module.StateStore(path).get("issues_cursor") == cursor
+
+    # Written by a pre-UTF-8 release in the operator's codepage. Nothing is lost
+    # by reading UTF-8 only, because an all-ASCII document is the same bytes.
+    path.write_bytes(healthy.encode("cp1252"))
+    assert module.StateStore(path).get("issues_cursor") == cursor
+
+    # One damaged byte inside the cursor: still a whole JSON document under a
+    # single-byte codepage, so only refusing that reading resets the checkpoint.
+    raw = healthy.encode()
+    at = raw.index(b"MjAxMi0wMi0xNlQ") + 3
+    path.write_bytes(raw[:at] + b"\x96" + raw[at + 1 :])
+    assert json.loads(path.read_bytes().decode("latin-1"))["issues_cursor"] != cursor
+    store = module.StateStore(path)
+    assert store.all() == {}
+    assert store.get("issues_cursor") is None
+
+
 def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
     """These shards reach gigabytes and every resume reads all of one, so a
     record that already read as UTF-8 must not be decoded and parsed again under
