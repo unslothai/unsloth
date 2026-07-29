@@ -1755,7 +1755,10 @@ def _codex_supports_model_catalog() -> bool:
         return True
     try:
         output = subprocess.check_output(
-            [executable, "--version"], text = True, timeout = 10, stderr = subprocess.DEVNULL,
+            [executable, "--version"],
+            text = True,
+            timeout = 10,
+            stderr = subprocess.DEVNULL,
             env = _probe_env(),
         )
     except Exception:
