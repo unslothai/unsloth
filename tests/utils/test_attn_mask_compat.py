@@ -132,6 +132,65 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
         assert torch.equal(actual, expected)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("attention_mask,past_length", [
+    (None, 8),
+    (None, 0),
+    ("ones", 8),
+    ("left_pad", 8),
+])
+def test_sdpa_mask_matches_transformers_on_cuda(attention_mask, past_length):
+    """CUDA counterpart of the test above.
+
+    `_unmask_unattended` is gated on ``device.type in ("cuda", "xpu")``, so a
+    CPU-only comparison never reaches it. Asserts stride and storage too: an
+    expanded view materialised into a dense [bsz, 1, q, kv] tensor is a memory
+    regression even when every element compares equal.
+    """
+    try:
+        legacy = importlib.import_module("transformers.modeling_attn_mask_utils")
+    except ImportError:
+        pytest.skip("transformers.modeling_attn_mask_utils unavailable")
+
+    batch_size, query_length = 4, 5
+    key_value_length = query_length + past_length
+    inputs_embeds = torch.zeros(
+        batch_size, query_length, 16, dtype = torch.float32, device = "cuda",
+    )
+    if attention_mask == "ones":
+        mask = torch.ones(batch_size, key_value_length, dtype = torch.int64, device = "cuda")
+    elif attention_mask == "left_pad":
+        mask = torch.ones(batch_size, key_value_length, dtype = torch.int64, device = "cuda")
+        mask[:, :2] = 0
+    else:
+        mask = None
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        expected = legacy._prepare_4d_causal_attention_mask_for_sdpa(
+            mask, (batch_size, query_length), inputs_embeds, past_length,
+            sliding_window = 3,
+        )
+    actual = compat._prepare_4d_causal_attention_mask_for_sdpa(
+        mask, (batch_size, query_length), inputs_embeds, past_length,
+        sliding_window = 3,
+    )
+
+    if expected is None:
+        assert actual is None
+        return
+
+    assert torch.equal(actual, expected)
+    assert actual.stride() == expected.stride(), (
+        f"layout diverged: {actual.stride()} vs upstream {expected.stride()} — "
+        "an expanded view was materialised"
+    )
+    assert actual.untyped_storage().nbytes() == expected.untyped_storage().nbytes(), (
+        f"allocation diverged: {actual.untyped_storage().nbytes()} bytes vs "
+        f"upstream {expected.untyped_storage().nbytes()}"
+    )
+
+
 def test_prepare_4d_attention_mask_for_sdpa_matches_transformers():
     try:
         legacy = importlib.import_module("transformers.modeling_attn_mask_utils")
@@ -169,9 +228,10 @@ def test_import_falls_back_when_is_tracing_missing():
     """Regression for Codex review on PR #6880.
 
     The compat module imports `is_tracing` from `transformers.utils.import_utils`,
-    but that symbol is only exported from transformers >= 4.52. Unsloth declares
-    `transformers>=4.51.3`, so the unconditional import would raise ImportError
-    on the lower bound tested in CI (`__from_pyproject__` matrix cell).
+    but that symbol is only exported from transformers >= 5.0.0. It is absent
+    from every 4.x release, including the declared `transformers>=4.51.3` floor
+    and the 4.57.6 pin used by tests/version_compat, so the fallback below is
+    the live path across the whole 4.x half of the supported range.
 
     Reload the module with `is_tracing` removed from the namespace and confirm
     the local fallback is used. The fallback must mirror the legacy

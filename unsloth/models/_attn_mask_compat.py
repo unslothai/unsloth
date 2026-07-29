@@ -13,13 +13,16 @@
 # limitations under the License.
 
 """
-Attention-mask helpers compatible with Transformers v5.10+.
+Attention-mask helpers, verified equivalent across Transformers 4.51.3 - 5.14.1.
 
-`transformers.modeling_attn_mask_utils` is deprecated and scheduled for removal.
-Unsloth keeps a local copy of the small API surface it uses so imports keep working
-and training runs do not emit deprecation warnings on every forward pass.
+`transformers.modeling_attn_mask_utils` warns on every call from 5.5.0 and
+announces removal in v5.10. It still ships in 5.14.1, but Transformers itself no
+longer imports it (135 internal references at 4.51.3, none from 5.5.0), so it can
+be dropped at any release. Keeping a local copy of the surface we use means
+imports survive that, and forward passes stop emitting deprecation warnings.
 
-Adapted from HuggingFace Transformers `modeling_attn_mask_utils.py` (Apache 2.0).
+Adapted from HuggingFace Transformers `modeling_attn_mask_utils.py`
+(Copyright 2023 The HuggingFace Team, Apache License 2.0).
 See: https://github.com/unslothai/unsloth/issues/6860
 """
 
@@ -33,30 +36,22 @@ import torch
 from transformers.utils.import_utils import is_torchdynamo_compiling
 
 try:
-    # `is_tracing` was added to `transformers.utils.import_utils` in 4.52
-    # (commit that introduced `_prepare_4d_attention_mask_for_sdpa` rewrites).
-    # Unsloth's declared lower bound is `transformers>=4.51.3`, so import
-    # defensively and fall back to a local implementation when the symbol
-    # is not exported. The fallback mirrors the tracing-detection expression
-    # that upstream `transformers.modeling_attn_mask_utils` used inline before
-    # `is_tracing` was added — `torch.jit.is_tracing() or
-    # isinstance(inputs_embeds, torch.fx.Proxy) or is_torchdynamo_compiling()`
-    # — so the data-dependent `torch.all(...)` branches in the mask helpers
-    # continue to be skipped during JIT trace / symbolic trace / Dynamo
-    # compilation, preserving the SDPA path selection.
+    # `is_tracing` exists only from Transformers 5.0.0, so the fallback below is
+    # the live path for all of 4.x, not just the 4.51.3 floor. The fallback
+    # mirrors what 4.x `modeling_attn_mask_utils` computes inline
+    # (`torch.jit.is_tracing() or isinstance(x, torch.fx.Proxy) or
+    # is_torchdynamo_compiling()`), so the data-dependent `torch.all(...)`
+    # branches stay skipped under JIT / FX / Dynamo and SDPA path selection is
+    # unchanged.
     from transformers.utils.import_utils import is_tracing  # type: ignore[attr-defined]
 except ImportError:
 
     def is_tracing(tensor = None) -> bool:  # type: ignore[no-redef]
-        """Local fallback for transformers < 4.52.
+        """Local fallback for transformers < 5.0.0.
 
-        Returns True when the active context is any of: ``torch.jit.trace``,
-        ``torch.fx.symbolic_trace``, or Dynamo compilation. Other tracing
-        backends that the modern ``transformers.utils.import_utils.is_tracing``
-        detects (CUDA stream capture, FakeTensor, JAX via torchax) cannot be
-        detected without newer ``import_utils`` helpers; for those we fall
-        back to the dynamo check, which matches the conservative pre-4.52
-        upstream behavior on the supported lower bound.
+        True under ``torch.jit.trace``, ``torch.fx.symbolic_trace`` or Dynamo.
+        The 5.x helper also detects CUDA stream capture, FakeTensor and JAX via
+        torchax; 4.x itself detects none of those, so behaviour on 4.x matches.
         """
         if torch.jit.is_tracing():
             return True
@@ -279,14 +274,17 @@ def _prepare_4d_causal_attention_mask_for_sdpa(
                 key_value_length = key_value_length,
             )
 
-    if (
-        not is_tracing_
-        and expanded_4d_mask is not None
-        and expanded_4d_mask.device.type in ["cuda", "xpu"]
-    ):
-        expanded_4d_mask = AttentionMaskConverter._unmask_unattended(
-            expanded_4d_mask, min_dtype = torch.finfo(inputs_embeds.dtype).min
-        )
+        # Attend to all tokens in masked rows, e.g. the first rows under left
+        # padding. Required by F.scaled_dot_product_attention's memory-efficient
+        # path: https://github.com/pytorch/pytorch/issues/110213
+        # Scoped to this branch to match upstream. At function scope it also runs
+        # on the `attention_mask is None` path, where it is a no-op numerically
+        # but materialises `to_causal_4d`'s stride-0 view into a dense
+        # [bsz, 1, q, kv] tensor.
+        if not is_tracing_ and expanded_4d_mask.device.type in ["cuda", "xpu"]:
+            expanded_4d_mask = AttentionMaskConverter._unmask_unattended(
+                expanded_4d_mask, min_dtype = torch.finfo(inputs_embeds.dtype).min
+            )
 
     return expanded_4d_mask
 
