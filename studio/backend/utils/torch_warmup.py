@@ -36,6 +36,7 @@ stall the event loop for the whole import (see main.py's /api/health).
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
 import importlib.util
 import os
 import sys
@@ -68,6 +69,17 @@ def _torch_installed() -> bool:
         return False
 
 
+def _is_extension_module(name: str) -> bool:
+    """True if sys.modules[name] is a compiled extension, not Python source."""
+    module = sys.modules.get(name)
+    origin = getattr(getattr(module, "__spec__", None), "origin", None) or getattr(
+        module, "__file__", None
+    )
+    if not isinstance(origin, str):
+        return False
+    return origin.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))
+
+
 def purge_partial_import(package: str) -> list:
     """Drop the submodules a failed package import left behind in sys.modules.
 
@@ -81,11 +93,30 @@ def purge_partial_import(package: str) -> list:
 
     Only acts on that exact signature (parent gone, submodules present), so a
     concurrent, still-running import is left alone. Returns what it removed.
+
+    Refuses to touch a package that has already-initialised C extension
+    submodules. Evicting one only makes the next import re-run its module init,
+    and a second registration of the same pybind11 type calls std::terminate:
+    purging torch.* on this box and re-importing killed the process outright
+    with 'generic_type: type "GradBucket" is already registered!'. Leaving the
+    zombie gives a torch that is missing attributes, which is bad; SIGABRT in
+    the middle of serving is worse.
     """
     if package in sys.modules:
         return []
     prefix = package + "."
     stale = [name for name in list(sys.modules) if name.startswith(prefix)]
+    compiled = sorted(name for name in stale if _is_extension_module(name))
+    if compiled:
+        logger.warning(
+            "not purging %s: %d of its submodule(s) are loaded C extensions and "
+            "re-importing one aborts the process (%s). The next import will reuse "
+            "the cached submodules and may be missing attributes.",
+            package,
+            len(compiled),
+            ", ".join(compiled[:4]),
+        )
+        return []
     for name in stale:
         sys.modules.pop(name, None)
     if stale:

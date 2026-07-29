@@ -127,7 +127,10 @@ def _has_torch() -> bool:
         # A failure part-way through torch/__init__ leaves its submodules in
         # sys.modules with the parent evicted; the next importer (transformers,
         # on the warm's second stage) would then re-run __init__ against those
-        # cache hits and get a torch that imports but is missing pieces.
+        # cache hits and get a torch that imports but is missing pieces. Worth
+        # clearing when the import died early -- but purge_partial_import()
+        # declines once any compiled submodule is loaded, because re-importing
+        # one aborts the process. See the note there.
         from utils.torch_warmup import purge_partial_import
         purge_partial_import("torch")
         return False
