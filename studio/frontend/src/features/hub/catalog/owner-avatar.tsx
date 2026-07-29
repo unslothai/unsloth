@@ -19,6 +19,20 @@ const SIZES: Record<AvatarSize, string> = {
   lg: "size-12 rounded-[15px] text-ui-16",
 };
 
+const UNSLOTH_OWNER_LOGO: ProviderLogo = {
+  id: "unsloth",
+  name: "Unsloth",
+  logoPath: "/rounded.png",
+  treatment: "original",
+  background: "transparent",
+  fit: "cover",
+  prefixes: [],
+};
+
+function isUnslothOwner(owner: string): boolean {
+  return owner.trim().toLowerCase() === "unsloth";
+}
+
 const AVATAR_IMAGE_RETRY_BASE_MS = 60_000;
 const AVATAR_IMAGE_RETRY_MAX_MS = 30 * 60_000;
 
@@ -53,8 +67,8 @@ export function OwnerAvatar({
   className?: string;
   /**
    * When false, never fetch the owner's HF profile picture; show a local
-   * provider logo or colored-initial tile instantly. Broad catalog views pass
-   * `false`; the bounded split pane and inspector keep remote loading enabled.
+   * provider logo or colored-initial tile instantly. Virtualized list rows pass
+   * `false` to avoid a per-row request storm; the inspector keeps `true`.
    */
   remote?: boolean;
 }) {
@@ -63,6 +77,16 @@ export function OwnerAvatar({
     return (
       <ProviderLogoTile
         provider={providerLogo}
+        size={size}
+        className={className}
+      />
+    );
+  }
+
+  if (isUnslothOwner(owner)) {
+    return (
+      <ProviderLogoTile
+        provider={UNSLOTH_OWNER_LOGO}
         size={size}
         className={className}
       />
@@ -83,11 +107,15 @@ export function useAvatarImageUrl(
   repoName?: string,
 ): string | null {
   const provider = resolveOwnerProviderLogo(owner, repoName);
-  const remoteUrl = useHfOwnerAvatar(owner.trim() || "?");
+  const isUnsloth = isUnslothOwner(owner);
+  const remoteUrl = useHfOwnerAvatar(
+    owner.trim() || "?",
+    provider == null && !isUnsloth,
+  );
   if (provider) {
     return provider.treatment === "original" ? provider.logoPath : null;
   }
-  return remoteUrl;
+  return isUnsloth ? UNSLOTH_OWNER_LOGO.logoPath : remoteUrl;
 }
 
 function ProviderLogoTile({
