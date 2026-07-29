@@ -47,6 +47,8 @@ from hub.utils.hf_cache_state import (
 # on rapid UI navigation.
 _HF_CACHE_SCANS_TTL_SECONDS = 15.0
 _GGUF_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
+# The transformers shard naming; each shard names the total the set needs.
+_WEIGHT_SHARD_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.(?:safetensors|bin)$)", re.IGNORECASE)
 _hf_cache_scans_lock = threading.Lock()
 
 
@@ -582,13 +584,13 @@ def _repo_signal_applies_to_snapshot(
     newest one charged an interrupted update to the previous complete payload
     -- the very state the dangling-ref recovery restores rows from. It excuses
     only a snapshot that can actually serve the row: a pinned snapshot holding
-    nothing but half a split quant has no other evidence it is unfinished, and
-    dropping the signal advertised shards that are not on disk.
+    nothing but half a payload has no other evidence it is unfinished, and
+    dropping the signal advertised files that are not on disk.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return True
     if _default_ref_names_an_absent_snapshot(repo_cache_dir):
-        return _snapshot_offers_only_broken_gguf(snapshot_dir)
+        return _snapshot_cannot_serve_its_payload(snapshot_dir)
     return _is_latest_snapshot(repo_cache_dir, snapshot_dir)
 
 
@@ -699,24 +701,65 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     return complete
 
 
-def _snapshot_offers_only_broken_gguf(snapshot_dir: Optional[Path]) -> bool:
-    """Whether *snapshot_dir* advertises GGUF quants and not one of them is whole.
-
-    Split shards name their own total, so this judges the pinned snapshot on its
-    own contents, with no ref, marker or manifest. Offering nothing is not proof
-    of breakage (a safetensors snapshot offers no quant), and one whole quant
-    beside a broken one still loads -- the rule ``is_gguf_repo_partial`` keeps.
-    """
-    if snapshot_dir is None:
-        return False
+def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
     from hub.utils.gguf import list_local_gguf_variants
 
     try:
         variants, _ = list_local_gguf_variants(str(snapshot_dir))
-        offered = {v.quant for v in variants if getattr(v, "quant", None)}
+        return {v.quant for v in variants if getattr(v, "quant", None)}
     except Exception:
+        return set()
+
+
+def _snapshot_missing_a_weight_shard(snapshot_dir: Path) -> bool:
+    """Whether a sharded non-GGUF weight set in *snapshot_dir* is missing a shard.
+
+    ``from_pretrained`` reads every shard the set names, so one absent shard
+    means the pinned snapshot cannot load. Grouped per directory and prefix
+    because a snapshot may ship more than one set.
+    """
+    groups: dict[tuple[str, str, int], set[int]] = {}
+    try:
+        paths = list(snapshot_dir.rglob("*"))
+    except OSError:
         return False
-    return bool(offered) and not (offered & _completed_gguf_variants(snapshot_dir))
+    for path in paths:
+        try:
+            if not path.is_file() or path.stat().st_size <= 0:
+                continue
+        except OSError:
+            continue
+        match = _WEIGHT_SHARD_RE.search(path.name)
+        if match is None:
+            continue
+        index = int(match.group(1))
+        total = int(match.group(2))
+        if index <= 0 or total <= 0 or index > total:
+            continue
+        groups.setdefault((str(path.parent), path.name[: match.start()], total), set()).add(index)
+    return any(
+        indices != set(range(1, key[2] + 1)) for key, indices in groups.items()
+    )
+
+
+def _snapshot_cannot_serve_its_payload(snapshot_dir: Optional[Path]) -> bool:
+    """Whether *snapshot_dir*'s own contents prove it cannot serve a row.
+
+    Judged on the pinned snapshot alone, with no ref, marker or manifest, since
+    the dangling ref is exactly what stops being evidence. A snapshot offering
+    quants is judged on those: one whole quant beside a broken one still loads
+    -- the rule ``is_gguf_repo_partial`` keeps -- so the GGUF answer is
+    unchanged by the shard walk below. One offering none is judged on its
+    sharded safetensors/checkpoint sets. Either way a file naming its own total
+    is the only proof accepted; holding nothing that names one is not proof of
+    breakage, so the dangling ref still excuses that snapshot.
+    """
+    if snapshot_dir is None:
+        return False
+    offered = _offered_gguf_quants(snapshot_dir)
+    if offered:
+        return not (offered & _completed_gguf_variants(snapshot_dir))
+    return _snapshot_missing_a_weight_shard(snapshot_dir)
 
 
 def snapshot_variants_all_complete(snapshot: str) -> bool:

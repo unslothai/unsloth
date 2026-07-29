@@ -1041,6 +1041,58 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
     assert rows[0]["capabilities"].get("can_chat") is not partial
 
 
+@pytest.mark.parametrize(
+    "older_files, partial",
+    [
+        # The safetensors half of the case above: a shard names the total the
+        # set needs, so half a set is provable from the directory alone and the
+        # dangling ref must not clear the ``.incomplete`` blob.
+        pytest.param(
+            {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 32},
+            True,
+            id = "pinned-snapshot-holds-half-a-sharded-set",
+        ),
+        # Negative side: the whole set is here, so the unmaterialised attempt is
+        # charged to nothing and the row stays chattable.
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "model-00002-of-00002.safetensors": b"\0" * 32,
+            },
+            False,
+            id = "pinned-snapshot-holds-the-whole-sharded-set",
+        ),
+        # Nothing names a total, so there is no proof of breakage: this is the
+        # #7374 shape and it must keep loading from disk.
+        pytest.param(
+            {"config.json": b"{}", "model.safetensors": b"\0" * 32},
+            False,
+            id = "pinned-snapshot-holds-an-unsharded-payload",
+        ),
+    ],
+)
+def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapshot(
+    older_files, partial, tmp_path, monkeypatch
+):
+    """The same repo with the same bytes on disk went partial while ``refs/main``
+    resolved and chattable once a later attempt rewrote the ref and materialised
+    no directory, so the row offered shards that were never fetched."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = older_files,
+        newer_files = {"config.json": b"{}"},
+        ref = UPSTREAM_HEAD,
+    )
+    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("partial") is partial
+    assert (rows[0].get("capabilities") or {}).get("can_chat") is not partial
+
+
 @pytest.mark.parametrize("signal", ["marker", "manifest"])
 def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
     signal, tmp_path, monkeypatch
