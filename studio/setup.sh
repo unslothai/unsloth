@@ -67,6 +67,18 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
+setup_fail() {
+    local exit_code=$1
+    shift
+    [ "$exit_code" -ne 0 ] || exit_code=1
+    local message
+    message=$(printf '%s' "$*" | tr '\r\n' '  ')
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
+    esac
+    exit "$exit_code"
+}
+
 # ── Helper: can the controlling terminal actually be opened for reading? ──
 # `test -r` only checks permission bits, which look fine in containers and
 # systemd units where open() then fails with ENXIO. Probe with a real open.
@@ -173,7 +185,7 @@ _run_quiet() {
         exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -182,7 +194,10 @@ _run_quiet() {
     local tmplog
     tmplog=$(mktemp) || {
         step "error" "Failed to create temporary file" "$C_ERR" >&2
-        [ "$on_fail" = "exit" ] && exit 1 || return 1
+        if [ "$on_fail" = "exit" ]; then
+            setup_fail 1 "Failed to create temporary file for $label"
+        fi
+        return 1
     }
 
     if "$@" >"$tmplog" 2>&1; then
@@ -196,7 +211,7 @@ _run_quiet() {
         rm -f "$tmplog"
 
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -549,10 +564,14 @@ if [ -n "$_studio_override" ]; then
     if [ ! -d "$_studio_override" ]; then
         echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
         echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
-        exit 1
+        setup_fail 1 "$_studio_override_var=$_studio_override does not exist"
     fi
-    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
-    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+    if [ ! -w "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2
+        setup_fail 1 "$_studio_override_var=$_studio_override is not writable"
+    fi
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" ||
+        setup_fail 1 "Could not resolve $_studio_override_var=$_studio_override"
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
@@ -598,7 +617,7 @@ _assert_studio_owned_or_absent() {
         fi
         echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
-        exit 1
+        setup_fail 1 "$_aso_label path is not an Unsloth-owned install: $_aso_dir"
     fi
 }
 
@@ -716,12 +735,12 @@ elif [ "$NODE_SOURCE" = bundled ]; then
         step "node" "install blocked by another active Unsloth install" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "close other Unsloth installs and retry"
-        exit 3
+        setup_fail 3 "Node install is blocked by another active Unsloth install"
     elif [ "$_NODE_STATUS" -ne 0 ]; then
         step "node" "isolated Node install failed" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
-        exit 1
+        setup_fail 1 "Could not install an isolated Node runtime"
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
@@ -854,7 +873,7 @@ if [ "$_bun_install_ok" = false ]; then
     if [ "$_npm_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
         rm -f "$_FRONTEND_INSTALL_LOG"
-        exit "$_npm_install_rc"
+        setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
     fi
 fi
 _CAPTURE_LOG=""
@@ -894,7 +913,7 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     if [ "$_oxc_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_OXC_INSTALL_LOG"
         rm -f "$_OXC_INSTALL_LOG"
-        exit "$_oxc_install_rc"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
     fi
     rm -f "$_OXC_INSTALL_LOG"
     cd "$SCRIPT_DIR"
@@ -932,7 +951,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
             if ! run_quiet_no_exit "install Colab backend deps" pip install -q -r "$_COLAB_REQS_TMP"; then
                 rm -f "$_COLAB_REQS_TMP"
                 step "python" "Colab backend dependency install failed" "$C_ERR"
-                exit 1
+                setup_fail 1 "Colab backend dependency installation failed"
             fi
         else
             step "python" "no Colab backend dependencies resolved from requirements file" "$C_WARN"
@@ -943,7 +962,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         step "python" "venv not found at $VENV_DIR" "$C_ERR"
         substep "Run install.sh first to create the environment:"
         substep "curl -fsSL https://unsloth.ai/install.sh | sh"
-        exit 1
+        setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
 else
     source "$VENV_DIR/bin/activate"
@@ -953,14 +972,47 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# ── HTTP GET to stdout (supports curl and wget) ──
+# install.sh takes either transport everywhere, so a wget-only box installs fine
+# and then stalled here, where curl was the only way to fetch anything.
+_setup_http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+    else
+        return 1
+    fi
+}
+
+# Same, with a deadline, for the checks that must not hang the install.
+# wget has nothing like curl's total-transfer --max-time: --timeout is per
+# operation and it retries 20 times, so a stalled server took minutes and a slow
+# drip never ended. --tries=1 plus an outer `timeout` restores the 5s ceiling;
+# without timeout (base macOS, which ships curl anyway) the per-operation bound
+# stands rather than the check being dropped.
+_setup_http_get_timed() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 5 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 wget -qO- --timeout=5 --tries=1 "$1"
+        else
+            wget -qO- --timeout=5 --tries=1 "$1"
+        fi
+    else
+        return 1
+    fi
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
     if _is_verbose; then
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        _setup_http_get https://astral.sh/uv/install.sh | sh
     else
-        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
     export PATH="$HOME/.local/bin:$PATH"
@@ -1001,7 +1053,7 @@ import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
@@ -1023,6 +1075,21 @@ except (PackageNotFoundError, ValueError, IndexError):
 sys.exit(0 if (major, minor) >= (4, 14) else 1)
 " 2>/dev/null; then
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+        # An interrupted install leaves $_PKG_NAME current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        if ! "$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
+sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+" "$SCRIPT_DIR" 2>/dev/null; then
+            substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
@@ -1277,7 +1344,7 @@ fi
 if [ -n "$_LLAMA_PR" ]; then
     if ! [[ "$_LLAMA_PR" =~ ^[0-9]+$ ]] || [ "$_LLAMA_PR" -le 0 ]; then
         step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number" "$C_ERR"
-        exit 1
+        setup_fail 1 "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number"
     fi
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
     _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
@@ -1313,7 +1380,7 @@ _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
-        exit 1
+        setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
     _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
     # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
@@ -1351,7 +1418,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # with no usable binary.
         if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
             step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
-            exit 1
+            setup_fail 1 "No llama-server was found under $_RESOLVED_LOCAL"
         fi
         # A stale link from a previous --with-llama-cpp-dir run isn't Unsloth-owned
         # content; drop it before the ownership check so re-runs stay idempotent
@@ -1460,7 +1527,7 @@ else
             substep "existing install was restored"
         fi
         substep "close Unsloth or other llama.cpp users and retry"
-        exit 3
+        setup_fail 3 "llama.cpp install is blocked by an active llama.cpp process"
     elif [ "$_PREBUILT_STATUS" -eq 4 ]; then
         step "llama.cpp" "not enough disk space to install llama.cpp" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -2217,5 +2284,5 @@ echo ""
 # successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
-    exit 1
+    setup_fail 1 "llama.cpp setup did not produce a usable server"
 fi

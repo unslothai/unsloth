@@ -43,6 +43,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
         pass
 
 logger = get_logger(__name__)
+from utils.child_stdio import utf8_child_env
 from utils.hardware import apply_gpu_ids
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
@@ -385,6 +386,10 @@ def _install_package_wheel_first(
         "stdout": _sp.PIPE,
         "stderr": _sp.STDOUT,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        # Make the Python child emit the UTF-8 we decode above.
+        "env": utf8_child_env(),
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
@@ -606,6 +611,9 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -849,6 +857,9 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:

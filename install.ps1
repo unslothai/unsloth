@@ -28,6 +28,14 @@ function Install-UnslothStudio {
         }
     }
 
+    function Clear-TauriInstallError {
+        param([string]$Message)
+        if ($TauriMode) {
+            Write-TauriLog "ERROR_CLEAR" $Message
+            [Console]::Error.WriteLine("[TAURI:ERROR_CLEAR] $Message")
+        }
+    }
+
     function Format-TauriDiagBool {
         param([bool]$Value)
         if ($Value) { return "true" }
@@ -47,6 +55,26 @@ function Install-UnslothStudio {
             "x86" { return "x86" }
             default { return ($arch -replace '[^a-z0-9_.-]', '_') }
         }
+    }
+
+    # Machine arch; Get-TauriDiagArch above reports the process. An emulated x64 shell on
+    # ARM64 reports AMD64, but PROCESSOR_ARCHITEW6432 is ARM64 in exactly that case.
+    function Get-HostMachineArch {
+        $osArch = ""
+        try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
+        $signals = @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
+        foreach ($s in $signals) {
+            if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
+        }
+        foreach ($s in $signals) {
+            if ([string]::IsNullOrWhiteSpace($s)) { continue }
+            switch ($s.ToLowerInvariant()) {
+                "amd64" { return "x86_64" }
+                "x64" { return "x86_64" }
+                "x86" { return "x86" }
+            }
+        }
+        return "unknown"
     }
 
     function Get-TauriTorchIndexFamily {
@@ -86,7 +114,7 @@ function Install-UnslothStudio {
             [int]$Code = 1
         )
         if ($Code -eq 0) { $Code = 1 }
-        Write-TauriLog "ERROR" $Message
+        Write-TauriLog "ERROR_DEFAULT" $Message
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
@@ -485,7 +513,8 @@ function Install-UnslothStudio {
     # Full command output is shown only when --verbose / UNSLOTH_VERBOSE=1.
     function Invoke-InstallCommand {
         param(
-            [Parameter(Mandatory = $true)][ScriptBlock]$Command
+            [Parameter(Mandatory = $true)][ScriptBlock]$Command,
+            [string]$Label = "install command"
         )
         # Installer-pinned index installs (torch) must beat an inherited uv mirror (#6898):
         # for --default-index, clear the uv index env vars (restore in finally) and set
@@ -504,6 +533,7 @@ function Install-UnslothStudio {
         try {
             # Reset to avoid stale values from prior native commands.
             $global:LASTEXITCODE = 0
+            Write-TauriLog "OUTPUT_CLEAR" $Label
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout so progress/warning output stays visible
                 # without flipping $? on successful native commands (PS 5.1 treats
@@ -518,7 +548,13 @@ function Install-UnslothStudio {
                     Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
                 }
             }
-            return [int]$LASTEXITCODE
+            $exitCode = [int]$LASTEXITCODE
+            if ($exitCode -eq 0) {
+                Clear-TauriInstallError "$Label recovered"
+            } else {
+                Write-TauriLog "ERROR_OUTPUT" "$Label failed (exit code $exitCode)"
+            }
+            return $exitCode
         } finally {
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
@@ -549,7 +585,7 @@ function Install-UnslothStudio {
         }
         $attempt = 1
         while ($true) {
-            $code = Invoke-InstallCommand $Command
+            $code = Invoke-InstallCommand -Command $Command -Label $Label
             if ($code -eq 0) { return 0 }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
@@ -1108,10 +1144,27 @@ exit 0
         return $false
     }
 
+    # The interpreter's own arch, asked of it: win-amd64|win-arm64|win32|"".
+    function Get-PythonPlatformTag {
+        param([string]$Exe)
+        try {
+            return (& $Exe -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+        } catch { return "" }
+    }
+
     # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
     function Find-CompatiblePython {
+        # -X64Only: best installed x64 interpreter or $null, never ARM64. Last resort for
+        # Install-X64Python, where x64 of a lower-priority minor beats ARM64.
+        param([switch]$X64Only)
+        # Windows on ARM: prefer x64. pyarrow (via datasets) and hf-transfer ship no
+        # win_arm64 wheel, so a native ARM64 Python source-builds both and dies on CMake /
+        # Rust minutes in; x64 runs fine emulated. ARM64 is still returned when it is all
+        # there is, and the caller then bootstraps x64 or warns.
+        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64")
+        $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
         # Prefer the requested $PythonVersion, then newest-first fallback.
@@ -1129,7 +1182,8 @@ exit 0
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            return @{ Version = $ver; Path = $resolvedExe }
+                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
                     }
                 } catch {}
@@ -1150,11 +1204,53 @@ exit 0
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        return @{ Version = $Matches[1]; Path = $cmd.Source }
+                        if (-not $preferX64) { return @{ Version = $Matches[1]; Path = $cmd.Source; Arch = "" } }
+                        $candidates += @{ Version = $Matches[1]; Path = $cmd.Source }
                     }
                 } catch {}
             }
         }
+        # `py -3.12` runs the launcher's preferred build, normally the native ARM64 one, so
+        # a same-minor x64 install that is neither preferred nor on PATH never becomes a
+        # candidate. `-3.12-64` cannot disambiguate (deprecated, it only means "not
+        # 32-bit"), so enumerate every registration with -0p and probe each path.
+        if ($preferX64) {
+            foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
+                $listed = @()
+                try { $listed = @(& $pyLauncher.Source "-0p" 2>$null) } catch {}
+                foreach ($line in $listed) {
+                    # " -V:3.12 *   C:\...\python.exe": tag, optional default marker, path.
+                    $m = [regex]::Match([string]$line, '(?i)^\s*-\S+\s+\*?\s*"?(?<p>\S.*?\.exe)"?\s*$')
+                    if (-not $m.Success) { continue }
+                    $exe = $m.Groups['p'].Value.Trim()
+                    if ($candidates | Where-Object { $_.Path -eq $exe }) { continue }
+                    if (-not (Test-Path -LiteralPath $exe)) { continue }
+                    if (Test-IsCondaPython $exe) { continue }
+                    try {
+                        $out = & $exe --version 2>&1 | Out-String
+                        if ($out -match "Python (3\.1[1-3])\.\d+") {
+                            $candidates += @{ Version = $Matches[1]; Path = $exe }
+                        }
+                    } catch {}
+                }
+            }
+        }
+        # Prefer x64, but only within one minor: $minors is the caller's version preference,
+        # so ranking on arch alone would answer UNSLOTH_PYTHON=3.12 with an x64 3.13 and
+        # never bootstrap x64 3.12. Probing costs a subprocess, so non-ARM returned above.
+        foreach ($c in $candidates) {
+            $tag = Get-PythonPlatformTag $c.Path
+            $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
+        }
+        foreach ($minor in $minors) {
+            $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
+            if ($sameMinor.Count -eq 0) { continue }
+            $x64 = $sameMinor | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
+            if ($x64) { return $x64 }
+            if (-not $X64Only) { return $sameMinor[0] }
+        }
+        if (-not $X64Only -and $candidates.Count -gt 0) { return $candidates[0] }
         return $null
     }
 
@@ -1165,8 +1261,11 @@ exit 0
     # (no UAC), putting python.exe + the py launcher on PATH. Mirrors the uv ->
     # astral.sh fallback below. Returns @{ Version; Path } or $null.
     function Install-PythonFromPythonOrg {
+        # $Arch overrides the host arch, to pull x64 onto an ARM64 box.
+        param([string]$Arch = "")
         # python.org ships one installer per architecture.
-        $archSuffix = switch (Get-TauriDiagArch) {
+        $targetArch = if ($Arch) { $Arch } else { Get-TauriDiagArch }
+        $archSuffix = switch ($targetArch) {
             "x86_64" { "-amd64" }
             "arm64"  { "-arm64" }
             "x86"    { "" }
@@ -1229,6 +1328,28 @@ exit 0
         }
         Refresh-SessionPath
         return (Find-CompatiblePython)
+    }
+
+    # ── Windows on ARM: get an x64 CPython ──
+    # --architecture x64 forces winget off the ARM64 build; python.org takes the same override.
+    function Install-X64Python {
+        if ($script:WingetAvailable) {
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                winget install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
+            } catch { }
+            $ErrorActionPreference = $prevEAP
+            Refresh-SessionPath
+            $found = Find-CompatiblePython
+            if ($found -and $found.Arch -eq "x86_64") { return $found }
+            substep "winget could not provide an x64 Python -- trying python.org..." "Yellow"
+        }
+        $found = Install-PythonFromPythonOrg -Arch "x86_64"
+        if ($found -and $found.Arch -eq "x86_64") { return $found }
+        # Nothing installable (offline / no winget): an x64 build of another supported minor
+        # still runs the wheels ARM64 cannot, so take it over the native interpreter.
+        return (Find-CompatiblePython -X64Only)
     }
 
     # ── Install Python if no compatible version (3.11-3.13) found ──
@@ -1302,6 +1423,26 @@ exit 0
             return (Exit-InstallFailure "Python installation failed")
         }
     }
+    # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
+    # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
+    # both and fails deep into the run. Warn up front if x64 is unobtainable.
+    if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
+        substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
+        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
+        $X64Python = Install-X64Python
+        if ($X64Python) {
+            $DetectedPython = $X64Python
+            step "python" "using x64 Python $($DetectedPython.Version) under emulation"
+        } else {
+            Write-Host "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
+            Write-Host "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
+            Write-Host "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
+            Write-Host "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
+            Write-Host "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+            Write-Host "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
+        }
+    }
+
     $DiagPythonVersion = $PythonVersion
     if ($DetectedPython) { $DiagPythonVersion = $DetectedPython.Version }
     $InitialGpuBranch = "unknown"
@@ -1603,7 +1744,7 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
@@ -2375,7 +2516,7 @@ exit 0
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
@@ -2422,6 +2563,13 @@ exit 0
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
+            # Windows on ARM lacks only torchaudio (whl/cpu win_arm64: torch 42,
+            # torchvision 60, torchaudio 0), so drop that pin instead of aborting. Ask the
+            # interpreter, not PROCESSOR_ARCHITECTURE; reached when no x64 Python exists.
+            $VenvPlatform = ""
+            try {
+                $VenvPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+            } catch { $VenvPlatform = "" }
             substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
             # Bound the companions to the capped torch on EVERY index, cu<digits>
             # families included: torchaudio 2.11 dropped its exact torch pin from
@@ -2429,7 +2577,13 @@ exit 0
             # resolve a mismatched 2.11.0 build. Mirrors install.sh.
             $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
             $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
+            $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)
+            if ($VenvPlatform -eq "win-arm64") {
+                substep "windows on arm: skipping torchaudio (upstream publishes no"
+                substep "win_arm64 wheel); torch and torchvision install normally."
+                $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec)
+            }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -2464,7 +2618,7 @@ exit 0
 
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
@@ -2487,7 +2641,7 @@ exit 0
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
@@ -2535,7 +2689,7 @@ exit 0
                     $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
                     $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
@@ -2544,7 +2698,7 @@ exit 0
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
@@ -2645,6 +2799,9 @@ exit 0
     # an inherited value would put llama.cpp in the wrong place.
     $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
     $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
+    $previousTauriMode = $env:UNSLOTH_TAURI_MODE
+    $hadPreviousTauriMode = ($null -ne $previousTauriMode)
+    $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
     if ($StudioRedirectMode -eq 'env') {
         $env:UNSLOTH_STUDIO_HOME = $StudioHome
     } else {
@@ -2674,14 +2831,22 @@ exit 0
         } else {
             Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
         }
+        if ($hadPreviousTauriMode) {
+            $env:UNSLOTH_TAURI_MODE = $previousTauriMode
+        } else {
+            Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
+        }
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }
     if ($setupExit -ne 0) {
-        Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
+        if (-not $TauriMode) {
+            Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
+        }
         return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
     }
+    Clear-TauriInstallError "studio setup completed"
 
     # ── Expose `unsloth` via a shim dir containing only unsloth.exe ──
     # We do NOT add the venv Scripts dir to PATH (it also holds python.exe
