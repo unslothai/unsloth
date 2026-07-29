@@ -6,23 +6,21 @@
 resulting venv as healthy -- reproducing the Tauri preflight probes so the regression
 is testable without building the app.
 
-One implementation for all three platforms. There were briefly two (a shell probe and
-an inline PowerShell one), and they diverged: the PowerShell version only ran `-h` and
-`desktop-capabilities`, so it could not see the `studio_install_ok`, `verify-install`
-or `desktop-runtime-check` signals that the fix PRs introduce -- it would have
-reported those PRs as failing no matter how well they worked. A probe that cannot
-observe the fix is worse than no probe, hence a single shared one.
-
 The reported bug: quitting the app during the dependency pass SIGTERMs the installer
 (install.rs stop_install). Landing in the "studio deps" step drops
 studio/backend/requirements/studio.txt, where structlog is declared. Preflight then
-probes `unsloth -h` (preflight/managed.rs:419) and `studio desktop-capabilities`
-(managed.rs:318); both SUCCEED because typer/click/rich are core, so the app reports
-ManagedReady with can_auto_repair=false and the backend dies on `import structlog`.
+probes `unsloth -h` (managed.rs:419) and `studio desktop-capabilities` (managed.rs:318);
+both SUCCEED because typer/click/rich are core, so the app reports ManagedReady with
+can_auto_repair=false and the backend dies on `import structlog`.
+
+ONE implementation for all three platforms. The Windows leg was briefly a bespoke inline
+PowerShell probe that ran only `-h` and `desktop-capabilities`, so it could not observe
+`studio_install_ok`, `verify-install` or `desktop-runtime-check` and would have failed
+the very PRs that add them. A probe that cannot see the fix is worse than no probe.
 
 Verdicts:
   HEALTHY      the backend boots AND desktop-capabilities reports the install
-               complete -- i.e. preflight would report ManagedReady and be right
+               complete -- preflight would report ManagedReady and be right
   REPAIRABLE   the backend is broken AND a probe the DESKTOP consumes reports it,
                so the app can offer a repair
   FALSE_READY  the backend is broken and every probe says ready -> THE BUG
@@ -45,9 +43,9 @@ from pathlib import Path
 
 
 def run(cmd: list[str], timeout: int = 120) -> tuple[int, str, str]:
-    """Returns (rc, stdout, stderr). Kept SEPARATE: preflight/managed.rs pipes stdout
-    and sends stderr to /dev/null (managed.rs:358), so anything the probe folds into
-    stdout is text the desktop never sees."""
+    """Returns (rc, stdout, stderr). Kept SEPARATE: preflight pipes stdout and sends
+    stderr to /dev/null (managed.rs:358), so anything folded into stdout here is text
+    the desktop never sees."""
     try:
         p = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout)
         return p.returncode, p.stdout or "", p.stderr or ""
@@ -61,8 +59,8 @@ def merged(rc_out_err: tuple[int, str, str]) -> str:
 
 
 def has_subcommand(bin_path: str, args: list[str]) -> bool:
-    """Whether the CLI understands a subcommand at all. Older builds do not have the
-    newer verify commands, and 'absent' must not be confused with 'reported failure'."""
+    """Whether the CLI understands a subcommand at all: older builds lack the newer
+    verify commands, and 'absent' must not be read as 'reported failure'."""
     rc, _, _ = run([bin_path, *args, "--help"], timeout = 60)
     return rc == 0
 
