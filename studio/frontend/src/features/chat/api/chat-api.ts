@@ -155,11 +155,12 @@ export async function loadModel(
     dialogOwner?: unknown;
     signal?: AbortSignal;
     retainRequestOnAbort?: boolean;
+    onRequestDispatched?: () => void;
   },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
-  const response = await authFetch("/api/inference/load", {
+  const responsePromise = authFetch("/api/inference/load", {
     method: "POST",
     // Once a load POST is dispatched, its caller may use /unload to cancel it.
     // Retaining this request lets that caller wait until the backend has
@@ -173,6 +174,8 @@ export async function loadModel(
       nativePathLease: undefined,
     }),
   });
+  options?.onRequestDispatched?.();
+  const response = await responsePromise;
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
 

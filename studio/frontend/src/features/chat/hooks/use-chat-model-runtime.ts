@@ -150,7 +150,9 @@ type SharedModelLoadHandle = {
 // without trying to mutate refs it does not own.
 let sharedModelLoadHandle: SharedModelLoadHandle | null = null;
 let modelSelectionIntentEpoch = 0;
-let pendingExternalReplacementConfig: PerModelConfig | undefined;
+let pendingExternalReplacement:
+  | { intentId: number; config?: PerModelConfig }
+  | null = null;
 
 type PendingReplacementRollback = {
   checkpoint: string | null;
@@ -382,15 +384,13 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      if (statusRes.idle_unloaded) {
-        // The backend retained an idle-reload stash, so keep the checkpoint for
-        // transparent reload while clearing only resident capabilities.
-        useChatRuntimeStore.setState({
-          modelRequiresTrustRemoteCode: false,
-          loadedIsMultimodal: false,
-          loadedIsDiffusion: false,
-        });
-      } else {
+      // An idle-reload stash keeps both the checkpoint and its capabilities;
+      // an in-flight switch also has a normal no-active interval.
+      if (
+        !statusRes.idle_unloaded &&
+        !useChatRuntimeStore.getState().modelLoading &&
+        !useChatRuntimeStore.getState().loadingModelPick
+      ) {
         useChatRuntimeStore.getState().clearCheckpoint();
       }
     }
@@ -645,11 +645,13 @@ export function useChatModelRuntime() {
     [cancelLoadingWithCheckpointPolicy],
   );
   const cancelLoadingForReplacement = useCallback(
-    async (): Promise<boolean> => {
+    async (intentId: number): Promise<boolean> => {
       const run = activeLoadRunRef.current ?? sharedModelLoadHandle?.run;
-      pendingExternalReplacementConfig = run?.rollbackConfig;
+      pendingExternalReplacement = { intentId, config: run?.rollbackConfig };
       const stopped = await cancelLoadingWithCheckpointPolicy(true);
-      if (!stopped) pendingExternalReplacementConfig = undefined;
+      if (!stopped && pendingExternalReplacement?.intentId === intentId) {
+        pendingExternalReplacement = null;
+      }
       return stopped;
     },
     [cancelLoadingWithCheckpointPolicy],
@@ -660,9 +662,17 @@ export function useChatModelRuntime() {
     return modelSelectionIntentEpoch;
   }, []);
 
-  const restoreConfigForExternalReplacement = useCallback((): void => {
+  const discardExternalReplacement = useCallback((intentId: number): void => {
+    if (pendingExternalReplacement?.intentId === intentId) {
+      pendingExternalReplacement = null;
+    }
+  }, []);
+
+  const restoreConfigForExternalReplacement = useCallback((intentId: number): void => {
     const config =
-      pendingExternalReplacementConfig ??
+      (pendingExternalReplacement?.intentId === intentId
+        ? pendingExternalReplacement.config
+        : undefined) ??
       sharedModelLoadHandle?.run.rollbackConfig ??
       pendingReplacementRollback?.config;
     if (config) {
@@ -670,9 +680,9 @@ export function useChatModelRuntime() {
         isDiffusion: useChatRuntimeStore.getState().loadedIsDiffusion,
       });
     }
-    pendingExternalReplacementConfig = undefined;
+    discardExternalReplacement(intentId);
     pendingReplacementRollback = null;
-  }, []);
+  }, [discardExternalReplacement]);
 
   const isModelSelectionIntentCurrent = useCallback((intentId: number) => {
     return modelSelectionIntentEpoch === intentId;
@@ -1405,8 +1415,6 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
-            run.backendLoadStarted = true;
-            run.backendLoadModelId = modelId;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
@@ -1434,6 +1442,10 @@ export function useChatModelRuntime() {
               dialogOwner: run,
               signal: abortCtrl.signal,
               retainRequestOnAbort: true,
+              onRequestDispatched: () => {
+                run.backendLoadStarted = true;
+                run.backendLoadModelId = modelId;
+              },
             });
 
             // If cancelled while loading, don't update UI to show
@@ -1653,8 +1665,6 @@ export function useChatModelRuntime() {
                 }
               }
               try {
-                run.backendLoadStarted = true;
-                run.backendLoadModelId = previousCheckpoint;
                 const rollbackResponse = await loadModel({
                   model_path: previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
@@ -1691,6 +1701,10 @@ export function useChatModelRuntime() {
                   dialogOwner: run,
                   signal: abortCtrl.signal,
                   retainRequestOnAbort: true,
+                  onRequestDispatched: () => {
+                    run.backendLoadStarted = true;
+                    run.backendLoadModelId = previousCheckpoint;
+                  },
                 });
                 if (abortCtrl.signal.aborted) {
                   throw new Error("Cancelled");
@@ -2188,6 +2202,7 @@ export function useChatModelRuntime() {
     cancelLoading,
     cancelLoadingForReplacement,
     invalidatePendingModelSelection,
+    discardExternalReplacement,
     restoreConfigForExternalReplacement,
     isModelSelectionIntentCurrent,
     loadingModel,

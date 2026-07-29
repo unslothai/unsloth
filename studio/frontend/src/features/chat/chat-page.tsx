@@ -1966,6 +1966,7 @@ export function ChatPage({
     cancelLoading,
     cancelLoadingForReplacement,
     invalidatePendingModelSelection,
+    discardExternalReplacement,
     restoreConfigForExternalReplacement,
     isModelSelectionIntentCurrent,
     loadingModel,
@@ -2603,8 +2604,11 @@ export function ChatPage({
           store.modelLoading || store.loadingModelPick,
         );
         if (hadLocalLoad) {
-          const stopped = await cancelLoadingForReplacement();
-          if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
+          const stopped = await cancelLoadingForReplacement(selectionIntentId);
+          if (!isModelSelectionIntentCurrent(selectionIntentId)) {
+            discardExternalReplacement(selectionIntentId);
+            return;
+          }
           if (!stopped) {
             toast.error("Could not stop the current model load", {
               description:
@@ -2663,7 +2667,7 @@ export function ChatPage({
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
-        restoreConfigForExternalReplacement();
+        restoreConfigForExternalReplacement(selectionIntentId);
         store.setCheckpoint(value, null);
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
@@ -2806,6 +2810,7 @@ export function ChatPage({
       externalProvidersForChat,
       modelsFromStore,
       cancelLoadingForReplacement,
+      discardExternalReplacement,
       restoreConfigForExternalReplacement,
       invalidatePendingModelSelection,
       isModelSelectionIntentCurrent,

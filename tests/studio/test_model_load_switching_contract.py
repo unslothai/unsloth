@@ -30,9 +30,10 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     no_active = runtime.split(
         "} else if (!statusRes.active_model && !isExternalSelectionActive) {", 1
     )[1].split("  } catch (error)", 1)[0]
-    assert "if (statusRes.idle_unloaded)" in no_active
+    assert "!statusRes.idle_unloaded" in no_active
     assert "clearCheckpoint();" in no_active
-    assert "loadedIsDiffusion: false" in no_active
+    assert "!useChatRuntimeStore.getState().modelLoading" in no_active
+    assert "!useChatRuntimeStore.getState().loadingModelPick" in no_active
     assert 'useHfTokenWarningStore.getState().resolve("cancel", run);' in cancel
     assert "useRemoteCodeConsentDialogStore.getState().resolve(false, run);" in cancel
     assert "useTransformersUpgradeDialogStore.getState().cancelPending(run);" in cancel
@@ -82,12 +83,17 @@ def test_external_selection_invalidates_older_local_intent():
     assert external.index("invalidatePendingModelSelection()") < external.index(
         "store.setCheckpoint(value, null);"
     )
-    assert external.index("await cancelLoadingForReplacement();") < external.index(
+    assert external.index(
+        "await cancelLoadingForReplacement(selectionIntentId);"
+    ) < external.index(
         "store.setCheckpoint(value, null);"
     )
-    assert external.index("restoreConfigForExternalReplacement();") < external.index(
+    assert external.index(
+        "restoreConfigForExternalReplacement(selectionIntentId);"
+    ) < external.index(
         "store.setCheckpoint(value, null);"
     )
+    assert "discardExternalReplacement(selectionIntentId);" in external
     assert "isModelSelectionIntentCurrent(selectionIntentId)" in external
 
 
@@ -210,6 +216,8 @@ def test_backend_load_request_settles_before_cancellation_releases_its_slot():
     )
     assert runtime.count("retainRequestOnAbort: true") >= 2
     assert "signal: options?.retainRequestOnAbort ? undefined : options?.signal" in api
+    assert "options?.onRequestDispatched?.();" in api
+    assert runtime.count("onRequestDispatched: () => {") >= 2
 
 
 def test_active_model_reload_cancellation_marks_rollback_unloaded():
@@ -243,14 +251,14 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
     assert "idle_unloaded?: boolean;" in frontend_types
     assert "idle_unloaded: bool" in backend_model
     assert "get_last_unloaded_model() is not None" in backend_route
-    assert "if (statusRes.idle_unloaded)" in runtime
+    assert "!statusRes.idle_unloaded" in runtime
 
 
 def test_hosted_selection_restores_cancelled_local_config():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     restore = runtime.split("const restoreConfigForExternalReplacement", 1)[1]
     restore = restore.split("const isModelSelectionIntentCurrent", 1)[0]
-    assert "pendingExternalReplacementConfig" in restore
+    assert "pendingExternalReplacement?.intentId === intentId" in restore
     assert "sharedModelLoadHandle?.run.rollbackConfig" in restore
     assert "pendingReplacementRollback?.config" in restore
     assert "applyPerModelConfigToRuntime(config" in restore
@@ -295,5 +303,6 @@ def test_cancellation_targets_an_inflight_rollback_load():
     assert "backendLoadModelId: string | null;" in runtime
     assert "const backendLoadModelId = run.backendLoadModelId ?? model.id;" in runtime
     assert "run.backendLoadModelId = modelId;" in runtime
-    rollback = runtime.split("const rollbackResponse = await loadModel(", 1)[0]
+    rollback = runtime.split("const rollbackResponse = await loadModel(", 1)[1]
+    rollback = rollback.split("if (abortCtrl.signal.aborted)", 1)[0]
     assert "run.backendLoadModelId = previousCheckpoint;" in rollback
