@@ -1355,8 +1355,7 @@ def test_header_kept_in_unscoped_conversion():
 
 
 def test_unclosed_header_in_truncated_scope_keeps_body():
-    # A capped fetch ends before </main>: the flushed segment must still carry its
-    # dropped prose or the body is lost.
+    # A capped fetch ends before </main>: the flushed segment must still carry its dropped prose.
     sections = "".join(
         f"<h2>Section {i} of the article</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12)
     )
@@ -1540,8 +1539,7 @@ def test_header_inside_an_enclosing_blockquote_is_still_stripped():
 
 
 def test_article_still_beats_a_bigger_card_after_its_header_goes():
-    # Dropped furniture is added back for the sibling comparison, so stripping a
-    # link-only header cannot hand the win to a longer related card.
+    # Dropped furniture is added back when ranking siblings, so a stripped header still wins.
     real = "<article><header><h1>Real</h1><ul>%s</ul></header><p>%s</p></article>" % (
         _interlanguage_list(300),
         "Short real body. " * 14,
@@ -1553,9 +1551,8 @@ def test_article_still_beats_a_bigger_card_after_its_header_goes():
 
 
 def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
-    # Furniture may rank a candidate but must never make it eligible: astro.build
-    # returned a 225 char feature card for the whole homepage because a nav-only
-    # header cleared the gate on bytes that were about to be deleted.
+    # Furniture may rank a candidate but never make it eligible: astro.build returned a 225 char
+    # feature card for the homepage because a nav-only header cleared the gate on deleted bytes.
     card = "<article><header>%s</header><p>%s</p></article>" % (
         "".join('<a href="/l%d">Language %d</a>' % (i, i) for i in range(120)),
         "Short teaser about the related thing, read more.",
@@ -1567,8 +1564,7 @@ def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
 
 
 def test_unclosed_nested_buffer_inside_a_header_is_still_stripped():
-    # The page omits </blockquote>, so the frame must claim its content before
-    # the strip is judged or the links escape and eat the fetch budget.
+    # The page omits </blockquote>, so the frame must claim its content before the strip is judged.
     body = "<main><header><h1>T</h1><blockquote><ul>%s</ul></header><p>%s</p></main>" % (
         _interlanguage_list(300),
         "Article body. " * 30,
@@ -1589,8 +1585,7 @@ def test_unclosed_table_cell_inside_a_header_is_still_stripped():
 
 
 def test_a_long_heading_href_does_not_condemn_the_rest_of_the_header():
-    # The heading is kept either way, so its size must not clear the floor for
-    # the metadata beside it.
+    # The heading is kept either way, so its size must not clear the floor for the metadata beside it.
     body = (
         "<article><header><h1><a href='/p?%s'>Title</a></h1>"
         "<a href='/author/jane'>Jane</a></header><p>%s</p></article>"
@@ -1602,8 +1597,7 @@ def test_a_long_heading_href_does_not_condemn_the_rest_of_the_header():
 
 
 def test_a_preserved_heading_is_terminated():
-    # The closing tag's blank line lands after the heading mark is popped, so
-    # the render has to supply it or the body joins the heading line.
+    # The closing tag's blank line lands after the heading mark pops, so render must supply it.
     body = "<main><header><h1>Title</h1><ul>%s</ul></header>Article body text here.</main>" % (
         _interlanguage_list(300)
     )
@@ -1614,8 +1608,7 @@ def test_a_preserved_heading_is_terminated():
 
 
 def test_scope_holding_only_furniture_does_not_win_or_blank_the_page():
-    # Removed furniture must not make an empty candidate eligible, or the
-    # fetch returns nothing at all.
+    # Removed furniture must not make an empty candidate eligible, or the fetch returns nothing.
     body = "<main><header><ul>%s</ul></header></main><p>%s</p>" % (
         _interlanguage_list(300),
         "Real page body prose. " * 30,
@@ -1657,8 +1650,7 @@ def test_truncated_header_and_blockquote_keep_source_order():
     assert out.index("Title") < out.index("Quote")
 
 
-# Header content interacts with every other buffer the renderer keeps, and each
-# pairing has a well-formed and a malformed case, so the grid is enumerated
+# Headers interact with every other buffer, well-formed and malformed, so the grid is enumerated
 # rather than sampled: that is where the one-off bugs in this area have lived.
 _GRID_HEADINGS = {
     "h1": "<h1>Page Title</h1>",
@@ -1713,9 +1705,8 @@ def test_header_survives_every_buffer_combination(
     assert "Article body sentence." in out, "body lost"
     assert out.strip(), "empty output"
     assert out.index("Article body sentence.") < 16000, "body pushed past the fetch cap"
-    # The title is only guaranteed where the markup closes and no <pre> is
-    # involved: inside <pre> a heading is verbatim text, and unclosed shapes are
-    # recovered on a best-effort basis that predates this pass.
+    # The title is only guaranteed for closed markup with no <pre>: inside <pre> a heading is
+    # verbatim text, and unclosed shapes are recovered best-effort by code predating this pass.
     well_formed = close_header and close_nested and "pre" not in (wrapper, nested)
     if _GRID_HEADINGS[heading] and well_formed:
         assert out.count("Page Title") == 1, "title duplicated or lost"
@@ -1843,8 +1834,7 @@ def test_deeply_nested_headers_do_not_blow_up_quadratically():
         start = time.perf_counter()
         html_to_markdown(html, main_content = True)
         timings.append(time.perf_counter() - start)
-    # Four times the depth and payload must not cost far more than four times
-    # the work; a quadratic implementation lands well above this.
+    # Four times the depth and payload, nowhere near quadratic cost.
     assert timings[1] < timings[0] * 12, timings
 
 
@@ -1859,9 +1849,8 @@ def test_linked_heading_text_is_counted_once_for_the_size_floor():
 
 
 def test_fenced_code_counts_as_retained_content():
-    # A leading # inside a fence is a comment, not a heading. Eligibility is
-    # measured on non-heading text, so counting the fence as headings would drop
-    # this article for the sibling even though the code IS the content.
+    # A leading # inside a fence is a comment, not a heading. Eligibility is measured on non-heading
+    # text, so counting the fence as headings would lose this article to the sibling.
     code = "<pre>%s</pre>" % "\n".join("# comment line %d" % i for i in range(16))
     article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
         _interlanguage_list(300),
@@ -1874,9 +1863,8 @@ def test_fenced_code_counts_as_retained_content():
 
 
 def test_only_valid_atx_syntax_counts_as_a_heading():
-    # CommonMark needs 1-6 hashes closed by whitespace or the line end, so
-    # "#include" is prose. Eligibility is measured on non-heading text, and a C
-    # snippet whose every line began with # was reading as pure heading.
+    # CommonMark needs 1-6 hashes closed by whitespace or line end, so "#include" is prose; without
+    # that check a C snippet whose every line starts with # read as pure heading, so as empty.
     assert not _is_heading_line("#include <stdio.h>")
     assert not _is_heading_line("#hashtag trending")
     assert not _is_heading_line("####### seven hashes")
@@ -1887,8 +1875,7 @@ def test_only_valid_atx_syntax_counts_as_a_heading():
 
 
 def test_hash_prefixed_prose_still_wins_its_scope():
-    # Every line opens with a hash, so treating those as headings left the scope
-    # looking empty and handed the page to the sibling card.
+    # Every line opens with a hash, so treating those as headings left the scope looking empty.
     lines = "".join("<p>#include &lt;header_%02d.h&gt;</p>" % i for i in range(14))
     article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
         _interlanguage_list(300),
@@ -1901,8 +1888,7 @@ def test_hash_prefixed_prose_still_wins_its_scope():
 
 
 def test_header_size_is_independent_of_the_buffer_it_renders_through():
-    # Text was counted entering a nested buffer AND when that buffer flushed, so
-    # the same links stripped once quoted but survived bare.
+    # Text counted entering a nested buffer AND on flush doubled it, so links stripped once quoted.
     links = "".join(
         '<a href="/very/long/section/path/number/%03d/index">L%03d</a>' % (i, i) for i in range(14)
     )
@@ -1922,8 +1908,7 @@ def test_header_size_is_independent_of_the_buffer_it_renders_through():
 
 
 def test_header_inside_open_inline_code_leaves_delimiters_paired():
-    # The <code> was opened outside the header, so the frame must not close it;
-    # doing so left the real </code> emitting a second, unpaired backtick.
+    # The <code> opened outside the header, so closing it in the frame left </code> unpaired.
     body = "<main><code>head<header><h1>T</h1></header>tail</code><p>%s</p></main>" % (
         "Article body. " * 30,
     )
@@ -1934,8 +1919,8 @@ def test_header_inside_open_inline_code_leaves_delimiters_paired():
 
 
 def test_nested_blockquote_prose_does_not_backtrack():
-    # Heading detection must scan linearly: a regex with adjacent whitespace
-    # groups goes exponential on "> > > ... prose".
+    # Heading detection must scan linearly: a regex with adjacent whitespace groups backtracks
+    # exponentially on "> > > ... prose".
     import time
 
     html = (

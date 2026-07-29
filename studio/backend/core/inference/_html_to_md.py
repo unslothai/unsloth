@@ -189,19 +189,14 @@ _BLOCK_TAGS = frozenset(
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-# A <header> is furniture only when almost all links (nav, Wikipedia's language
-# dropdown): live link lists measure 0.94-1.00, content headers 0.13-0.90.
+# Furniture is nearly all links: measured 0.94-1.00 for link lists, 0.13-0.90 for content headers.
 _HEADER_LINK_DENSITY = 0.93
-# Below this the ratio is too noisy: live link lists start at 182 chars, link-dense
-# content headers top out at 93.
+# Below this the ratio is noise: link lists start at 182 chars, link-dense content headers stop at 93.
 _HEADER_MIN_CHARS = 150
-# Short labels can carry huge hrefs, so judge rendered size too: content headers
-# render to at most 363 chars, link lists to 1609 and up.
+# Short labels can hide huge hrefs, so size the render too: content peaks at 363, link lists at 1609+.
 _HEADER_MAX_RENDERED_CHARS = 800
 
-
-# Real pages nest headers one or two deep. Past this they are left as ordinary
-# content, so closing a frame can never copy an unbounded chain of ancestors.
+# Real pages nest headers one or two deep; past this, closing a frame cannot copy an unbounded chain.
 _MAX_HEADER_NESTING = 8
 
 
@@ -242,23 +237,19 @@ class _HeaderFrame:
         self.parts: list[str] = []
         # Heading output, teed so a heading routed through a nested buffer survives.
         self.heading_parts: list[str] = []
-        # Visible chars tallied as they are emitted. Counting here keeps nested
-        # headers linear; re-cleaning each parent's cumulative buffer is quadratic.
-        # Set by render() so the caller need not re-measure its output.
-        self.stripped: bool = False
+        self.stripped: bool = False  # set by render()
+        # Tallied on emit: linear for nested headers, where re-cleaning each parent's buffer is quadratic.
         self.rendered_chars: int = 0
         self.heading_chars: int = 0
-        # Side buffers open at this point enclose the frame; later ones are nested.
-        # Links and cells are held by sequence number, not a flag: an inner one
-        # replaces the outer in the renderer's single slot, so identity is needed.
+        # Side buffers open now enclose the frame, later ones are nested. Links and cells are keyed by
+        # sequence number, not a flag: an inner one replaces the outer in the renderer's single slot.
         self.outer_list_depth = list_depth
         self.outer_link_seq = link_seq
         self.outer_cell_seq = cell_seq
         self.outer_in_pre = in_pre
         self.outer_in_code = in_code
         self.outer_bq_depth = bq_depth
-        # Both exclude heading text (never dropped, so it must not vote on dropping
-        # the rest); only href anchors count as links.
+        # Both exclude heading text (always kept, so it must not vote on dropping the rest).
         self.text_chars: int = 0
         self.link_chars: int = 0
 
@@ -271,15 +262,13 @@ class _HeaderFrame:
         if not closed_by_own_tag:
             return "".join(self.parts)
         headings = "".join(self.heading_parts)
-        # Only the droppable part, and only its visible characters: a heading is
-        # kept either way, and blank structure that _cleanup collapses (500 empty
-        # <div>s) must not make a tiny header look huge.
+        # Droppable visible chars only: headings are kept either way, and blank structure that
+        # _cleanup collapses (500 empty <div>s) must not make a tiny header look huge.
         droppable = self.rendered_chars - self.heading_chars
         big_enough = self.text_chars >= _HEADER_MIN_CHARS or droppable >= _HEADER_MAX_RENDERED_CHARS
         if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
             self.stripped = True
-            # The closing tag's blank line is emitted after the heading mark is
-            # popped, so terminate the heading or the body runs into it.
+            # The closing tag's blank line lands after the heading mark pops, so terminate it here.
             return headings + "\n\n" if headings.strip() else headings
         return "".join(self.parts)
 
@@ -383,10 +372,9 @@ class _MarkdownRenderer(HTMLParser):
 
     def _emit(self, text: str) -> None:
         frame = self._header_stack[-1] if self._header_stack else None
-        # Tee wherever the text is routed, so a heading inside a nested buffer is
-        # captured. A link opened inside the frame delivers its text twice (raw,
-        # then formatted by _finish_link), so only the formatted form is teed; a
-        # link that encloses the frame never re-delivers, so it is teed as it comes.
+        # Tee wherever the text is routed, so a heading inside a nested buffer is captured. A link
+        # opened inside the frame delivers twice (raw, then formatted by _finish_link), so only the
+        # formatted form is teed; an enclosing link never re-delivers and is teed as it comes.
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
         )
@@ -395,9 +383,8 @@ class _MarkdownRenderer(HTMLParser):
             frame.heading_parts.append(text)
             frame.heading_chars += len(text.strip())
         nested_open = self._nested_buffer_open(frame) if frame is not None else False
-        # Size is tallied once, on the emit that reaches the frame. Counting text
-        # on its way INTO a nested buffer as well as when that buffer flushes its
-        # formatted output doubled it, so a kept header stripped once quoted.
+        # Tally once, on the emit that reaches the frame: counting text going INTO a nested buffer
+        # and again when that buffer flushes doubled it, so a kept header stripped once quoted.
         if frame is not None and not nested_open:
             frame.rendered_chars += len(text.strip())
             frame.parts.append(text)
@@ -539,12 +526,11 @@ class _MarkdownRenderer(HTMLParser):
         Their content is the header's, so it has to land in the frame before the
         strip is judged; otherwise it is emitted afterwards and escapes."""
         if self._in_link and self._link_seq != frame.outer_link_seq:
-            # The header boundary proves this anchor did not adopt the body, so
-            # its text is link furniture even though no </a> arrived.
+            # The header boundary proves this anchor did not adopt the body, so its text is furniture.
             frame.link_chars += self._link_header_chars
             self._finish_link()
-        # Inline code opened OUTSIDE the header is the page's, not the frame's:
-        # closing it here leaves the real </code> to emit an unpaired backtick.
+        # Inline code opened OUTSIDE the header is the page's: closing it here would leave the real
+        # </code> to emit an unpaired backtick.
         if self._in_inline_code and not frame.outer_in_code:
             self._in_inline_code = False
             self._emit("`")
@@ -559,8 +545,7 @@ class _MarkdownRenderer(HTMLParser):
             prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
             if prefixed:
                 self._emit("\n\n" + prefixed + "\n\n")
-        # A list left open inside the header would otherwise indent the body's
-        # own lists under phantom nesting.
+        # A list left open inside the header would indent the body's own lists under phantom nesting.
         while len(self._list_stack) > frame.outer_list_depth:
             if self._list_stack.pop() == "ol" and self._ol_counter:
                 self._ol_counter.pop()
@@ -638,16 +623,14 @@ class _MarkdownRenderer(HTMLParser):
     def _exit_tag(self, tag: str) -> bool:
         """Pop to the matching open tag; return True when the end tag should
         be rendered (False = it closed inside a hidden / out-of-scope region)."""
-        # Recover an <a> the page left open before the segment is recorded, or its
-        # text is stranded in the link buffer.
+        # Recover an <a> the page left open before the segment is recorded, or its text is stranded.
         if self._in_link and self._scope_tags is not None and tag in self._scope_tags:
             self._finish_link()
         suppressed = bool(self._hidden_marks) or (
             self._scope_tags is not None and self._scope_depth == 0
         )
-        # An element that is itself the heading (e.g. <a role="heading">) emits
-        # its text when its buffer closes, which happens after the mark below is
-        # popped, so flush it here while the tee still recognises it.
+        # An element that is itself the heading (e.g. <a role="heading">) emits when its buffer closes,
+        # after the mark below is popped, so flush it here while the tee still recognises it.
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
         if tag not in _VOID_TAGS:
@@ -886,9 +869,8 @@ class _MarkdownRenderer(HTMLParser):
     # Flush pending buffers (handles truncated HTML from capped fetches)
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
-        # Headers first: each frame finalizes the buffers opened inside it, then
-        # emits into whatever encloses it, so an enclosing link or cell must still
-        # be open here and is finalized below.
+        # Headers first: each frame finalizes the buffers opened inside it, then emits into whatever
+        # encloses it, so an enclosing link or cell must still be open here and is finalized below.
         self._flush_header_frames()
 
         # Flush innermost buffers first so their content propagates outward.
@@ -1088,9 +1070,8 @@ def _is_heading_line(line: str) -> bool:
             i = j + 1
         else:
             break
-    # ATX rules: 1-6 hashes closed by whitespace or the line end. Without the
-    # closing check "#include" and "#hashtag" read as headings, and this decides
-    # whether a scope has any content, so a C snippet could lose to a teaser.
+    # ATX rules: 1-6 hashes closed by whitespace or line end. Without the closing check "#include"
+    # reads as a heading, and this decides whether a scope has content, so a C snippet loses to a teaser.
     start = i
     while i < n and line[i] == "#":
         i += 1
