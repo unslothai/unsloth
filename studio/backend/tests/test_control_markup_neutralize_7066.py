@@ -188,7 +188,11 @@ class _JinjaTokenizer:
     # Templates that take "tools" are rendered by passing supports = ("tools",);
     # by default the kwarg is dropped, standing in for a tokenizer that has no
     # tool support.
-    def __init__(self, template: str, supports: tuple = ()):
+    def __init__(
+        self,
+        template: str,
+        supports: tuple = (),
+    ):
         self._template = template
         self._supports = supports
 

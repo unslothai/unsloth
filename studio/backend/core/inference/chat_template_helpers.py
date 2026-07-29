@@ -115,9 +115,7 @@ def _neutralize_tool_call_arguments(tool_calls: list) -> list:
     for call in tool_calls:
         function = call.get("function") if isinstance(call, dict) else None
         arguments = function.get("arguments") if isinstance(function, dict) else None
-        new_arguments = (
-            arguments if arguments is None else _neutralize_argument_leaves(arguments)
-        )
+        new_arguments = arguments if arguments is None else _neutralize_argument_leaves(arguments)
         if new_arguments is arguments or new_arguments == arguments:
             out.append(call)
         else:
