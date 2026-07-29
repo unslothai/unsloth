@@ -442,7 +442,12 @@ class _StdioSession:
         except Exception:
             return False
 
-    def run(self, coro, timeout: Optional[float], margin: float = _STDIO_WEDGE_MARGIN):
+    def run(
+        self,
+        coro,
+        timeout: Optional[float],
+        margin: float = _STDIO_WEDGE_MARGIN,
+    ):
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         # The coroutine enforces the tool timeout; the margin only catches a

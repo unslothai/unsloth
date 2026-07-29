@@ -313,7 +313,12 @@ def test_liveness_probe_runs_without_the_wedge_margin(fake_clients, monkeypatch)
     margins = []
     real_run = mcp_client._StdioSession.run
 
-    def spy(self, coro, timeout, margin = mcp_client._STDIO_WEDGE_MARGIN):
+    def spy(
+        self,
+        coro,
+        timeout,
+        margin = mcp_client._STDIO_WEDGE_MARGIN,
+    ):
         margins.append(margin)
         return real_run(self, coro, timeout, margin)
 
