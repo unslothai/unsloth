@@ -221,9 +221,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         # The line as list tracking sees it: blank wherever nothing renders.
         structural = ""
         opened_block = False
-        in_block = (
-            open_fence is not None or in_html_block or in_raw_html is not None or in_comment
-        )
+        in_block = open_fence is not None or in_html_block or in_raw_html is not None or in_comment
         # A fence, a comment or an HTML block inside a list item runs only to
         # the end of that item, so a line dedented out of the item closes both.
         # Lazy continuation cannot reach into any of them, so any content to the

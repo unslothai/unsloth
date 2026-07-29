@@ -1912,9 +1912,7 @@ def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in item
 
 
-def test_a_comment_written_as_an_item_first_content_is_a_block(
-    changelog_module, run_scanner
-):
+def test_a_comment_written_as_an_item_first_content_is_a_block(changelog_module, run_scanner):
     """A comment is an HTML block (spec 0.31.2 section 4.6, type 2), so one
     written as a list item's first content opens inside that item, exactly as a
     fence written there does. The scanners looked for the opener at the margin
