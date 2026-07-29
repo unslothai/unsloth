@@ -1035,12 +1035,15 @@ def _remove_pid_file():
     _write_pid_file writes the two independently.
     """
     for path in ([_OWN_PID_FILE] if _OWN_PID_FILE is not None else []) + [_PID_FILE]:
-        record = _read_pid_record(path) if path.is_file() else None
-        if record is not None and record[0] == os.getpid():
-            try:
+        # Nothing here may raise: _graceful_shutdown calls this at the end, and an
+        # unreadable or undeletable record must not abandon the rest of the exit
+        # path. _read_pid_record already swallows OSError/UnicodeDecodeError.
+        try:
+            record = _read_pid_record(path) if path.is_file() else None
+            if record is not None and record[0] == os.getpid():
                 path.unlink(missing_ok = True)
-            except OSError:
-                pass
+        except OSError:
+            pass
 
 
 def _graceful_shutdown(server = None):
