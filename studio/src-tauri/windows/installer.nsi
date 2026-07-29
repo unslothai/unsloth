@@ -43,6 +43,9 @@ ${StrLoc}
 
 !define MANUFACTURER "{{manufacturer}}"
 !define PRODUCTNAME "{{product_name}}"
+
+; Stable across display-name changes.
+!define INSTALLIDENTITY "Unsloth Studio (Desktop)"
 !define VERSION "{{version}}"
 !define VERSIONWITHBUILD "{{version_with_build}}"
 !define HOMEPAGE "{{homepage}}"
@@ -65,9 +68,9 @@ ${StrLoc}
 !define WEBVIEW2BOOTSTRAPPERPATH "{{webview2_bootstrapper_path}}"
 !define WEBVIEW2INSTALLERPATH "{{webview2_installer_path}}"
 !define MINIMUMWEBVIEW2VERSION "{{minimum_webview2_version}}"
-!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
+!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INSTALLIDENTITY}"
 !define MANUKEY "Software\${MANUFACTURER}"
-!define MANUPRODUCTKEY "${MANUKEY}\${PRODUCTNAME}"
+!define MANUPRODUCTKEY "${MANUKEY}\${INSTALLIDENTITY}"
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
 !define STARTMENUFOLDER "{{start_menu_folder}}"
@@ -518,17 +521,17 @@ Function .onInit
     !if "${INSTALLMODE}" == "perMachine"
       ${If} ${RunningX64}
         !if "${ARCH}" == "x64"
-          StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCTNAME}"
+          StrCpy $INSTDIR "$PROGRAMFILES64\${INSTALLIDENTITY}"
         !else if "${ARCH}" == "arm64"
-          StrCpy $INSTDIR "$PROGRAMFILES64\${PRODUCTNAME}"
+          StrCpy $INSTDIR "$PROGRAMFILES64\${INSTALLIDENTITY}"
         !else
-          StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
+          StrCpy $INSTDIR "$PROGRAMFILES\${INSTALLIDENTITY}"
         !endif
       ${Else}
-        StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
+        StrCpy $INSTDIR "$PROGRAMFILES\${INSTALLIDENTITY}"
       ${EndIf}
     !else if "${INSTALLMODE}" == "currentUser"
-      StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
+      StrCpy $INSTDIR "$LOCALAPPDATA\${INSTALLIDENTITY}"
     !endif
 
     Call RestorePreviousInstallLocation
@@ -933,6 +936,15 @@ Function CreateOrUpdateStartMenuShortcut
   ; migrate old shortcuts to target the new MAINBINARYNAME
   StrCpy $R0 0
 
+  !insertmacro IsShortcutTarget "$SMPROGRAMS\${INSTALLIDENTITY}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $0
+  ${If} $0 = 1
+    Delete "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+    Rename "$SMPROGRAMS\${INSTALLIDENTITY}.lnk" "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+    StrCpy $R0 1
+  ${EndIf}
+
   !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
   Pop $0
   ${If} $0 = 1
@@ -973,6 +985,16 @@ FunctionEnd
 Function CreateOrUpdateDesktopShortcut
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
+
+  !insertmacro IsShortcutTarget "$DESKTOP\${INSTALLIDENTITY}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $0
+  ${If} $0 = 1
+    Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+    Rename "$DESKTOP\${INSTALLIDENTITY}.lnk" "$DESKTOP\${PRODUCTNAME}.lnk"
+    !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+    Return
+  ${EndIf}
+
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
   Pop $0
   ${If} $0 = 1

@@ -38,6 +38,21 @@ def test_desktop_display_name_and_compatibility_ids() -> None:
     assert 'name = "unsloth-studio"' in read(TAURI / "Cargo.toml")
 
 
+def test_desktop_package_transitions_preserve_legacy_installs() -> None:
+    config = json.loads(read(TAURI / "tauri.conf.json"))
+    deb = config["bundle"]["linux"]["deb"]
+    for field in ("provides", "conflicts", "replaces"):
+        assert deb[field] == ["unsloth-studio-desktop"]
+
+    installer = read(TAURI / "windows/installer.nsi")
+    assert '!define INSTALLIDENTITY "Unsloth Studio (Desktop)"' in installer
+    assert "Uninstall\\${INSTALLIDENTITY}" in installer
+    assert '${MANUKEY}\\${INSTALLIDENTITY}' in installer
+    assert '$LOCALAPPDATA\\${INSTALLIDENTITY}' in installer
+    assert 'Rename "$SMPROGRAMS\\${INSTALLIDENTITY}.lnk"' in installer
+    assert 'Rename "$DESKTOP\\${INSTALLIDENTITY}.lnk"' in installer
+
+
 def test_desktop_artwork_uses_plain_unsloth_lockups() -> None:
     config = json.loads(read(TAURI / "tauri.conf.json"))
     nsis = config["bundle"]["windows"]["nsis"]

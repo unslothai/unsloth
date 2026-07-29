@@ -86,6 +86,9 @@
       },
       "deb": {
         "desktopTemplate": "./linux/unsloth.desktop",
+        "provides": ["unsloth-studio-desktop"],
+        "conflicts": ["unsloth-studio-desktop"],
+        "replaces": ["unsloth-studio-desktop"],
         "postRemoveScript": "./linux/postremove.sh"
       }
     }
