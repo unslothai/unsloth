@@ -100,8 +100,13 @@ def _is_hidden_element(attr_dict: dict) -> bool:
 
 
 def _is_aria_heading(attr_dict: dict) -> bool:
-    """True for ``role="heading"``, which titles a page just as ``h1``-``h6`` does."""
-    return (attr_dict.get("role") or "").strip().lower() == "heading"
+    """True for ``role="heading"``, which titles a page just as ``h1``-``h6`` does.
+
+    ``role`` is a token list authors use for fallbacks (``role="future-role
+    heading"``), so any token counts. WAI-ARIA takes the first token naming a
+    real role, which would need the whole role table; matching anywhere is the
+    safe direction, since keeping a stray title beats dropping a real one."""
+    return "heading" in (attr_dict.get("role") or "").lower().split()
 
 
 # HTML5 optional end tags: a listed start tag implicitly closes an open element
@@ -540,6 +545,9 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_pre and not frame.outer_in_pre:
             raw = "".join(self._pre_parts)
             self._in_pre = False
+            # Drained, not just closed: a late </pre> would otherwise replay the
+            # block outside the stripped header and push the article past the cap.
+            self._pre_parts = []
             self._emit("\n\n```\n" + raw + "\n```\n\n")
         while len(self._bq_stack) > frame.outer_bq_depth:
             prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
@@ -802,9 +810,10 @@ class _MarkdownRenderer(HTMLParser):
                     self._ol_counter.pop()
             self._emit("\n")
 
-        elif tag == "pre":
+        elif tag == "pre" and self._in_pre:
             raw = "".join(self._pre_parts)
             self._in_pre = False
+            self._pre_parts = []
             block = "```\n" + raw + "\n```"
             self._emit("\n\n" + block + "\n\n")
 
@@ -1090,7 +1099,24 @@ def _non_heading_chars(text: str) -> int:
             in_fence = not in_fence
             continue
         if line.strip() and (in_fence or not _is_heading_line(line)):
-            total += len(line)
+            total += len(line) if in_fence else _visible_len(line)
+    return total
+
+
+def _visible_len(line: str) -> int:
+    """Length of *line* without Markdown link destinations. A tracking URL is not
+    prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
+    characters off 4 and displaced the article. Scanned, so no backtracking."""
+    total, i, n = 0, 0, len(line)
+    while i < n:
+        if line[i] == "]" and i + 1 < n and line[i + 1] == "(":
+            end = line.find(")", i + 2)
+            if end == -1:
+                break
+            i = end + 1
+            continue
+        total += 1
+        i += 1
     return total
 
 

@@ -21,7 +21,11 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference._html_to_md import _is_heading_line, html_to_markdown
+from core.inference._html_to_md import (
+    _is_aria_heading,
+    _is_heading_line,
+    html_to_markdown,
+)
 from core.inference.tools import (
     _fetch_page_text,
     _fetch_url_raw,
@@ -1860,6 +1864,50 @@ def test_fenced_code_counts_as_retained_content():
     out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
     assert "comment line 1" in out
     assert "Sibling teaser" not in out
+
+
+def test_link_destinations_do_not_count_as_retained_prose():
+    # A tracking URL is not prose: this card shows 4 visible characters but its
+    # serialized destination scored 339, enough to displace the real article.
+    query = "utm_source=x&" * 25
+    card = '<article><header>%s</header><p><a href="/card?%s">Read</a></p></article>' % (
+        "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
+        query,
+    )
+    real = "<article><p>%s</p></article>" % ("The genuine article body text here. " * 20)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "The genuine article body text here." in out
+    assert "/card?" not in out
+
+
+def test_late_end_tag_cannot_replay_a_recovered_pre_block():
+    # </header> arrives while <pre> is open, so the frame drains it; the later
+    # </pre> re-emitted the same buffer OUTSIDE the stripped header.
+    body = "<main><header><h1>T</h1><ul>%s</ul><pre>%s</header><p>%s</p></pre></main>" % (
+        _interlanguage_list(300),
+        "NAVJUNK_MARKER\n" * 3,
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "NAVJUNK_MARKER" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_aria_heading_accepts_a_fallback_role_token_list():
+    # role is a token list authors use for fallbacks, so an exact match dropped
+    # the title of a header that was then reduced to its headings.
+    assert _is_aria_heading({"role": "heading"})
+    assert _is_aria_heading({"role": "future-role heading"})
+    assert _is_aria_heading({"role": "HEADING"})
+    assert not _is_aria_heading({"role": "banner"})
+    assert not _is_aria_heading({})
+    body = '<main><header><div role="future-role heading">Page Title</div><ul>%s</ul></header><p>%s</p></main>' % (
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Lang0" not in out
 
 
 def test_only_valid_atx_syntax_counts_as_a_heading():
