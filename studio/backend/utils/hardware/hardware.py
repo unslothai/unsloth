@@ -2586,7 +2586,10 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
     # Vulkan is a llama.cpp inference backend, not a PyTorch training device, so
     # keep it separate from the PyTorch/MLX training-device report.
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _apply_igpu_host_reserve_mib,
+        )
     except Exception as e:
         logger.debug("Could not inspect the llama.cpp Vulkan backend: %s", e)
         return None
@@ -2606,23 +2609,12 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
         "devices": [],
         "index_kind": "vulkan",
     }
-    # Identity (real device description, explicit iGPU flag) comes from the
-    # inventory; the memory numbers stay on _get_gpu_memory, which applies the
-    # iGPU host reserve and zeroes a shared total. Budgeting an APU off the raw
-    # shared total instead would hand out the whole machine's RAM with no OS
-    # headroom. Join by ordinal; a probe failure just leaves names unresolved.
-    identity: Dict[int, Dict[str, Any]] = {}
     try:
-        identity = {row["index"]: row for row in LlamaCppBackend.vulkan_device_inventory()}
-    except Exception as e:
-        logger.debug("Vulkan device inventory failed, falling back to ordinals: %s", e)
-
-    try:
-        for ordinal, free_mib, total_mib in LlamaCppBackend._get_gpu_memory():
-            info = identity.get(ordinal, {})
-            # _get_gpu_memory reports total 0 for a shared pool; prefer the
-            # explicit flag when the inventory resolved this ordinal.
-            shared_memory = bool(info["is_igpu"]) if "is_igpu" in info else total_mib == 0
+        for row in LlamaCppBackend.vulkan_device_inventory():
+            ordinal = row["index"]
+            shared_memory = bool(row["is_igpu"])
+            free_mib = _apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
+            total_mib = 0 if shared_memory else row["total_mib"]
             budget_mib = total_mib or free_mib
             used_mib = max(0, total_mib - free_mib) if total_mib else None
             result["devices"].append(
@@ -2632,7 +2624,7 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
                     # so unlike a torch-xpu relative ordinal these are selectable.
                     "index_kind": "vulkan",
                     "visible_ordinal": ordinal,
-                    "name": info.get("name") or f"Vulkan{ordinal}",
+                    "name": row["name"],
                     "memory_total_gb": round(budget_mib / 1024, 2),
                     "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
                     "vram_free_gb": round(free_mib / 1024, 2),
