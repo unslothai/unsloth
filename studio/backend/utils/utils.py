@@ -37,10 +37,18 @@ def hf_env_offline() -> bool:
     return False
 
 
-# One load makes many hub calls, so the reachability verdict is shared for a short window.
-_HF_REACHABILITY_TTL_S = 60.0
+# One load makes many hub calls, so the verdict is shared briefly to avoid re-probing on
+# each. Kept short in BOTH directions: a stale "reachable" misses the plug being pulled
+# (the case this whole path exists for), and a stale "unreachable" sends a load to the
+# cache after the user reconnected, failing it if the model is not cached.
+_HF_REACHABILITY_TTL_S = 5.0
 _hf_reachability: Optional[tuple] = None
 _hf_reachability_lock = threading.Lock()
+
+
+def _reachability_fresh(entry) -> bool:
+    """True while a cached (timestamp, unreachable) verdict may still be reused."""
+    return entry is not None and (time.monotonic() - entry[0]) < _HF_REACHABILITY_TTL_S
 
 
 def hf_probe_disabled() -> bool:
@@ -75,12 +83,12 @@ def hf_unreachable(timeout: int = 3) -> bool:
 
     global _hf_reachability
     cached = _hf_reachability
-    if cached is not None and time.monotonic() - cached[0] < _HF_REACHABILITY_TTL_S:
+    if _reachability_fresh(cached):
         return cached[1]
 
     with _hf_reachability_lock:
         cached = _hf_reachability
-        if cached is not None and time.monotonic() - cached[0] < _HF_REACHABILITY_TTL_S:
+        if _reachability_fresh(cached):
             return cached[1]
         try:
             from utils.transformers_version import hf_endpoint_unreachable

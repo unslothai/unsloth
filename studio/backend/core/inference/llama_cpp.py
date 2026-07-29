@@ -495,9 +495,23 @@ _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
 
 
-def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
+def _hf_endpoint_host() -> str:
+    """Host of the configured hub endpoint. Mirror users point HF_ENDPOINT elsewhere, and
+    probing huggingface.co would then report their working mirror as offline."""
+    endpoint = (os.environ.get("HF_ENDPOINT") or "").strip() or "https://huggingface.co"
+    if "://" not in endpoint:
+        endpoint = "https://" + endpoint
+    try:
+        from urllib.parse import urlparse
+        return urlparse(endpoint).hostname or "huggingface.co"
+    except Exception:
+        return "huggingface.co"
+
+
+def _probe_dns_dead(host: Optional[str] = None, timeout: float = 2.0) -> bool:
     """Quick DNS check on a daemon thread, so concurrent sockets aren't
-    affected by socket.setdefaulttimeout."""
+    affected by socket.setdefaulttimeout. Defaults to the configured endpoint's host."""
+    host = host or _hf_endpoint_host()
     result: list[Optional[bool]] = [None]
 
     def _probe() -> None:

@@ -3672,10 +3672,10 @@ def _target_is_vision(load_path: str) -> bool:
     # paths, where the token is unused, but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
-        # Guarded: this runs per request, so an unreachable hub would re-pay its retry
-        # backoff on every image/audio call.
-        with _hf_offline_if_unreachable():
-            return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
+        # Deliberately unguarded: the resolver only yields local paths, so this returns
+        # from the mmproj filesystem branch without touching the hub. A reachability
+        # probe here would add seconds per request and prevent nothing.
+        return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
     except Exception as exc:
         # Detection failure: don't block the swap, let the load decide.
         logger.debug("auto-switch: vision probe failed for %s: %s", load_path, exc)

@@ -1012,6 +1012,80 @@ class TestHfOfflineIfUnreachable:
         assert "TRANSFORMERS_OFFLINE" not in os.environ
 
 
+class TestEndpointAwareOfflineDetection:
+    """A reachable HF_ENDPOINT mirror must not be declared offline just because
+    huggingface.co does not resolve (air-gapped / corporate networks)."""
+
+    @pytest.fixture
+    def no_upstream_dns(self, monkeypatch):
+        real_host = socket.gethostbyname
+
+        def _host(h, *a, **k):
+            if "huggingface.co" in str(h):
+                raise socket.gaierror(-2, "Name or service not known")
+            return "127.0.0.1"
+
+        monkeypatch.setattr(socket, "gethostbyname", _host)
+
+    @pytest.mark.parametrize(
+        "endpoint,expected",
+        [
+            ("https://hf-mirror.com", "hf-mirror.com"),
+            ("hf-mirror.com", "hf-mirror.com"),
+            ("https://hf-mirror.com:8443", "hf-mirror.com"),
+            ("https://hf-mirror.com/path", "hf-mirror.com"),
+            ("", "huggingface.co"),
+        ],
+    )
+    def test_endpoint_host_parsing(self, monkeypatch, endpoint, expected):
+        from core.inference.llama_cpp import _hf_endpoint_host
+
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        assert _hf_endpoint_host() == expected
+
+    def test_dns_precheck_follows_endpoint(self, monkeypatch, no_upstream_dns):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        assert _probe_dns_dead() is False
+
+    def test_default_endpoint_still_probes_huggingface(self, monkeypatch, no_upstream_dns):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        assert _probe_dns_dead() is True
+
+
+class TestGatewayErrorsAreNotConnectionFailures:
+    """Lifetime offline flags must not be set by a momentary 502/503/504."""
+
+    def _probe_with(self, monkeypatch, exc):
+        import urllib.request
+
+        def _urlopen(*a, **k):
+            raise exc
+
+        monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+        from utils.transformers_version import hf_endpoint_unreachable
+
+        return hf_endpoint_unreachable
+
+    @pytest.mark.parametrize("code", [502, 503, 504])
+    def test_strict_mode_treats_gateway_error_as_reachable(self, monkeypatch, code):
+        import urllib.error
+
+        exc = urllib.error.HTTPError("u", code, "err", {}, None)
+        probe = self._probe_with(monkeypatch, exc)
+        assert probe(timeout = 1, gateway_errors_offline = False) is False
+        # Default (scoped callers) keeps treating a downed hub as offline.
+        assert probe(timeout = 1) is True
+
+    @pytest.mark.parametrize("code", [401, 403, 404, 429])
+    def test_other_http_errors_always_reachable(self, monkeypatch, code):
+        import urllib.error
+
+        exc = urllib.error.HTTPError("u", code, "err", {}, None)
+        probe = self._probe_with(monkeypatch, exc)
+        assert probe(timeout = 1) is False
+        assert probe(timeout = 1, gateway_errors_offline = False) is False
+
+
 class TestHfUnreachableProbe:
     """``utils.utils.hf_unreachable``: memoised, opt-outable, fails open."""
 
@@ -1068,6 +1142,31 @@ class TestHfUnreachableProbe:
         reset_hf_reachability_cache()
         assert hf_unreachable() is True
         assert len(calls) == 2
+
+    def test_memo_window_is_short_in_both_directions(self):
+        """Stale either way is a bug: a stale 'reachable' hides the plug being pulled,
+        a stale 'unreachable' fails a download after the user reconnects."""
+        import utils.utils as uu
+
+        assert uu._HF_REACHABILITY_TTL_S <= 10.0
+
+    def test_verdict_expires_so_a_disconnect_is_noticed(self, monkeypatch, clean_offline_env):
+        import time as _time
+
+        import utils.utils as uu
+        from utils.utils import hf_unreachable
+
+        monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.2)
+        verdict = {"value": False}
+        monkeypatch.setattr(
+            __import__("utils.transformers_version", fromlist = ["x"]),
+            "hf_endpoint_unreachable",
+            lambda *a, **k: verdict["value"],
+        )
+        assert hf_unreachable() is False  # online during the download
+        verdict["value"] = True  # plug pulled
+        _time.sleep(0.3)
+        assert hf_unreachable() is True
 
 
 class TestExtractQuantLabelSubdir:

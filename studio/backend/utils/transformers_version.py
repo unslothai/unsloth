@@ -63,7 +63,7 @@ def _env_offline() -> bool:
     )
 
 
-def hf_endpoint_unreachable(timeout: int = 3) -> bool:
+def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = True) -> bool:
     """Bounded reachability probe to the HF endpoint. A HEAD request runs in a daemon thread
     joined with a deadline, so a resolver blackhole cannot block past ~timeout+1s. True if
     unreachable. urllib natively honors *_PROXY / NO_PROXY, so this verifies real egress
@@ -86,8 +86,11 @@ def hf_endpoint_unreachable(timeout: int = 3) -> bool:
             with urllib.request.urlopen(req, timeout = timeout):
                 result["online"] = True
         except urllib.error.HTTPError as exc:
-            # The server/proxy answered: reachable unless it is a gateway error.
-            result["online"] = exc.code not in (502, 503, 504)
+            # The server/proxy answered, so we have egress. A gateway error usually means
+            # the hub itself is down, which callers scoping offline to one operation want
+            # to treat as offline; callers setting a lifetime flag pass
+            # gateway_errors_offline=False so a momentary 503 can't strand the process.
+            result["online"] = True if not gateway_errors_offline else exc.code not in (502, 503, 504)
         except urllib.error.URLError as exc:
             # A TLS/cert failure means we DID reach the server; treat as reachable so the real
             # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
