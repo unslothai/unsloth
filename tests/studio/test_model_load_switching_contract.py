@@ -276,7 +276,6 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
     assert 'parallel_slots = idle_capabilities.get("parallel_slots")' in backend_route
     assert "inference_config = load_inference_config(idle_internal_identifier)" in backend_route
     assert "if is_direct_local_model" in keepwarm
-    assert 'and str(internal_identifier).lower().endswith(".gguf")' in keepwarm
 
 
 def test_send_time_adoption_accepts_an_idle_unloaded_model():

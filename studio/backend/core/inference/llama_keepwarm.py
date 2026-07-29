@@ -425,7 +425,6 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                             or (
                                 internal_identifier
                                 if is_direct_local_model
-                                and str(internal_identifier).lower().endswith(".gguf")
                                 else public_model_id(internal_identifier)
                             )
                         ),
