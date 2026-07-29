@@ -75,7 +75,8 @@ def test_preimport_swallows_a_genuinely_missing_wheel():
     """An absent bitsandbytes stays unsloth's own degradation path, not a collection error."""
     tree = ast.parse(CONFTEST.read_text(encoding = "utf-8"))
     fn = next(
-        n for n in tree.body
+        n
+        for n in tree.body
         if isinstance(n, ast.FunctionDef) and n.name == "_preimport_bitsandbytes"
     )
     assert any(isinstance(node, ast.Try) for node in ast.walk(fn)), (
