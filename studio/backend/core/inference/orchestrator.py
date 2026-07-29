@@ -2115,11 +2115,24 @@ class InferenceOrchestrator:
 
 # ========== GLOBAL INSTANCE ==========
 _inference_backend = None
+# Guards the lazy construction below. The first build runs hardware detection
+# (get_default_models -> hw.get_device()), which takes seconds on a cold start,
+# and the routes that need the backend during first paint call this getter from
+# executor threads -- so without the lock several of them observe None inside
+# that window and each build their own orchestrator. The last one to finish wins
+# the global and the rest are orphaned, taking any load started on them (their
+# own subprocess, loading_models and active_model_name are per-instance) out of
+# reach of every later status or generation call.
+_inference_backend_lock = threading.Lock()
 
 
 def get_inference_backend() -> InferenceOrchestrator:
     """Global inference backend instance (orchestrator)."""
     global _inference_backend
+    # Double-checked: the cheap read keeps the warm path lock-free, and the
+    # recheck under the lock is what actually decides who constructs.
     if _inference_backend is None:
-        _inference_backend = InferenceOrchestrator()
+        with _inference_backend_lock:
+            if _inference_backend is None:
+                _inference_backend = InferenceOrchestrator()
     return _inference_backend
