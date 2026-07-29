@@ -21,6 +21,7 @@ interface MonitorLayout {
   left: number;
   top: number;
   minWidth: number;
+  minHeight: number;
   maxWidth: number;
   maxHeight: number;
 }
@@ -41,10 +42,43 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+// Height the panel wants. Reading the rendered box instead hides growth once
+// maxHeight caps it, so the observer never fires and the cap is never lifted.
+function desiredPanelHeight(
+  renderedHeight: number,
+  scroll: HTMLDivElement | null,
+  content: HTMLDivElement | null,
+): number {
+  if (!(scroll && content)) {
+    return renderedHeight;
+  }
+  // The scroll region is the only flexible child, so the rest is fixed chrome.
+  const chrome = renderedHeight - scroll.getBoundingClientRect().height;
+  return chrome + content.getBoundingClientRect().height;
+}
+
+// Width the panel wants. While anchored, maxWidth equals the current width, so
+// the cap is also a floor: a monitor opened in a narrow window never widens
+// again. Lift the cap for one measurement to break that.
+function naturalWidth(monitor: HTMLDivElement): number {
+  const capped = monitor.style.maxWidth;
+  // "none", not "", so the class-level max-w-full lifts too.
+  monitor.style.maxWidth = "none";
+  const width = monitor.getBoundingClientRect().width;
+  monitor.style.maxWidth = capped;
+  return width;
+}
+
 function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
   const monitorRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
   const hasDraggedRef = useRef(false);
+  const preferredWidthRef = useRef<number | null>(null);
+  const preferredHeightRef = useRef<number | null>(null);
+  const surfaceWidthRef = useRef(0);
+  const remeasureRef = useRef(0);
   const [layout, setLayout] = useState<MonitorLayout | null>(null);
 
   useLayoutEffect(() => {
@@ -53,11 +87,47 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     if (!(monitor && constraints)) {
       return;
     }
+    // Deferred to the next frame: writing a style while ResizeObserver entries
+    // are delivered makes Firefox report an observer loop. A hand-resized panel
+    // keeps the user's width instead of re-measuring.
+    const scheduleWidthRemeasure = (surfaceWidth: number) => {
+      if (surfaceWidth === surfaceWidthRef.current) {
+        return;
+      }
+      surfaceWidthRef.current = surfaceWidth;
+      if (monitor.style.width || remeasureRef.current) {
+        return;
+      }
+      remeasureRef.current = requestAnimationFrame(() => {
+        remeasureRef.current = 0;
+        preferredWidthRef.current = naturalWidth(monitor);
+        reconcileGeometry();
+      });
+    };
+
     const reconcileGeometry = () => {
       const constraintsBox = constraints.getBoundingClientRect();
       const monitorBox = monitor.getBoundingClientRect();
-      const width = Math.min(monitorBox.width, constraintsBox.width);
-      const height = Math.min(monitorBox.height, constraintsBox.height);
+      const desiredHeight = desiredPanelHeight(
+        monitorBox.height,
+        scrollRef.current,
+        contentRef.current,
+      );
+
+      scheduleWidthRemeasure(constraintsBox.width);
+      const desiredWidth = Math.max(
+        monitorBox.width,
+        preferredWidthRef.current ?? monitorBox.width,
+      );
+
+      // Content height is the floor, as a resolved number: intrinsic
+      // min-content outranks max-height, a number clamped to it cannot.
+      if (!monitor.style.height) {
+        preferredHeightRef.current = desiredHeight;
+      }
+
+      const width = Math.min(desiredWidth, constraintsBox.width);
+      const height = Math.min(desiredHeight, constraintsBox.height);
       const maxLeft = Math.max(0, constraintsBox.width - width);
       const maxTop = Math.max(0, constraintsBox.height - height);
       const currentLeft = monitorBox.left - constraintsBox.left;
@@ -81,13 +151,16 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
         const next = {
           left,
           top,
-          minWidth: current?.minWidth ?? monitorBox.width,
+          minWidth: preferredWidthRef.current ?? monitorBox.width,
+          minHeight: preferredHeightRef.current ?? monitorBox.height,
           maxWidth: constraintsBox.width - left,
           maxHeight: constraintsBox.height - top,
         };
         return current &&
           current.left === next.left &&
           current.top === next.top &&
+          current.minWidth === next.minWidth &&
+          current.minHeight === next.minHeight &&
           current.maxWidth === next.maxWidth &&
           current.maxHeight === next.maxHeight
           ? current
@@ -99,7 +172,18 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     const observer = new ResizeObserver(reconcileGeometry);
     observer.observe(constraints);
     observer.observe(monitor);
-    return () => observer.disconnect();
+    // The unclamped content wrapper is what makes late GPU rows reposition the
+    // panel instead of being cut off.
+    if (contentRef.current) {
+      observer.observe(contentRef.current);
+    }
+    return () => {
+      observer.disconnect();
+      if (remeasureRef.current) {
+        cancelAnimationFrame(remeasureRef.current);
+        remeasureRef.current = 0;
+      }
+    };
   }, [constraintsElement]);
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
@@ -186,7 +270,15 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     }
   }
 
-  return { monitorRef, layout, startDrag, updateDrag, finishDrag };
+  return {
+    monitorRef,
+    scrollRef,
+    contentRef,
+    layout,
+    startDrag,
+    updateDrag,
+    finishDrag,
+  };
 }
 
 function clampPercent(value: number): number {
@@ -232,8 +324,15 @@ function FloatingMonitorPanel({
   const t = useT();
   const [constraintsElement, setConstraintsElement] =
     useState<HTMLDivElement | null>(null);
-  const { monitorRef, layout, startDrag, updateDrag, finishDrag } =
-    useMonitorLayout(constraintsElement);
+  const {
+    monitorRef,
+    scrollRef,
+    contentRef,
+    layout,
+    startDrag,
+    updateDrag,
+    finishDrag,
+  } = useMonitorLayout(constraintsElement);
 
   const ramTotal = systemInfo.memory?.total_gb ?? 0;
   const ramAvailable = systemInfo.memory?.available_gb ?? 0;
@@ -280,7 +379,7 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface pointer-events-auto absolute max-h-full w-64 max-w-full cursor-default select-none overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm",
+          "settings-surface pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm",
           layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
@@ -290,11 +389,11 @@ function FloatingMonitorPanel({
                 left: layout.left,
                 top: layout.top,
                 minWidth: Math.min(layout.minWidth, layout.maxWidth),
-                minHeight: "min-content",
+                minHeight: Math.min(layout.minHeight, layout.maxHeight),
                 maxWidth: layout.maxWidth,
                 maxHeight: layout.maxHeight,
               }
-            : { minHeight: "min-content" }
+            : undefined
         }
       >
         <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
@@ -330,68 +429,76 @@ function FloatingMonitorPanel({
           </div>
         </div>
 
-        <div className="space-y-3 overflow-hidden">
-          <div className="space-y-1">
-            <div className="flex justify-between text-ui-11 font-medium font-mono">
-              <span>{t("settings.resources.liveMonitor.ram")}</span>
-              <span className={cn("tabular-nums", usageTextClass(ramPercent))}>
-                {Math.round(ramPercent)}%
-              </span>
-            </div>
-            <div className="text-xs text-muted-foreground font-mono tabular-nums">
-              {formatGiB(ramUsed)} / {formatGiB(ramTotal)}
-            </div>
-            <Progress
-              value={ramPercent}
-              className="mt-1 h-1.5 rounded-full bg-muted"
-              indicatorClassName={usageIndicatorClass(ramPercent)}
-            />
-          </div>
-
-          {hasGpu && (
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+          <div
+            ref={contentRef}
+            data-testid="floating-monitor-content"
+            className="space-y-3"
+          >
             <div className="space-y-1">
               <div className="flex justify-between text-ui-11 font-medium font-mono">
-                <span className="truncate flex-1 pr-2">
-                  {t("settings.resources.liveMonitor.vram")}{" "}
-                  {devices.length > 1
-                    ? `(${devices.length} GPUs)`
-                    : `(${devices[0].name ?? "GPU"})`}
-                </span>
+                <span>{t("settings.resources.liveMonitor.ram")}</span>
                 <span
-                  className={cn(
-                    "shrink-0 tabular-nums",
-                    vramUsageKnown
-                      ? usageTextClass(vramPercent)
-                      : "text-muted-foreground",
-                  )}
+                  className={cn("tabular-nums", usageTextClass(ramPercent))}
                 >
-                  {vramUsageKnown ? `${Math.round(vramPercent)}%` : "--"}
+                  {Math.round(ramPercent)}%
                 </span>
               </div>
               <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                {formatGiB(vramTotal)}
+                {formatGiB(ramUsed)} / {formatGiB(ramTotal)}
               </div>
               <Progress
-                value={vramUsageKnown ? vramPercent : 0}
+                value={ramPercent}
                 className="mt-1 h-1.5 rounded-full bg-muted"
-                indicatorClassName={usageIndicatorClass(vramPercent)}
+                indicatorClassName={usageIndicatorClass(ramPercent)}
               />
             </div>
-          )}
-          {separateInferenceGpu && (
-            <div className="flex justify-between gap-2 text-ui-11 font-mono">
-              <span className="text-muted-foreground">GGUF inference</span>
-              <span className="uppercase text-foreground">
-                {separateInferenceGpu.backend ?? "GPU"}
-                {separateInferenceGpu.available
-                  ? inferenceVramTotal
-                    ? ` · ${formatGiB(inferenceVramTotal)}`
-                    : ""
-                  : " · unavailable"}
-              </span>
-            </div>
-          )}
+
+            {hasGpu && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-ui-11 font-medium font-mono">
+                  <span className="truncate flex-1 pr-2">
+                    {t("settings.resources.liveMonitor.vram")}{" "}
+                    {devices.length > 1
+                      ? `(${devices.length} GPUs)`
+                      : `(${devices[0].name ?? "GPU"})`}
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0 tabular-nums",
+                      vramUsageKnown
+                        ? usageTextClass(vramPercent)
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {vramUsageKnown ? `${Math.round(vramPercent)}%` : "--"}
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground font-mono tabular-nums">
+                  {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
+                  {formatGiB(vramTotal)}
+                </div>
+                <Progress
+                  value={vramUsageKnown ? vramPercent : 0}
+                  className="mt-1 h-1.5 rounded-full bg-muted"
+                  indicatorClassName={usageIndicatorClass(vramPercent)}
+                />
+              </div>
+            )}
+            {separateInferenceGpu && (
+              <div className="flex justify-between gap-2 text-ui-11 font-mono">
+                <span className="text-muted-foreground">GGUF inference</span>
+                <span className="uppercase text-foreground">
+                  {separateInferenceGpu.backend ?? "GPU"}
+                  {separateInferenceGpu.available
+                    ? inferenceVramTotal
+                      ? ` · ${formatGiB(inferenceVramTotal)}`
+                      : ""
+                    : " · unavailable"}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       </motion.div>
     </div>

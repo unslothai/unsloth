@@ -348,7 +348,8 @@ def exercise_floating_monitor_geometry(page):
     )
 
     # Delayed GPU rows must expand upward and retain the initial bottom anchor.
-    monitor.evaluate(
+    # The probe goes in the content region, where a real row is rendered.
+    monitor.get_by_test_id("floating-monitor-content").evaluate(
         """node => {
             const probe = document.createElement("div");
             probe.dataset.testid = "floating-monitor-growth-probe";
