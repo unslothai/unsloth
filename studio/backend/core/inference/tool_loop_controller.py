@@ -212,7 +212,16 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            parsed = urlparse(url)
+            # Bare hosts are fetched as https, so normalize first or the badge
+            # stays generic for exactly the URLs the fetch layer accepts.
+            from core.inference.tools import _normalize_url_scheme
+
+            try:
+                parsed = urlparse(_normalize_url_scheme(url))
+            except ValueError:
+                # Runs in prepare_call, outside the fetch's exception handler:
+                # raising here kills the turn instead of returning "Blocked:".
+                return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
                 if host.startswith("www."):
@@ -227,6 +236,19 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
     return f"Calling: {tool_name}"
+
+
+def awaiting_approval_status(tool_name: str) -> str:
+    """Status text for a call parked on the approval prompt.
+
+    It has not started, so reporting "Running ..." with a climbing timer reads
+    as a hang.
+    """
+    if tool_name == "python":
+        return "Waiting for approval: Python"
+    if tool_name == "terminal":
+        return "Waiting for approval: command"
+    return f"Waiting for approval: {tool_name}"
 
 
 def is_tool_error(result: str) -> bool:

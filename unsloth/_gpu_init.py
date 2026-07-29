@@ -303,13 +303,19 @@ if DEVICE_TYPE == "cuda":
     # Try loading bitsandbytes and triton
     try:
         import bitsandbytes as bnb
+
+        # Bind the submodule by name: a half-imported bitsandbytes leaves the parent
+        # without a `functional` attribute, which would otherwise be misreported below
+        # as a CUDA linking failure. See unsloth/kernels/utils.py.
+        import bitsandbytes.functional as bnb_functional
     except:
         print(
             "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
         )
         bnb = None
+        bnb_functional = None
     try:
-        cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+        cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
@@ -351,7 +357,7 @@ if DEVICE_TYPE == "cuda":
                         pass
                 else:
                     from triton.common.build import libcuda_dirs
-                cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+                cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
                 libcuda_dirs()
             except:
                 warnings.warn(
@@ -374,7 +380,15 @@ elif DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
-    import bitsandbytes as bnb
+    # Same degradation as the cuda branch above: no bnb means no 4bit, not a
+    # failed `import unsloth`.
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        print(
+            "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
+        )
+        bnb = None
 
     # TODO: check triton for intel installed properly.
     pass
