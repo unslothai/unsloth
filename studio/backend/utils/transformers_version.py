@@ -81,7 +81,6 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
     # hub here exactly as it does in the DNS shortcut, instead of probing "https://".
     try:
         from utils.utils import hf_endpoint_url
-
         endpoint = hf_endpoint_url()
     except Exception:
         endpoint = (os.environ.get("HF_ENDPOINT") or "").strip() or "https://huggingface.co"
@@ -133,7 +132,6 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
         # Bounded separately so the whole probe stays within a predictable deadline.
         try:
             from utils.utils import hf_tcp_reachable
-
             return not hf_tcp_reachable(min(timeout, 2.0), endpoint)
         except Exception:
             return True

@@ -1180,12 +1180,10 @@ class TestIpv6Endpoint:
     def test_ipv6_literal_resolves(self):
         """gethostbyname is IPv4-only and would call an AAAA-only mirror dead."""
         from utils.utils import dns_host_dead
-
         assert dns_host_dead("::1", timeout = 2.0) is False
 
     def test_unresolvable_host_still_dead(self):
         from utils.utils import dns_host_dead
-
         assert dns_host_dead("no-such-host.invalid", timeout = 2.0) is True
 
 
