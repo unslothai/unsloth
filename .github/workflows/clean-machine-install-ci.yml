@@ -623,9 +623,15 @@ jobs:
   #
   # Gating, deliberately: this is the only job that runs the real WSL branch, so a
   # job-level continue-on-error made the distro import, the installer exit code, the
-  # `platform wsl` assertion and the CLI check all unable to fail anything. Eight
-  # consecutive staging runs were green through every step, so there is no flake to
-  # absorb; if the pinned rootfs ever moves, a red job is the correct signal.
+  # `platform wsl` assertion and the CLI check all unable to fail anything. There is no
+  # flake to absorb; if the pinned rootfs ever moves, a red job is the correct signal.
+  #
+  # The eight green staging runs cited when that continue-on-error came off do not
+  # transfer to this branch: every one of them ran a tree that already carried #7548
+  # (installer-fix-ci and integ-installer-fixes-ci both have `_unsloth_main` in
+  # install.sh), and #7548 is exactly what makes the script survive being piped. This
+  # branch does not carry it, so the Install step pins that one difference and
+  # everything else in this job still gates.
   wsl:
     name: wsl ubuntu-24.04
     runs-on: windows-latest
@@ -657,6 +663,7 @@ jobs:
           wsl -d unsloth-ci -- sh -c 'for t in curl wget git gcc cmake python3 sudo; do printf "%-8s %s\n" "$t" "$(command -v $t || echo ABSENT)"; done'
 
       - name: Install inside WSL, piped exactly as documented
+        id: install
         shell: pwsh
         run: |
           # Only ca-certificates + curl: the advertised one-liner cannot start without a
@@ -685,6 +692,41 @@ jobs:
           wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
           $installRc = $LASTEXITCODE
           Write-Host "installer exit: $installRc"
+
+          # KNOWN OUTCOME PIN, retire when #7548 merges. Piping a 218KB script into sh is
+          # not atomic: dash reads it from the pipe in 8192-byte blocks and runs each
+          # command as soon as it parses, so any command that inherits fd 0 and reads to
+          # EOF swallows the rest of the script. install.sh:2007 runs
+          # _maybe_reroute_strixhalo_to_2404, which on WSL alone shells out to Windows
+          # interop (powershell.exe for the WMI GPU name, then wsl.exe -l -q), and interop
+          # relays the stdin it inherited. dash has exactly 11 blocks buffered by then,
+          # ending at byte 90112, which lands inside "$STUDIO_LOCAL_INSTALL" on line 2082
+          # -- hence that line number rather than anything wrong with it. Truncating
+          # install.sh at 90112 and parsing it reproduces the message verbatim. Every
+          # other platform runs the same file and stays green because nothing in that
+          # window touches stdin. #7548 wraps the body in _unsloth_main so sh must parse
+          # the whole script before running any of it, which is why that marker is what
+          # retires this pin. Read it out of the distro so it tracks the script that
+          # actually ran, published or not.
+          wsl -d unsloth-ci -u root -- sh -c 'grep -q "^_unsloth_main()" /root/install.sh'
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host '::error::the installer under test now carries #7548; delete this pin block and let the exit-code check below gate unconditionally'
+            exit 1
+          }
+          if (-not (Test-Path logs/wsl-install.log)) {
+            Write-Host '::error::the WSL install produced no log'
+            exit 1
+          }
+          # Exit code AND the shell's own parse error, so any other non-zero exit, and any
+          # other syntax error, still fails this required job. The line number is not
+          # matched: it moves with any edit to install.sh while the failure is the same.
+          $truncated = Select-String -Path logs/wsl-install.log `
+            -Pattern 'sh: [0-9]+: Syntax error: Unterminated quoted string' -Quiet
+          if ($installRc -eq 2 -and $truncated) {
+            Write-Host '::notice::known outcome: install.sh is not pipe-safe, so WSL interop drained the pipe and sh hit EOF mid-string. Fixed by #7548; nothing in this branch can change it.'
+            "pinned=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
           # Printing the code discarded it, and the next step's CLI check does not
           # compensate: install.sh links the `unsloth` shim (4174-4182) BEFORE it reports
           # a failing studio/setup.sh (4219-4230), so a late setup failure leaves a shim
@@ -715,6 +757,14 @@ jobs:
           if (-not ($platformLines | Where-Object { $_ -match '^\s*platform\s+wsl\s*$' })) {
             Write-Host '::error::installer never reported ''platform wsl''; the WSL branch was not exercised'
             exit 1
+          }
+          # Only the CLI half is waived under the pin: the truncation kills the run
+          # before anything is installed, so there is nothing to find. The `platform wsl`
+          # assertion above still gates either way, because the installer prints it
+          # several hundred lines before the point where the pipe runs dry.
+          if ('${{ steps.install.outputs.pinned }}' -eq 'true') {
+            Write-Host '::notice::CLI check waived: the Install step recorded the pinned pre-#7548 pipe truncation'
+            exit 0
           }
           # No `|| echo`: substituting a message for the missing CLI made the inner
           # shell, this step and the job all succeed even when the install produced
@@ -764,9 +814,11 @@ jobs:
           # "Git is required but could not be installed automatically" gate: no winget
           # means no way to fetch git. That gate is what #7549 relaxes to the --local and
           # llama.cpp source paths that actually use git; with it applied the leg is
-          # green (staging run 30407859691, all 16 legs). So this row stays required: it
-          # is a merge-order dependency, not a product gap, and the overlay is what lets
-          # this workflow see the fix land.
+          # green (staging run 30407859691, all 16 legs). It is a merge-order dependency,
+          # not a product gap, and the overlay is what lets this workflow see the fix
+          # land. The Install step is therefore continue-on-error and the step below pins
+          # that exact failure: the row stays required, so a DIFFERENT failure is still
+          # red, and the pin turns into a hard error the moment the relaxed gate appears.
           - os: windows-latest
             winget: 'masked'
             experimental: false
@@ -936,8 +988,9 @@ jobs:
       - name: Install
         id: install
         shell: pwsh
-        # ARM64 only: its failure is pinned below rather than gating (see the matrix).
-        continue-on-error: ${{ matrix.os == 'windows-11-arm' }}
+        # ARM64 and winget=masked only: both failures are pinned below rather than
+        # gating (see the matrix).
+        continue-on-error: ${{ matrix.os == 'windows-11-arm' || matrix.winget == 'masked' }}
         env:
           # Empty, and therefore ignored by install.ps1, on the non-overlay legs.
           UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
@@ -1016,6 +1069,54 @@ jobs:
             exit 1
           }
           Write-Host '::notice::known outcome: a native ARM64 CPython plus no win_arm64 torchaudio wheel. Fixed by #7549 (prefer an x64 interpreter on ARM64 hosts); nothing in this branch can change it.'
+
+      # KNOWN OUTCOME PIN, retire when #7549 merges. Same reason as the ARM64 pin above:
+      # continue-on-error on Install would otherwise tolerate a bootstrap outage or an
+      # unrelated early exit exactly like the intended diagnostic, so every branch here
+      # that is not the pinned failure exits 1 and fails the (required) job.
+      - name: Assert the winget=masked outcome is a known one
+        if: always() && matrix.winget == 'masked' && steps.install.outcome != 'skipped'
+        shell: pwsh
+        run: |
+          # The flip condition. studio/setup.ps1:1655-1669 gates on git unconditionally
+          # and can only get it from winget, so masking winget leaves no way to satisfy
+          # it; #7549 relaxes the gate to the --local and llama.cpp source-build paths
+          # that actually use git, so that wording being present means the fix landed.
+          # Read from the checkout because this row is overlay: true, which is what makes
+          # the branch's setup.ps1 the one that runs (install.ps1:2626-2642). A published
+          # dispatch takes setup.ps1 from the released wheel instead, so there the tree
+          # says nothing and only the outcome checks below can retire the pin.
+          if ('${{ inputs.installer_source }}' -ne 'published') {
+            $relaxed = Select-String -Path studio/setup.ps1 -SimpleMatch -Quiet `
+              -Pattern 'Git is required for --local and llama.cpp source-build installs'
+            if ($relaxed) {
+              Write-Host '::error::studio/setup.ps1 now carries the relaxed #7549 git gate; delete this pin and drop winget=masked from continue-on-error on the Install step so this row gates.'
+              exit 1
+            }
+          }
+          if ('${{ steps.install.outcome }}' -eq 'success') {
+            Write-Host '::error::the masked leg installed successfully; the pinned failure is gone, so delete this pin and drop winget=masked from continue-on-error on the Install step'
+            exit 1
+          }
+          if (-not (Test-Path logs/install.log)) {
+            Write-Host '::error::the masked leg produced no install log'
+            exit 1
+          }
+          $log = Get-Content logs/install.log -Raw
+          # All three, so a failure anywhere else is still red: winget really was absent,
+          # the git gate is what fired, and it is what stopped studio setup rather than
+          # a warning the install walked past. The winget check is not redundant with the
+          # matrix -- without it this pin would also absorb a leg whose PATH scrub failed
+          # and which then died on the same gate for an entirely different reason.
+          $noWinget = $log -match 'will require Python \+ uv to be already installed'
+          $gitGate  = $log -match 'Git is required but could not be installed automatically'
+          $setupRc  = $log -match 'unsloth studio setup failed \(exit code 1\)'
+          Write-Host "no winget: $noWinget / git gate: $gitGate / setup exit 1: $setupRc"
+          if (-not ($noWinget -and $gitGate -and $setupRc)) {
+            Write-Host '::error::the masked leg did not stop at the winget-only git gate in studio/setup.ps1; this is a new failure'
+            exit 1
+          }
+          Write-Host '::notice::known outcome: setup.ps1 gates on git unconditionally and can only fetch it through winget, which this row masks. Fixed by #7549 (relax the gate to --local and source-build installs); nothing in this branch can change it.'
 
       # See the macOS job: proves the leg is testing what its matrix row claims.
       - name: Assert this ref's Python was really put under test
