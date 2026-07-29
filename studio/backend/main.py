@@ -1087,14 +1087,20 @@ install_api_error_handlers(app)
 # That was safe while the lifespan detected hardware inline, since TAURI_PORT
 # came after detection and health answered instantly. Detection is on the warm
 # thread now and TAURI_PORT is emitted before it finishes, so health must answer
-# within the budget whether or not detection is done. 1.5s leaves headroom under
-# the 2s client timeout for connect and JSON.
+# within the budget whether or not detection is done.
+#
+# The budget is a target, not a guarantee: the wait polls on the event loop, and
+# a C-extension import holds the GIL for stretches in which the loop does not run
+# at all, so the reply lands late by however long the current stretch is. Setting
+# it to 1.5s measured a worst case of 1.742s here -- inside the 2s but with only
+# 0.26s to absorb a slower host. 1.0s buys that margin back for one extra
+# provisional reply; the next poll ~0.3s later already carries the real value.
 #
 # Nothing the launcher reads from health depends on detection: it reads
 # status/service, the protocol and manageability versions, the auth and
 # ownership bits, studio_root_id, desktop_owner and version. Only chat_only
 # does, and only the web UI reads that.
-_HEALTH_DETECT_BUDGET_S = 1.5
+_HEALTH_DETECT_BUDGET_S = 1.0
 
 
 async def _await_hardware_detection(budget: float) -> bool:
