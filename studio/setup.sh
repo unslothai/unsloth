@@ -973,9 +973,8 @@ install_python_stack() {
 }
 
 # ── HTTP GET to stdout (supports curl and wget) ──
-# install.sh accepts either transport everywhere (its download() and _http_get),
-# so a wget-only box gets that far and then stalled here, where curl was the only
-# way to fetch anything. Same preference order: curl, else wget.
+# install.sh takes either transport everywhere, so a wget-only box installs fine
+# and then stalled here, where curl was the only way to fetch anything.
 _setup_http_get() {
     if command -v curl >/dev/null 2>&1; then
         curl -LsSf "$1"
@@ -987,12 +986,11 @@ _setup_http_get() {
 }
 
 # Same, with a deadline, for the checks that must not hang the install.
-# wget has no equivalent of curl's total-transfer --max-time: --timeout is per
-# operation and it retries 20 times by default, so a stalled server dragged this
-# check out to minutes and a slow drip never ended it at all. --tries=1 plus an
-# outer `timeout` gives the same 5 second ceiling; without coreutils timeout
-# (curl-less macOS would be the case, and macOS ships curl) we keep the
-# per-operation bound rather than skipping the check.
+# wget has nothing like curl's total-transfer --max-time: --timeout is per
+# operation and it retries 20 times, so a stalled server took minutes and a slow
+# drip never ended. --tries=1 plus an outer `timeout` restores the 5s ceiling;
+# without timeout (base macOS, which ships curl anyway) the per-operation bound
+# stands rather than the check being dropped.
 _setup_http_get_timed() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --max-time 5 "$1"
