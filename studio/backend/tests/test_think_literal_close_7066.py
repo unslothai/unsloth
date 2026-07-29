@@ -2644,7 +2644,13 @@ def _anthropic_messages_call(monkeypatch, name, *, stream):
         }
 
         class _Client:
-            async def post(self, _url, json = None, timeout = None, headers = None):
+            async def post(
+                self,
+                _url,
+                json = None,
+                timeout = None,
+                headers = None,
+            ):
                 return httpx.Response(200, json = upstream)
 
             async def aclose(self):
@@ -2665,9 +2671,7 @@ def _anthropic_messages_call(monkeypatch, name, *, stream):
     )
 
     async def _run():
-        response = await inf.anthropic_messages(
-            payload, request = _Request(), current_subject = "t"
-        )
+        response = await inf.anthropic_messages(payload, request = _Request(), current_subject = "t")
         if not stream:
             return json.loads(response.body)
         chunks = []
