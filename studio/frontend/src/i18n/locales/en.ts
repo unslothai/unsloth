@@ -601,9 +601,9 @@ export const en = {
     agents: {
       title: "Agents",
       description:
-        "Connect coding agents like Claude Code and Codex to a model running locally in Unsloth with unsloth start.",
+        "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode, Pi and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs an OpenAI-compatible server for the agent and never touches your agent's config files.",
+        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
@@ -672,7 +672,7 @@ export const en = {
         launch: "Launch the agent, or just print the command and environment.",
         persist: "Keep Unsloth-managed agent storage between runs.",
         asSubagent:
-          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, OpenCode, and Pi).",
+          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
@@ -855,8 +855,7 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
-      codingAgentsSwap:
-        "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, or hermes.",
       codingAgentDetected: "Installed on this machine",
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",
