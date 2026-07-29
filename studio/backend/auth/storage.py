@@ -66,6 +66,38 @@ def _persist_bootstrap_password(password: str) -> None:
         raise
 
 
+def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
+    """Give an existing malformed file its trailing LF, in place.
+
+    Deliberately not the atomic replace above: a rename would recreate the file
+    if clear_bootstrap_password() or the CLI cleanup deleted it after we read
+    it, putting revoked plaintext back on disk for a later reset to re-seed.
+    Opening without O_CREAT cannot resurrect a deleted file, and the contents
+    are re-checked through the descriptor so an in-place truncation is not
+    undone either.
+    """
+    data = _bootstrap_file_bytes(password)
+    # Only a trailing-whitespace rewrite is safe without a rename: every partial
+    # state is then "<secret>\n" plus leftover whitespace, which still strips to
+    # the same credential. Anything else keeps working unnormalised.
+    if not raw.startswith(data[:-1]):
+        return
+
+    fd = os.open(_BOOTSTRAP_PW_PATH, os.O_RDWR)
+    try:
+        if os.read(fd, len(raw) + 1) != raw:
+            return
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, data)
+        os.ftruncate(fd, len(data))
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
+
+
 def _read_persisted_bootstrap_password() -> Optional[str]:
     """Read the persisted password, normalising the file if it is malformed."""
     if not _BOOTSTRAP_PW_PATH.is_file():
@@ -83,11 +115,11 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
         return None
 
     # Older releases wrote no terminator, and text mode wrote CRLF on Windows,
-    # so upgrades kept the `cat` problem. Rewrite anything that isn't exactly
-    # "<secret>\n". Best-effort: a read-only auth dir must not fail startup.
+    # so upgrades kept the `cat` problem. Best-effort: a read-only auth dir or a
+    # credential cleared underneath us must not fail startup.
     if raw != _bootstrap_file_bytes(password):
         try:
-            _persist_bootstrap_password(password)
+            _normalise_bootstrap_file(raw, password)
         except OSError:
             pass
     return password

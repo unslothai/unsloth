@@ -193,15 +193,68 @@ def test_migration_failure_does_not_break_startup(monkeypatch):
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
-    def refuse(*args, **kwargs):
-        raise PermissionError("read-only auth dir")
+    real_open = storage.os.open
 
-    monkeypatch.setattr(storage.tempfile, "mkstemp", refuse)
+    def refuse(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            raise PermissionError("read-only auth dir")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", refuse)
 
     storage.ensure_default_admin()
 
     assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
     assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret"
+
+
+def test_normalising_never_recreates_a_cleared_bootstrap_file(monkeypatch):
+    # A rename would resurrect the file if the password changed after the read,
+    # leaving revoked plaintext for a later auth.db reset to re-seed.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    real_open = storage.os.open
+
+    def clear_then_open(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            storage._BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", clear_then_open)
+
+    assert storage._read_persisted_bootstrap_password() == "legacy-bootstrap-secret"
+    assert not storage._BOOTSTRAP_PW_PATH.exists()
+
+
+def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    real_open = storage.os.open
+
+    def rotate_then_open(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            storage._BOOTSTRAP_PW_PATH.write_bytes(b"brand-new-secret\n")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", rotate_then_open)
+
+    storage._read_persisted_bootstrap_password()
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"brand-new-secret\n"
+
+
+def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
+    # Only trailing whitespace is rewritten in place: without a rename there is
+    # no atomicity, and a partial rewrite here could mis-strip.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"  legacy-bootstrap-secret  ")
+
+    storage.ensure_default_admin()
+
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"  legacy-bootstrap-secret  "
 
 
 def test_persisting_the_bootstrap_password_is_atomic(monkeypatch, tmp_path):
