@@ -385,6 +385,7 @@ def _opencode_supports_native_auto() -> bool:
             text = True,
             timeout = 10,
             stderr = subprocess.DEVNULL,
+            env = _probe_env(),
         )
     except Exception:
         return False
@@ -437,6 +438,22 @@ def _opencode_native_auto_args(args: list[str], yolo: bool) -> tuple[list[str], 
 
 def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
+    parts = ["npm", "install", "-g"]
+    if os.name != "nt":
+        # No home (bare container UID): fall back to npm's own prefix instead of failing.
+        try:
+            parts.extend(("--prefix", str(Path.home() / ".local")))
+        except (RuntimeError, OSError):
+            pass
+    if ignore_scripts:
+        parts.append("--ignore-scripts")
+    parts.append(package)
+    if os.name == "nt":
+        return " ".join(_powershell_quote(part) for part in parts)
+    return shlex.join(parts)
 
 
 def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
@@ -1213,10 +1230,13 @@ def _require_studio(
     )
 
 
+def _studio_auth_root() -> Path:
+    from unsloth_cli.commands.studio import STUDIO_HOME
+    return STUDIO_HOME / "auth"
+
+
 def _key_cache_path() -> Path:
-    ensure_studio_backend_path()
-    from utils.paths import auth_root
-    return auth_root() / "agent_api_key.json"
+    return _studio_auth_root() / "agent_api_key.json"
 
 
 def _read_cache(cache: Path) -> dict:
@@ -1657,7 +1677,7 @@ def _claude_version() -> Optional[tuple]:
         return None
     try:
         result = subprocess.run(
-            [executable, "--version"], capture_output = True, text = True, timeout = 10
+            [executable, "--version"], capture_output = True, text = True, timeout = 10, env = _probe_env()
         )
         # Pull the X.Y.Z out of the output rather than assuming it is the first token.
         # claude prints it first today ("2.1.98 (Claude Code)"), but a format change
@@ -1734,7 +1754,11 @@ def _codex_supports_model_catalog() -> bool:
         return True
     try:
         output = subprocess.check_output(
-            [executable, "--version"], text = True, timeout = 10, stderr = subprocess.DEVNULL
+            [executable, "--version"],
+            text = True,
+            timeout = 10,
+            stderr = subprocess.DEVNULL,
+            env = _probe_env(),
         )
     except Exception:
         return False
@@ -2005,20 +2029,6 @@ def write_codex_parent_overlay(overlay: Path) -> Path:
     return overlay
 
 
-@contextlib.contextmanager
-def _codex_parent_overlay(session_home: Path, *, launch: bool, persist: bool):
-    if launch and not persist:
-        temp_root = _agents_config_root() / ".tmp"
-        temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
-        overlay = Path(tempfile.mkdtemp(prefix = "codex-parent-", dir = temp_root))
-        try:
-            yield write_codex_parent_overlay(overlay)
-        finally:
-            shutil.rmtree(overlay, ignore_errors = True)
-    else:
-        yield write_codex_parent_overlay(session_home / "parent")
-
-
 def _agent_config_path(path: Path, command: list) -> str:
     """Translate a generated config path when a Windows agent runs through WSL."""
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
@@ -2068,8 +2078,7 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
             err = True,
         )
     else:
-        env = os.environ.copy()
-        env["OPENCODE_CONFIG"] = _agent_config_path(path, ["opencode"])
+        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, ["opencode"]))
         try:
             resolved = subprocess.run(
                 [executable, "debug", "config"],
@@ -2408,19 +2417,48 @@ def _refresh_windows_path() -> None:
         os.environ["PATH"] = os.pathsep.join(entries)
 
 
+def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
+    # Best-effort: any failure here means "no managed Node", never a broken launch.
+    try:
+        ensure_studio_backend_path()
+        from utils.node_runtime import managed_node_binary, resolve_node_executable
+        node = Path(managed_node_binary())
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    npm = node.with_name("npm.cmd" if os.name == "nt" else "npm")
+    try:
+        usable = node.is_file() and npm.is_file()
+        if os.name != "nt":
+            usable = usable and os.access(node, os.X_OK) and os.access(npm, os.X_OK)
+    except OSError:
+        return None
+    if not usable:
+        return None
+    try:
+        resolved = resolve_node_executable()
+        preferred = bool(resolved) and Path(resolved).resolve() == node.resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        preferred = False
+    return node, npm, preferred
+
+
 def _augment_path_with_install_dirs() -> None:
-    # Append known install dirs to PATH so a freshly installed agent resolves without a new
-    # shell: some installers write the binary but not PATH (claude drops ~/.local/bin and
-    # only prints a note; npm -g shims land in %APPDATA%\npm). Appended, so precedence holds.
+    # Add known install dirs to PATH so a freshly installed agent resolves without a new shell.
+    # User dirs are appended (existing tools keep precedence); a preferred managed Node is
+    # prepended so Node-backed shims use it. Only user dirs need a home, so a missing home must
+    # not drop the managed Node, or a shim fails on `env node` under a bare container UID.
     try:
         home = Path.home()
     except (RuntimeError, OSError):
-        return
-    candidates = [home / ".local" / "bin"]
+        home = None
+    candidates = [home / ".local" / "bin"] if home is not None else []
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:
             candidates.append(Path(appdata) / "npm")
+    managed_node = _managed_node_tools()
+    if managed_node is not None and not managed_node[2]:
+        candidates.append(managed_node[0].parent)
     current = os.environ.get("PATH")
     if current is None:
         # PATH unset: shutil.which() and exec*p* fall back to os.defpath (e.g. /bin:/usr/bin), so
@@ -2428,14 +2466,42 @@ def _augment_path_with_install_dirs() -> None:
         # system-installed agent and strip the launched child's normal PATH). An explicitly empty
         # PATH is left as-is: like shutil.which, it means "search nothing", not os.defpath.
         current = os.defpath
+    preferred_node = (
+        str(managed_node[0].parent) if managed_node is not None and managed_node[2] else None
+    )
+    if preferred_node:
+        preferred_key = os.path.normcase(preferred_node)
+        current = os.pathsep.join(
+            entry
+            for entry in current.split(os.pathsep)
+            if not entry or os.path.normcase(entry) != preferred_key
+        )
     seen = {os.path.normcase(entry) for entry in current.split(os.pathsep) if entry}
     additions = [
         str(directory)
         for directory in candidates
         if directory.is_dir() and os.path.normcase(str(directory)) not in seen
     ]
-    if additions:
-        os.environ["PATH"] = os.pathsep.join([current, *additions] if current else additions)
+    if preferred_node or additions:
+        parts = [part for part in (preferred_node, current, *additions) if part]
+        os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def _probe_env(**extra: str) -> dict:
+    """Environment for probes that RUN a resolved shim.
+
+    _which_with_install_dirs restores PATH before returning, so a shim backed by Studio's
+    managed Node would not find that node when executed.
+    """
+    original = os.environ.get("PATH")
+    _augment_path_with_install_dirs()
+    env = os.environ.copy()
+    if original is None:
+        os.environ.pop("PATH", None)
+    else:
+        os.environ["PATH"] = original
+    env.update(extra)
+    return env
 
 
 def _which_with_install_dirs(name: str) -> Optional[str]:
@@ -2469,6 +2535,69 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
         flags = re.IGNORECASE,
     )
     return match.group(1).lower() if match else None
+
+
+def _npm_executable() -> Optional[str]:
+    managed_node = _managed_node_tools()
+    if not (managed_node and managed_node[2]):
+        executable = shutil.which("npm")
+        if executable and not _wsl_windows_executable([executable]):
+            return executable
+        if executable:
+            # WSL inherits the Windows PATH, so the rejected shim may shadow a native npm.
+            for directory in os.get_exec_path():
+                candidate = shutil.which("npm", path = directory)
+                if candidate and not _wsl_windows_executable([candidate]):
+                    return candidate
+
+    return str(managed_node[1]) if managed_node is not None else None
+
+
+def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
+    if not re.match(r"^\s*npm(?:\s|$)", install_hint):
+        if os.name == "nt":
+            return (
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    install_hint,
+                ],
+                None,
+            )
+        return ["/bin/sh", "-c", install_hint], None
+
+    npm = _npm_executable()
+    if npm is None:
+        _fail(
+            "npm is required to install this agent, but no native system npm or usable "
+            "Unsloth-managed Node installation was found. Install Node.js with npm, "
+            "then re-run."
+        )
+    args = shlex.split(install_hint)
+    env = dict(os.environ)
+    # dirname, not Path().parent: Path picks its flavour from os.name, which the tests
+    # override. Empty means npm is a bare name; prepending "" would put the cwd on PATH.
+    npm_dir = os.path.dirname(npm)
+    current_path = env.get("PATH", "")
+    if npm_dir:
+        env["PATH"] = os.pathsep.join([npm_dir, current_path]) if current_path else npm_dir
+    if os.name == "nt":
+        command = "& " + " ".join(_powershell_quote(arg) for arg in [npm, *args[1:]])
+        return (
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ],
+            env,
+        )
+    return [npm, *args[1:]], env
 
 
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
@@ -2507,22 +2636,15 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     typer.secho(warning, fg = "yellow", err = True)
     if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
-    # Run each hint through its shell: PowerShell on Windows, /bin/sh elsewhere.
-    # -ExecutionPolicy Bypass is process-scoped (nothing persistent) so npm's npm.ps1 and
-    # irm | iex run under the Windows default Restricted policy instead of failing with a
-    # PSSecurityException.
-    if os.name == "nt":
-        install_command = [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            install_hint,
-        ]
-    else:
-        install_command = ["/bin/sh", "-c", install_hint]
-    if subprocess.run(install_command).returncode != 0:
+    install_command, install_env = _install_command(install_hint)
+    try:
+        result = subprocess.run(install_command, env = install_env)
+    except OSError as exc:
+        _fail(
+            f"Could not run the install command: {exc}. "
+            f"Run it yourself, then re-run: {install_hint}"
+        )
+    if result.returncode != 0:
         message = f"Install command failed. Run it yourself, then re-run: {install_hint}"
         if os.name == "nt":
             # A hand-run retry can still hit the policy; point at the one-time per-user fix.
@@ -2545,6 +2667,19 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     return executable
 
 
+def _resolve_or_install_agent(name: str, install_hint: str, resolver) -> str:
+    executable = resolver(name) or _install_agent(name, install_hint)
+    if executable is None:
+        _fail(f"`{name}` not found on PATH. Install it with: {install_hint}")
+    return executable
+
+
+def _require_agent_for_launch(name: str, install_hint: str, launch: bool) -> Optional[str]:
+    if not launch:
+        return None
+    return _resolve_or_install_agent(name, install_hint, _which_with_install_dirs)
+
+
 def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tuple]:
     wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
     if not wsl_env_bridge:
@@ -2564,9 +2699,7 @@ def _launch(
     # Resolve well-known install dirs (e.g. ~/.local/bin) first, so an already-installed
     # agent not yet on PATH is found instead of prompting a needless reinstall.
     _augment_path_with_install_dirs()
-    executable = shutil.which(command[0]) or _install_agent(command[0], install_hint)
-    if executable is None:
-        _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
+    executable = _resolve_or_install_agent(command[0], install_hint, shutil.which)
     env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
     child_env = dict(os.environ)
     if wsl_env_bridge:
@@ -2678,14 +2811,34 @@ def _run(
 
 
 def _agents_config_root() -> Path:
-    ensure_studio_backend_path()
-    from utils.paths import auth_root
-    return auth_root() / "agents"
+    return _studio_auth_root() / "agents"
+
+
+@contextlib.contextmanager
+def _temporary_agent_config(prefix: str):
+    # Nothing else prunes Studio's auth tree, so reuse the locked session helper: the next
+    # launch reclaims homes left by a killed wrapper, and the lock spares live sessions.
+    temp_root = _agents_config_root() / ".tmp"
+    with contextlib.ExitStack() as stack:
+        try:
+            temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+            path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
+        except OSError:
+            # Attaching to a remote or running Studio needs no local auth tree, so it may be
+            # absent or unwritable. Fall back to the system temp dir, as before: no
+            # reclamation there, but the OS prunes it.
+            path = Path(tempfile.mkdtemp(prefix = prefix))
+            stack.callback(shutil.rmtree, path, ignore_errors = True)
+        yield path
+
+
+# codex-subagent nests CODEX_HOME under <home>/parent, so it needs the short root too.
+_CODEX_SHORT_HOME_AGENTS = ("codex", "codex-subagent")
 
 
 def _ephemeral_session_parent(agent: str) -> Optional[Path]:
     """Return a non-system-temp parent when an agent needs one."""
-    if os.name != "nt" or agent != "codex":
+    if os.name != "nt" or agent not in _CODEX_SHORT_HOME_AGENTS:
         return None
     # Codex creates a deeply nested curated-plugin checkout below CODEX_HOME.
     # A normal %TEMP%\unsloth-codex-* home can exceed legacy Windows path
@@ -2699,7 +2852,9 @@ def _ephemeral_session_parent(agent: str) -> Optional[Path]:
 
 def _ephemeral_session_prefix(agent: str, parent: Optional[Path]) -> str:
     """Return the platform-specific prefix for an ephemeral agent home."""
-    return "u-codex-" if agent == "codex" and parent is not None else f"unsloth-{agent}-"
+    if agent in _CODEX_SHORT_HOME_AGENTS and parent is not None:
+        return "u-codex-"
+    return f"unsloth-{agent}-"
 
 
 @contextlib.contextmanager
@@ -2749,9 +2904,9 @@ def _locked_file(path: Path, blocking: bool = True):
         handle.close()
 
 
-def _reclaim_stale_ephemeral_sessions(parent: Path) -> None:
-    """Remove abandoned short Codex homes while preserving locked live sessions."""
-    for path in parent.glob("u-codex-*"):
+def _reclaim_stale_ephemeral_sessions(parent: Path, prefix: str) -> None:
+    """Remove abandoned session homes while preserving locked live sessions."""
+    for path in parent.glob(f"{prefix}*"):
         if not path.is_dir():
             continue
         active_lock = path / ".active.lock"
@@ -2782,8 +2937,8 @@ def _refresh_ephemeral_session_marker(path: Path, stop: threading.Event) -> None
 
 
 @contextlib.contextmanager
-def _short_ephemeral_session(parent: Path):
-    """Create a short Codex home whose lock makes crash cleanup concurrency-safe."""
+def _short_ephemeral_session(parent: Path, prefix: str = "u-codex-"):
+    """Create a session home whose lock makes crash cleanup concurrency-safe."""
     path = None
     active_lock = contextlib.ExitStack()
     heartbeat_stop = None
@@ -2792,8 +2947,8 @@ def _short_ephemeral_session(parent: Path):
         with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
             if not cleanup_lock:  # The blocking acquisition should always succeed.
                 raise RuntimeError(f"Could not lock ephemeral session root: {parent}")
-            _reclaim_stale_ephemeral_sessions(parent)
-            path = Path(tempfile.mkdtemp(prefix = "u-codex-", dir = parent))
+            _reclaim_stale_ephemeral_sessions(parent, prefix)
+            path = Path(tempfile.mkdtemp(prefix = prefix, dir = parent))
             locked = active_lock.enter_context(_locked_file(path / ".active.lock"))
             if not locked:
                 raise RuntimeError(f"Could not lock ephemeral session home: {path}")
@@ -2801,7 +2956,7 @@ def _short_ephemeral_session(parent: Path):
             heartbeat = threading.Thread(
                 target = _refresh_ephemeral_session_marker,
                 args = (path / ".active.lock", heartbeat_stop),
-                name = "unsloth-codex-home-heartbeat",
+                name = "unsloth-agent-home-heartbeat",
                 daemon = True,
             )
             heartbeat.start()
@@ -2839,16 +2994,15 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
+        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Studio's root.
         parent = _ephemeral_session_parent(agent)
+        prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:
-            with _short_ephemeral_session(parent) as path:
+            with _short_ephemeral_session(parent, prefix) as path:
                 yield path
         else:
-            path = Path(tempfile.mkdtemp(prefix = _ephemeral_session_prefix(agent, parent)))
-            try:
+            with _temporary_agent_config(prefix) as path:
                 yield path
-            finally:
-                shutil.rmtree(path, ignore_errors = True)
     else:
         # Never wipe this dir: a previously printed recipe may still be running
         # an agent whose sessions/state live here, and every config writer
@@ -3235,6 +3389,12 @@ def claude(
     """Point Claude Code at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    install_hint = (
+        "irm https://claude.ai/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://claude.ai/install.sh | bash"
+    )
+    _require_agent_for_launch("claude", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -3255,11 +3415,6 @@ def claude(
         ),
     )
     model_id = entry["id"]
-    install_hint = (
-        "irm https://claude.ai/install.ps1 | iex"
-        if os.name == "nt"
-        else "curl -fsSL https://claude.ai/install.sh | bash"
-    )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
@@ -3355,6 +3510,8 @@ def codex(
     """Point OpenAI Codex at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    install_hint = _npm_install_hint("@openai/codex")
+    _require_agent_for_launch("codex", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -3393,25 +3550,25 @@ def codex(
                 home,
                 yolo = yolo,
             )
-            with _codex_parent_overlay(home, launch = launch, persist = persist) as parent_home:
-                command = [
-                    "codex",
-                    *_codex_subagent_flags(bridge_config),
-                    *_yolo_command_flags("codex", yolo),
-                    *ctx.args,
-                ]
-                typer.echo(
-                    "Unsloth is available as a local agent. "
-                    "Ask Codex to spawn an Unsloth or local agent."
-                )
-                _run(
-                    base,
-                    subagent_model,
-                    {"CODEX_HOME": str(parent_home)},
-                    command,
-                    launch = launch,
-                    install_hint = "npm install -g @openai/codex",
-                )
+            parent_home = write_codex_parent_overlay(home / "parent")
+            command = [
+                "codex",
+                *_codex_subagent_flags(bridge_config),
+                *_yolo_command_flags("codex", yolo),
+                *ctx.args,
+            ]
+            typer.echo(
+                "Unsloth is available as a local agent. "
+                "Ask Codex to spawn an Unsloth or local agent."
+            )
+            _run(
+                base,
+                subagent_model,
+                {"CODEX_HOME": str(parent_home)},
+                command,
+                launch = launch,
+                install_hint = install_hint,
+            )
         return
     command = [
         "codex",
@@ -3424,7 +3581,7 @@ def codex(
     with _session_config("codex", launch, persist = persist) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
-        _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
 @start_app.command("openclaw", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -3456,6 +3613,12 @@ def openclaw(
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("openclaw", ctx.args)
+    install_hint = (
+        "iwr -useb https://openclaw.ai/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://openclaw.ai/install.sh | bash"
+    )
+    _require_agent_for_launch("openclaw", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -3486,11 +3649,6 @@ def openclaw(
     if not openclaw_args:
         openclaw_args = ["tui", "--local"]
     command = ["openclaw", *openclaw_args]
-    install_hint = (
-        "iwr -useb https://openclaw.ai/install.ps1 | iex"
-        if os.name == "nt"
-        else "curl -fsSL https://openclaw.ai/install.sh | bash"
-    )
     with _session_config("openclaw", launch, persist = persist) as cfg:
         config_path = cfg / "openclaw.json"
         workspace_path = None
@@ -3539,6 +3697,8 @@ def opencode(
     """Point OpenCode at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    install_hint = _npm_install_hint("opencode-ai")
+    _require_agent_for_launch("opencode", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -3577,11 +3737,6 @@ def opencode(
                 as_subagent = True,
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
-            if launch and _which_with_install_dirs("opencode") is None:
-                # Provider-filter inspection needs the binary; offer the install now so
-                # a global/project allowlist is honored on this first launch instead of
-                # being read only after _launch installs OpenCode.
-                _install_agent("opencode", "npm install -g opencode-ai")
             inline_config = _opencode_subagent_inline_config(config_path, session_permission)
             # A project opencode.json outranks the session file and could field-merge its
             # own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
@@ -3599,7 +3754,7 @@ def opencode(
                 env,
                 command,
                 launch = launch,
-                install_hint = "npm install -g opencode-ai",
+                install_hint = install_hint,
             )
         return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
@@ -3670,7 +3825,7 @@ def opencode(
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
         }
-        _run(base, entry, env, command, launch = launch, install_hint = "npm install -g opencode-ai")
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
 @start_app.command("hermes", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -3704,6 +3859,8 @@ def hermes(
     _reject_as_subagent("hermes", ctx.args)
     native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
+    install_hint = _hermes_install_hint()
+    _require_agent_for_launch("hermes", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -3723,7 +3880,6 @@ def hermes(
             presence_penalty = presence_penalty,
         ),
     )
-    install_hint = _hermes_install_hint()
     with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
@@ -3761,6 +3917,13 @@ def pi(
     """Point Pi (coding agent) at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    install_hint = _npm_install_hint(
+        "@earendil-works/pi-coding-agent",
+        ignore_scripts = True,
+    )
+    if as_subagent and not _PI_SUBAGENT_EXTENSION.is_file():
+        _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
+    _require_agent_for_launch("pi", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -3780,10 +3943,7 @@ def pi(
             presence_penalty = presence_penalty,
         ),
     )
-    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     if as_subagent:
-        if not _PI_SUBAGENT_EXTENSION.is_file():
-            _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])

@@ -146,3 +146,15 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.about.shutDownStudio",
   ],
 };
+
+/**
+ * Extra terms a row matches on, beyond its own label. The value is a
+ * translation key holding space-separated synonyms; it is never rendered.
+ * Search matched labels only, so "models folder" or "directory" found nothing.
+ */
+export const SETTINGS_SEARCH_KEYWORDS: Partial<
+  Record<TranslationKey, TranslationKey>
+> = {
+  "settings.resources.storage.modelsFolder":
+    "settings.resources.storage.modelsFolderKeywords",
+};
