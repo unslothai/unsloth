@@ -224,11 +224,19 @@ class _HeaderFrame:
         "outer_link_seq",
         "outer_cell_seq",
         "outer_in_pre",
+        "outer_in_code",
         "outer_bq_depth",
     )
 
     def __init__(
-        self, depth: int, link_seq: int, cell_seq: int, in_pre: bool, bq_depth: int, list_depth: int
+        self,
+        depth: int,
+        link_seq: int,
+        cell_seq: int,
+        in_pre: bool,
+        in_code: bool,
+        bq_depth: int,
+        list_depth: int,
     ):
         self.depth = depth
         self.parts: list[str] = []
@@ -247,6 +255,7 @@ class _HeaderFrame:
         self.outer_link_seq = link_seq
         self.outer_cell_seq = cell_seq
         self.outer_in_pre = in_pre
+        self.outer_in_code = in_code
         self.outer_bq_depth = bq_depth
         # Both exclude heading text (never dropped, so it must not vote on dropping
         # the rest); only href anchors count as links.
@@ -531,7 +540,9 @@ class _MarkdownRenderer(HTMLParser):
             # its text is link furniture even though no </a> arrived.
             frame.link_chars += self._link_header_chars
             self._finish_link()
-        if self._in_inline_code:
+        # Inline code opened OUTSIDE the header is the page's, not the frame's:
+        # closing it here leaves the real </code> to emit an unpaired backtick.
+        if self._in_inline_code and not frame.outer_in_code:
             self._in_inline_code = False
             self._emit("`")
         if self._in_cell and self._cell_seq != frame.outer_cell_seq:
@@ -600,6 +611,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._link_seq if self._in_link else -1,
                         self._cell_seq if self._in_cell else -1,
                         self._in_pre,
+                        self._in_inline_code,
                         len(self._bq_stack),
                         len(self._list_stack),
                     )
@@ -1035,27 +1047,23 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     clearing the threshold together, and returning that one subtree keeps
     unrelated siblings (related cards, comment threads) out of the output.
 
-    Candidates are sized with their dropped header furniture added back, so the
-    strip never costs an article the size gate or a sibling comparison. A
-    candidate that retained nothing is all furniture, and gets no such credit."""
+    A candidate earns its place on the prose it RETAINED, then gets its dropped
+    header furniture added back to rank against siblings. Furniture must not buy
+    eligibility: a card whose header was the only bulk would otherwise clear the
+    gate on deleted bytes and suppress the ``<main>`` holding the real page."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
     dropped = renderer.scope_dropped
     best_len = 0
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        credit = dropped[i] if _non_heading_chars(rendered) >= _MIN_RETAINED_CHARS else 0
-        size = len(rendered) + credit
+        if _non_heading_chars(rendered) < _MIN_MAIN_CONTENT_CHARS:
+            continue
+        size = len(rendered) + dropped[i]
         if size > best_len:
             best_len = size
             best_render = rendered
     return best_len, best_render
-
-
-# Removed furniture only counts toward a candidate's size once the candidate
-# retained this much prose OUTSIDE its headings, so neither an empty scope nor a
-# stub carrying one long title can qualify on what was deleted from it.
-_MIN_RETAINED_CHARS = 50
 
 
 def _is_heading_line(line: str) -> bool:

@@ -1539,16 +1539,31 @@ def test_header_inside_an_enclosing_blockquote_is_still_stripped():
     assert out.index("Article body.") < 16000
 
 
-def test_short_article_still_beats_a_card_after_its_header_goes():
-    # Sizing adds the dropped furniture back, so stripping cannot cost the win.
+def test_article_still_beats_a_bigger_card_after_its_header_goes():
+    # Dropped furniture is added back for the sibling comparison, so stripping a
+    # link-only header cannot hand the win to a longer related card.
     real = "<article><header><h1>Real</h1><ul>%s</ul></header><p>%s</p></article>" % (
         _interlanguage_list(300),
-        "Short real body. " * 6,
+        "Short real body. " * 14,
     )
-    card = "<article><p>%s</p></article>" % ("Related card teaser text here. " * 8)
+    card = "<article><p>%s</p></article>" % ("Related card teaser text here. " * 12)
     out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
     assert "Short real body." in out
     assert "Related card teaser" not in out
+
+
+def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
+    # Furniture may rank a candidate but must never make it eligible: astro.build
+    # returned a 225 char feature card for the whole homepage because a nav-only
+    # header cleared the gate on bytes that were about to be deleted.
+    card = "<article><header>%s</header><p>%s</p></article>" % (
+        "".join('<a href="/l%d">Language %d</a>' % (i, i) for i in range(120)),
+        "Short teaser about the related thing, read more.",
+    )
+    body = "<p>%s</p>" % ("The real article body the reader wants. " * 40)
+    out = html_to_markdown(f"<body><main>{body}{card}</main></body>", main_content = True)
+    assert "The real article body the reader wants." in out
+    assert "Language 7" not in out
 
 
 def test_unclosed_nested_buffer_inside_a_header_is_still_stripped():
@@ -1844,15 +1859,30 @@ def test_linked_heading_text_is_counted_once_for_the_size_floor():
 
 
 def test_fenced_code_counts_as_retained_content():
-    # A leading # inside a fence is a comment, not a heading.
-    code = "<pre># comment line one\n# comment line two\n# comment line three</pre>"
+    # A leading # inside a fence is a comment, not a heading. Eligibility is
+    # measured on non-heading text, so counting the fence as headings would drop
+    # this article for the sibling even though the code IS the content.
+    code = "<pre>%s</pre>" % "\n".join("# comment line %d" % i for i in range(16))
     article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
         _interlanguage_list(300),
         code,
     )
     sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
     out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
-    assert "comment line one" in out
+    assert "comment line 1" in out
+    assert "Sibling teaser" not in out
+
+
+def test_header_inside_open_inline_code_leaves_delimiters_paired():
+    # The <code> was opened outside the header, so the frame must not close it;
+    # doing so left the real </code> emitting a second, unpaired backtick.
+    body = "<main><code>head<header><h1>T</h1></header>tail</code><p>%s</p></main>" % (
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("`") % 2 == 0
+    assert "`head`" not in out
+    assert "Article body." in out
 
 
 def test_nested_blockquote_prose_does_not_backtrack():
