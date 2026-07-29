@@ -85,6 +85,10 @@ IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monit
 # reader between the reset and the CUDA branch sees "chat only" on a GPU host.
 # Re-entrant: get_device() -> detect_hardware() nests on the same thread.
 _DETECT_LOCK = threading.RLock()
+# Set once ensure_hardware_detected() has a settled answer, including its
+# CPU/chat-only fallback. Poll this rather than DEVICE: DEVICE is assigned
+# mid-detection, so it goes non-None while later probes can still change it.
+DETECTION_COMPLETE = threading.Event()
 
 # Drives start_background_detection(). Separate from _DETECT_LOCK because it is
 # only ever held for the bookkeeping below, never across the import.
@@ -245,7 +249,12 @@ def detect_hardware() -> DeviceType:
       5. CPU   (fallback)
     """
     with _DETECT_LOCK:
-        return _detect_hardware_locked()
+        device = _detect_hardware_locked()
+        # A forced re-detect that returns has a settled value too. Deliberately
+        # not in a finally: if this raises, the branch's partial assignment is
+        # still in place, and that is precisely what the event must not publish.
+        DETECTION_COMPLETE.set()
+        return device
 
 
 def ensure_hardware_detected() -> DeviceType:
@@ -270,6 +279,14 @@ def ensure_hardware_detected() -> DeviceType:
                 DEVICE = DeviceType.CPU
                 CHAT_ONLY = True
                 CHAT_ONLY_REASON = "detection_failed"
+        # Set only here, where a final value is guaranteed. The detection
+        # branches assign DEVICE partway through and keep probing -- the XPU
+        # branch sets DEVICE and CHAT_ONLY before torch.xpu.get_device_name(0),
+        # which can raise -- so "DEVICE is not None" means "a candidate was
+        # picked", not "detection finished". A waiter that treats the
+        # intermediate value as authoritative can publish training-enabled for a
+        # host the except above is about to degrade to CPU/chat-only.
+        DETECTION_COMPLETE.set()
         return DEVICE
 
 

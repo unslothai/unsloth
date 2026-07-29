@@ -208,8 +208,28 @@ def _warm_unsloth_zoo() -> None:
 # Order matters -- it is the eager import order: transformers before unsloth_zoo
 # (which patches transformers on import), datasets between them because that is
 # where `import main` reached it.
+def _warm_inference_backend() -> None:
+    # Build the orchestrator singleton here, off the loop, right after detection.
+    #
+    # Its constructor calls get_default_models() -> hw.get_device(), so whoever
+    # builds it first pays for detection. Lazily that is whichever request
+    # arrives first, and the reach is much wider than the handlers that name the
+    # getter: _loaded_satisfies, _resolves_to_resident, _unload_may_evict,
+    # _monitor_active_model, _monitor_context_length and _openai_model_objects
+    # are all sync helpers that call it, and async handlers call those inline.
+    # Offloading every one of those call sites would be a wide mechanical change
+    # across the OpenAI, Responses and monitor paths; building it once here
+    # makes the getter a plain dict read before any of them run.
+    #
+    # Ordered after hardware so it does not duplicate the detection this thread
+    # has already done, and it stays inside _run_stage's failure handling.
+    from core.inference import get_inference_backend
+    get_inference_backend()
+
+
 _STAGES = (
     ("hardware", _warm_hardware),
+    ("inference_backend", _warm_inference_backend),
     ("transformers", _warm_transformers),
     ("datasets", _warm_datasets),
     ("unsloth_zoo", _warm_unsloth_zoo),

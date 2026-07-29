@@ -6547,10 +6547,11 @@ class TestApiMonitorSafetensorsUsage:
                 # Only the generation hop should cancel; resolution runs before the row opens.
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
-                # Resolving the inference singleton is another pre-row hop: it is
-                # offloaded so a cold build cannot block the event loop, and it
-                # happens before api_monitor.start opens the row.
-                if func is inf_mod.get_inference_backend:
+                # Resolving what is already serving is also pre-row work, and it
+                # is offloaded for the same reason: _loaded_satisfies reaches the
+                # inference singleton, whose cold build waits on hardware
+                # detection. Both run before api_monitor.start opens the row.
+                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
                     return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 

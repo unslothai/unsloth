@@ -1884,7 +1884,9 @@ async def get_model_config(
         base_model = None
         max_position_embeddings = None
         try:
-            model_config = ModelConfig.from_identifier(model_name)
+            # Off-loop: the first call builds the detection registry, importing
+            # transformers or waiting on the warm thread that is importing it.
+            model_config = await asyncio.to_thread(ModelConfig.from_identifier, model_name)
             is_lora = model_config.is_lora
             base_model = model_config.base_model if is_lora else None
             max_position_embeddings = _get_max_position_embeddings(model_config)

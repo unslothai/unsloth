@@ -1140,12 +1140,18 @@ async def _await_hardware_detection(budget: float) -> bool:
     endpoint would drain the pool. Detection itself runs on the warm thread, or
     on the one start_background_detection() puts up when the warm is disabled.
     """
-    if _hw_module.DEVICE is not None:
+    # DETECTION_COMPLETE, not DEVICE: the detection branches assign DEVICE and
+    # then keep probing, so a non-None DEVICE can still be revised. Waiting on
+    # the assignment let health publish a candidate the fallback was about to
+    # replace -- the XPU branch sets DEVICE and CHAT_ONLY=False before
+    # torch.xpu.get_device_name(0), so a raise there would have been reported as
+    # training-enabled on a host that ends up CPU/chat-only.
+    if _hw_module.DETECTION_COMPLETE.is_set():
         return True
     start_background_detection()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + budget
-    while _hw_module.DEVICE is None:
+    while not _hw_module.DETECTION_COMPLETE.is_set():
         if loop.time() >= deadline:
             return False
         await asyncio.sleep(0.02)

@@ -63,6 +63,71 @@ def test_the_offload_is_actually_present():
     assert total >= 14, f"expected the offloaded call sites to survive, found {total}"
 
 
+def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
+    """Sync functions in this module that call get_inference_backend() inline."""
+    tree = ast.parse((_BACKEND / rel).read_text())
+    names = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):  # sync only
+            continue
+        for sub in ast.walk(fn):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id == "get_inference_backend"
+            ):
+                names.add(fn.name)
+    return names
+
+
+def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
+    """The direct sweep is not enough: a sync helper hides the same stall.
+
+    _loaded_satisfies calls get_inference_backend() inline, and an async handler
+    calling it on the loop pays the cold build exactly as if it had called the
+    getter itself -- which is what happened four lines above an offload that
+    looked complete. Only ast.AsyncFunctionDef was walked, so nothing caught it.
+    """
+    offenders = []
+    for rel in _ROUTE_FILES:
+        helpers = _sync_helpers_that_build_the_singleton(rel)
+        if not helpers:
+            continue
+        tree = ast.parse((_BACKEND / rel).read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.AsyncFunctionDef):
+                continue
+            for sub in ast.walk(fn):
+                # A bare Call to the helper runs it on the loop; passing it to
+                # to_thread makes it an ast.Name argument, never a Call.
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id in helpers
+                ):
+                    offenders.append(f"{rel}:{sub.lineno} async {fn.name} -> {sub.func.id}()")
+
+    # These reach the singleton through a sync helper and are NOT individually
+    # offloaded. Offloading ~19 call sites across the OpenAI, Responses, monitor
+    # and unload paths is a wide mechanical change, and the warm now builds the
+    # orchestrator in its own stage right after hardware detection, so the getter
+    # is a plain dict read before any of them run. This is a frozen baseline, not
+    # an endorsement: the set must not grow, and anything new has to be offloaded
+    # at the call site or justified here.
+    known = {
+        "_resolves_to_resident",
+        "_unload_may_evict",
+        "_monitor_active_model",
+        "_monitor_context_length",
+        "_openai_model_objects",
+    }
+    new = [o for o in offenders if o.rsplit("-> ", 1)[-1].rstrip("()") not in known]
+    assert not new, (
+        "new async handlers reaching the singleton through a sync helper; "
+        "offload at the call site rather than widening the baseline:\n  " + "\n  ".join(new)
+    )
+
+
 def test_the_offload_stays_at_the_call_site():
     """No orchestrator-level async helper: it would bypass patched route globals.
 

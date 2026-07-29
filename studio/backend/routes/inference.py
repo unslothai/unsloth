@@ -3824,7 +3824,7 @@ async def _no_model_loaded_error(
     if named is None or not get_openai_auto_switch_enabled():
         return status, _no_model_loaded_detail(base)
     try:
-        if _loaded_satisfies(named):
+        if await asyncio.to_thread(_loaded_satisfies, named):
             # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
@@ -3886,7 +3886,7 @@ async def _maybe_auto_download_model(
     if not is_downloadable_ref(requested_model):
         return
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
-    if _loaded_satisfies(requested_model):
+    if await asyncio.to_thread(_loaded_satisfies, requested_model):
         return
     try:
         refusal = await maybe_auto_download(
@@ -4098,7 +4098,7 @@ async def _reject_unservable_model(
 
     still_indexing = False
     try:
-        if _loaded_satisfies(requested_model):
+        if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
         if not (
             get_llama_cpp_backend().is_loaded
@@ -5469,12 +5469,19 @@ async def _load_model_impl(
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
-        with _hf_offline_if_dns_dead():
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
-            )
+        def _resolve_config():
+            with _hf_offline_if_dns_dead():
+                return ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
+
+        # The guard and the call go to the worker together: from_identifier can
+        # import transformers to build the detection registry, and the DNS probe
+        # in the guard is itself a network round trip. Neither belongs on the
+        # event-loop thread while the warm is still running.
+        config = await asyncio.to_thread(_resolve_config)
 
         if not config:
             raise HTTPException(
@@ -6118,7 +6125,12 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        config = ModelConfig.from_identifier(
+        # Off-loop: the first call builds the vision/audio detection registry,
+        # which imports transformers, or blocks on _DETECTION_SETS_LOCK while the
+        # warm thread is importing it. Inline it holds the event-loop thread for
+        # that whole import and stalls login, liveness and the desktop probe.
+        config = await asyncio.to_thread(
+            ModelConfig.from_identifier,
             model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
