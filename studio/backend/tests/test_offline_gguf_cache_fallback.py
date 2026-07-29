@@ -1039,7 +1039,6 @@ class TestEndpointAwareOfflineDetection:
     )
     def test_endpoint_host_parsing(self, monkeypatch, endpoint, expected):
         from core.inference.llama_cpp import _hf_endpoint_host
-
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         assert _hf_endpoint_host() == expected
 
@@ -1147,7 +1146,6 @@ class TestHfUnreachableProbe:
         """Stale either way is a bug: a stale 'reachable' hides the plug being pulled,
         a stale 'unreachable' fails a download after the user reconnects."""
         import utils.utils as uu
-
         assert uu._HF_REACHABILITY_TTL_S <= 10.0
 
     def test_verdict_expires_so_a_disconnect_is_noticed(self, monkeypatch, clean_offline_env):

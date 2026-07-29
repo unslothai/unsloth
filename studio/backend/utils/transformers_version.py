@@ -90,7 +90,9 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
             # the hub itself is down, which callers scoping offline to one operation want
             # to treat as offline; callers setting a lifetime flag pass
             # gateway_errors_offline=False so a momentary 503 can't strand the process.
-            result["online"] = True if not gateway_errors_offline else exc.code not in (502, 503, 504)
+            result["online"] = (
+                True if not gateway_errors_offline else exc.code not in (502, 503, 504)
+            )
         except urllib.error.URLError as exc:
             # A TLS/cert failure means we DID reach the server; treat as reachable so the real
             # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
