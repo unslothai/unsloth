@@ -242,7 +242,6 @@ function TrainingMethodSelect() {
         side="bottom"
         align="start"
         sideOffset={8}
-        avoidCollisions={false}
         className="rounded-[14px] ring-0"
       >
         {TRAINING_METHOD_ORDER.map((method) => {
