@@ -1027,8 +1027,11 @@ try:
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
+    from utils.paths import is_local_path
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        colocated_split_shards,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1036,6 +1039,7 @@ try:
         NativePathLeaseError,
         display_label_for_native_path,
         is_registered_native_path_label,
+        native_gguf_companion_parent_allowed,
         redact_native_paths,
         verify_native_path_lease,
     )
@@ -1072,8 +1076,11 @@ except ImportError:
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
+    from utils.paths import is_local_path
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        colocated_split_shards,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1081,6 +1088,7 @@ except ImportError:
         NativePathLeaseError,
         display_label_for_native_path,
         is_registered_native_path_label,
+        native_gguf_companion_parent_allowed,
         redact_native_paths,
         verify_native_path_lease,
     )
@@ -2906,6 +2914,18 @@ def _monitor_openai_error_message(data: dict) -> Optional[str]:
     return None
 
 
+def _is_openai_sse_done(raw_line: str) -> bool:
+    """Whether the line is the terminal `data: [DONE]` frame.
+
+    Deliberately independent of the monitor: framing the client sees must not
+    change just because recording is off.
+    """
+    # SSE spec allows `data:value` and `data: value`; accept both.
+    if not raw_line.startswith("data:"):
+        return False
+    return raw_line[5:].lstrip() == "[DONE]"
+
+
 def _monitor_openai_sse_line(
     monitor_id: Optional[str],
     raw_line: str,
@@ -2913,7 +2933,6 @@ def _monitor_openai_sse_line(
 ) -> Optional[str]:
     if not monitor_id:
         return None
-    # SSE spec allows `data:value` and `data: value`; accept both.
     if not raw_line.startswith("data:"):
         return None
     data_str = raw_line[5:].lstrip()
@@ -3192,11 +3211,16 @@ def _monitor_active_model() -> Optional[str]:
 
 
 def _validate_native_gguf_companion(
-    companion_path: str | None, gguf_path: str | None, label: str
+    companion_path: str | None,
+    gguf_path: str | None,
+    label: str,
+    *,
+    allow_mtp_subdir: bool = False,
+    mtp_search_root: str | Path | None = None,
 ) -> None:
     """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
     would otherwise hand to llama-server: must be a regular file (no symlink
-    escaping the leased directory) living next to the selected GGUF."""
+    escaping the leased directory) in a permitted location."""
     if not companion_path or not gguf_path:
         return
     import stat as _stat_module
@@ -3218,16 +3242,81 @@ def _validate_native_gguf_companion(
             detail = f"Native {label} must be a regular file.",
         )
     try:
-        if companion.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+        if not native_gguf_companion_parent_allowed(
+            companion,
+            gguf,
+            allow_mtp_subdir = allow_mtp_subdir,
+            mtp_search_root = mtp_search_root,
+        ):
+            location = (
+                "beside the selected GGUF or in its MTP directory"
+                if allow_mtp_subdir
+                else "next to the selected GGUF"
+            )
             raise HTTPException(
                 status_code = 400,
-                detail = f"Native {label} must live next to the selected GGUF.",
+                detail = f"Native {label} must live {location}.",
             )
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
             detail = f"Native {label} is no longer accessible.",
         ) from exc
+
+
+def _loaded_is_local_model(
+    llama_backend: LlamaCppBackend, native_grant_backed: bool, model_id: str | None
+) -> bool:
+    """Provenance of the running model, preferring what the load recorded.
+
+    Falls back to the filesystem for a server started before the flag existed.
+    """
+    if native_grant_backed:
+        return True
+    stored = getattr(llama_backend, "_is_local_model", None)
+    if stored is not None:
+        return bool(stored)
+    return bool(model_id and is_local_path(model_id))
+
+
+def _validate_native_mtp_drafter(
+    companion_path: str | None,
+    gguf_path: str | None,
+    *,
+    mtp_search_root: str | Path | None = None,
+) -> None:
+    """Validate an MTP drafter for a native load, every shard of it.
+
+    llama-server opens the sibling shards of a split drafter implicitly, so
+    checking only the launch path would let a later shard be a symlink out of
+    the permitted directory without ever facing the native rules.
+    """
+    if not companion_path or not gguf_path:
+        return
+    shards, _ = colocated_split_shards(Path(companion_path))
+    for shard in shards or [Path(companion_path)]:
+        _validate_native_gguf_companion(
+            str(shard),
+            gguf_path,
+            "MTP drafter",
+            allow_mtp_subdir = True,
+            mtp_search_root = mtp_search_root,
+        )
+
+
+def _native_gguf_companion_usable(
+    companion_path: str | None,
+    gguf_path: str | None,
+    *,
+    mtp_search_root: str | Path | None = None,
+) -> bool:
+    """Whether a native load would accept this MTP drafter, as a predicate for
+    reload dedup. Same rules, so the two cannot disagree."""
+    try:
+        _validate_native_mtp_drafter(companion_path, gguf_path, mtp_search_root = mtp_search_root)
+    except HTTPException:
+        return False
+    return True
 
 
 def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
@@ -3322,6 +3411,7 @@ def _request_matches_loaded_settings(
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
     requested_parallel_slots: Optional[int] = None,
+    native_grant_backed: bool = False,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -3491,7 +3581,29 @@ def _request_matches_loaded_settings(
             else llama_backend.extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
-            detected = detect_mtp_file(llama_backend.gguf_path)
+            companion_root = _local_gguf_companion_search_root(
+                llama_backend.gguf_path, llama_backend.gguf_path
+            )
+            detected = detect_mtp_file(llama_backend.gguf_path, search_root = companion_root)
+            if native_grant_backed:
+                # Mirror the load path's choice, or the comparison is against a
+                # drafter that never launched. A native grant cannot reach a
+                # root drafter outside it, so the load falls back to the MTP/
+                # copy and, failing that, to no drafter at all. An ordinary
+                # load reaches the root drafter, so it keeps root-first
+                # detection and reloads when one appears.
+                def _usable(candidate: str) -> bool:
+                    return _native_gguf_companion_usable(
+                        candidate, llama_backend.gguf_path, mtp_search_root = companion_root
+                    )
+
+                if detected and not _usable(detected):
+                    detected = detect_mtp_file(
+                        llama_backend.gguf_path,
+                        search_root = companion_root,
+                        skip_root = True,
+                        accept = _usable,
+                    )
             stored = llama_backend.mtp_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
@@ -5439,6 +5551,7 @@ async def _load_model_impl(
                     llama_backend,
                     effective_chat_template_override,
                     requested_parallel_slots = _n_parallel,
+                    native_grant_backed = native_grant_backed,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
@@ -5465,6 +5578,9 @@ async def _load_model_impl(
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_local_model = _loaded_is_local_model(
+                        llama_backend, native_grant_backed, llama_backend.model_identifier
+                    ),
                     is_diffusion = llama_backend.is_diffusion,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
@@ -5525,6 +5641,7 @@ async def _load_model_impl(
                     is_vision = _model_info.get("is_vision", False),
                     is_lora = _model_info.get("is_lora", False),
                     is_gguf = False,
+                    is_local_model = native_grant_backed or is_local_path(backend.active_model_name),
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
@@ -5757,13 +5874,41 @@ async def _load_model_impl(
                     if config.gguf_mtp_file:
                         # The drafter is optional (unlike mmproj for a vision
                         # model): drop it rather than fail the load.
-                        try:
-                            _validate_native_gguf_companion(
-                                config.gguf_mtp_file, config.gguf_file, "MTP drafter"
+                        mtp_search_root = _local_gguf_companion_search_root(
+                            config.gguf_file, config.gguf_file
+                        )
+
+                        def _mtp_allowed(candidate: str) -> bool:
+                            try:
+                                _validate_native_mtp_drafter(
+                                    candidate,
+                                    config.gguf_file,
+                                    mtp_search_root = mtp_search_root,
+                                )
+                                return True
+                            except HTTPException as exc:
+                                logger.warning(
+                                    "Dropping MTP drafter for native load: %s", exc.detail
+                                )
+                                return False
+
+                        if not _mtp_allowed(config.gguf_mtp_file):
+                            # The preferred root drafter is out of bounds for a
+                            # grant on a quant subdir, but an MTP/ copy may not
+                            # be. Scan them in preference order rather than
+                            # dropping MTP on the first rejection.
+                            fallback = detect_mtp_file(
+                                config.gguf_file,
+                                search_root = mtp_search_root,
+                                skip_root = True,
+                                accept = _mtp_allowed,
                             )
-                        except HTTPException as exc:
-                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
-                            config.gguf_mtp_file = None
+                            if fallback:
+                                logger.info(
+                                    "Using MTP subdirectory drafter for native load: %s",
+                                    fallback,
+                                )
+                            config.gguf_mtp_file = fallback
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
@@ -5877,6 +6022,10 @@ async def _load_model_impl(
             _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = model_log_label if native_grant_backed else None
             llama_backend._native_grant_backed = bool(native_grant_backed)
+            # Provenance is a load-time fact. Re-deriving it per status poll
+            # would flip a local model to remote if its directory is deleted
+            # or unmounted underneath a still-running server.
+            llama_backend._is_local_model = bool(native_grant_backed or config.is_local)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
 
@@ -5889,6 +6038,7 @@ async def _load_model_impl(
                 is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
+                is_local_model = config.is_local,
                 is_diffusion = llama_backend.is_diffusion,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
@@ -6050,6 +6200,7 @@ async def _load_model_impl(
             is_vision = config.is_vision,
             is_lora = config.is_lora,
             is_gguf = False,
+            is_local_model = config.is_local,
             is_audio = config.is_audio,
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
@@ -6920,11 +7071,15 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         operating_status = "ready"
     else:
         operating_status = "idle"
+    # With request logging off, ``snapshot()`` returns an empty list -- the same shape
+    # as a Studio that simply hasn't served a request yet. Signal the disabled state so
+    # the UI can explain the empty list instead of claiming there was no API traffic.
     return {
         "status": operating_status,
         "active_model": active_model,
         "context_length": _monitor_context_length(),
         "active_requests": active_requests,
+        "logging_enabled": api_monitor.enabled,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
 
@@ -7137,6 +7292,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
+                is_local_model = _loaded_is_local_model(
+                    llama_backend, _native_grant_backed, _model_id
+                ),
                 is_diffusion = llama_backend.is_diffusion,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
@@ -7209,6 +7367,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             model_identifier = backend.active_model_name,
             is_vision = is_vision,
             is_gguf = False,
+            is_local_model = bool(
+                backend.active_model_name and is_local_path(backend.active_model_name)
+            ),
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
@@ -8475,7 +8636,10 @@ async def _proxy_to_external_provider(
                 if monitor_event == "error":
                     stream_failed = True
                 yield f"{line}\n\n"
-                if monitor_event == "done":
+                # Parsed from the line itself, not from monitor_event: with the
+                # monitor disabled the helper returns None for every line, and
+                # trusting it would append a second [DONE] after the provider's.
+                if _is_openai_sse_done(line):
                     sent_done = True
             if not sent_done:
                 if not stream_failed:

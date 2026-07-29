@@ -840,6 +840,47 @@ class TestMLAEstimation:
         expected = 61 * _runtime_kv_cells(1000) * 1 * (512 + 64) * 2  # 576
         assert result == expected
 
+    def test_mla_hybrid_counts_only_attention_layers(self):
+        """Kimi-K3: KDA layers are 0 in head_count_kv and hold no growing cache."""
+        pattern = [1 if (i % 4) == 3 else 0 for i in range(93)]
+        pattern[92] = 1
+        b = self._mla_backend(_n_layers = 93, _n_kv_heads_by_layer = pattern)
+        n_attn = sum(1 for v in pattern if v)
+        assert n_attn == 24
+        expected = n_attn * _runtime_kv_cells(1000) * 1 * 576 * 2
+        assert b._estimate_kv_cache_bytes(1000, "f16") == expected
+
+    def test_mla_uniform_unaffected_by_hybrid_path(self):
+        """An all-attention per-layer array must match the plain layer count."""
+        b = self._mla_backend(_n_kv_heads_by_layer = [1] * 61)
+        expected = 61 * _runtime_kv_cells(1000) * 1 * 576 * 2
+        assert b._estimate_kv_cache_bytes(1000, "f16") == expected
+
+    def test_hybrid_adds_recurrent_state(self):
+        """KDA conv+state is f32, per sequence, and does not scale with context."""
+        pattern = [1 if (i % 4) == 3 else 0 for i in range(93)]
+        pattern[92] = 1
+        b = self._mla_backend(
+            _n_layers = 93,
+            _n_kv_heads_by_layer = pattern,
+            _n_heads = 96,
+            _kda_head_dim = 128,
+            _ssm_conv_kernel = 4,
+        )
+        # 69 recurrent layers * (3*3*96*128 + 128*128*96) * 4 B
+        rs = 69 * (110592 + 1572864) * 4
+        assert b._recurrent_state_bytes() == rs
+        kv = 24 * _runtime_kv_cells(1000) * 1 * 576 * 2
+        assert b._estimate_kv_cache_bytes(1000, "f16") == kv + rs
+        # per sequence, so --parallel multiplies it
+        assert b._recurrent_state_bytes(4) == rs * 4
+
+    def test_recurrent_state_zero_without_kda_dims(self):
+        """Uniform MLA and un-parsed Mamba keep the previous behaviour."""
+        assert self._mla_backend()._recurrent_state_bytes() == 0
+        b = self._mla_backend(_n_layers = 93, _n_kv_heads_by_layer = [1] * 93)
+        assert b._recurrent_state_bytes() == 0
+
     def test_mla_defaults_n_kv_to_1_when_heads_absent(self):
         """MLA uses n_kv=1 even if n_kv_heads is None (not n_heads)."""
         b = self._mla_backend(_n_kv_heads = None)  # n_heads=128 still set

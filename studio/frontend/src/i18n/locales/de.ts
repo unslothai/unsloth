@@ -491,7 +491,7 @@ export const de = {
       codingAgentsHint:
         "Starten Sie einen Coding-Agent gegen diesen Server. Er verwendet das geladene Modell; ein lokaler Server erstellt automatisch einen API-Schlüssel, ein entfernter fügt ihn dem Befehl hinzu.",
       codingAgentsSwap:
-        "Ersetzen Sie claude durch codex, openclaw, opencode, hermes oder pi.",
+        "Ersetzen Sie claude durch codex, openclaw, opencode oder hermes.",
       codingAgentDetected: "Auf diesem Gerät installiert",
       codingAgentsDetectedHint: "Auf diesem Gerät erkannt: {agents}.",
       relativeNever: "nie",

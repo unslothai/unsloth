@@ -867,6 +867,8 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /** Whether the backend loaded the active model from a filesystem path. */
+  activeModelIsLocal: boolean;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
@@ -1476,6 +1478,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
@@ -1856,8 +1859,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
+        // Provenance and the spec-fallback reason both describe the model
+        // being replaced, so they go together on a real change. Dropping only
+        // one leaves the settings sheet pairing a stale reason with the wrong
+        // recovery text. The load or status response reseeds both.
         ...(checkpointChanged
-          ? { contextUsage: null, contextUsageByThreadId: {} }
+          ? {
+              contextUsage: null,
+              contextUsageByThreadId: {},
+              activeModelIsLocal: false,
+              specFallbackReason: null,
+            }
           : {}),
         // Switching to an external provider disables Deep Research, which only
         // applies to the local base model.
@@ -1897,6 +1909,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeModelIsLocal: false,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,

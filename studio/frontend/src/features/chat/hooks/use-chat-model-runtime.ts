@@ -322,6 +322,9 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
+      // specFallbackReason survives here, so clearing activeModelIsLocal
+      // alone would flip a local model's warning to "download failed". Every
+      // load path and clearCheckpoint set it, so leave it consistent.
       useChatRuntimeStore.setState({
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
@@ -1213,6 +1216,7 @@ export function useChatModelRuntime() {
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
+              activeModelIsLocal: loadResponse.is_local_model ?? false,
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
@@ -1325,6 +1329,7 @@ export function useChatModelRuntime() {
                   rollbackResponse.speculative_type,
                 );
                 useChatRuntimeStore.setState({
+                  activeModelIsLocal: rollbackResponse.is_local_model ?? false,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                   // Restore the previous token's lease together with the token so a
                   // rollback never pairs restored token A with failed load B's expiry.
