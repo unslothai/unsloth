@@ -951,6 +951,15 @@ class TestPyYamlDeserialization:
                 "runner = parse\n"
                 "runner(__import__)"
             ),
+            (
+                "from yaml import safe_load\n"
+                "getattr(safe_load, '__globals__')['unsafe_load'](payload)"
+            ),
+            (
+                "from yaml import safe_load\n"
+                "safe_load.__getattribute__('__globals__')['unsafe_load'](payload)"
+            ),
+            ("from yaml import __dict__ as namespace\nnamespace['unsafe_load'](payload)"),
         ],
     )
     def test_callable_class_factory_and_storage_pyyaml_bypasses_blocked(self, code):

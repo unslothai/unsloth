@@ -10017,6 +10017,12 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_safe_loader_aliases.add(bound)
                     elif alias.name in _PYYAML_SAFE_LOADER_MUTATORS:
                         self.yaml_module_mutator_aliases.add(bound)
+                    elif alias.name == "__dict__":
+                        # This is the yaml module namespace itself, not an
+                        # ordinary exported value. Treat it like the module so
+                        # lookups of unsafe loaders retain PyYAML provenance.
+                        self.yaml_aliases.add(bound)
+                        self.dynamic_namespace_aliases.add(bound)
                     elif alias.name == "YAMLObject":
                         self.yaml_object_aliases.add(bound)
                     else:
@@ -11274,6 +11280,28 @@ def _check_signal_escape_patterns(code: str):
             self.visit_With(node)
 
         def visit_Call(self, node):
+            reflected = _reflected_member(node)
+            reflective_globals_base = (
+                reflected[0]
+                if reflected is not None and reflected[1] == "__globals__"
+                else (
+                    node.func.value
+                    if (
+                        isinstance(node.func, ast.Attribute)
+                        and node.func.attr in {"__getattr__", "__getattribute__"}
+                        and node.args
+                        and _subscript_key(node.args[0]) == "__globals__"
+                    )
+                    else None
+                )
+            )
+            if reflective_globals_base is not None and self._is_pyyaml_callable_reference(
+                reflective_globals_base
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization callable globals escape",
+                )
             if id(node) not in self.direct_pyyaml_module_refs and _is_pyyaml_module_expr(
                 node,
                 self.yaml_aliases,
