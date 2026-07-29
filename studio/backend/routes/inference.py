@@ -727,6 +727,7 @@ def _wants_stream_usage(payload) -> bool:
 
 _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S = 2.0
 _SSE_DONE_LINE = "data: [DONE]"
+_SSE_DONE_CHUNK = "data: [DONE]\n\n"
 
 
 def _openai_passthrough_sse_line_terminal_state(raw_line: str) -> Optional[str]:
@@ -2440,10 +2441,16 @@ async def _await_cancel_or_disconnect_then_close_client(
         return
 
 
-async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
+async def _stop_local_disconnect_cancel_watcher(watcher, timeout_s: float = 5.0) -> None:
+    # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
+    # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
+    # and an abandoned watcher owns no resources.
     watcher.cancel()
+    done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
+    if not done:
+        return
     try:
-        await watcher
+        watcher.result()
     except (asyncio.CancelledError, Exception):
         pass
 
@@ -9449,12 +9456,15 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             _tool_sentinel = object()
+            # True only once the sync generator returned on its own; see _gguf_decode_finished.
+            _tool_decode_finished = False
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
             _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
 
             async def gguf_tool_stream():
+                nonlocal _tool_decode_finished
                 gen = None
                 next_task = None
                 stream_completed = False
@@ -9542,6 +9552,7 @@ async def openai_chat_completions(
                             if next_task.done():
                                 next_task = None
                         if event is _tool_sentinel:
+                            _tool_decode_finished = True
                             break
 
                         # Anything after the gated tool_start means the user answered.
@@ -9758,6 +9769,13 @@ async def openai_chat_completions(
                         stream_started = True
                         try:
                             async for chunk in iterator:
+                                # Release before the yield; see gguf_stream_chunks.
+                                if (
+                                    lease is not None
+                                    and _tool_decode_finished
+                                    and chunk == _SSE_DONE_CHUNK
+                                ):
+                                    lease.release()
                                 yield chunk
                         except asyncio.CancelledError:
                             stream_cancelled = True
@@ -10060,6 +10078,9 @@ async def openai_chat_completions(
             )
 
         _gguf_sentinel = object()
+        # True only once the sync generator returned on its own: only then has _open_stream's
+        # client exited. A cancel still emits [DONE] without it.
+        _gguf_decode_finished = False
 
         if payload.stream:
             if _wants_multiple_choices(payload):
@@ -10086,6 +10107,7 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             async def gguf_stream_chunks():
+                nonlocal _gguf_decode_finished
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
@@ -10130,6 +10152,7 @@ async def openai_chat_completions(
                             if next_task.done():
                                 next_task = None
                         if cumulative is _gguf_sentinel:
+                            _gguf_decode_finished = True
                             break
                         # Capture server metadata for the final usage chunk
                         if isinstance(cumulative, dict):
@@ -10292,6 +10315,20 @@ async def openai_chat_completions(
                     stream_started = True
                     try:
                         async for chunk in iterator:
+                            # The slot is idle once the sync generator returned and the stream ends
+                            # with the plain sentinel. The finally only runs at ASGI teardown, so
+                            # waiting for it starves the next request. Release before the yield: a
+                            # stalled send() or a consumer that stops pulling parks us there, and
+                            # Starlette never aclose()s a body iterator. Release is idempotent, so
+                            # the finally stays the backstop. Exact equality, not endswith:
+                            # _openai_stream_error_sse ends in the same sentinel before its
+                            # cleanup runs, and that stream still owns the slot.
+                            if (
+                                lease is not None
+                                and _gguf_decode_finished
+                                and chunk == _SSE_DONE_CHUNK
+                            ):
+                                lease.release()
                             yield chunk
                     except asyncio.CancelledError:
                         stream_cancelled = True
