@@ -123,7 +123,34 @@ def _install_device_type_stub(name: str) -> None:
     sys.modules[name] = stub
 
 
+def _preimport_bitsandbytes() -> None:
+    """Bind bitsandbytes against the real torch before the CUDA spoof below.
+
+    `bitsandbytes/__init__.py` runs `if torch.cuda.is_available(): from .backends.cuda
+    import ops`, and that module reads `torch._C._cuda_getCurrentRawStream`, which a
+    CPU-only torch build does not expose. `_preload_device_type` patches
+    `torch.cuda.is_available` to return True, so a bitsandbytes import landing inside
+    that window takes the CUDA branch and dies with AttributeError.
+
+    Python then drops `bitsandbytes` from sys.modules but leaves `bitsandbytes.functional`
+    and the rest of its submodules cached, so the next import re-executes __init__ against
+    those cached submodules, re-binds nothing, and hands back a module with no
+    `.functional`. `unsloth/kernels/utils.py` reads `bnb.functional.get_ptr` at module
+    scope, so every later `import unsloth` in that process dies with
+    "module 'bitsandbytes' has no attribute 'functional'".
+
+    Importing first, outside the window, keeps bitsandbytes on its CPU backend and fully
+    usable. Must stay ahead of the `_preload_device_type` calls below.
+    """
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:
+        # A genuinely absent or broken wheel is unsloth's own degradation path.
+        pass
+
+
 if not _has_real_accelerator():
+    _preimport_bitsandbytes()
     if not _preload_device_type("unsloth_zoo", prereqs = ("utils",)):
         _install_device_type_stub("unsloth_zoo.device_type")
     if not _preload_device_type("unsloth"):
