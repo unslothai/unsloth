@@ -92,22 +92,30 @@ test("the foreground is the higher-contrast of the two, not a luminance guess", 
     "#ececec",
   ]) {
     applyCustomizationToDocument(withAccent(accent), "light");
+    const renderedAccent = vars.get("--primary") ?? "";
     const chosen = vars.get("--primary-foreground") ?? "";
-    const other = chosen === "#ffffff" ? "#111417" : "#ffffff";
     assert.ok(
-      ratio(accent, chosen) >= ratio(accent, other),
-      `${accent}: picked ${chosen} at ${ratio(accent, chosen).toFixed(2)}:1 over ${other} at ${ratio(accent, other).toFixed(2)}:1`,
+      ratio(renderedAccent, chosen) >=
+        Math.max(
+          ratio(renderedAccent, "#111417"),
+          ratio(renderedAccent, "#ffffff"),
+        ),
+      `${renderedAccent}: ${chosen} is not the highest-contrast foreground`,
     );
   }
 });
 
-test("a saturated green label clears WCAG AA instead of failing it", () => {
-  applyCustomizationToDocument(withAccent("#22c55e"), "light");
-  const chosen = vars.get("--primary-foreground") ?? "";
-  assert.ok(
-    ratio("#22c55e", chosen) >= 4.5,
-    `#22c55e on ${chosen} is only ${ratio("#22c55e", chosen).toFixed(2)}:1`,
-  );
+test("accent labels always clear WCAG AA, including the ink crossover", () => {
+  for (const accent of ["#22c55e", "#7a7a7a"]) {
+    applyCustomizationToDocument(withAccent(accent), "light");
+    const renderedAccent = vars.get("--primary") ?? "";
+    const chosen = vars.get("--primary-foreground") ?? "";
+    assert.ok(
+      ratio(renderedAccent, chosen) >= 4.5,
+      `${renderedAccent} on ${chosen} is only ${ratio(renderedAccent, chosen).toFixed(2)}:1`,
+    );
+  }
+  assert.equal(vars.get("--primary-foreground"), "#000000");
 });
 
 test("no accent leaves every palette variable alone", () => {
@@ -186,8 +194,7 @@ test("the label follows the corrected accent, not the raw pick", () => {
   assert.ok(ratio(corrected, chosen) >= ratio(corrected, other));
 });
 
-test("a custom background moves the bar with it", () => {
-  // On a dark custom background, a pale accent is already legible.
+test("a custom background does not hide the unchanged elevated surfaces", () => {
   const onDark = {
     ...DEFAULT_CUSTOMIZATION,
     colors: {
@@ -196,5 +203,37 @@ test("a custom background moves the bar with it", () => {
     },
   };
   applyCustomizationToDocument(onDark, "light");
-  assert.equal(vars.get("--primary"), "#fde68a");
+  const corrected = vars.get("--primary") ?? "";
+  assert.notEqual(corrected, "#fde68a");
+  assert.ok(ratio(corrected, "#101014") >= 2.5);
+  assert.ok(ratio(corrected, "#ffffff") >= 2.5);
+});
+
+test("the correction endpoint follows contrast rather than a luminance guess", () => {
+  const midGray = {
+    ...DEFAULT_CUSTOMIZATION,
+    colors: {
+      light: { accent: "#aaaaaa", background: "#aaaaaa", foreground: null },
+      dark: { ...DEFAULT_CUSTOMIZATION.colors.dark, accent: null },
+    },
+  };
+  applyCustomizationToDocument(midGray, "light");
+  const corrected = vars.get("--primary") ?? "";
+  assert.notEqual(corrected, "#ffffff");
+  assert.ok(ratio(corrected, "#aaaaaa") >= 2.5);
+  assert.ok(ratio(corrected, "#ffffff") >= 2.5);
+});
+
+test("a narrow valid band between custom and elevated surfaces is not skipped", () => {
+  const splitSurfaces = {
+    ...DEFAULT_CUSTOMIZATION,
+    colors: {
+      light: { ...DEFAULT_CUSTOMIZATION.colors.light, accent: null },
+      dark: { accent: "#44d088", background: "#4bba47", foreground: null },
+    },
+  };
+  applyCustomizationToDocument(splitSurfaces, "dark");
+  const corrected = vars.get("--primary") ?? "";
+  assert.ok(ratio(corrected, "#4bba47") >= 2.5);
+  assert.ok(ratio(corrected, "#212121") >= 2.5);
 });

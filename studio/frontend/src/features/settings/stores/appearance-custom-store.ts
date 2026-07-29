@@ -3,9 +3,9 @@
 
 import { create } from "zustand";
 import {
+  type StateStorage,
   createJSONStorage,
   persist,
-  type StateStorage,
 } from "zustand/middleware";
 import type { ResolvedTheme } from "./theme-store";
 
@@ -397,6 +397,12 @@ function hexLuminance(hex: string): number {
 
 const FOREGROUND_DARK = "#111417";
 const FOREGROUND_LIGHT = "#ffffff";
+const FOREGROUND_DARK_FALLBACK = "#000000";
+const FOREGROUND_CONTRAST_FLOOR = 4.5;
+const ACCENT_TEXT_FLOOR = 2.5;
+// Cover the full 8-bit channel range so a narrow valid contrast band is not
+// skipped when the custom and elevated surfaces sit far apart.
+const MIX_STEPS = 255;
 
 /** WCAG contrast ratio between two relative luminances. */
 function contrastRatio(a: number, b: number): number {
@@ -412,27 +418,35 @@ function contrastRatio(a: number, b: number): number {
  */
 function readableForeground(hex: string): string {
   const accent = hexLuminance(hex);
-  return contrastRatio(accent, hexLuminance(FOREGROUND_DARK)) >=
-    contrastRatio(accent, hexLuminance(FOREGROUND_LIGHT))
-    ? FOREGROUND_DARK
-    : FOREGROUND_LIGHT;
+  const darkContrast = contrastRatio(accent, hexLuminance(FOREGROUND_DARK));
+  const lightContrast = contrastRatio(accent, hexLuminance(FOREGROUND_LIGHT));
+  const preferred =
+    darkContrast >= lightContrast ? FOREGROUND_DARK : FOREGROUND_LIGHT;
+  if (Math.max(darkContrast, lightContrast) >= FOREGROUND_CONTRAST_FLOOR) {
+    return preferred;
+  }
+  // The preferred inks have a narrow crossover where both fall below AA.
+  // True black closes it without changing the established dark ink elsewhere.
+  return FOREGROUND_DARK_FALLBACK;
 }
 
-/** Palette backgrounds, for an accent chosen without a custom background. */
-const PALETTE_BACKGROUND: Record<ResolvedTheme, string> = {
-  light: "#ffffff",
-  dark: "#181818",
+/** Palette surfaces that custom colors do not replace. */
+const PALETTE_SURFACES: Record<
+  ResolvedTheme,
+  { background: string; elevated: string }
+> = {
+  light: { background: "#ffffff", elevated: "#ffffff" },
+  dark: { background: "#181818", elevated: "#212121" },
 };
 
-/**
- * The accent is not only a fill: text-primary and text-control-accent paint it
- * straight onto the page. A pale pick in light mode, or a near-black one in
- * dark, then disappears. The shipped green reads at 2.52:1 against its own
- * background, so hold custom accents to that same bar. Every palette accent
- * already clears it, so ordinary picks are returned untouched.
- */
-const ACCENT_TEXT_FLOOR = 2.5;
-const MIX_STEPS = 24;
+function minimumContrast(hex: string, backgrounds: readonly string[]): number {
+  const luminance = hexLuminance(hex);
+  return Math.min(
+    ...backgrounds.map((background) =>
+      contrastRatio(luminance, hexLuminance(background)),
+    ),
+  );
+}
 
 function mixToward(hex: string, target: number, amount: number): string {
   const channel = (index: number) => {
@@ -444,17 +458,38 @@ function mixToward(hex: string, target: number, amount: number): string {
   return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
-function legibleAccent(accent: string, background: string): string {
-  const backgroundLuminance = hexLuminance(background);
+/**
+ * The accent is not only a fill: text-primary and text-control-accent paint it
+ * straight onto page and elevated surfaces. A pale pick in light mode, or a
+ * near-black one in dark, then disappears. The shipped green reads at 2.52:1
+ * against its own background, so hold custom accents to that same bar.
+ *
+ * Find the smallest correction in either direction. Endpoint order is based
+ * on actual worst-case contrast, so a mid-gray background cannot send a
+ * failing accent toward white when black is the readable endpoint.
+ */
+function legibleAccent(accent: string, backgrounds: readonly string[]): string {
   const clears = (hex: string) =>
-    contrastRatio(hexLuminance(hex), backgroundLuminance) >= ACCENT_TEXT_FLOOR;
-  if (clears(accent)) return accent;
-  // Walk toward the far end of the page, so the hue survives the correction.
-  const target = backgroundLuminance > 0.5 ? 0 : 255;
-  for (let step = 1; step <= MIX_STEPS; step += 1) {
-    const candidate = mixToward(accent, target, step / MIX_STEPS);
-    if (clears(candidate)) return candidate;
+    minimumContrast(hex, backgrounds) >= ACCENT_TEXT_FLOOR;
+  if (clears(accent)) {
+    return accent;
   }
+
+  const targets = [0, 255].sort(
+    (a, b) =>
+      minimumContrast(b === 0 ? "#000000" : "#ffffff", backgrounds) -
+      minimumContrast(a === 0 ? "#000000" : "#ffffff", backgrounds),
+  );
+  for (let step = 1; step <= MIX_STEPS; step += 1) {
+    for (const target of targets) {
+      const candidate = mixToward(accent, target, step / MIX_STEPS);
+      if (clears(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  const target = targets[0] ?? 0;
   return target === 0 ? "#000000" : "#ffffff";
 }
 
@@ -539,12 +574,13 @@ export function applyCustomizationToDocument(
   };
 
   const colors = c.colors[resolved];
+  const paletteSurfaces = PALETTE_SURFACES[resolved];
 
   const accent = colors.accent
-    ? legibleAccent(
-        colors.accent,
-        colors.background ?? PALETTE_BACKGROUND[resolved],
-      )
+    ? legibleAccent(colors.accent, [
+        colors.background ?? paletteSurfaces.background,
+        paletteSurfaces.elevated,
+      ])
     : null;
   for (const name of ACCENT_VARS) setVar(name, accent);
   for (const name of ACCENT_FG_VARS) {
