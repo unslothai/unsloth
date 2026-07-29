@@ -404,12 +404,16 @@ export function applyActiveModelStatusToStore(
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-      // Extract model name from path; trailing boundary prevents
-      // matching substrings like "8bit".
-      const midSlash = mid.replace(/\\/g, "/");
-      const sizeRe = /(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])/;
-      const sizeMatch =
-        (midSlash.split("/").pop() || "").match(sizeRe) ?? midSlash.match(sizeRe);
+      // Scan path segments right to left so the size nearest the leaf wins over
+      // a size-like parent dir; trailing boundary prevents matching "8bit".
+      const sizeRe = /(?:^|[-_.])(\d+\.?\d*)b(?:$|[-_.])/;
+      const sizeMatch = mid
+        .replace(/\\/g, "/")
+        .split("/")
+        .reduceRight<RegExpMatchArray | null>(
+          (found, seg) => found ?? seg.match(sizeRe),
+          null,
+        );
       if (sizeMatch && Number.parseFloat(sizeMatch[1]) <= 9) {
         reasoningDefault = false;
       }

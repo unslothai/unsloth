@@ -3,33 +3,36 @@
 
 """The Qwen3.5/3.6 thinking-default size gate in llama_cpp.py's launch path.
 
-The gate is inline in _build_command with no seam, so the pattern is read back out of the
-source and exercised here. Keep this in sync with the two frontend mirrors.
+The gate is inline in _build_command with no seam, so the whole block is sliced out of the
+source and exec'd here: that way a change to its control flow, not just its regex, is
+caught. Keep this in sync with the two frontend mirrors.
 """
 
 import re
+import textwrap
 from pathlib import Path
 
 import pytest
 
 _SRC = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+_START = 'mid = (model_identifier or "").lower()'
+_END = "thinking_default = False"
 
 
-def _gate_pattern() -> str:
-    src = _SRC.read_text(encoding = "utf-8")
-    match = re.search(r'size_re = r"([^"]+)"', src)
-    assert match, "size gate pattern not found in llama_cpp.py"
-    return match.group(1)
+def _gate_source() -> str:
+    lines = _SRC.read_text(encoding = "utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == _START)
+    end = next(i for i, line in enumerate(lines[start:], start) if line.strip() == _END)
+    return textwrap.dedent("\n".join(lines[start : end + 1]))
+
+
+_GATE = compile(_gate_source(), str(_SRC), "exec")
 
 
 def _thinking_default_off(model_identifier: str) -> bool:
-    mid = (model_identifier or "").lower()
-    if "qwen3.5" not in mid and "qwen3.6" not in mid:
-        return False
-    size_re = _gate_pattern()
-    mid_slash = mid.replace("\\", "/")
-    size_match = re.search(size_re, mid_slash.split("/")[-1]) or re.search(size_re, mid_slash)
-    return bool(size_match) and float(size_match.group(1)) <= 9
+    scope = {"re": re, "model_identifier": model_identifier, "thinking_default": True}
+    exec(_GATE, scope)
+    return scope["thinking_default"] is False
 
 
 @pytest.mark.parametrize(
@@ -66,7 +69,15 @@ def test_sub_9b_turns_thinking_off(model_id):
 
 
 @pytest.mark.parametrize(
-    "model_id", ["/models/8bit/qwen3.6-27b.gguf", "/models/8b/qwen3.6-27b.gguf"]
+    "model_id",
+    [
+        "/models/8bit/qwen3.6-27b.gguf",
+        "/models/8b/qwen3.6-27b.gguf",
+        # Directory identifier, so there is no file name to prefer: the segment nearest
+        # the leaf has to win instead.
+        "/models/8b/Qwen3.5-35B-A3B/UD-Q4_K_XL",
+        "/models/4b/Qwen3.6-27B-GGUF/snapshots/bfc15c3",
+    ],
 )
 def test_size_like_directory_does_not_shadow_the_real_size(model_id):
     assert _thinking_default_off(model_id) is False

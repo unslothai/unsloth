@@ -8487,15 +8487,16 @@ class LlamaCppBackend:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
                     if "qwen3.5" in mid or "qwen3.6" in mid:
-                        # Prefer the file name so a size-like directory (/8bit/) loses to the
-                        # real size, but fall back to the whole path: the identifier is a
-                        # directory for auto-switch (snapshot sha) and quant subdirs.
+                        # Scan path segments right to left: the identifier can be a
+                        # directory (auto-switch snapshot, quant subdir), so the size
+                        # nearest the leaf wins over a size-like parent (/8bit/, /8b/).
                         # Trailing boundary stops "8bit" matching as 8B.
-                        size_re = r"(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])"
-                        mid_slash = mid.replace("\\", "/")
-                        size_match = re.search(size_re, mid_slash.split("/")[-1]) or re.search(
-                            size_re, mid_slash
-                        )
+                        size_re = r"(?:^|[-_.])(\d+\.?\d*)b(?:$|[-_.])"
+                        size_match = None
+                        for seg in reversed(mid.replace("\\", "/").split("/")):
+                            size_match = re.search(size_re, seg)
+                            if size_match:
+                                break
                         # 9B included: unsloth ships 0.8B/2B/4B/9B with reasoning off by default.
                         if size_match and float(size_match.group(1)) <= 9:
                             thinking_default = False
