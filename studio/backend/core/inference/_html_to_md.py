@@ -246,8 +246,8 @@ class _HeaderFrame:
         # Tallied on emit; re-cleaning each parent's buffer would be quadratic.
         self.rendered_chars: int = 0
         self.heading_chars: int = 0
-        # Buffers open now enclose the frame, later ones nest. Links and cells are keyed by sequence
-        # number, not a flag: an inner one replaces the outer in the renderer's single slot.
+        # Buffers open now enclose the frame, later ones nest. Link/cell sequence numbers, not
+        # flags: an inner one replaces the outer in the renderer's single slot.
         self.outer_list_depth = list_depth
         self.outer_link_seq = link_seq
         self.outer_cell_seq = cell_seq
@@ -267,8 +267,8 @@ class _HeaderFrame:
         if not closed_by_own_tag:
             return "".join(self.parts)
         headings = "".join(self.heading_parts)
-        # Droppable visible chars only: headings are kept anyway, and blank structure _cleanup
-        # collapses (500 empty <div>s) must not make a tiny header look huge.
+        # Droppable chars only; headings survive, and blank structure _cleanup collapses must not
+        # inflate a tiny header.
         droppable = self.rendered_chars - self.heading_chars
         big_enough = self.text_chars >= _HEADER_MIN_CHARS or droppable >= _HEADER_MAX_RENDERED_CHARS
         if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
@@ -299,13 +299,12 @@ class _MarkdownRenderer(HTMLParser):
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
 
-        # One boundary per top-level scope element, so each candidate is sized alone and a swarm
-        # of tiny sibling cards cannot clear the threshold together.
+        # One boundary per top-level scope element, so a swarm of tiny cards cannot clear the gate.
         self.scope_segments: list[str] = []
         self._scope_seg_start: int | None = None
 
-        # Open non-void tags plus the indices where a hidden element started. End tags pop to the
-        # matching tag, so an omitted </p>/</li> cannot leave the renderer stuck hidden.
+        # Open non-void tags plus hidden-start indices, so an omitted </p>/</li> cannot leave the
+        # renderer stuck hidden.
         self._open_tags: list[str] = []
         # Open tags that can be closed implicitly; zero lets _close_implicit skip the scan.
         self._closable_open: int = 0
@@ -318,8 +317,8 @@ class _MarkdownRenderer(HTMLParser):
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
         self.scope_dropped: list[int] = []
-        # Heading text per segment: role="heading", <hgroup> and linked <h1> render as ordinary
-        # prose, so ATX reparsing alone cannot keep them out of the gate.
+        # Heading text per segment: role="heading", hgroup and linked h1 render as prose, so ATX
+        # reparsing alone cannot keep them out of the gate.
         self._seg_heading_texts: list[str] = []
         self.scope_heading_prose: list[int] = []
         # Open-tag indices of headings, unwound with _hidden_marks.
@@ -330,8 +329,7 @@ class _MarkdownRenderer(HTMLParser):
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
         self._link_seq: int = 0
-        # A link wrapping a heading emits after the heading mark is gone, so the tee is told to
-        # treat that one emit as heading output.
+        # A link wrapping a heading emits after the mark pops, so the tee is told to treat it so.
         self._link_had_heading: bool = False
         self._link_heading_parts: list[str] = []
         self._emit_as_heading: bool = False
@@ -356,8 +354,7 @@ class _MarkdownRenderer(HTMLParser):
         # Pre/code state
         self._in_pre: bool = False
         self._pre_parts: list[str] = []
-        # Depth, not a flag: <code><code>x</code></code> opens two spans and each
-        # end tag owes a backtick, else the delimiters stop pairing.
+        # Depth, not a flag: nested <code> opens two spans and each </code> owes a backtick.
         self._inline_code_depth: int = 0
 
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
@@ -369,8 +366,8 @@ class _MarkdownRenderer(HTMLParser):
 
         Such a buffer emits into the frame when it closes; an enclosing one
         (already open at ``<header>``) must not capture it."""
-        # Only the buffer _emit would pick matters, in its order: a blockquote inside a
-        # cell-enclosed header still routes to the cell, so OR-ing them would call that nested.
+        # Only the buffer _emit would pick matters, in its order; OR-ing them calls an enclosing
+        # one nested.
         if self._in_link:
             return self._link_seq != frame.outer_link_seq
         if self._in_cell:
@@ -382,28 +379,24 @@ class _MarkdownRenderer(HTMLParser):
     def _emit(self, text: str) -> None:
         frame = self._header_stack[-1] if self._header_stack else None
         # Tee wherever the text routes, so a heading in a nested buffer is captured. A link opened
-        # inside the frame delivers twice (raw, then formatted by _finish_link), so only the
-        # formatted form is teed; an enclosing link never re-delivers and is teed as it comes.
+        # inside the frame delivers twice, so tee only the formatted form; an enclosing link, once.
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
         )
-        # A flushed buffer re-delivers text already teed on the way in, so replays never tee;
-        # _finish_link is the exception and re-arms the tee itself.
+        # Replays never tee: the text was teed on the way in. _finish_link re-arms the tee itself.
         as_heading = (
             self._heading_marks and not in_nested_link and not self._replaying
         ) or self._emit_as_heading
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(text.strip())
-        # Tallied for the eligibility gate, independent of any frame. Text inside a link waits for
-        # _finish_link so the formatted form counts once.
+        # For the eligibility gate, frame or not. Link text waits for _finish_link to count once.
         if not self._replaying and (
             (self._heading_marks and not self._in_link) or self._emit_as_heading
         ):
             self._seg_heading_texts.append(text)
         nested_open = self._nested_buffer_open(frame) if frame is not None else False
-        # Tally once, on the emit that reaches the frame: counting text going INTO a nested buffer
-        # and again when it flushes doubled it, so a kept header stripped once quoted.
+        # Tally once, on the emit reaching the frame; counting again on flush doubled it.
         if frame is not None and not nested_open:
             frame.rendered_chars += len(text.strip())
             frame.parts.append(text)
@@ -499,8 +492,7 @@ class _MarkdownRenderer(HTMLParser):
         self._in_link = False
         self._link_text_parts = []
         self._link_heading_parts = []
-        # An anchor wrapping a heading AND other content is furniture carrying a title: tee the
-        # title alone, or the whole nav rides out as a heading.
+        # An anchor wrapping a heading AND other content tees the title alone, else the nav rides.
         partial = bool(heading_text) and heading_text != text
         self._emit_as_heading = self._link_had_heading and not partial
         self._link_had_heading = False
@@ -515,8 +507,7 @@ class _MarkdownRenderer(HTMLParser):
             frame = self._header_stack[-1]
             frame.heading_parts.append(heading_text + "\n\n")
             frame.heading_chars += len(heading_text)
-            # Preserved by hand, so the gate needs telling too or a title-only card
-            # reads as body prose.
+            # Preserved by hand, so tell the gate too or a title-only card reads as body prose.
             self._seg_heading_texts.append(heading_text)
 
     # ------------------------------------------------------------------
@@ -592,13 +583,11 @@ class _MarkdownRenderer(HTMLParser):
             # The header boundary proves this anchor did not adopt the body: its text is furniture.
             frame.link_chars += self._link_header_chars
             self._finish_link()
-        # Inline code opened OUTSIDE the header is the page's; closing it here would leave the real
-        # </code> to emit an unpaired backtick.
+        # Code opened OUTSIDE the header is the page's; closing it here leaves </code> unpaired.
         while self._inline_code_depth > frame.outer_in_code:
             self._inline_code_depth -= 1
             self._emit("`")
-        # Before the cell: _finish_row emits, and an open <pre> would swallow the
-        # row into the code block as CODE|  | instead of a cell holding the code.
+        # Before the cell: _finish_row emits, and an open <pre> would swallow the row as CODE|  |.
         if self._in_pre and not frame.outer_in_pre:
             self._drain_pre()
         if self._in_cell and self._cell_seq != frame.outer_cell_seq:
@@ -691,8 +680,8 @@ class _MarkdownRenderer(HTMLParser):
         suppressed = bool(self._hidden_marks) or (
             self._scope_tags is not None and self._scope_depth == 0
         )
-        # An element that IS the heading (e.g. <a role="heading">) emits when its buffer closes,
-        # after the mark below is popped, so flush it here while the tee still recognises it.
+        # An element that IS the heading emits when its buffer closes, after the mark pops; flush
+        # it here while the tee still recognises it.
         if self._in_link and tag == "a" and self._heading_marks:
             self._finish_link()
         if tag not in _VOID_TAGS:
@@ -866,8 +855,7 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "pre" and self._in_pre:
             self._drain_pre()
 
-        # Already closed means a header frame recovered it; a second backtick here would leave the
-        # rest of the page formatted as code.
+        # Already closed means a frame recovered it; a second backtick codes the rest of the page.
         elif tag == "code" and not self._in_pre and self._inline_code_depth:
             self._inline_code_depth -= 1
             self._emit("`")
@@ -908,8 +896,8 @@ class _MarkdownRenderer(HTMLParser):
             return
         # Collapse all whitespace (including newlines) per HTML rules.
         text = re.sub(r"\s+", " ", data)
-        # Sized after collapsing, as the reader sees it: a run of source spaces in a link otherwise
-        # clears the floor at ~100% density and drops the byline.
+        # Sized after collapsing, as the reader sees it: raw spaces in a link cleared the floor at
+        # ~100% density and dropped the byline.
         self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation).
         if self._in_table and not self._in_cell and not text.strip():
@@ -933,8 +921,8 @@ class _MarkdownRenderer(HTMLParser):
     # Flush pending buffers (handles truncated HTML from capped fetches)
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
-        # Headers first: each frame finalizes the buffers opened inside it, then emits into what
-        # encloses it, so an enclosing link or cell must still be open here; it is finalized below.
+        # Headers first: a frame finalizes its inner buffers, then emits into the enclosing link or
+        # cell, which must still be open here; it is finalized below.
         self._flush_header_frames()
 
         # Flush innermost buffers first so their content propagates outward.
@@ -1166,11 +1154,9 @@ def _visible_len(line: str) -> int:
             continue
         if line[i] == "[":
             open_bracket = True
-        # Without a bracket that opened it, "](" is literal text and the parens after
-        # it are prose: skipping them dropped visible characters from the score.
+        # With no opening bracket, "](" is literal and the parens after it are prose.
         if open_bracket and line[i] == "]" and i + 1 < n and line[i + 1] == "(":
-            # Destinations may hold balanced or escaped parens (/card(foo)?q=..), so stopping at
-            # the first ) leaves the rest scored as prose.
+            # Destinations may hold balanced or escaped parens, so the first ) does not end them.
             j, depth = i + 2, 1
             while j < n and depth:
                 char = line[j]
@@ -1180,8 +1166,7 @@ def _visible_len(line: str) -> int:
                 depth += (char == "(") - (char == ")")
                 j += 1
             if depth:
-                # Never balances, so this is not a link a reader would resolve; the bytes show as
-                # text, so count them rather than dropping the prose on the rest of the line.
+                # Never balances, so it is not a link; the bytes show as text, so count them.
                 total += 1
                 i += 1
                 continue

@@ -1626,8 +1626,8 @@ def test_header_survives_every_buffer_combination(
     assert "Article body sentence." in out, "body lost"
     assert out.strip(), "empty output"
     assert out.index("Article body sentence.") < 16000, "body pushed past the fetch cap"
-    # The title holds only for closed markup with no <pre>: in <pre> a heading is verbatim text,
-    # and unclosed shapes get best-effort recovery from code predating this pass.
+    # The title holds only for closed markup with no <pre>: there a heading is verbatim text, and
+    # unclosed shapes get best-effort recovery predating this pass.
     well_formed = close_header and close_nested and "pre" not in (wrapper, nested)
     if _GRID_HEADINGS[heading] and well_formed:
         assert out.count("Page Title") == 1, "title duplicated or lost"
@@ -1760,8 +1760,8 @@ _FENCE = "`" * 3
 
 
 def test_dropped_furniture_cannot_dominate_sibling_ranking():
-    # Credit keeps a stripped article competitive but must not decide the match:
-    # a teaser with a 1000 link header outranked five times its own real text.
+    # Credit must not decide the match: a teaser with a 1000 link header outranked five times its
+    # own real text.
     teaser = "<article><header>%s</header><p>%s</p></article>" % (
         "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(1000)),
         "Teaser words here. " * 20,
@@ -1773,8 +1773,7 @@ def test_dropped_furniture_cannot_dominate_sibling_ranking():
 
 
 def test_literal_bracket_paren_is_prose_not_a_destination():
-    # No [ opened it, so "](" is literal text and the parens hold visible prose.
-    # Skipping them scored 192 of 295 and dropped the article under the gate.
+    # No [ opened it, so "](" is literal and the parens hold prose; skipping them scored 192 of 295.
     article = "<article><p>%s](%s) %s</p></article>" % (
         "Real article prose that the reader wants to see. " * 3,
         "y" * 100,
@@ -1787,8 +1786,8 @@ def test_literal_bracket_paren_is_prose_not_a_destination():
 
 
 def test_hand_preserved_heading_reaches_the_eligibility_tally():
-    # The partial branch writes the title straight into heading_parts, so the
-    # gate has to be told as well or a title-only card reads as body prose.
+    # The partial branch writes the title straight into heading_parts, so the gate needs telling
+    # too or a title-only card reads as body prose.
     card = (
         '<article><header><a href="/h"><div role="heading">%s</div>%s</a><ul>%s</ul></header></article>'
         % (
@@ -1803,8 +1802,7 @@ def test_hand_preserved_heading_reaches_the_eligibility_tally():
 
 
 def test_pre_inside_a_table_cell_is_drained_before_the_row():
-    # The row is emitted, so an open <pre> swallowed it and produced a fenced
-    # block holding CODEMARKER|  | instead of a cell holding the code.
+    # The row is emitted, so an open <pre> swallowed it into a fence as CODEMARKER|  |.
     body = "<main><header><h1>T</h1><table><tr><td><pre>CODEMARKER</header><p>%s</p></main>" % (
         "Article body. " * 30,
     )
@@ -1814,8 +1812,8 @@ def test_pre_inside_a_table_cell_is_drained_before_the_row():
 
 
 def test_post_processing_respects_the_widened_fence():
-    # _cleanup and _strip_boilerplate_lines toggled on any ``` line, so the literal one
-    # closed the block and its code was cleaned and de-boilerplated.
+    # Both passes toggled on any ``` line, so the literal one closed the block and its code was
+    # cleaned and de-boilerplated.
     code = "<pre>%s\nskip to content\n\nreal code line   \nmore code</pre>" % _FENCE
     body = "<article>%s<p>%s</p></article>" % (code, "Body text here. " * 20)
     out = html_to_markdown(f"<body><main>{body}</main></body>", main_content = True)
@@ -1836,8 +1834,8 @@ def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
 
 
 def test_structural_headings_do_not_satisfy_the_eligibility_gate():
-    # role="heading" renders as plain prose, so ATX reparsing missed it and a header-only card
-    # cleared the gate on its title plus dropped-list credit.
+    # role="heading" renders as prose, so ATX reparsing missed it and a header-only card cleared
+    # the gate on its title plus dropped-list credit.
     card = '<article><header><div role="heading">%s</div><ul>%s</ul></header></article>' % (
         "Card Title Words " * 14,
         _interlanguage_list(300),
@@ -1908,8 +1906,7 @@ def test_heading_through_a_nested_buffer_is_emitted_once():
 
 
 def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
-    # </code> arrives after </header>; the frame already closed the span, so a second emit is
-    # unpaired across the rest of the page.
+    # </code> arrives after </header>; the frame already closed the span, so a second emit is odd.
     body = "<main><header><h1>T</h1><code>navcode<ul>%s</ul></header><p>%s</p></code></main>" % (
         _interlanguage_list(300),
         "Article body. " * 30,
@@ -1987,8 +1984,7 @@ def test_aria_heading_accepts_a_fallback_role_token_list():
     ],
 )
 def test_heading_survives_a_stripped_header(heading_markup, marker):
-    # However the title is expressed, reducing a link-only header keeps it and
-    # nothing else: through a cell, an ARIA role, a link, or an hgroup subtitle.
+    # However the title is expressed, reducing a link-only header keeps it and nothing else.
     body = "<main><header>%s<ul>%s</ul></header><p>%s</p></main>" % (
         heading_markup,
         _interlanguage_list(300),
@@ -2052,8 +2048,7 @@ def test_header_size_is_independent_of_the_buffer_it_renders_through():
 
 
 def test_nested_inline_code_closes_every_span_it_opened():
-    # Two <code> elements owe two closing backticks. Tracking open/closed as a
-    # flag let the first </code> answer for both and left the delimiters odd.
+    # Two <code> elements owe two backticks; as a flag the first </code> answered for both.
     body = "<main><article><p><code><code>x</code></code></p><p>%s</p></article></main>" % (
         "Body text here. " * 20,
     )
