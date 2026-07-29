@@ -155,10 +155,11 @@ def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
     assert "tryReservePreStreamRun()" in submit
     assert "preStreamRunReservations" in QUEUE_BOUNDARY
     assert "registerPreStreamRun(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
-    assert "releasePreStreamRunForThread(threadKey);" in CHAT_ADAPTER
+    assert "releasePreStreamRunForThread(" in CHAT_ADAPTER
     assert "runtime.setThreadRunning(threadKey, true, {" in CHAT_ADAPTER
     assert "sendReservedComposer()" in submit
-    assert "notifyPreStreamRunFailed(referenceThreadId);" in THREAD
+    assert "getPreStreamRunReservationToken()" in THREAD
+    assert "notifyPreStreamRunFailed(referenceThreadId, reservationToken);" in THREAD
     assert "class PreStreamAwareAttachmentAdapter" in RUNTIME_PROVIDER
     attachment_adapter = _between(
         RUNTIME_PROVIDER,
@@ -166,8 +167,9 @@ def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
         "function useStudioRuntimeAdapters(",
     )
     assert "return await this.delegate.send(attachment);" in attachment_adapter
-    assert "getPreStreamRunReservationCount() > 0" in attachment_adapter
-    assert "notifyPreStreamRunFailed();" in attachment_adapter
+    assert "const reservationToken = getPreStreamRunReservationToken();" in attachment_adapter
+    assert "notifyPreStreamRunFailed(undefined, reservationToken)" in attachment_adapter
+    assert "expectedToken !== preStreamRunReservationToken" in QUEUE_BOUNDARY
     assert "new PreStreamAwareAttachmentAdapter(" in RUNTIME_PROVIDER
     assert "Promise.resolve(aui.composer().send())" not in THREAD
 
@@ -184,6 +186,16 @@ def test_retry_edit_and_compare_preflights_reserve_global_capacity():
         "function isPromptQueueRunReadyToDispatch(",
     )
     assert "!usePromptQueueUI.getState().isRunning" in reserve
+    submit = _between(
+        THREAD,
+        "const handleSubmit = useCallback(",
+        "const stopQueue = useCallback(",
+    )
+    overlay = _between(submit, "if (overlay) {", "clearStoredDraft();")
+    assert "if (!tryReservePreStreamRun())" in overlay
+    assert overlay.index("(overlay.threadId ?? null) !== referenceThreadId") < (
+        overlay.index("if (!tryReservePreStreamRun())")
+    )
 
 
 def test_background_queue_snapshots_settings_and_blocks_model_changes():
@@ -200,6 +212,7 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert '"reasoningEffort"' in QUEUED_SETTINGS
     assert '"preserveThinking"' in QUEUED_SETTINGS
     assert "pendingSettingsIds" in target
+    assert "void aui.threadListItem().initialize()" in target
     assert "discardQueuedChatRunSettings(settingsId)" in target
     assert "discardQueuedChatRunSettingsForThread(threadId);" in THREAD
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
@@ -222,12 +235,14 @@ def test_bulk_archive_and_clear_stop_prompt_queues_first():
     assert "cancelByThreadId[threadId]?.();" in CLEAR_ALL_CHATS
     assert "getPreStreamRunThreadIds()" in CLEAR_ALL_CHATS
     assert "requestPromptQueueStop();" in CLEAR_ALL_CHATS
-    assert CLEAR_ALL_CHATS.index("cancelByThreadId[threadId]?.();") < (
-        CLEAR_ALL_CHATS.index("requestPromptQueueStop();")
+    assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < (
+        CLEAR_ALL_CHATS.index("cancelByThreadId[threadId]?.();")
     )
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
         "clearStoredChats();"
     )
+    assert "window.addEventListener(PROMPT_QUEUE_STOP_EVENT, stopRunListQueue)" in SHARED_COMPOSER
+    assert "queueRef.current = [];" in SHARED_COMPOSER
 
 
 def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
@@ -255,6 +270,31 @@ def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
     )
     assert "delete nextCancel[threadId]" not in set_running
     assert "ownerless clear predates per-run tracking" in set_running
+    cancel_registrar = _between(
+        RUNTIME_PROVIDER,
+        "function CancelRegistrar()",
+        "function ThreadBackendAutosave(",
+    )
+    assert "current.cancelByThreadId[mainThreadId] !== cancel" in cancel_registrar
+    assert "unsubscribe = useChatRuntimeStore.subscribe" in cancel_registrar
+    assert "unsubscribe();" in cancel_registrar
+    assert "PRE_STREAM_RUN_FAILED_EVENT" in cancel_registrar
+
+
+def test_research_transfers_its_pre_stream_reservation_to_run_ownership():
+    research = _between(
+        CHAT_ADAPTER,
+        "if (\n        runtime.deepResearchEnabled &&",
+        "const sandboxSessionId",
+    )
+    assert "let researchReservationPending = true;" in research
+    assert "getPreStreamRunReservationToken()" in research
+    assert "researchReservationPending = !releasePreStreamRunForThread(" in research
+    assert "if (researchReservationPending)" in research
+    assert "researchReservationToken," in research
+    assert research.index("researchReservationPending = !releasePreStreamRunForThread(") < (
+        research.index("runtime.setThreadRunning(threadKey, true")
+    )
 
 
 def test_persisted_new_chat_accepts_its_promoted_remote_id():
@@ -272,3 +312,4 @@ def test_sidebar_distinguishes_running_queues_from_completed_background_chats():
     assert "hasQueueActivity" in APP_SIDEBAR
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
+    assert "hasActivityIndicator && !isGenerating" in APP_SIDEBAR

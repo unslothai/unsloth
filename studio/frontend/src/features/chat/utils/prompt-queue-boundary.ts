@@ -3,6 +3,7 @@ export const PROMPT_QUEUE_RUN_FAILED_EVENT = "unsloth:prompt-queue-run-failed";
 export const PRE_STREAM_RUN_FAILED_EVENT = "unsloth:pre-stream-run-failed";
 
 let preStreamRunReservations = 0;
+let preStreamRunReservationToken: symbol | null = null;
 const preStreamRunThreadIds = new Set<string>();
 
 export interface PromptQueueStopOptions {
@@ -37,11 +38,28 @@ export function tryReservePreStreamRun(): boolean {
     return false;
   }
   preStreamRunReservations += 1;
+  preStreamRunReservationToken = Symbol("pre-stream-run");
   return true;
 }
 
-export function releasePreStreamRunReservation(): void {
+export function getPreStreamRunReservationToken(): symbol | null {
+  return preStreamRunReservationToken;
+}
+
+export function releasePreStreamRunReservation(
+  expectedToken?: symbol | null,
+): boolean {
+  if (
+    expectedToken !== undefined &&
+    expectedToken !== preStreamRunReservationToken
+  ) {
+    return false;
+  }
   preStreamRunReservations = Math.max(0, preStreamRunReservations - 1);
+  if (preStreamRunReservations === 0) {
+    preStreamRunReservationToken = null;
+  }
+  return true;
 }
 
 export function registerPreStreamRun(threadId?: string | null): void {
@@ -50,11 +68,17 @@ export function registerPreStreamRun(threadId?: string | null): void {
   }
 }
 
-export function releasePreStreamRunForThread(threadId?: string | null): void {
+export function releasePreStreamRunForThread(
+  threadId?: string | null,
+  expectedToken?: symbol | null,
+): boolean {
+  if (!releasePreStreamRunReservation(expectedToken)) {
+    return false;
+  }
   if (threadId) {
     preStreamRunThreadIds.delete(threadId);
   }
-  releasePreStreamRunReservation();
+  return true;
 }
 
 export function isPreStreamRunActive(threadId: string): boolean {
@@ -83,11 +107,16 @@ export function notifyPromptQueueRunFailed(threadId?: string | null) {
   );
 }
 
-export function notifyPreStreamRunFailed(threadId?: string | null) {
-  releasePreStreamRunForThread(threadId);
+export function notifyPreStreamRunFailed(
+  threadId?: string | null,
+  expectedToken?: symbol | null,
+): boolean {
+  if (!releasePreStreamRunForThread(threadId, expectedToken)) {
+    return false;
+  }
   notifyPromptQueueRunFailed(threadId);
   if (typeof window === "undefined") {
-    return;
+    return true;
   }
   window.dispatchEvent(
     new CustomEvent<PromptQueueRunFailedEventDetail>(
@@ -97,4 +126,5 @@ export function notifyPreStreamRunFailed(threadId?: string | null) {
       },
     ),
   );
+  return true;
 }

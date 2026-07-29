@@ -119,12 +119,14 @@ import {
 } from "./stores/chat-runtime-store";
 import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import {
+  PROMPT_QUEUE_STOP_EVENT,
   PRE_STREAM_RUN_FAILED_EVENT,
   getPreStreamRunReservationCount,
   notifyPreStreamRunFailed,
   releasePreStreamRunReservation,
   tryReservePreStreamRun,
   type PromptQueueRunFailedEventDetail,
+  type PromptQueueStopOptions,
 } from "./utils/prompt-queue-boundary";
 import {
   getExternalReasoningCapabilities,
@@ -592,6 +594,26 @@ export function SharedComposer({
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const stopRunListQueue = (event: Event) => {
+      const detail = (event as CustomEvent<PromptQueueStopOptions>).detail;
+      // A targeted single-chat stop does not identify compare panes. Global
+      // stops (including Clear all) must discard the saved-prompt run list
+      // before cancelling its active pane runs can advance it.
+      if (detail?.threadIds?.length || !isQueueRunningRef.current) {
+        return;
+      }
+      isQueueRunningRef.current = false;
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setIsQueueRunning(false);
+      setQueueProgress({ current: 0, total: 0 });
+    };
+    window.addEventListener(PROMPT_QUEUE_STOP_EVENT, stopRunListQueue);
+    return () =>
+      window.removeEventListener(PROMPT_QUEUE_STOP_EVENT, stopRunListQueue);
+  }, []);
 
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;

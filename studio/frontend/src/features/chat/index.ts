@@ -77,6 +77,7 @@ export {
 export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
+  getPreStreamRunReservationToken,
   getPreStreamRunReservationCount,
   notifyPreStreamRunFailed,
   releasePreStreamRunReservation,

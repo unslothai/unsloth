@@ -103,6 +103,7 @@ import {
   PLUS_MENU_ORDER,
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
+  getPreStreamRunReservationToken,
   getPreStreamRunReservationCount,
   notifyPreStreamRunFailed,
   releasePreStreamRunReservation,
@@ -2034,6 +2035,14 @@ const Composer: FC<{
   const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
     const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
     const initialState = aui.threadListItem().getState();
+    if (!initialState.remoteId) {
+      // switchToNewThread() reuses an uninitialized local thread. Claim its
+      // durable identity now so another New Chat cannot merge two parked
+      // prompts into the same conversation.
+      void aui.threadListItem().initialize().catch(() => {
+        // Dispatch will surface the unavailable thread if initialization fails.
+      });
+    }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
     const usesThreadDocumentsAtQueueStart =
@@ -2165,13 +2174,14 @@ const Composer: FC<{
   );
 
   const sendReservedComposer = useCallback(() => {
+    const reservationToken = getPreStreamRunReservationToken();
     try {
       // The public composer API returns void; async attachment conversion
       // failures are released by PreStreamAwareAttachmentAdapter.
       aui.composer().send();
     } catch (error) {
-      if (getPreStreamRunReservationCount() > 0) {
-        notifyPreStreamRunFailed(referenceThreadId);
+      if (reservationToken) {
+        notifyPreStreamRunFailed(referenceThreadId, reservationToken);
       }
       toast.error("Could not prepare attachments", {
         description:
@@ -2308,6 +2318,11 @@ const Composer: FC<{
             description: "Open the original chat and retry the edit.",
           });
           closeOverlay();
+          return;
+        }
+        if (!tryReservePreStreamRun()) {
+          event.preventDefault();
+          toast.error("Wait for the current response to finish");
           return;
         }
         clearStoredDraft();

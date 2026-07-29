@@ -9,6 +9,7 @@ import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import {
+  getPreStreamRunReservationToken,
   notifyPreStreamRunFailed,
   releasePreStreamRunForThread,
 } from "../utils/prompt-queue-boundary";
@@ -2137,6 +2138,9 @@ export function createOpenAIStreamAdapter(
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base")
       ) {
+        const researchReservationToken = getPreStreamRunReservationToken();
+        let researchReservationPending = true;
+        try {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
           await waitForModelReady(abortSignal);
@@ -2265,6 +2269,10 @@ export function createOpenAIStreamAdapter(
           }
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
+        researchReservationPending = !releasePreStreamRunForThread(
+          threadKey,
+          researchReservationToken,
+        );
         runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
@@ -2374,6 +2382,14 @@ export function createOpenAIStreamAdapter(
           runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
         }
         return;
+        } finally {
+          if (researchReservationPending) {
+            notifyPreStreamRunFailed(
+              resolvedThreadId ?? null,
+              researchReservationToken,
+            );
+          }
+        }
       }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId

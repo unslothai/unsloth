@@ -18,9 +18,12 @@ export async function clearAllChats() {
     ...getPreStreamRunThreadIds(),
     ...Object.keys(cancelByThreadId),
   ]);
+  // Stop schedulers before cancelling active runs: their running-to-idle
+  // transition is otherwise interpreted as permission to dispatch the next
+  // queued prompt while storage is being cleared.
+  requestPromptQueueStop();
   for (const threadId of activeThreadIds) {
     cancelByThreadId[threadId]?.();
   }
-  requestPromptQueueStop();
   return clearStoredChats();
 }

@@ -61,7 +61,8 @@ import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import {
-  getPreStreamRunReservationCount,
+  PRE_STREAM_RUN_FAILED_EVENT,
+  getPreStreamRunReservationToken,
   isPreStreamRunActive,
   notifyPreStreamRunFailed,
   registerPreStreamRun,
@@ -954,14 +955,17 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const reservationToken = getPreStreamRunReservationToken();
     try {
       return await this.delegate.send(attachment);
     } catch (error) {
       // ComposerRuntime.send() intentionally returns void even though its core
       // awaits attachment conversion. Release the slot here, at the only
       // promise boundary that can observe a pre-handleSend conversion failure.
-      if (getPreStreamRunReservationCount() > 0) {
-        notifyPreStreamRunFailed();
+      if (
+        reservationToken &&
+        notifyPreStreamRunFailed(undefined, reservationToken)
+      ) {
         toast.error("Could not prepare attachments", {
           description:
             error instanceof Error ? error.message : "Please retry the send.",
@@ -1492,13 +1496,44 @@ function CancelRegistrar(): ReactElement | null {
     };
     useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
     return () => {
-      const store = useChatRuntimeStore.getState();
-      if (
-        !store.runningByThreadId[mainThreadId] &&
-        !isPreStreamRunActive(mainThreadId)
-      ) {
-        store.clearThreadCancel(mainThreadId);
+      const clearIfFinished = () => {
+        const current = useChatRuntimeStore.getState();
+        if (current.cancelByThreadId[mainThreadId] !== cancel) {
+          return true;
+        }
+        if (
+          !current.runningByThreadId[mainThreadId] &&
+          !isPreStreamRunActive(mainThreadId)
+        ) {
+          current.clearThreadCancel(mainThreadId);
+          return true;
+        }
+        return false;
+      };
+      if (clearIfFinished()) {
+        return;
       }
+      // Navigation unmounts this registrar while the old run continues. Keep
+      // the callback reachable until that run settles, then release both the
+      // runtime closure and its registry entry.
+      let unsubscribe = () => {};
+      const stopWatching = () => {
+        unsubscribe();
+        window.removeEventListener(
+          PRE_STREAM_RUN_FAILED_EVENT,
+          handleRunStateChange,
+        );
+      };
+      const handleRunStateChange = () => {
+        if (clearIfFinished()) {
+          stopWatching();
+        }
+      };
+      unsubscribe = useChatRuntimeStore.subscribe(handleRunStateChange);
+      window.addEventListener(
+        PRE_STREAM_RUN_FAILED_EVENT,
+        handleRunStateChange,
+      );
     };
   }, [aui, mainThreadId]);
 

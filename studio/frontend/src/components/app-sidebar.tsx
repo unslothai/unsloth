@@ -1114,7 +1114,7 @@ export function AppSidebar() {
             />
           )}
         </SidebarMenuButton>
-        {hasActivityIndicator ? (
+        {hasActivityIndicator && !isGenerating ? (
           <span
             className={cn(
               "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
