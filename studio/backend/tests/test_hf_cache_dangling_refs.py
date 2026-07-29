@@ -368,17 +368,22 @@ def _two_snapshot_repo(
     older_files: dict,
     newer_files: dict,
     *,
-    ref: str = UPSTREAM_HEAD,
+    ref: str | None = UPSTREAM_HEAD,
 ) -> Path:
     """A repo whose payload sits in the older of two snapshots.
 
     Realistic because a metadata probe (config.json only) against a commit that
     has moved on materialises a newer, weightless snapshot beside the download.
+
+    ``ref = None`` leaves no ``refs/main`` at all, which is what a fetch pinned
+    to a commit hash leaves behind: ``snapshot_download`` only writes a ref for
+    a branch or tag.
     """
     repo_dir = cache_root / "models--Org--Model"
     (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
     (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
-    (repo_dir / "refs" / "main").write_text(ref, encoding = "utf-8")
+    if ref is not None:
+        (repo_dir / "refs" / "main").write_text(ref, encoding = "utf-8")
     for commit, files in ((OLDER, older_files), (NEWER, newer_files)):
         snapshot = repo_dir / "snapshots" / commit
         snapshot.mkdir(parents = True, exist_ok = True)
@@ -788,13 +793,26 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
         pytest.param({"config.json": b"{}"}, NEWER, OLDER, False, id = "pinned-older-snapshot"),
         # Negative side: when the row advertises the newest snapshot the signal
         # does describe it, and a cancelled download with no ``.incomplete``
-        # blob left behind has nothing else to give it away.
+        # blob left behind has nothing else to give it away. No ``refs/main``
+        # at all, which is what a commit-pinned fetch leaves: the ref carries no
+        # evidence about the attempt, so the newest snapshot still owns it.
+        pytest.param(
+            {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+            None,
+            NEWER,
+            True,
+            id = "advertised-snapshot",
+        ),
+        # A ``refs/main`` naming a commit with no directory does carry evidence:
+        # the ref is rewritten before the first file lands, so the attempt that
+        # left the signal never materialised a snapshot and the complete payload
+        # already on disk must not inherit it.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             UPSTREAM_HEAD,
             NEWER,
-            True,
-            id = "advertised-snapshot",
+            False,
+            id = "unmaterialised-attempt",
         ),
     ],
 )
@@ -852,6 +870,7 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
         tmp_path,
         older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
         newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+        ref = None,
     )
     (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
 
@@ -860,6 +879,85 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
     assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
     assert rows[0].get("partial") is True
     assert rows[0]["capabilities"].get("can_chat") is False
+
+
+@pytest.mark.parametrize("signal", ["marker", "manifest"])
+def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
+    signal, tmp_path, monkeypatch
+):
+    """The recovered row's own scenario, and the reason it must not arrive
+    partial. ``snapshot_download`` rewrites ``refs/main`` with the new commit
+    before it fetches a byte, and the downloader writes the manifest earlier
+    still, so an update interrupted before the first file leaves the previous
+    complete snapshot as the only payload on disk under a ref that resolves
+    nowhere. That is exactly the state this branch recovers rows from, and
+    charging the interrupted attempt's signals to the cached payload handed
+    chat auto-load a model it had to skip."""
+    repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
+    snapshot = repo_dir / "snapshots" / SNAPSHOT
+    (snapshot / "config.json").write_text("{}", encoding = "utf-8")
+    _write_repo_wide_signal(signal, tmp_path)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == snapshot
+    assert rows[0].get("partial") is False
+    assert rows[0]["capabilities"].get("can_chat") is True
+
+
+@pytest.mark.parametrize(
+    "older_files, newer_files, ref, advertised, partial",
+    [
+        # A same-variant re-download that stops before materialising its
+        # snapshot leaves a manifest listing the new revision's files. Verifying
+        # it against the older snapshot the row pins fails on any rename or size
+        # change, so the one complete quant on disk looked broken.
+        pytest.param(
+            {"Model-Q4_K_M.gguf": b"\0" * 32},
+            {"config.json": b"{}"},
+            NEWER,
+            OLDER,
+            False,
+            id = "pinned-older-snapshot",
+        ),
+        # Negative side: the quant the manifest names is not complete under the
+        # pinned snapshot, so the manifest is the only thing that can judge it
+        # and the row stays partial.
+        pytest.param(
+            {"config.json": b"{}"},
+            {"Model-Q4_K_M.gguf": b"\0" * 32},
+            None,
+            NEWER,
+            True,
+            id = "advertised-snapshot",
+        ),
+    ],
+)
+def test_a_gguf_variant_manifest_is_scoped_to_the_snapshot_the_row_pins(
+    older_files, newer_files, ref, advertised, partial, tmp_path, monkeypatch
+):
+    from hub.utils import download_manifest
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = older_files,
+        newer_files = newer_files,
+        ref = ref,
+    )
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile("Model-Q4_K_M.gguf", 999)],
+        "http",
+        hub_cache = tmp_path,
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / advertised
+    assert rows[0].get("partial") is partial
+    assert rows[0]["capabilities"].get("can_chat") is not partial
 
 
 def test_a_gguf_variant_marker_from_a_newer_attempt_does_not_disable_the_pinned_quant(
@@ -905,6 +1003,7 @@ def test_a_gguf_variant_marker_against_the_advertised_snapshot_is_still_partial(
         tmp_path,
         older_files = {"config.json": b"{}"},
         newer_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        ref = None,
     )
     download_manifest.write_cancel_marker(
         "model", "Org/Model", "Q4_K_M", "http", hub_cache = tmp_path

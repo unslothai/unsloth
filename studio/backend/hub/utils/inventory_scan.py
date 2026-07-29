@@ -549,6 +549,28 @@ def _is_latest_snapshot(repo_cache_dir: Path, snapshot_dir: Path) -> bool:
         return latest == snapshot_dir
 
 
+def _default_ref_names_an_absent_snapshot(repo_cache_dir: Path) -> bool:
+    """Whether ``refs/main`` is present and names a commit with no snapshot dir.
+
+    ``snapshot_download`` rewrites ``refs/<revision>`` with the resolved commit
+    *before* it fetches a single file, and the snapshot directory is only
+    created once the first file lands, so this state is the window between the
+    two. A missing ``refs/main`` is not the same thing: a repo fetched by
+    commit hash never gets one, so it carries no evidence either way.
+    """
+    ref_path = repo_cache_dir / "refs" / "main"
+    try:
+        commit = ref_path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not commit:
+        return False
+    try:
+        return not (repo_cache_dir / "snapshots" / commit).is_dir()
+    except (OSError, ValueError):
+        return False
+
+
 def _repo_signal_applies_to_snapshot(
     repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
 ) -> bool:
@@ -560,9 +582,19 @@ def _repo_signal_applies_to_snapshot(
     newest snapshot, so a row advertising an older, already complete one must
     not inherit them and lose ``can_chat``. With nothing to attribute against,
     the signal is kept rather than dropped.
+
+    A ``refs/main`` naming a commit with no directory pins that attempt to a
+    revision that is not on disk at all, so no snapshot here may inherit it.
+    The downloader never passes a revision, so every attempt it starts rewrites
+    that ref first; leaving the signal on the newest snapshot instead charged an
+    interrupted update to the previous, complete payload and hid a model that
+    still loads. This is the very state the dangling-ref recovery restores rows
+    from, so the recovered row would arrive unusable.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return True
+    if _default_ref_names_an_absent_snapshot(repo_cache_dir):
+        return False
     return _is_latest_snapshot(repo_cache_dir, snapshot_dir)
 
 
@@ -604,7 +636,9 @@ def _repo_cache_dir_has_snapshot_legacy_partial(
     # they can only be charged to the revision a download is currently writing,
     # which is the newest one. A row that advertises an older, already complete
     # snapshot must not go partial (and lose ``can_chat``) over a separate fetch.
-    if snapshot_dir is not None and not _is_latest_snapshot(repo_cache_dir, snapshot_dir):
+    if snapshot_dir is not None and not _repo_signal_applies_to_snapshot(
+        repo_cache_dir, snapshot_dir
+    ):
         return False
     incomplete_hashes = _repo_cache_dir_incomplete_hashes(repo_cache_dir)
     return any(blob_hash not in ignored_blob_hashes for blob_hash in incomplete_hashes)
@@ -836,7 +870,7 @@ def is_variant_partial(
     incomplete_blob_hashes: Optional[set[str]] = None,
     variant_blob_hashes: Optional[frozenset[str]] = None,
     repo_cache_dir: Optional[Path] = None,
-    cancel_marker_applies: bool = True,
+    repo_signal_applies: bool = True,
 ) -> bool:
     """Per-variant partial detection. Owns its manifest, owns its marker.
     Used by the GGUF variants endpoint to flag a specific quant as broken
@@ -846,15 +880,16 @@ def is_variant_partial(
     caller is checking many variants of the same repo (see
     is_gguf_repo_partial for that usage).
 
-    ``cancel_marker_applies`` is the same attribution the repo-wide signals get:
-    the marker is keyed by (repo, variant) with no revision, so a caller that
-    pinned *snapshot_dir* to an older revision than the cancelled attempt was
-    writing passes False rather than call the quant it verifies there broken.
-    Defaults True so the per-variant endpoint keeps reporting a cancelled quant
-    as cancelled."""
+    ``repo_signal_applies`` is the same attribution the repo-wide signals get.
+    The marker and the manifest are both keyed by (repo, variant) with no
+    revision and are both overwritten by the next attempt, so a caller that
+    pinned *snapshot_dir* to an older revision than that attempt was writing
+    passes False rather than judge the quant it verifies there by another
+    revision's file list. Defaults True so the per-variant endpoint keeps
+    reporting a cancelled or unfinished quant as broken."""
     from hub.utils import download_manifest
     return _compose_partial(
-        lambda: cancel_marker_applies
+        lambda: repo_signal_applies
         and download_manifest.has_cancel_marker(
             "model",
             repo_id,
@@ -866,7 +901,8 @@ def is_variant_partial(
             and variant_blob_hashes
             and incomplete_blob_hashes.intersection(variant_blob_hashes)
         ),
-        lambda: _manifest_partial(
+        lambda: repo_signal_applies
+        and _manifest_partial(
             "model",
             repo_id,
             variant,
@@ -920,7 +956,8 @@ def is_gguf_repo_partial(
     # Variant cancel markers carry no revision either, so they get it too.
     repo_signal_applies = _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
     has_legacy_partial = repo_signal_applies and _legacy_partial("model", repo_id, repo_cache_dir)
-    variants: set[str] = set(_completed_gguf_variants(snapshot_dir))
+    complete_here = _completed_gguf_variants(snapshot_dir)
+    variants: set[str] = set(complete_here)
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
     for variant, _path in download_manifest.iter_variant_manifests(
         "model",
@@ -959,7 +996,10 @@ def is_gguf_repo_partial(
             variant,
             snapshot_dir,
             repo_cache_dir = repo_cache_dir,
-            cancel_marker_applies = repo_signal_applies,
+            # A quant whose files are all in the pinned snapshot is loadable
+            # from it whatever a newer attempt's marker or manifest says, and
+            # that attempt's manifest lists another revision's files.
+            repo_signal_applies = repo_signal_applies or variant not in complete_here,
         ):
             has_broken = True
         else:
