@@ -456,97 +456,91 @@ export function ResourcesTab() {
             </span>
           </div>
         )}
-        <div>
-          {hasGpu ? (
-            metrics.devices.map((device, index) => {
-              const ordinal = deviceOrdinal(device);
-              // Preserve null (unknown, e.g. Windows ROCm perf counter); coercing
-              // to 0 would render a fabricated 0 used / full free.
-              const total = device.memory_total_gb ?? null;
-              const used = device.vram_used_gb ?? null;
-              const free =
-                device.vram_free_gb ??
-                (isFiniteNumber(total) && isFiniteNumber(used)
-                  ? Math.max(0, total - used)
-                  : null);
-              const percent =
-                device.vram_utilization_pct ??
-                (isFiniteNumber(total) && total > 0 && isFiniteNumber(used)
-                  ? (used / total) * 100
-                  : null);
-              const safePercent = clampPercent(percent);
-              const usedText = isFiniteNumber(used)
-                ? formatGiB(used)
-                : unknownLabel;
-              const freeText = isFiniteNumber(free)
-                ? formatGiB(free)
-                : unknownLabel;
-              const totalText = isFiniteNumber(total)
-                ? formatGiB(total)
-                : unknownLabel;
-              const percentText = isFiniteNumber(percent)
-                ? formatPercent(safePercent)
-                : unknownLabel;
-              return (
-                // Two compact lines per device. The settings pane is about
-                // 664px at any window size, which cannot hold the name, three
-                // figures, meter and percentage on one row, so no breakpoint
-                // would ever fire. Splitting them keeps the name readable and
-                // the meter narrow instead of running the width of the pane.
-                <div
-                  key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                  className="flex min-w-0 flex-col gap-2 py-3"
-                >
-                  <div className="flex min-w-0 items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-foreground">
-                        {device.name ??
-                          t("settings.resources.gpu.unknownDevice")}
-                      </div>
-                      <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                        {ordinal === undefined
-                          ? backendLabel
-                          : `${t("settings.resources.gpu.deviceWithIndex", {
-                              index: ordinal,
-                            })}, ${backendLabel}`}
-                      </div>
-                    </div>
-                    <div className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+        {hasGpu ? (
+          metrics.devices.map((device, index) => {
+            const ordinal = deviceOrdinal(device);
+            // Preserve null (unknown, e.g. Windows ROCm perf counter); coercing
+            // to 0 would render a fabricated 0 used / full free.
+            const total = device.memory_total_gb ?? null;
+            const used = device.vram_used_gb ?? null;
+            const free =
+              device.vram_free_gb ??
+              (isFiniteNumber(total) && isFiniteNumber(used)
+                ? Math.max(0, total - used)
+                : null);
+            const percent =
+              device.vram_utilization_pct ??
+              (isFiniteNumber(total) && total > 0 && isFiniteNumber(used)
+                ? (used / total) * 100
+                : null);
+            const safePercent = clampPercent(percent);
+            const usedText = isFiniteNumber(used)
+              ? formatGiB(used)
+              : unknownLabel;
+            const freeText = isFiniteNumber(free)
+              ? formatGiB(free)
+              : unknownLabel;
+            const totalText = isFiniteNumber(total)
+              ? formatGiB(total)
+              : unknownLabel;
+            const percentText = isFiniteNumber(percent)
+              ? formatPercent(safePercent)
+              : unknownLabel;
+            return (
+              // Name over backend on the left, figures and meter beside them.
+              // The meter is deliberately short: at full width it read as a
+              // rule across the pane rather than a reading for one device.
+              <div
+                key={`${device.index ?? index}-${device.name ?? "gpu"}`}
+                className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-foreground">
+                    {device.name ?? t("settings.resources.gpu.unknownDevice")}
+                  </div>
+                  <div className="mt-1 flex min-w-0 items-center gap-2">
+                    <span className="truncate text-xs text-muted-foreground">
+                      {ordinal === undefined
+                        ? backendLabel
+                        : `${t("settings.resources.gpu.deviceWithIndex", {
+                            index: ordinal,
+                          })}, ${backendLabel}`}
+                    </span>
+                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-ui-11 tabular-nums text-muted-foreground dark:bg-white/[0.08]">
                       {percentText}{" "}
                       {t("settings.resources.gpu.vramUtilization")}
-                    </div>
-                  </div>
-                  {/* Wraps rather than overflows once the pane gets narrow. */}
-                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
-                    <div className="flex min-w-0 gap-3 font-mono text-xs tabular-nums text-muted-foreground">
-                      <span className="truncate">
-                        {t("settings.resources.gpu.used", { value: usedText })}
-                      </span>
-                      <span className="truncate">
-                        {t("settings.resources.gpu.free", { value: freeText })}
-                      </span>
-                      <span className="truncate">
-                        {t("settings.resources.gpu.total", {
-                          value: totalText,
-                        })}
-                      </span>
-                    </div>
-                    <Progress
-                      value={safePercent}
-                      aria-label={device.name ?? "GPU"}
-                      className="h-1.5 w-40 max-w-full shrink-0 rounded-full bg-muted dark:bg-black/40"
-                      indicatorClassName={usageIndicatorClass(safePercent)}
-                    />
+                    </span>
                   </div>
                 </div>
-              );
-            })
-          ) : (
-            <div className="py-3 text-sm text-muted-foreground">
-              {t("settings.resources.gpu.noGpu")}
-            </div>
-          )}
-        </div>
+                <div className="flex shrink-0 items-center gap-4">
+                  <div className="flex gap-3 font-mono text-xs tabular-nums text-muted-foreground">
+                    <span className="truncate">
+                      {t("settings.resources.gpu.used", { value: usedText })}
+                    </span>
+                    <span className="truncate">
+                      {t("settings.resources.gpu.free", { value: freeText })}
+                    </span>
+                    <span className="truncate">
+                      {t("settings.resources.gpu.total", {
+                        value: totalText,
+                      })}
+                    </span>
+                  </div>
+                  <Progress
+                    value={safePercent}
+                    aria-label={device.name ?? "GPU"}
+                    className="h-1.5 w-24 shrink-0 rounded-full bg-muted dark:bg-black/40"
+                    indicatorClassName={usageIndicatorClass(safePercent)}
+                  />
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="py-3 text-sm text-muted-foreground">
+            {t("settings.resources.gpu.noGpu")}
+          </div>
+        )}
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.storage.title")}>
