@@ -123,9 +123,11 @@ def test_post_warm_actually_runs_both_pieces_of_work(monkeypatch):
 
     main_mod._post_warm_background_work()
 
-    assert order == ["join", "mlx", "rag"], (
-        f"post-warm work did not run in the intended order, got {order}"
-    )
+    assert order == [
+        "join",
+        "mlx",
+        "rag",
+    ], f"post-warm work did not run in the intended order, got {order}"
 
 
 def test_a_failing_mlx_probe_does_not_strand_the_rag_warm(monkeypatch):
