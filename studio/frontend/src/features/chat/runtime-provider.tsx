@@ -47,7 +47,6 @@ import {
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
-  isExternalModelId,
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
@@ -67,11 +66,7 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
-import {
-  getSavedContextUsageFromMessages,
-  refreshContextUsage,
-  registerRuntimeMessagesGetter,
-} from "./utils/refresh-context-usage";
+import { refreshContextUsage } from "./utils/refresh-context-usage";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
@@ -1147,62 +1142,47 @@ function useStudioRuntimeAdapters(
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
 
+        // Restore context usage from last assistant message if model matches.
+        const lastAssistant = [...msgs]
+          .reverse()
+          .find((m) => m.role === "assistant");
+        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
+          ?.contextUsage as
+          | {
+              promptTokens: number;
+              completionTokens: number;
+              totalTokens: number;
+              cachedTokens: number;
+              cacheWriteTokens?: number;
+              modelId?: string;
+            }
+          | undefined;
         const store = useChatRuntimeStore.getState();
-        if (
-          store.ggufContextLength != null &&
-          store.params.checkpoint &&
-          !isExternalModelId(store.params.checkpoint)
-        ) {
-          const savedUsage = getSavedContextUsageFromMessages(
-            msgs,
-            store.params.checkpoint,
-            store.ggufContextLength,
-          );
-          if (savedUsage) {
-            // Key by the thread this loader read, not whichever is active when the await
-            // resolves: a switch inside it would file this thread's usage under the
-            // incoming one. Same rule the adapter's end-of-run write follows.
-            store.setThreadContextUsage(remoteId, savedUsage);
-            if (store.activeThreadId === remoteId) {
-              store.setContextUsage(savedUsage);
-            }
-          }
-          void refreshContextUsage({ threadId: remoteId });
-        } else {
-          // Restore context usage from last assistant message if model matches.
-          const lastAssistant = [...msgs]
-            .reverse()
-            .find((m) => m.role === "assistant");
-          const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
-            ?.contextUsage as
-            | {
-                promptTokens: number;
-                completionTokens: number;
-                totalTokens: number;
-                cachedTokens: number;
-                cacheWriteTokens?: number;
-                modelId?: string;
-              }
-            | undefined;
-          // Window check applies only when a local GGUF window is known; external
-          // providers have ggufContextLength === null.
-          const withinLocalLimit =
-            !store.ggufContextLength ||
-            (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-          // Legacy unscoped usage (no modelId) is trusted only when a known local
-          // window bounds the totals, so an old local turn can't be misattributed
-          // to a newly-selected external provider.
-          const modelMatches = savedUsage?.modelId
-            ? savedUsage.modelId === store.params.checkpoint
-            : typeof store.ggufContextLength === "number" &&
-              store.ggufContextLength > 0;
-          if (savedUsage && withinLocalLimit && modelMatches) {
-            store.setThreadContextUsage(remoteId, savedUsage);
-            if (store.activeThreadId === remoteId) {
-              store.setContextUsage(savedUsage);
-            }
+        // Window check applies only when a local GGUF window is known; external
+        // providers have ggufContextLength === null.
+        const withinLocalLimit =
+          !store.ggufContextLength ||
+          (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
+        // Legacy unscoped usage (no modelId) is trusted only when a known local
+        // window bounds the totals, so an old local turn can't be misattributed
+        // to a newly-selected external provider.
+        const modelMatches = savedUsage?.modelId
+          ? savedUsage.modelId === store.params.checkpoint
+          : typeof store.ggufContextLength === "number" &&
+            store.ggufContextLength > 0;
+        if (savedUsage && withinLocalLimit && modelMatches) {
+          // Key by the thread this loader read, not whichever is active when the await resolves:
+          // a switch inside it would file this thread's usage under the incoming one. Same rule
+          // the adapter's end-of-run write follows.
+          store.setThreadContextUsage(remoteId, savedUsage);
+          if (store.activeThreadId === remoteId) {
+            store.setContextUsage(savedUsage);
           }
         }
+        // Saved usage above is the last completion's, and there may be none at all
+        // (a thread opened after a model switch). Price the branch as loaded, so the
+        // bar answers "does this chat still fit" before the next message (#7450).
+        void refreshContextUsage({ threadId: remoteId });
 
         // If any message has a stored parentId, reconstruct the tree so
         // retries/regenerations load as branches rather than a flat list. For
@@ -1421,21 +1401,16 @@ function ThreadNewChatSwitch({
     // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
-    // The line above blanks the bar, and this view reaches none of the other recount
-    // triggers: it has no persisted thread for the history loader and ActiveThreadSync
-    // is off while a nonce is present. Without this an empty New Chat opened against an
-    // already-resident GGUF hides the bar until the first completion, while loading a
-    // model on the same view shows it. The template and system prompt are already in the
-    // request, so price them. modelLoading defers to the post-load recount.
-    void refreshContextUsage();
   }, [aui, isLoading, nonce]);
 
-  // On a RELOAD of /chat?new=<uuid> the effect above runs before the first
-  // /api/inference/status answers. Neither the local checkpoint nor the GGUF
-  // window is persisted, so that recount returns without counting, and the
-  // hydration recount skips this view because its thread is deliberately null.
-  // Retry once the resident model is known, while the bar is still blank and no
-  // thread has been persisted -- a real completion's usage is never recounted.
+  // The effect above blanks the bar, and this view reaches no other recount trigger: it
+  // has no persisted thread for the history loader and ActiveThreadSync is off while a
+  // nonce is present. The template and system prompt are already in the request, so price
+  // them. Keyed on the model too, because on a RELOAD of /chat?new=<uuid> neither the
+  // checkpoint nor the window is known until /api/inference/status answers; without that
+  // retry an empty New Chat opened against an already-resident GGUF hides the bar until
+  // the first completion. Only into a blank bar on an unpersisted thread, so a real
+  // completion's usage is never overwritten.
   useEffect(() => {
     if (isLoading || modelLoading || !checkpoint || ggufContextLength == null) {
       return;
@@ -1443,6 +1418,7 @@ function ThreadNewChatSwitch({
     const store = useChatRuntimeStore.getState();
     if (store.activeThreadId != null || store.contextUsage != null) return;
     void refreshContextUsage();
+    // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again.
   }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce]);
 
   return null;
@@ -1462,18 +1438,6 @@ function ActiveThreadSync({
     }
     setActiveThreadId(mainThreadId ?? null);
   }, [enabled, mainThreadId, setActiveThreadId]);
-
-  return null;
-}
-
-function RuntimeMessagesRegistrar(): ReactElement | null {
-  const aui = useAui();
-
-  useEffect(
-    () =>
-      registerRuntimeMessagesGetter(() => aui.thread().getState().messages),
-    [aui],
-  );
 
   return null;
 }
@@ -1662,7 +1626,6 @@ export function ChatRuntimeProvider({
         />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
         <CancelRegistrar />
-        <RuntimeMessagesRegistrar />
         {initialThreadId && (
           <ThreadAutoSwitch
             threadId={initialThreadId}

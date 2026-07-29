@@ -1264,44 +1264,13 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
-/** Fold an extra system instruction into the leading system turn, or add one. */
-function addSystemInstruction(
-  targetMessages: SerializedMessage[],
-  text: string | null,
-): void {
-  if (!text) return;
-  const firstMessage = targetMessages[0];
-  if (firstMessage?.role === "system") {
-    if (typeof firstMessage.content === "string") {
-      targetMessages[0] = {
-        ...firstMessage,
-        content: `${firstMessage.content}\n\n${text}`,
-      };
-    } else {
-      targetMessages[0] = {
-        ...firstMessage,
-        content: [
-          ...(Array.isArray(firstMessage.content) ? firstMessage.content : []),
-          { type: "text", text: `\n\n${text}` },
-        ],
-      };
-    }
-    return;
-  }
-  targetMessages.unshift({ role: "system", content: text });
-}
-
-/** Canvas system instruction, shared by the request and the recount so both match. */
-function canvasInstruction(
-  artifactsEnabled: boolean,
-  renderHtmlToolEnabledForThisTurn: boolean,
-): string | null {
-  if (!artifactsEnabled) return null;
-  return renderHtmlToolEnabledForThisTurn
-    ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
-    : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
-}
-
+/**
+ * The OpenAI-form messages a completion would send for `messages`, for the token
+ * recount that fills the context usage bar. Mirrors the prune + system-prompt half of
+ * createOpenAIStreamAdapter; the tool catalog is priced server-side from the flags
+ * buildLocalTokenCountExtras sends, since `unsloth run --enable-tools` can inject
+ * schemas the client cannot see.
+ */
 export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
   threadId: string | undefined,
@@ -1310,9 +1279,7 @@ export async function buildOutboundMessagesForTokenCount(
   for (const message of messages) {
     if (isAnthropicRefusalMessage(message)) {
       const last = survivingMessages.at(-1);
-      if (last && last.role === "user") {
-        survivingMessages.pop();
-      }
+      if (last && last.role === "user") survivingMessages.pop();
       continue;
     }
     survivingMessages.push(message);
@@ -1350,91 +1317,17 @@ export async function buildOutboundMessagesForTokenCount(
     });
   }
 
-  // Canvas adds a system instruction to the real request, so count it too. The recount
-  // is local-only, which covers the isExternalRequest half of the generation-side gate.
-  const { artifactsEnabled, supportsTools } = useChatRuntimeStore.getState();
-  addSystemInstruction(
-    outboundMessages,
-    canvasInstruction(
-      artifactsEnabled,
-      Boolean(
-        supportsTools &&
-          artifactsEnabled &&
-          !outboundMessagesIncludeImage(outboundMessages as OpenAIChatMessage[]),
-      ),
-    ),
-  );
-
   return outboundMessages as OpenAIChatMessage[];
 }
 
-function outboundMessagesIncludeImage(
-  messages: OpenAIChatMessage[],
-): boolean {
-  for (const message of messages) {
-    const content = message.content;
-    if (!Array.isArray(content)) continue;
-    if (
-      content.some(
-        (part) =>
-          typeof part === "object" &&
-          part !== null &&
-          "type" in part &&
-          part.type === "image_url",
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /**
- * Reasoning fields for a local count, mirroring the completion request built in
- * buildRequestPayload. llama-server merges the load-time --chat-template-kwargs under
- * whatever a request omits, so a count that drops these renders the launch default while
- * the completion renders the user's mode -- a Preserve Thinking pill flipped on keeps
- * every past turn's <think> block in the real prompt but not in the count. Sends
- * enable_thinking rather than the Anthropic-style `thinking` wrapper the completion uses;
- * the backend maps that wrapper onto the same field.
+ * The tool flags a completion would send, so the count includes the tool schemas and
+ * the action nudge. Same gates the adapter applies before it turns tools on; the
+ * render_html image gate is left to the server, which sees the rendered prompt.
  */
-export function buildLocalReasoningTokenCountExtras(): Record<string, unknown> {
-  const {
-    supportsReasoning,
-    reasoningEnabled,
-    reasoningStyle,
-    reasoningEffort,
-    reasoningEffortLevels,
-    supportsPreserveThinking,
-    preserveThinking,
-  } = useChatRuntimeStore.getState();
-  const localReasoningEffort = clampReasoningEffortToLevels(
-    reasoningEffort,
-    reasoningEffortLevels,
-  );
-  return {
-    ...(supportsReasoning
-      ? reasoningStyle === "enable_thinking_effort"
-        ? reasoningEnabled
-          ? { enable_thinking: true, reasoning_effort: localReasoningEffort }
-          : { enable_thinking: false }
-        : reasoningStyle === "reasoning_effort"
-          ? reasoningEnabled
-            ? { reasoning_effort: localReasoningEffort }
-            : {}
-          : { enable_thinking: reasoningEnabled }
-      : {}),
-    ...(supportsPreserveThinking
-      ? { preserve_thinking: preserveThinking }
-      : {}),
-  };
-}
-
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
-  outboundMessages: OpenAIChatMessage[],
 ): Promise<Record<string, unknown>> {
-  const runtime = useChatRuntimeStore.getState();
   const {
     supportsTools,
     toolsEnabled,
@@ -1443,76 +1336,51 @@ export async function buildLocalTokenCountExtras(
     mcpEnabledForChat,
     ragEnabled,
     ragSource,
-    ragMode,
-    ragTopK,
-    ragAutoInject,
-    ragAutoInjectMinScore,
-    autoHealToolCalls,
-    params,
-  } = runtime;
-
-  // Independent of tools: the template renders in the selected reasoning mode either way.
-  const reasoningExtras = buildLocalReasoningTokenCountExtras();
-
-  if (!supportsTools) {
-    return reasoningExtras;
-  }
+  } = useChatRuntimeStore.getState();
+  if (!supportsTools) return {};
 
   const ragProjectId = await resolveProjectId(threadId);
   const projectRagEnabled = ragProjectId
     ? await projectHasSources(ragProjectId)
     : false;
-  const hasOutboundImage = outboundMessagesIncludeImage(outboundMessages);
-  const renderHtmlToolEnabledForThisTurn = Boolean(
-    artifactsEnabled && !hasOutboundImage,
-  );
-
+  const ragOn = ragEnabled || projectRagEnabled;
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
-    !renderHtmlToolEnabledForThisTurn &&
+    !artifactsEnabled &&
     !mcpEnabledForChat &&
-    !ragEnabled &&
-    !projectRagEnabled
+    !ragOn
   ) {
-    return reasoningExtras;
+    return {};
   }
 
   return {
-    ...reasoningExtras,
     enable_tools: true,
-    // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
-    auto_heal_tool_calls: autoHealToolCalls,
     enabled_tools: [
-      ...(ragEnabled || projectRagEnabled ? ["search_knowledge_base"] : []),
+      ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal"] : []),
-      ...(renderHtmlToolEnabledForThisTurn ? ["render_html"] : []),
+      ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
-    ...(ragEnabled || projectRagEnabled
+    // Only its truthiness is read server-side, to keep search_knowledge_base in the
+    // catalog and its grounding nudge in the prompt; no retrieval runs for a count.
+    ...(ragOn
       ? {
-          rag_scope: {
-            ...(ragEnabled && ragSource.type === "kb"
+          rag_scope:
+            ragEnabled && ragSource.type === "kb"
               ? { kb_id: ragSource.kbId }
               : {
                   ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
                   ...(projectRagEnabled && ragProjectId
                     ? { project_id: ragProjectId }
                     : {}),
-                }),
-            default_top_k: ragTopK,
-            mode: ragMode,
-            autoinject: resolveAutoInject(ragAutoInject, params.checkpoint),
-            autoinject_min_score: ragAutoInjectMinScore,
-            ...(ragAutoInject === "off" ? { whole_doc: false } : {}),
-            context_length:
-              runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
-          },
+                },
         }
       : {}),
   };
 }
+
 
 async function resolveUseAdapter(
   threadId: string | undefined,
@@ -2895,6 +2763,35 @@ export function createOpenAIStreamAdapter(
             "Do not return tool-call syntax inside your response.";
         }
       }
+      type OutboundMessage = (typeof outboundMessages)[number];
+      function addSystemInstruction(
+        targetMessages: OutboundMessage[],
+        text: string | null,
+      ): void {
+        if (!text) return;
+        const firstMessage = targetMessages[0];
+        if (firstMessage?.role === "system") {
+          if (typeof firstMessage.content === "string") {
+            targetMessages[0] = {
+              ...firstMessage,
+              content: `${firstMessage.content}\n\n${text}`,
+            };
+          } else {
+            targetMessages[0] = {
+              ...firstMessage,
+              content: [
+                ...(Array.isArray(firstMessage.content)
+                  ? firstMessage.content
+                  : []),
+                { type: "text", text: `\n\n${text}` },
+              ],
+            };
+          }
+          return;
+        }
+        targetMessages.unshift({ role: "system", content: text });
+      }
+
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
@@ -2910,10 +2807,11 @@ export function createOpenAIStreamAdapter(
           artifactsEnabled &&
           !hasOutboundImage,
       );
-      const artifactInstruction = canvasInstruction(
-        artifactsEnabled,
-        renderHtmlToolEnabledForThisTurn,
-      );
+      const artifactInstruction = artifactsEnabled
+        ? renderHtmlToolEnabledForThisTurn
+          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
+          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+        : null;
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
           ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
