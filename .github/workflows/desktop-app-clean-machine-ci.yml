@@ -74,6 +74,10 @@ env:
 jobs:
   # ── macOS: .dmg, Apple Silicon ────────────────────────────────────────────
   macos:
+    # A fork PR's token is read-only however this workflow declares permissions, so it
+    # cannot list the draft releases every desktop-v* bundle is published as. Skip
+    # rather than fail: it is a property of the trigger, not a broken release.
+    if: github.event.pull_request.head.repo.fork != true
     name: desktop macOS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -258,6 +262,10 @@ jobs:
 
   # ── Linux: .deb and .AppImage, with a real webview under Xvfb ────────────
   linux:
+    # A fork PR's token is read-only however this workflow declares permissions, so it
+    # cannot list the draft releases every desktop-v* bundle is published as. Skip
+    # rather than fail: it is a property of the trigger, not a broken release.
+    if: github.event.pull_request.head.repo.fork != true
     name: desktop linux ${{ matrix.kind }}
     runs-on: ubuntu-22.04
     timeout-minutes: 45
@@ -426,6 +434,10 @@ jobs:
 
   # ── Windows: NSIS setup.exe, silent install ──────────────────────────────
   windows:
+    # A fork PR's token is read-only however this workflow declares permissions, so it
+    # cannot list the draft releases every desktop-v* bundle is published as. Skip
+    # rather than fail: it is a property of the trigger, not a broken release.
+    if: github.event.pull_request.head.repo.fork != true
     name: desktop windows
     runs-on: windows-latest
     # 60, not 45: this job runs the bundled installer, and a full torch install on a
