@@ -40,7 +40,6 @@ DownloadStallError: type
 def __getattr__(name: str):
     if name == "DownloadStallError":
         from utils.hf_xet_fallback import DownloadStallError as _exc
-
         return _exc
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -1134,6 +1133,7 @@ class InferenceOrchestrator:
         stale unsloth patches, torch.compile caches, or getsource failures).
         """
         from utils.transformers_version import needs_transformers_5
+
         # Same lazy-shim reason as _wait_response(); see the note there.
         from utils.hf_xet_fallback import DownloadStallError
 

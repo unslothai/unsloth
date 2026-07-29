@@ -684,27 +684,27 @@ def _raw_config_has_vision_config(
 def _build_vision_check_inline_helpers() -> str:
     vlm_types, vlm_classes, audio_types = _detection_sets()
     return (
-    "_VLM_ARCH_SUFFIXES = " + repr(tuple(_VLM_ARCH_SUFFIXES)) + "\n"
-    "_VLM_MODEL_TYPES = " + repr(set(vlm_types)) + "\n"
-    "_VLM_CLASS_NAMES = " + repr(set(vlm_classes)) + "\n"
-    "_AUDIO_ONLY_MODEL_TYPES = " + repr(set(audio_types)) + "\n"
-    "def _is_vlm(config):\n"
-    "    architectures = getattr(config, 'architectures', None) or []\n"
-    "    model_type = getattr(config, 'model_type', None)\n"
-    "    explicit_vision = (\n"
-    "        hasattr(config, 'vision_config')\n"
-    "        or hasattr(config, 'img_processor')\n"
-    "        or hasattr(config, 'image_token_index')\n"
-    "        or hasattr(config, 'projector_config')\n"
-    "    )\n"
-    "    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:\n"
-    "        return False\n"
-    "    return (\n"
-    "        explicit_vision\n"
-    "        or any(x in _VLM_CLASS_NAMES for x in architectures)\n"
-    "        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
-    "        or model_type in _VLM_MODEL_TYPES\n"
-    "    )\n"
+        "_VLM_ARCH_SUFFIXES = " + repr(tuple(_VLM_ARCH_SUFFIXES)) + "\n"
+        "_VLM_MODEL_TYPES = " + repr(set(vlm_types)) + "\n"
+        "_VLM_CLASS_NAMES = " + repr(set(vlm_classes)) + "\n"
+        "_AUDIO_ONLY_MODEL_TYPES = " + repr(set(audio_types)) + "\n"
+        "def _is_vlm(config):\n"
+        "    architectures = getattr(config, 'architectures', None) or []\n"
+        "    model_type = getattr(config, 'model_type', None)\n"
+        "    explicit_vision = (\n"
+        "        hasattr(config, 'vision_config')\n"
+        "        or hasattr(config, 'img_processor')\n"
+        "        or hasattr(config, 'image_token_index')\n"
+        "        or hasattr(config, 'projector_config')\n"
+        "    )\n"
+        "    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:\n"
+        "        return False\n"
+        "    return (\n"
+        "        explicit_vision\n"
+        "        or any(x in _VLM_CLASS_NAMES for x in architectures)\n"
+        "        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
+        "        or model_type in _VLM_MODEL_TYPES\n"
+        "    )\n"
     )
 
 
@@ -712,7 +712,7 @@ def _build_vision_check_inline_helpers() -> str:
 # token via argv, prints JSON result to stdout.
 def _build_vision_check_script() -> str:
     return (
-    r"""
+        r"""
 import sys, os, json
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -727,8 +727,8 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 """
-    + _build_vision_check_inline_helpers()
-    + r"""
+        + _build_vision_check_inline_helpers()
+        + r"""
 try:
     from transformers import AutoConfig
 

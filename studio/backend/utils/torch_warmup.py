@@ -120,7 +120,6 @@ def _warm_hardware() -> None:
     # call, so it either finds the result cached or blocks on the lock the warm
     # thread holds -- never a second, racing detection.
     from utils.hardware import ensure_hardware_detected
-
     ensure_hardware_detected()
 
 
@@ -129,7 +128,6 @@ def _warm_transformers() -> None:
     # unsloth_zoo stage: that is the order the eager imports ran in, and
     # unsloth_zoo patches transformers on import.
     from utils.models.model_config import _detection_sets
-
     _detection_sets()
 
 
@@ -173,9 +171,7 @@ def _warm_unsloth_zoo() -> None:
         # behind first: whoever imports unsloth_zoo next must re-run __init__
         # against an empty cache. See purge_partial_import().
         purge_partial_import("unsloth_zoo")
-        raise RuntimeError(
-            "unsloth_zoo unavailable; the download stall watchdog stays degraded"
-        )
+        raise RuntimeError("unsloth_zoo unavailable; the download stall watchdog stays degraded")
 
 
 # Order matters: it is the order the eager imports ran in. transformers before

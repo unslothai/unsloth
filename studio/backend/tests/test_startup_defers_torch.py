@@ -132,6 +132,7 @@ def test_detection_sets_are_built_once_under_concurrency():
     saved = mc._DETECTION_SETS
     mc._DETECTION_SETS = None
     try:
+
         def counted():
             calls.append(1)
             return (frozenset({"x"}), frozenset(), frozenset())
@@ -165,6 +166,7 @@ def test_hardware_is_detected_once_under_concurrency():
     saved_device, saved_impl = hw.DEVICE, hw._detect_hardware_locked
     hw.DEVICE = None
     try:
+
         def counted():
             calls.append(1)
             hw.DEVICE = hw.DeviceType.CPU
@@ -215,12 +217,11 @@ def test_the_warm_covers_every_package_import_main_used_to_pull():
     request that needs it, silently.
     """
     from utils import torch_warmup
-
     assert [name for name, _ in torch_warmup._STAGES] == [
-        "hardware",      # torch, via utils.hardware
+        "hardware",  # torch, via utils.hardware
         "transformers",  # via model_config's registry read
-        "datasets",      # via utils/datasets/raw_text.py
-        "unsloth_zoo",   # via orchestrator's utils.hf_xet_fallback import
+        "datasets",  # via utils/datasets/raw_text.py
+        "unsloth_zoo",  # via orchestrator's utils.hf_xet_fallback import
     ]
 
 
@@ -239,9 +240,7 @@ def test_the_unsloth_zoo_stage_goes_through_the_shim(monkeypatch):
 
     monkeypatch.setattr(torch_warmup, "_torch_installed", lambda: True)
     calls = []
-    monkeypatch.setattr(
-        hf_xet_fallback, "_load_shared", lambda: (calls.append(1), True)[1]
-    )
+    monkeypatch.setattr(hf_xet_fallback, "_load_shared", lambda: (calls.append(1), True)[1])
 
     real_import = builtins.__import__
 
@@ -272,9 +271,7 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys):
 
     monkeypatch.setattr(torch_warmup, "_thread", None, raising = False)
     monkeypatch.delenv(torch_warmup.DISABLE_ENV_VAR, raising = False)
-    monkeypatch.setattr(
-        torch_warmup, "_STAGES", (("boom", boom), ("after", lambda: None))
-    )
+    monkeypatch.setattr(torch_warmup, "_STAGES", (("boom", boom), ("after", lambda: None)))
     assert torch_warmup.start_background_warm() is True
     assert torch_warmup.join_background_warm(60) is True
 
@@ -352,8 +349,7 @@ def test_first_paint_routes_do_not_block_the_event_loop(rel_path, func_name, cal
 
     # The bare-name form: asyncio.to_thread(callee).
     handed_off = any(
-        isinstance(n, ast.Name) and n.id == callee and id(n) in offloaded
-        for n in ast.walk(func)
+        isinstance(n, ast.Name) and n.id == callee and id(n) in offloaded for n in ast.walk(func)
     )
     direct = [
         n
@@ -395,6 +391,7 @@ def test_a_failed_detection_degrades_instead_of_raising():
     hw.DEVICE = None
     calls = []
     try:
+
         def boom():
             calls.append(1)
             raise OSError("libcudart.so.12: cannot open shared object file")
