@@ -788,13 +788,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
             # mirror the test in _WRAPPED_PACKING_SETUP (rl_replacements.py).
             try:
                 from trl.data_utils import pack_dataset
-
                 pack_has_strategy = "strategy" in inspect.signature(pack_dataset).parameters
             except Exception:
                 pack_has_strategy = True
             would_wrap = (
-                getattr(config_arg, "packing_strategy", None) == "wrapped"
-                or not pack_has_strategy
+                getattr(config_arg, "packing_strategy", None) == "wrapped" or not pack_has_strategy
             )
             # rl.py sets skip_prepare_dataset for an UnslothVisionDataCollator, but that
             # runs inside the wrapped __init__ below, so test the collator directly.
