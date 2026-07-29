@@ -19,7 +19,7 @@ the Profile tab is free until history changes.
 import json
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -33,6 +33,8 @@ logger = get_logger(__name__)
 SESSION_GAP_SECONDS = 30 * 60
 # Cap on the daily activity series handed to the UI (the heatmap draws a year).
 MAX_DAILY_DAYS = 366
+# Widest real UTC offset is 14h; anything beyond that is a bad client value.
+MAX_TZ_OFFSET_MINUTES = 14 * 60
 # Top-N lists returned to the client.
 TOP_MODELS = 8
 RECENT_RUNS = 5
@@ -64,6 +66,18 @@ def _as_int(value: Any) -> int:
 
 def _iso(day: date) -> str:
     return day.isoformat()
+
+
+def _local_stamp(created_at_ms: int, tz_offset_minutes: int) -> Optional[datetime]:
+    """Wall-clock time in the caller's timezone, not the server's.
+
+    ``tz_offset_minutes`` follows the browser's ``getTimezoneOffset()``: minutes
+    to add to local time to reach UTC, so UTC-5 sends 300.
+    """
+    if created_at_ms <= 0:
+        return None
+    utc = datetime.fromtimestamp(created_at_ms / 1000, tz = timezone.utc)
+    return (utc - timedelta(minutes = tz_offset_minutes)).replace(tzinfo = None)
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
@@ -146,12 +160,13 @@ class _MessageFold:
         bucket["threads"].add(thread_id)
 
 
-def _fold_messages(conn) -> _MessageFold:
+def _fold_messages(conn, tz_offset_minutes: int = 0) -> _MessageFold:
     fold = _MessageFold()
     rows = conn.execute(
         """
         SELECT m.thread_id, m.role, m.metadata_json, m.attachments_json, m.created_at,
-               t.title, t.model_id, t.model_type
+               t.title, t.model_id, t.model_type,
+               t.created_at AS thread_created_at, t.forked_from_thread_id
         FROM chat_messages m
         LEFT JOIN chat_threads t ON t.id = m.thread_id
         ORDER BY m.thread_id, m.created_at
@@ -187,6 +202,13 @@ def _fold_messages(conn) -> _MessageFold:
             thread_messages = 0
             previous_created = None
 
+        # Forking clones the whole ancestry into the new thread, keeping each
+        # copy's original timestamp. Counting those again would double every
+        # metric for the branched-from conversation, so skip anything older
+        # than the fork itself.
+        if row["forked_from_thread_id"] and created_at < _as_int(row["thread_created_at"]):
+            continue
+
         fold.threads.add(thread_id)
         fold.messages += 1
         thread_messages += 1
@@ -197,7 +219,7 @@ def _fold_messages(conn) -> _MessageFold:
                 thread_seconds += gap
         previous_created = created_at
 
-        stamp = datetime.fromtimestamp(created_at / 1000) if created_at > 0 else None
+        stamp = _local_stamp(created_at, tz_offset_minutes)
         role = row["role"]
         if role == "user":
             fold.user_messages += 1
@@ -245,11 +267,13 @@ def _fold_messages(conn) -> _MessageFold:
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
-            model_id = usage.get("modelId")
-            if not isinstance(model_id, str) or not model_id.strip():
-                model_id = row["model_id"] if isinstance(row["model_id"], str) else ""
-            if model_id.strip():
-                fold.note_model(model_id.strip(), message_tokens)
+            # Only the checkpoint recorded on the turn itself. The thread's
+            # model_id tracks whatever is selected now, so using it as a
+            # fallback credits older turns to the wrong model after a switch.
+            raw_model_id = usage.get("modelId")
+            model_id = raw_model_id.strip() if isinstance(raw_model_id, str) else ""
+            if model_id:
+                fold.note_model(model_id, message_tokens)
 
             speed = _as_float(timing.get("tokensPerSecond"))
             # llama.cpp reports absurd rates on no-op turns; ignore those.
@@ -262,10 +286,10 @@ def _fold_messages(conn) -> _MessageFold:
             stream_ms = _as_float(timing.get("totalStreamTime"))
             if stream_ms is not None and stream_ms > 0:
                 fold.response_ms.append(stream_ms)
-            start_ms = _as_float(timing.get("streamStartTime"))
+            # firstTokenTime is already an elapsed duration, not a timestamp.
             first_token = _as_float(timing.get("firstTokenTime"))
-            if start_ms and first_token and first_token > start_ms:
-                fold.first_token_ms.append(first_token - start_ms)
+            if first_token is not None and first_token > 0:
+                fold.first_token_ms.append(first_token)
 
         if stamp is not None:
             fold.by_hour[stamp.hour] += 1
@@ -299,7 +323,6 @@ def _training_stats(conn) -> dict[str, Any]:
         """
         SELECT COUNT(*) AS runs,
                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-               SUM(COALESCE(final_step, 0)) AS steps,
                SUM(COALESCE(duration_seconds, 0)) AS seconds,
                COUNT(DISTINCT model_name) AS models,
                COUNT(DISTINCT dataset_name) AS datasets,
@@ -308,7 +331,28 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    tokens = conn.execute("SELECT COALESCE(SUM(num_tokens), 0) FROM training_metrics").fetchone()[0]
+    # A resumed run continues its source's step and token counters from the
+    # checkpoint, so both absolute totals already include the source's work.
+    # resume_blocked marks a run that some later run resumed from; counting
+    # only the unresumed tails avoids adding the same progress twice.
+    steps = conn.execute(
+        "SELECT COALESCE(SUM(final_step), 0) FROM training_runs WHERE resume_blocked = 0"
+    ).fetchone()[0]
+
+    # num_tokens is state.num_input_tokens_seen, a running total logged at each
+    # step, so summing the samples multiplies the real figure. Take each run's
+    # final counter, the same value get_run_metrics reports.
+    tokens = conn.execute(
+        """
+        SELECT COALESCE(SUM(run_tokens), 0) FROM (
+            SELECT MAX(m.num_tokens) AS run_tokens
+            FROM training_metrics m
+            JOIN training_runs r ON r.id = m.run_id
+            WHERE r.resume_blocked = 0
+            GROUP BY m.run_id
+        )
+        """
+    ).fetchone()[0]
 
     recent = conn.execute(
         """
@@ -324,7 +368,7 @@ def _training_stats(conn) -> dict[str, Any]:
     return {
         "runs": _as_int(row["runs"]),
         "completed": _as_int(row["completed"]),
-        "steps": _as_int(row["steps"]),
+        "steps": _as_int(steps),
         "tokens": _as_int(tokens),
         "seconds": _as_float(row["seconds"]) or 0.0,
         "models": _as_int(row["models"]),
@@ -357,12 +401,15 @@ def _fingerprint(conn) -> tuple:
     return (message_row[0], message_row[1], run_row[0], run_row[1])
 
 
-def compute_profile_stats(days: int = MAX_DAILY_DAYS) -> dict[str, Any]:
+def compute_profile_stats(days: int = MAX_DAILY_DAYS, tz_offset_minutes: int = 0) -> dict[str, Any]:
     """Aggregate every profile statistic in one pass, memoised per history state."""
     days = max(1, min(int(days), MAX_DAILY_DAYS))
+    tz_offset_minutes = max(
+        -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
+    )
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn), days)
+        fingerprint = (_fingerprint(conn), days, tz_offset_minutes)
         now = time.monotonic()
         with _cache_lock:
             if (
@@ -373,10 +420,12 @@ def compute_profile_stats(days: int = MAX_DAILY_DAYS) -> dict[str, Any]:
                 return _cache["payload"]
 
         started = time.perf_counter()
-        fold = _fold_messages(conn)
+        fold = _fold_messages(conn, tz_offset_minutes)
         training = _training_stats(conn)
 
-        today = date.today()
+        # "Today" has to match the buckets above, or the newest column and the
+        # current streak drift by a day whenever the caller is elsewhere.
+        today = (_local_stamp(int(time.time() * 1000), tz_offset_minutes) or datetime.now()).date()
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 

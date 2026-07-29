@@ -5,7 +5,7 @@
 
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -76,8 +76,10 @@ def _metadata(
             "modelId": "unsloth/gpt-oss-20b",
         },
         "timing": {
-            "streamStartTime": 1000,
-            "firstTokenTime": 1200,
+            # The adapter writes streamStartTime as an epoch stamp and
+            # firstTokenTime as the elapsed ms before the first chunk.
+            "streamStartTime": 1_760_000_000_000,
+            "firstTokenTime": 200,
             "totalStreamTime": 2000,
             "tokenCount": completion,
             "tokensPerSecond": speed,
@@ -166,8 +168,10 @@ def test_completion_tokens_fall_back_to_adapter_count(stats_db):
 
     assert stats["totals"]["completionTokens"] == 64
     assert stats["totals"]["totalTokens"] == 64
-    # No modelId in metadata: the thread's model is used instead.
-    assert stats["models"][0]["id"] == "local-gguf"
+    # No modelId on the turn, so it is not credited to any model. The thread's
+    # model_id follows the current selection and would misattribute after a
+    # mid-conversation switch.
+    assert stats["models"] == []
 
 
 def test_session_time_ignores_long_idle_gaps(stats_db):
@@ -236,9 +240,10 @@ def test_training_totals(stats_db):
             "VALUES ('r2', 'error', 'unsloth/qwen3-4b', 'my/dataset', '{}', "
             "'2026-01-02T10:00:00', 100, 20, 1.8, 600)",
         )
+        # num_tokens is a running total, so the last row is the run's figure.
         conn.executemany(
             "INSERT INTO training_metrics (run_id, step, loss, num_tokens) VALUES (?, ?, ?, ?)",
-            [("r1", step, 1.0, 1000) for step in range(10)],
+            [("r1", step, 1.0, (step + 1) * 1000) for step in range(10)],
         )
         conn.commit()
     finally:
@@ -256,6 +261,149 @@ def test_training_totals(stats_db):
     assert training["bestLoss"] == pytest.approx(0.42)
     assert training["recent"][0]["id"] == "r2"
     assert training["recent"][0]["modelLabel"] == "qwen3-4b"
+
+
+def test_first_token_time_is_read_as_a_duration(stats_db):
+    """firstTokenTime is `Date.now() - streamStartTime`, not a wall-clock stamp.
+
+    Treating it as a stamp and subtracting streamStartTime made the comparison
+    fail for every real message, so the average was always empty.
+    """
+    now = datetime.now()
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "tft", "m", [(now, _metadata(10, 10))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = compute_profile_stats(days = 7)
+
+    assert stats["speed"]["averageFirstTokenMs"] == pytest.approx(200.0)
+
+
+def test_forked_threads_do_not_double_count_copied_history(stats_db):
+    """Forking clones the ancestry, so the copies must not be counted again."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "src", "m", [(now - timedelta(hours = 2), _metadata(100, 50))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = compute_profile_stats(days = 7)
+    assert before["totals"]["totalTokens"] == 150
+    assert before["totals"]["messages"] == 2
+
+    fork_at = now
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, "
+            "updated_at, forked_from_thread_id, forked_from_message_id) "
+            "VALUES ('fork', 'fork of src', 'base', 'm', ?, ?, 'src', 'src-a0')",
+            (_ms(fork_at), _ms(fork_at)),
+        )
+        # The clone keeps the original timestamp, exactly as fork_chat_thread does.
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('fork-a0', 'fork', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2))),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    invalidate_profile_stats_cache()
+    after = compute_profile_stats(days = 7)
+
+    assert after["totals"]["totalTokens"] == 150
+    assert after["totals"]["messages"] == 2
+
+    # A genuinely new turn in the fork still counts.
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('fork-a1', 'fork', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(10, 5)), _ms(fork_at + timedelta(minutes = 1))),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    invalidate_profile_stats_cache()
+    grown = compute_profile_stats(days = 7)
+    assert grown["totals"]["totalTokens"] == 165
+    assert grown["totals"]["messages"] == 3
+
+
+def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
+    """A resume continues the source's counters, so only the tail is counted."""
+    conn = studio_db.get_connection()
+    try:
+        # 'stopped' at step 10, then claimed by the resume below.
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, duration_seconds, resume_blocked) "
+            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, 1)",
+        )
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, duration_seconds, resume_blocked) "
+            "VALUES ('cont', 'completed', 'm', 'd', '{}', '2026-01-02T10:00:00', 20, 15, 300, 0)",
+        )
+        conn.executemany(
+            "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
+            # The continuation's counter picks up where the source stopped.
+            [("src", step, step * 100) for step in range(1, 11)]
+            + [("cont", step, step * 100) for step in range(11, 16)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    training = compute_profile_stats(days = 7)["training"]
+
+    # Training reached step 15, not 10 + 15.
+    assert training["steps"] == 15
+    assert training["tokens"] == 1500
+    # Both attempts still show up as runs.
+    assert training["runs"] == 2
+
+
+def test_days_and_hours_use_the_callers_timezone(stats_db):
+    """A remote browser must not be bucketed against the server's calendar."""
+    # 01:30 UTC. In UTC that is one day; at UTC-4 it is 21:30 the day before.
+    when = datetime(2026, 3, 10, 1, 30, tzinfo = timezone.utc)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at) "
+            "VALUES ('tz', 'tz', 'base', 'm', ?, ?)",
+            (int(when.timestamp() * 1000), int(when.timestamp() * 1000)),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('tz-a0', 'tz', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(10, 10)), int(when.timestamp() * 1000)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    at_utc = compute_profile_stats(days = 366, tz_offset_minutes = 0)
+    invalidate_profile_stats_cache()
+    at_minus_four = compute_profile_stats(days = 366, tz_offset_minutes = 240)
+
+    assert at_utc["hourly"][1] == 1
+    assert at_minus_four["hourly"][21] == 1
+
+    utc_days = {day["date"] for day in at_utc["daily"] if day["messages"]}
+    local_days = {day["date"] for day in at_minus_four["daily"] if day["messages"]}
+    assert utc_days == {"2026-03-10"}
+    assert local_days == {"2026-03-09"}
 
 
 def test_repeat_calls_are_served_from_cache_until_history_changes(stats_db):
@@ -302,7 +450,7 @@ def test_route_does_not_block_the_event_loop(stats_db, monkeypatch):
 
     from routes import profile_stats as route_module
 
-    def slow_compute(days = 366):
+    def slow_compute(days = 366, tz_offset_minutes = 0):
         time.sleep(0.5)
         return {"totals": {"messages": 0}}
 
@@ -319,7 +467,9 @@ def test_route_does_not_block_the_event_loop(stats_db, monkeypatch):
 
         beat = asyncio.create_task(heartbeat())
         try:
-            await route_module.get_profile_stats(days = 366, current_subject = "unsloth")
+            await route_module.get_profile_stats(
+                days = 366, tz_offset_minutes = 0, current_subject = "unsloth"
+            )
         finally:
             beat.cancel()
         return ticks

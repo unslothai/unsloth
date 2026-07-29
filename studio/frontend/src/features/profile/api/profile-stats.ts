@@ -90,7 +90,12 @@ export type ProfileStats = {
 export async function loadProfileStats(
   signal?: AbortSignal,
 ): Promise<ProfileStats> {
-  const res = await authFetch("/api/profile/stats", { signal });
+  // Bucket days and hours in this browser's timezone, which is not the
+  // server's when Studio is reached over the network.
+  const query = new URLSearchParams({
+    tz_offset_minutes: String(new Date().getTimezoneOffset()),
+  });
+  const res = await authFetch(`/api/profile/stats?${query}`, { signal });
   if (!res.ok) {
     throw new Error(await readFastApiError(res, "Failed to load your stats"));
   }
