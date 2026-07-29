@@ -47,7 +47,6 @@ def hf_endpoint_host() -> str:
     """Host of the configured endpoint; probing huggingface.co would misjudge a mirror."""
     try:
         from urllib.parse import urlparse
-
         return urlparse(hf_endpoint_url()).hostname or "huggingface.co"
     except Exception:
         return "huggingface.co"
@@ -86,7 +85,6 @@ def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
 
     def _probe() -> None:
         import socket as _socket
-
         try:
             _socket.gethostbyname(host)
             result[0] = False

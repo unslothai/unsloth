@@ -2358,7 +2358,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # last the whole job, so only a connection failure counts: a momentary
                 # 502/503 must not block every download for the rest of the run.
                 from utils.transformers_version import hf_endpoint_unreachable
-
                 _offline = hf_endpoint_unreachable(gateway_errors_offline = False)
         except Exception:
             _offline = False

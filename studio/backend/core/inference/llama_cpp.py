@@ -589,7 +589,6 @@ def _hf_offline_if_unreachable_for(model_name):
     """
     try:
         from utils.paths import is_local_path
-
         if isinstance(model_name, str) and is_local_path(model_name):
             return contextlib.nullcontext()
     except Exception:
