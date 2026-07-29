@@ -1901,9 +1901,12 @@ def test_aria_heading_accepts_a_fallback_role_token_list():
     assert _is_aria_heading({"role": "HEADING"})
     assert not _is_aria_heading({"role": "banner"})
     assert not _is_aria_heading({})
-    body = '<main><header><div role="future-role heading">Page Title</div><ul>%s</ul></header><p>%s</p></main>' % (
-        _interlanguage_list(300),
-        "Article body. " * 30,
+    body = (
+        '<main><header><div role="future-role heading">Page Title</div><ul>%s</ul></header><p>%s</p></main>'
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
     )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Page Title" in out
