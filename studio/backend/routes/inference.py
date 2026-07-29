@@ -727,6 +727,7 @@ def _wants_stream_usage(payload) -> bool:
 
 _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S = 2.0
 _SSE_DONE_LINE = "data: [DONE]"
+_SSE_DONE_CHUNK = "data: [DONE]\n\n"
 
 
 def _openai_passthrough_sse_line_terminal_state(raw_line: str) -> Optional[str]:
@@ -2440,10 +2441,16 @@ async def _await_cancel_or_disconnect_then_close_client(
         return
 
 
-async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
+async def _stop_local_disconnect_cancel_watcher(watcher, timeout_s: float = 5.0) -> None:
+    # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
+    # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
+    # and an abandoned watcher owns no resources.
     watcher.cancel()
+    done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
+    if not done:
+        return
     try:
-        await watcher
+        watcher.result()
     except (asyncio.CancelledError, Exception):
         pass
 
@@ -3294,10 +3301,25 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
+def _parallel_slot_echo(llama_backend: LlamaCppBackend) -> dict:
+    """requested/effective parallel-slot fields for /load and /status echoes.
+
+    The diffusion runner ignores ``--parallel`` and never commits a count, so it
+    reports None like the non-GGUF paths; echoing the reset placeholder 1 would
+    fabricate an "invoked with 1 slot"."""
+    if llama_backend.is_diffusion:
+        return {"requested_parallel_slots": None, "parallel_slots": None}
+    return {
+        "requested_parallel_slots": llama_backend.requested_parallel_slots,
+        "parallel_slots": llama_backend.effective_parallel_slots,
+    }
+
+
 def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
+    requested_parallel_slots: Optional[int] = None,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -3306,10 +3328,21 @@ def _request_matches_loaded_settings(
     launched (user override, else a bundled family template such as the
     gemma-4 override), so the dedup compares against what the backend actually
     holds rather than the raw request field. Defaults to the request field for
-    callers that do not resolve a bundled override."""
+    callers that do not resolve a bundled override.
+
+    ``requested_parallel_slots`` is the resolved count the load would use
+    (per-load ``n_parallel``, else the server-wide default); None skips it."""
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
+        return False
+    # Requested-vs-requested for the same reason: the fitter may launch fewer
+    # slots. Diffusion ignores --parallel, so a change there must not reload.
+    if (
+        requested_parallel_slots is not None
+        and not llama_backend.is_diffusion
+        and int(requested_parallel_slots) != llama_backend.requested_parallel_slots
+    ):
         return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
@@ -4730,6 +4763,20 @@ def _guard_chat_load_against_training(
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
         )
 
+    # Size with the count that will actually launch, or a load that fits gets a
+    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
+    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
+    if is_gguf and n_parallel > 1:
+        if diffusion_kind is True:
+            n_parallel = 1
+        else:
+            try:
+                caps = LlamaCppBackend.probe_server_capabilities()
+                if caps.get("found") and not caps.get("supports_kv_unified"):
+                    n_parallel = 1
+            except Exception as e:
+                logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
+
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
@@ -5272,6 +5319,17 @@ async def _load_model_impl(
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
 
+        # Resolve the slot count once (per-load field, else the server-wide
+        # --parallel default) so the dedupe, the training guard and the load
+        # kwargs all size against what launches. app.state stays the launch
+        # intent / admission fallback; getattr because direct callers have no app.
+        _app_state = getattr(getattr(fastapi_request, "app", None), "state", None)
+        _n_parallel = (
+            request.n_parallel
+            if request.n_parallel is not None
+            else getattr(_app_state, "llama_parallel_slots", 1)
+        )
+
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         if request.gguf_variant or is_direct_gguf_request:
             gguf_variant_matches = is_direct_gguf_request or bool(
@@ -5289,6 +5347,7 @@ async def _load_model_impl(
                     request,
                     llama_backend,
                     effective_chat_template_override,
+                    requested_parallel_slots = _n_parallel,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
@@ -5343,6 +5402,7 @@ async def _load_model_impl(
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
                     requested_gpu_ids = llama_backend.requested_gpu_ids,
+                    **_parallel_slot_echo(llama_backend),
                 )
         else:
             if (
@@ -5481,7 +5541,7 @@ async def _load_model_impl(
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
-            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            n_parallel = _n_parallel,
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = bool(request.tensor_parallel),
             gpu_memory_mode = request.gpu_memory_mode,
@@ -5558,7 +5618,6 @@ async def _load_model_impl(
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests
             # during the (potentially long) GGUF download + llama-server start.
-            _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
 
             # Load kwargs common to HF and local modes; the two differ only by
             # the model-source args (hf_repo/-token vs gguf_path/mmproj).
@@ -5756,6 +5815,7 @@ async def _load_model_impl(
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
+                **_parallel_slot_echo(llama_backend),
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -6156,9 +6216,14 @@ async def validate_model(
                 requested_gpu_ids = effective_gpu_ids,
                 llama_extra_args = effective_extra_args,
                 n_parallel = (
-                    getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
-                    if fastapi_request is not None
-                    else 1
+                    request.n_parallel
+                    if request.n_parallel is not None
+                    # Same getattr chain as the load path: preflight must size like the load.
+                    else getattr(
+                        getattr(getattr(fastapi_request, "app", None), "state", None),
+                        "llama_parallel_slots",
+                        1,
+                    )
                 ),
                 cache_type_kv = request.cache_type_kv,
                 tensor_parallel = request.tensor_parallel,
@@ -6987,6 +7052,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
+                **_parallel_slot_echo(llama_backend),
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
@@ -9390,12 +9456,15 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             _tool_sentinel = object()
+            # True only once the sync generator returned on its own; see _gguf_decode_finished.
+            _tool_decode_finished = False
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
             _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
 
             async def gguf_tool_stream():
+                nonlocal _tool_decode_finished
                 gen = None
                 next_task = None
                 stream_completed = False
@@ -9413,7 +9482,10 @@ async def openai_chat_completions(
                     if lease is None:
                         return
                     if on:
-                        lease.park()
+                        # Refused when the budget is spent: the slot stays here,
+                        # so there is nothing to take back afterwards.
+                        if not lease.park():
+                            return
                     elif wait:
                         # Resuming: park() may have handed our slot to a waiter, so wait for room instead
                         # of putting two holders on one slot.
@@ -9480,6 +9552,7 @@ async def openai_chat_completions(
                             if next_task.done():
                                 next_task = None
                         if event is _tool_sentinel:
+                            _tool_decode_finished = True
                             break
 
                         # Anything after the gated tool_start means the user answered.
@@ -9696,6 +9769,13 @@ async def openai_chat_completions(
                         stream_started = True
                         try:
                             async for chunk in iterator:
+                                # Release before the yield; see gguf_stream_chunks.
+                                if (
+                                    lease is not None
+                                    and _tool_decode_finished
+                                    and chunk == _SSE_DONE_CHUNK
+                                ):
+                                    lease.release()
                                 yield chunk
                         except asyncio.CancelledError:
                             stream_cancelled = True
@@ -9998,6 +10078,9 @@ async def openai_chat_completions(
             )
 
         _gguf_sentinel = object()
+        # True only once the sync generator returned on its own: only then has _open_stream's
+        # client exited. A cancel still emits [DONE] without it.
+        _gguf_decode_finished = False
 
         if payload.stream:
             if _wants_multiple_choices(payload):
@@ -10024,6 +10107,7 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             async def gguf_stream_chunks():
+                nonlocal _gguf_decode_finished
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
@@ -10068,6 +10152,7 @@ async def openai_chat_completions(
                             if next_task.done():
                                 next_task = None
                         if cumulative is _gguf_sentinel:
+                            _gguf_decode_finished = True
                             break
                         # Capture server metadata for the final usage chunk
                         if isinstance(cumulative, dict):
@@ -10230,6 +10315,20 @@ async def openai_chat_completions(
                     stream_started = True
                     try:
                         async for chunk in iterator:
+                            # The slot is idle once the sync generator returned and the stream ends
+                            # with the plain sentinel. The finally only runs at ASGI teardown, so
+                            # waiting for it starves the next request. Release before the yield: a
+                            # stalled send() or a consumer that stops pulling parks us there, and
+                            # Starlette never aclose()s a body iterator. Release is idempotent, so
+                            # the finally stays the backstop. Exact equality, not endswith:
+                            # _openai_stream_error_sse ends in the same sentinel before its
+                            # cleanup runs, and that stream still owns the slot.
+                            if (
+                                lease is not None
+                                and _gguf_decode_finished
+                                and chunk == _SSE_DONE_CHUNK
+                            ):
+                                lease.release()
                             yield chunk
                     except asyncio.CancelledError:
                         stream_cancelled = True
