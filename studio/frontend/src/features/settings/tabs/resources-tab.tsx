@@ -124,7 +124,9 @@ function MetricTile({
         <span
           className={cn(
             "shrink-0 font-mono text-xs tabular-nums",
-            percentKnown ? usageTextClass(safePercent) : "text-muted-foreground",
+            percentKnown
+              ? usageTextClass(safePercent)
+              : "text-muted-foreground",
           )}
         >
           {percentKnown ? formatPercent(safePercent) : "--"}
@@ -327,7 +329,9 @@ export function ResourcesTab() {
   const hasGpu =
     (displayedGpu?.available ?? false) && metrics.devices.length > 0;
   const backendLabel = (
-    displayedGpu?.backend ?? systemInfo.device_backend ?? "cpu"
+    displayedGpu?.backend ??
+    systemInfo.device_backend ??
+    "cpu"
   ).toUpperCase();
   const modelsFolderPath = hfCache
     ? hfCache.cacheHome
@@ -487,7 +491,7 @@ export function ResourcesTab() {
               // as a page-wide rule, so the bar is sized to the row instead.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 items-center gap-4 py-3 max-md:flex-col max-md:items-stretch max-md:gap-2"
+                className="flex min-w-0 items-center gap-4 py-3 max-lg:flex-col max-lg:items-stretch max-lg:gap-2"
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">
@@ -501,8 +505,10 @@ export function ResourcesTab() {
                         })}, ${backendLabel}`}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-4 max-md:justify-between">
-                  <div className="flex shrink-0 gap-3 font-mono text-xs tabular-nums text-muted-foreground max-lg:hidden">
+                {/* Narrow screens stack instead of hiding: the used, free and
+                    total figures stay reachable on tablets and small laptops. */}
+                <div className="flex shrink-0 items-center gap-4 max-lg:flex-col max-lg:items-stretch max-lg:gap-2">
+                  <div className="flex shrink-0 gap-3 font-mono text-xs tabular-nums text-muted-foreground max-lg:justify-between">
                     <span className="truncate">
                       {t("settings.resources.gpu.used", { value: usedText })}
                     </span>
@@ -513,14 +519,17 @@ export function ResourcesTab() {
                       {t("settings.resources.gpu.total", { value: totalText })}
                     </span>
                   </div>
-                  <Progress
-                    value={safePercent}
-                    aria-label={device.name ?? "GPU"}
-                    className="h-1.5 w-40 shrink-0 rounded-full bg-muted max-md:w-full dark:bg-black/40"
-                    indicatorClassName={usageIndicatorClass(safePercent)}
-                  />
-                  <div className="w-[5.5rem] shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
-                    {percentText} {t("settings.resources.gpu.vramUtilization")}
+                  <div className="flex min-w-0 items-center gap-4">
+                    <Progress
+                      value={safePercent}
+                      aria-label={device.name ?? "GPU"}
+                      className="h-1.5 w-40 shrink-0 rounded-full bg-muted max-lg:w-full dark:bg-black/40"
+                      indicatorClassName={usageIndicatorClass(safePercent)}
+                    />
+                    <div className="w-[5.5rem] shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                      {percentText}{" "}
+                      {t("settings.resources.gpu.vramUtilization")}
+                    </div>
                   </div>
                 </div>
               </div>
