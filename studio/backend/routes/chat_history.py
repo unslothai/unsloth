@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
 from loggers import get_logger
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
@@ -169,6 +170,7 @@ class ChatPresetLoadConfig(BaseModel):
     kvCacheDtype: Optional[str] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
+    nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None

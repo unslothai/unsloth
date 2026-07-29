@@ -397,6 +397,7 @@ export function ChatSettingsPanel({
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
+  const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
   const mtpUpdatable =
@@ -504,6 +505,7 @@ export function ChatSettingsPanel({
     tensorParallel,
     speculativeType,
     specDraftNMax,
+    nParallel,
     params.maxSeqLength,
   ]);
   const activePresetLoadSummary = useMemo(
@@ -522,6 +524,7 @@ export function ChatSettingsPanel({
       tensorParallel,
       speculativeType,
       specDraftNMax,
+      nParallel,
       params.maxSeqLength,
     ],
   );

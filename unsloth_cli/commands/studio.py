@@ -1263,7 +1263,8 @@ def studio_default(
         max = _PARALLEL_MAX,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            "(Parallel Slots) override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -1880,7 +1881,8 @@ def run(
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
+            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Studio "
+            "run settings (Parallel Slots) can override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
