@@ -158,9 +158,9 @@ print("RESULT" + json.dumps({
 
 def _probe(detect_seconds: float) -> dict:
     proc = _run(_SNIPPET % {"detect_seconds": detect_seconds})
-    assert proc.returncode == 0, (
-        f"probe failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr[-4000:]}"
-    )
+    assert (
+        proc.returncode == 0
+    ), f"probe failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr[-4000:]}"
     line = next(ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT"))
     return json.loads(line[len("RESULT") :])
 
@@ -197,9 +197,9 @@ def test_health_still_waits_when_detection_finishes_inside_the_budget():
     result = _probe(0.3)
 
     assert result["status"] == 200
-    assert result["chat_only"] is False, (
-        "health published chat_only=True on a host whose detection completed well inside the budget"
-    )
+    assert (
+        result["chat_only"] is False
+    ), "health published chat_only=True on a host whose detection completed well inside the budget"
     assert "hardware_detecting" not in result or result["hardware_detecting"] is None
 
 
@@ -251,9 +251,9 @@ def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
         "the provisional authed reply carries device_type, so the frontend caches "
         "it as authoritative and never re-reads the measured chat_only"
     )
-    assert not result["authed_has_chat_only_reason"], (
-        "chat_only_reason is meaningless before detection has run"
-    )
+    assert not result[
+        "authed_has_chat_only_reason"
+    ], "chat_only_reason is meaningless before detection has run"
     # The launcher-facing fields are unaffected.
     assert result["authed_has_version"]
 
@@ -282,17 +282,17 @@ def test_a_mid_detection_assignment_is_not_treated_as_finished():
 
     hw = importlib.import_module("utils.hardware.hardware")
 
-    assert hasattr(hw, "DETECTION_COMPLETE"), (
-        "detection needs a completion signal distinct from the DEVICE assignment"
-    )
+    assert hasattr(
+        hw, "DETECTION_COMPLETE"
+    ), "detection needs a completion signal distinct from the DEVICE assignment"
     assert isinstance(hw.DETECTION_COMPLETE, threading.Event)
 
     src = _MAIN_SRC.read_text(encoding = "utf-8")
     start = src.index("async def _await_hardware_detection")
     body = src[start : start + 1800]
-    assert "DETECTION_COMPLETE" in body, (
-        "the health wait must poll the completion signal, not the DEVICE assignment"
-    )
-    assert "while _hw_module.DEVICE is None" not in body, (
-        "the health wait is keyed on the mid-detection assignment again"
-    )
+    assert (
+        "DETECTION_COMPLETE" in body
+    ), "the health wait must poll the completion signal, not the DEVICE assignment"
+    assert (
+        "while _hw_module.DEVICE is None" not in body
+    ), "the health wait is keyed on the mid-detection assignment again"
