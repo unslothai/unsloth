@@ -66,6 +66,11 @@ export interface LoadModelRequest {
    */
   spec_draft_n_max?: number | null;
   /**
+   * Parallel decode slots for llama-server (--parallel), 1..64. Omit/null =
+   * the launch default. The VRAM fitter may launch fewer to stay on GPU.
+   */
+  n_parallel?: number | null;
+  /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
@@ -202,6 +207,12 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Slots the load was invoked with (else the --parallel default). Null for
+   * non-GGUF loads. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null for
+   * non-GGUF loads. */
+  parallel_slots?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -263,6 +274,12 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Slots the active load was invoked with (else the --parallel default).
+   * Null when no GGUF model is loaded. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null when
+   * no GGUF model is loaded. */
+  parallel_slots?: number | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

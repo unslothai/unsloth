@@ -1130,6 +1130,8 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
+                // Slots scale the KV estimate; keep validate sized like the load.
+                n_parallel: ownConfig.nParallel ?? null,
               }
             : {}),
         });
@@ -1198,6 +1200,7 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                n_parallel: ownConfig.nParallel ?? null,
               }
             : {}),
         });
@@ -1229,6 +1232,12 @@ export function SharedComposer({
               effectiveCustomContextLength,
             )
           : null;
+        // Slots this compare load committed. Diffusion ignores --parallel, so a
+        // count there would mint a phantom override a preset carries onto a GGUF.
+        const committedSlots =
+          targetIsGguf && !(resp.is_diffusion ?? false)
+            ? (ownConfig.nParallel ?? null)
+            : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1237,6 +1246,9 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          // Click-time value, not the resolved echo (see the single-model load).
+          nParallel: committedSlots,
+          loadedNParallel: committedSlots,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,

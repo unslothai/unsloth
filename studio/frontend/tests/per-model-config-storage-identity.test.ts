@@ -45,6 +45,7 @@ function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
     kvCacheDtype,
     speculativeType: null,
     specDraftNMax: null,
+    nParallel: null,
     tensorParallel: false,
     chatTemplateOverride: null,
   };

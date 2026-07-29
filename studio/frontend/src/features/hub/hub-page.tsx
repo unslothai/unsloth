@@ -365,7 +365,9 @@ export function ModelsPage() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
   const urlModel = hubSearch.model ?? null;
+  const preferredGgufFile = hubSearch.file ?? null;
 
+  const preferredGgufFileIntent = hubSearch.intent ?? 0;
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1081,7 +1083,7 @@ export function ModelsPage() {
       setSelected(id);
       void navigate({
         to: "/hub",
-        search: (prev) => ({ ...prev, model: id }),
+        search: (prev) => ({ ...prev, model: id, file: undefined }),
       });
     },
     [setSelected, navigate],
@@ -1167,7 +1169,7 @@ export function ModelsPage() {
     setSelected(firstId);
     void navigate({
       to: "/hub",
-      search: (prev) => ({ ...prev, model: firstId }),
+      search: (prev) => ({ ...prev, model: firstId, file: undefined }),
       replace: true,
     });
   }, [
@@ -1868,6 +1870,9 @@ export function ModelsPage() {
             >
               <HubDetailView
                 model={selectedModel}
+                preferredGgufFile={preferredGgufFile}
+
+                preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
                 selectionHiddenByFilters={selectionHiddenByFilters}
@@ -1890,6 +1895,9 @@ export function ModelsPage() {
             >
               <HubDetailView
                 model={selectedModel}
+                preferredGgufFile={preferredGgufFile}
+
+                preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
                 selectionHiddenByFilters={selectionHiddenByFilters}

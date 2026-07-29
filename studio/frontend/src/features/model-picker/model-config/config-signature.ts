@@ -54,6 +54,7 @@ export function loadedConfigSignature(
     config.kvCacheDtype ?? "",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
+    config.nParallel ?? "",
     config.tensorParallel ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""

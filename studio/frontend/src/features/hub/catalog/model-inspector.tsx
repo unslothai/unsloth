@@ -411,6 +411,9 @@ export const ModelInspector = memo(function ModelInspector({
   model,
   runtime,
   actions,
+  preferredGgufFile = null,
+
+  preferredGgufFileIntent = 0,
   isDataset = false,
   metadataUnavailable = false,
   selectionHiddenByFilters = false,
@@ -419,6 +422,9 @@ export const ModelInspector = memo(function ModelInspector({
   isDataset?: boolean;
   metadataUnavailable?: boolean;
   selectionHiddenByFilters?: boolean;
+  preferredGgufFile?: string | null;
+
+  preferredGgufFileIntent?: number;
   runtime: ModelInspectorRuntime;
   actions: ModelInspectorActions;
 }) {
@@ -696,6 +702,9 @@ export const ModelInspector = memo(function ModelInspector({
               loadingPhase={loadingPhase}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
+
+              preferredFile={preferredGgufFile}
+              preferredFileIntent={preferredGgufFileIntent}
               unsupportedReason={
                 unslothSupport.status === "unsupported"
                   ? (unslothSupport.reason ?? "Unsupported format")
@@ -721,6 +730,9 @@ export const ModelInspector = memo(function ModelInspector({
               canRun={canRunModel}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
+              preferredGgufFile={preferredGgufFile}
+
+              preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
