@@ -94,6 +94,8 @@ def main():
         max_length                  = max_seq_length,
         dataset_num_proc            = 2,
         packing                     = False,  # True can spike VRAM on variable-length samples
+        padding_free                = False,  # Unsloth auto-enables this when unset, which conflicts
+                                               # with an explicit max_length + packing=False (trl 1.6+)
     )
 
     # ── 5. Initialize trainer ─────────────────────────────────────────────────
