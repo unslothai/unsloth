@@ -61,7 +61,6 @@ class HuggingFaceCachePaths:
     def child_env(self, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
         if base is None:
             from utils.utils import hf_environment_for_spawn
-
             env = hf_environment_for_spawn()
         else:
             env = dict(base)
@@ -163,7 +162,6 @@ def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None
     """
 
     from utils.utils import hf_environment_restored_for_spawn
-
     with _spawn_env_lock, hf_environment_restored_for_spawn():
         missing = object()
         saved_environment: dict[str, str | object] = {}

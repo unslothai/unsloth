@@ -56,7 +56,6 @@ def hf_proxy_for_endpoint(endpoint: Optional[str] = None) -> Optional[str]:
     """Return the Hub client's proxy choice, including ALL_PROXY and NO_PROXY rules."""
     try:
         from requests.utils import get_environ_proxies, select_proxy
-
         url = endpoint or hf_endpoint_url()
         return select_proxy(url, get_environ_proxies(url))
     except Exception:
@@ -290,10 +289,7 @@ def hf_environment_restored_for_spawn():
             return
 
         missing = object()
-        forced_environment = {
-            key: os.environ.get(key, missing)
-            for key in _OFFLINE_ENV_KEYS
-        }
+        forced_environment = {key: os.environ.get(key, missing) for key in _OFFLINE_ENV_KEYS}
         _restore_saved_offline_env(os.environ)
         try:
             yield

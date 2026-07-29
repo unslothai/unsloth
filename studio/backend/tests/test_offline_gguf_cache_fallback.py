@@ -1449,7 +1449,6 @@ class TestSpawnEnvironmentDoesNotInheritScopedOffline:
     ):
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
-
         with force_hf_offline():
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
             with child_environment_for_spawn({}):
@@ -1473,7 +1472,6 @@ class TestSpawnEnvironmentDoesNotInheritScopedOffline:
     def test_nested_spawn_contexts_remain_reentrant(self, monkeypatch, clean_offline_env):
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
-
         with force_hf_offline():
             with child_environment_for_spawn({}):
                 with child_environment_for_spawn({}):
