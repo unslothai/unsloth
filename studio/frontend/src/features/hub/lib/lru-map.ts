@@ -27,17 +27,13 @@ export class LruMap<K, V> {
     return value;
   }
 
-  set(key: K, value: V): K | undefined {
+  set(key: K, value: V): void {
     this.map.delete(key);
     this.map.set(key, value);
-    if (this.map.size <= this.max) {
-      return undefined;
+    if (this.map.size > this.max) {
+      const oldest = this.map.keys().next().value;
+      if (oldest !== undefined) this.map.delete(oldest);
     }
-    const oldest = this.map.keys().next().value;
-    if (oldest !== undefined) {
-      this.map.delete(oldest);
-    }
-    return oldest;
   }
 
   delete(key: K): void {

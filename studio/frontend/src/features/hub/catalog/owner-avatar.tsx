@@ -53,8 +53,8 @@ export function OwnerAvatar({
   className?: string;
   /**
    * When false, never fetch the owner's HF profile picture; show a local
-   * provider logo or colored-initial tile instantly. Virtualized list rows pass
-   * `false` to avoid a per-row request storm; the inspector keeps `true`.
+   * provider logo or colored-initial tile instantly. Broad catalog views pass
+   * `false`; the bounded split pane and inspector keep remote loading enabled.
    */
   remote?: boolean;
 }) {
