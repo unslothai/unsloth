@@ -1218,16 +1218,16 @@ class TestAllProxyIsHonoured:
         assert hf_endpoint_unreachable(timeout = 1) is False
         assert seen["proxies"] == {"https": "http://proxy.internal:3128"}
 
-    def test_probe_stays_direct_without_a_proxy(self, monkeypatch):
+    def test_probe_forces_direct_opener_when_no_proxy_bypasses(self, monkeypatch):
         import urllib.request
 
         from utils.transformers_version import hf_endpoint_unreachable
 
-        monkeypatch.setattr(
-            urllib.request,
-            "build_opener",
-            lambda *a, **k: pytest.fail("built a proxy opener with no proxy configured"),
-        )
+        monkeypatch.setenv("HF_ENDPOINT", "https://10.23.4.5")
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("NO_PROXY", "10.0.0.0/8")
+        seen = {}
+        real_build = urllib.request.build_opener
 
         class _Resp:
             def __enter__(self):
@@ -1236,8 +1236,22 @@ class TestAllProxyIsHonoured:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+        def _spy(*handlers):
+            for handler in handlers:
+                if isinstance(handler, urllib.request.ProxyHandler):
+                    seen["proxies"] = dict(handler.proxies)
+            opener = real_build(*handlers)
+            opener.open = lambda req, timeout = None: _Resp()  # noqa: ARG005
+            return opener
+
+        monkeypatch.setattr(urllib.request, "build_opener", _spy)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *a, **k: pytest.fail("default opener re-evaluated proxy settings"),
+        )
         assert hf_endpoint_unreachable(timeout = 1) is False
+        assert seen["proxies"] == {}
 
 
 class TestEnvOfflineSkipsTheProbe:
@@ -1525,6 +1539,11 @@ class TestProxyTimeoutIsNotExcused:
         monkeypatch.setattr("utils.utils.hf_proxy_configured", lambda: False)
         monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: True)
         assert probe(timeout = 1) is False
+
+    def test_lifetime_mode_fails_open_on_proxy_timeout(self, monkeypatch):
+        probe = self._probe_timing_out(monkeypatch)
+        monkeypatch.setattr("utils.utils.hf_proxy_configured", lambda: True)
+        assert probe(timeout = 1, proxy_timeouts_offline = False) is False
 
 
 class TestEndpointNormalisation:

@@ -69,7 +69,12 @@ def _hf_raw_url(model_name: str, filename: str) -> str:
     return f"{hf_endpoint_url().rstrip('/')}/{model_name}/raw/main/{filename}"
 
 
-def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = True) -> bool:
+def hf_endpoint_unreachable(
+    timeout: int = 3,
+    *,
+    gateway_errors_offline: bool = True,
+    proxy_timeouts_offline: bool = True,
+) -> bool:
     """Bounded reachability probe to the HF endpoint. A HEAD request runs in a daemon thread
     joined with a deadline, so a resolver blackhole cannot block past ~timeout+1s. True if
     unreachable. A clean socket timeout is resolved with a TCP connect, so a slow-but-live
@@ -94,17 +99,18 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
         if "://" not in endpoint:
             endpoint = "https://" + endpoint
 
-    # urllib ignores all_proxy, which the Hub client (requests) honours, so a proxy-only
-    # setup would fail this probe's direct lookup and be called offline while the real hub
-    # calls succeed. Resolve the proxy the same way and pin it to the endpoint's scheme.
-    # None means direct, including when NO_PROXY covers the host.
+    # Pin the Hub client's proxy choice. The default urllib opener ignores all_proxy and
+    # can also override a requests-compatible NO_PROXY decision.
     opener = None
     try:
         from utils.utils import hf_proxy_for_endpoint
+
         proxy = hf_proxy_for_endpoint(endpoint)
+        scheme = urllib.parse.urlparse(endpoint).scheme or "https"
         if proxy:
-            scheme = urllib.parse.urlparse(endpoint).scheme or "https"
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
+        elif any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     except Exception:
         opener = None
     _open = opener.open if opener is not None else urllib.request.urlopen
@@ -156,9 +162,8 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
             from utils.utils import hf_proxy_configured, hf_tcp_reachable
             if hf_proxy_configured():
                 # Through a proxy the handshake only proves the proxy is up, not that it
-                # can reach the hub, so a timeout stays unreachable rather than being
-                # excused by a live proxy with a dead upstream.
-                return True
+                # can reach the hub. Lifetime callers fail open on this ambiguous result.
+                return proxy_timeouts_offline
             return not hf_tcp_reachable(min(timeout, 2.0), endpoint)
         except Exception:
             return True

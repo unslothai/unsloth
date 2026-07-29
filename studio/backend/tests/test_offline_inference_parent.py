@@ -231,6 +231,9 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
             "training worker must not hardcode huggingface.co; a reachable HF_ENDPOINT "
             "mirror would be declared offline"
         )
+        assert (
+            "proxy_timeouts_offline = False" in block
+        ), "training worker must fail open on an ambiguous proxy timeout"
 
     def test_shared_dns_helper_uses_thread_probe(self):
         """The daemon-thread property moved with the probe; pin it where it now lives."""
