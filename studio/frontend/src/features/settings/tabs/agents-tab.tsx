@@ -1094,12 +1094,13 @@ export function AgentsTab() {
         data-settings-label={t("settings.agents.intro")}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        {/* The chip is the docs entry point, so no separate link is needed. */}
+        {/* The chip is the docs entry point, so no separate link is needed.
+            No aria-label: it would replace the visible "unsloth start" as the
+            accessible name, leaving voice control unable to target it. */}
         <a
           href={DOCS_URL}
           target="_blank"
           rel="noopener noreferrer"
-          aria-label={t("settings.agents.readDocs")}
           title={t("settings.agents.readDocs")}
           className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.08]"
         >
