@@ -760,6 +760,25 @@ def snapshot_has_complete_variants(snapshot: str) -> bool:
         return False
 
 
+def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
+    """Whether *snapshot* itself holds a GGUF vision projector.
+
+    Read through the same walk the variant lister reports ``has_vision`` from, so
+    the row capability and the picker's flag cannot name different revisions. The
+    loader's companion search does not leave the snapshot it resolved the quant
+    in, so a projector fetched on its own into another revision is unreachable
+    however many revisions the repo has.
+    """
+    if snapshot is None:
+        return False
+    from hub.utils.gguf import list_local_gguf_variants
+
+    try:
+        return bool(list_local_gguf_variants(str(snapshot))[1])
+    except Exception:
+        return False
+
+
 def complete_snapshot_variants(snapshot: str) -> set[str]:
     """Quant labels in *snapshot* whose files are all on disk: the subset behind
     ``snapshot_variants_all_complete``'s all-or-nothing answer."""

@@ -348,14 +348,51 @@ def _cache_inventory_fields(
     partial: bool = False,
     requires_variant: bool = False,
     payload_snapshots: Optional[frozenset[str]] = None,
+    identity: Optional[_LoadIdentity] = None,
+    gguf_snapshot: Optional[Path] = None,
+    repo_info = None,
+    hidden_infra: bool = False,
 ) -> dict:
-    identity = _resolve_load_identity(
-        repo_id,
-        repo_path = repo_path,
-        snapshot_path = snapshot_path,
-        active_hub_cache = active_hub_cache,
-        payload_snapshots = payload_snapshots,
-    )
+    """Load identity plus the capability block for one cache row.
+
+    The single place a cache row's capabilities are built. Every flag is derived
+    here, from the snapshot this row describes, because the recurring defect has
+    been a signal collected repo-wide -- over every revision, or off a marker
+    carrying no revision at all -- and then hung on a row whose load id names one
+    directory. Setting a flag afterwards out of ``repo_info`` puts the whole repo
+    back in scope, so a new flag belongs in here with the snapshot beside it.
+
+    *identity* is accepted already resolved so a caller that needs the load
+    snapshot to compute *partial* does not resolve it a second time and risk a
+    different answer.
+    """
+    if identity is None:
+        identity = _resolve_load_identity(
+            repo_id,
+            repo_path = repo_path,
+            snapshot_path = snapshot_path,
+            active_hub_cache = active_hub_cache,
+            payload_snapshots = payload_snapshots,
+        )
+    capabilities = _capabilities_for_format(
+        model_format,
+        "hf_cache",
+        partial = partial,
+        requires_variant = requires_variant,
+    ).model_dump()
+    # The projector must sit in the snapshot the offered quants come from: the
+    # loader's companion search never leaves it, and the picker takes this flag
+    # over the snapshot-scoped one the variants endpoint returns, so a repo-wide
+    # answer here could not be corrected downstream. With no snapshot to scope
+    # against, the repo-wide answer stands, as the other repo-wide signals do.
+    if model_format == "gguf" and (
+        hf_cache_scan.snapshot_has_gguf_projector(gguf_snapshot)
+        if gguf_snapshot is not None
+        else repo_info is not None and _repo_has_mmproj(repo_info)
+    ):
+        capabilities["supports_vision"] = True
+    if hidden_infra:
+        capabilities["can_chat"] = False
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
         "load_id": identity.load_id,
@@ -363,12 +400,7 @@ def _cache_inventory_fields(
         "model_format": model_format,
         "runtime": _runtime_for_format(model_format),
         "format_variant": None,
-        "capabilities": _capabilities_for_format(
-            model_format,
-            "hf_cache",
-            partial = partial,
-            requires_variant = requires_variant,
-        ).model_dump(),
+        "capabilities": capabilities,
     }
 
 
@@ -451,22 +483,21 @@ def _scan_cached_gguf() -> list[dict]:
                         partial = bool(row["partial"]),
                         requires_variant = True,
                         payload_snapshots = gguf_payload_snapshots,
+                        # The snapshot the offered quants come from, so the row's
+                        # vision flag describes that one directory.
+                        gguf_snapshot = gguf_snapshot,
+                        repo_info = repo_info,
+                        # Visible infra variants remain management-only.
+                        hidden_infra = is_hidden_infra,
                     )
                 )
-                if _repo_has_mmproj(repo_info):
-                    row["capabilities"]["supports_vision"] = True
-                # Visible infra variants remain management-only.
-                if is_hidden_infra:
-                    row["capabilities"]["can_chat"] = False
+                # Copies of a repo in two cache roots describe two directories,
+                # and only the winner's is loaded: carrying the loser's vision
+                # flag over advertised a projector nothing can reach.
                 if _prefer_cache_row(row, existing):
-                    if existing and existing["capabilities"].get("supports_vision"):
-                        row["capabilities"]["supports_vision"] = True
                     seen_lower[key] = row
-                else:
-                    if last_modified > existing.get("last_modified", 0.0):
-                        existing["last_modified"] = last_modified
-                    if row["capabilities"].get("supports_vision"):
-                        existing["capabilities"]["supports_vision"] = True
+                elif last_modified > existing.get("last_modified", 0.0):
+                    existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
@@ -797,13 +828,14 @@ def _scan_cached_models() -> list[dict]:
                 # newest payload snapshot is not that answer: a load id left as
                 # the repo id resolves through refs/main, which may name an older
                 # payload snapshot.
-                load_snapshot = _resolve_load_identity(
+                identity = _resolve_load_identity(
                     repo_id,
                     repo_path = repo_path,
                     snapshot_path = payload.payload_snapshot or snapshot_path,
                     active_hub_cache = active_hub_cache,
                     payload_snapshots = payload.payload_snapshots,
-                ).load_snapshot
+                )
+                load_snapshot = identity.load_snapshot
                 local_metadata = _cached_model_local_metadata(repo_path, load_snapshot)
                 if local_metadata.pop("_hidden_stt", False):
                     skipped_stt += 1
@@ -843,11 +875,8 @@ def _scan_cached_models() -> list[dict]:
                     _cache_inventory_fields(
                         repo_id,
                         payload.model_format,
-                        repo_path = repo_path,
-                        snapshot_path = payload.payload_snapshot or snapshot_path,
-                        active_hub_cache = active_hub_cache,
+                        identity = identity,
                         partial = bool(row["partial"]),
-                        payload_snapshots = payload.payload_snapshots,
                     )
                 )
                 if _prefer_cache_row(row, existing):

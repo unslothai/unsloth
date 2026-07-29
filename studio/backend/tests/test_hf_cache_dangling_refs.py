@@ -838,6 +838,10 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
     # The quant on disk stays offered either way; only the flag may move.
     assert [v.quant for v in variants] == ["Q4_K_M"]
     assert reported_vision is has_vision
+    # The row carries its own copy of the flag and the picker prefers it over
+    # the one above, so a repo-wide answer here could not be corrected: it put a
+    # vision badge on a load whose projector is in another snapshot.
+    assert rows[0]["capabilities"].get("supports_vision") is has_vision
     # Behavioural anchor for the flag: the loader's companion search stops at
     # the pinned snapshot, so vision is real exactly when the projector is here.
     assert (load_dir / "mmproj-F16.gguf").is_file() is has_vision
@@ -1238,3 +1242,45 @@ def test_the_row_and_the_picker_agree_on_equal_mtime_snapshots(tmp_path, monkeyp
     )
     # Both selectors head the same list, so the tie cannot split them again.
     assert load_dir == next(iter(iter_hf_cache_snapshots("Org/Model", root = tmp_path)))
+
+
+def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
+    """The same repo can sit in the active hub cache and in a previous one.
+
+    One row survives the merge and only its directory is ever loaded, so a
+    projector that exists solely in the copy that lost has nothing to reach it.
+    Carrying the flag onto the winner put a vision badge on a text-only load."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    active = tmp_path / "active"
+    previous = tmp_path / "previous"
+    for root, files in (
+        (active, {"Model-Q4_K_M.gguf": b"\0" * 32}),
+        (previous, {"Model-Q4_K_M.gguf": b"\0" * 32, "mmproj-F16.gguf": b"\0" * 64}),
+    ):
+        snapshot = root / "models--Org--Model" / "snapshots" / SNAPSHOT
+        snapshot.mkdir(parents = True)
+        (root / "models--Org--Model" / "refs").mkdir(parents = True)
+        (root / "models--Org--Model" / "refs" / "main").write_text(SNAPSHOT, encoding = "utf-8")
+        for name, payload in files.items():
+            (snapshot / name).write_bytes(payload)
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, previous])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_gguf()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["active_cache"] is True
+    # Behavioural anchor: the row the picker shows loads out of the active root,
+    # and there is no projector there.
+    assert not (active / "models--Org--Model" / "snapshots" / SNAPSHOT / "mmproj-F16.gguf").exists()
+    assert rows[0]["capabilities"].get("supports_vision") is False
