@@ -207,8 +207,13 @@ def test_cancel_preserves_stateful_session(fake_clients):
     cancel = threading.Event()
     threading.Timer(0.1, cancel.set).start()
     out = call_tool_sync(
-        STDIO_URL, None, "browser_snapshot", {}, scope = "chat",
-        cancel_event = cancel, timeout = 5,
+        STDIO_URL,
+        None,
+        "browser_snapshot",
+        {},
+        scope = "chat",
+        cancel_event = cancel,
+        timeout = 5,
     )
     assert out == "Error: MCP tool 'browser_snapshot' cancelled"
     fake_clients[0].call_delay = 0.0
