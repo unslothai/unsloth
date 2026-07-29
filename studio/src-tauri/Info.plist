@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Unsloth Studio uses the microphone you select for local voice dictation.</string>
+    <string>Unsloth uses the microphone you select for local voice dictation.</string>
 </dict>
 </plist>

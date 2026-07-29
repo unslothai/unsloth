@@ -24,7 +24,7 @@ export const ptBR = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "Menu de conta {name}",
     updateAvailable: "Atualização disponível",
     resize: {
@@ -278,7 +278,7 @@ export const ptBR = {
     },
     appearance: {
       title: "Aparência",
-      description: "Como o Unsloth Studio se parece neste dispositivo.",
+      description: "Como o Unsloth se parece neste dispositivo.",
       theme: {
         title: "Tema",
         label: "Esquema de cores",
@@ -553,7 +553,7 @@ export const ptBR = {
       osWindows: "Windows",
       secureHttps: "HTTPS Seguro",
       secureHttpsHint:
-        "A porta 0.0.0.0 ainda está acessível globalmente. Para segurança total, inicie o Unsloth Studio com --secure para expor apenas este link HTTPS.",
+        "A porta 0.0.0.0 ainda está acessível globalmente. Para segurança total, inicie o Unsloth com --secure para expor apenas este link HTTPS.",
       copyTunnelUrl: "Copiar URL do túnel",
       copySnippet: "Copiar trecho de código",
       copy: "Copiar",
@@ -606,7 +606,7 @@ export const ptBR = {
       reportIssue: "Reportar um problema",
       license: {
         sectionTitle: "Licença",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription:
           "Código aberto sob a licença GNU AGPL v3.0.",
@@ -615,12 +615,12 @@ export const ptBR = {
         libraryDescription: "Licenciado sob Apache 2.0.",
       },
       dangerZone: "Zona de perigo",
-      shutDownStudio: "Desligar Unsloth Studio",
+      shutDownStudio: "Desligar Unsloth",
       shutDownStudioDescription:
         "Interrompe o servidor Unsloth e encerra sua sessão.",
       shutDown: "Desligar",
       update: {
-        title: "Atualizar Unsloth Studio",
+        title: "Atualizar Unsloth",
         commandText: "Texto de {label}",
         copied: "Copiado",
         copyCommand: "Copiar comando",

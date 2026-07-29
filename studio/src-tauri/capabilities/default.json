@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Unsloth Studio",
+  "description": "Default capabilities for Unsloth",
   "windows": ["main"],
   "permissions": [
     "core:default",

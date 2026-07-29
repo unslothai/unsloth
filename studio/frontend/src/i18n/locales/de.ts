@@ -24,7 +24,7 @@ export const de = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "Kontomenü von {name}",
     updateAvailable: "Update verfügbar",
     resize: {
@@ -280,7 +280,7 @@ export const de = {
     },
     appearance: {
       title: "Darstellung",
-      description: "Wie Unsloth Studio auf diesem Gerät aussieht.",
+      description: "Wie Unsloth auf diesem Gerät aussieht.",
       theme: {
         title: "Design",
         label: "Farbschema",
@@ -481,7 +481,7 @@ export const de = {
       osWindows: "Windows",
       secureHttps: "Sicheres HTTPS",
       secureHttpsHint:
-        "Der 0.0.0.0-Port ist weiterhin global erreichbar. Für vollständige Sicherheit starten Sie Unsloth Studio mit --secure, um nur diesen HTTPS-Link freizugeben.",
+        "Der 0.0.0.0-Port ist weiterhin global erreichbar. Für vollständige Sicherheit starten Sie Unsloth mit --secure, um nur diesen HTTPS-Link freizugeben.",
       copyTunnelUrl: "Tunnel-URL kopieren",
       copySnippet: "Snippet kopieren",
       copy: "Kopieren",
@@ -534,7 +534,7 @@ export const de = {
       reportIssue: "Problem melden",
       license: {
         sectionTitle: "Lizenz",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "Open Source unter der GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
@@ -542,12 +542,12 @@ export const de = {
         libraryDescription: "Lizenziert unter Apache 2.0.",
       },
       dangerZone: "Gefahrenzone",
-      shutDownStudio: "Unsloth Studio herunterfahren",
+      shutDownStudio: "Unsloth herunterfahren",
       shutDownStudioDescription:
         "Stoppt den Unsloth-Server und beendet Ihre Sitzung.",
       shutDown: "Herunterfahren",
       update: {
-        title: "Unsloth Studio aktualisieren",
+        title: "Unsloth aktualisieren",
         commandText: "{label}-Text",
         copied: "Kopiert",
         copyCommand: "Befehl kopieren",

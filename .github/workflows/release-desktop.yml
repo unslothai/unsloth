@@ -21,7 +21,7 @@ permissions:
 
 env:
   DESKTOP_RELEASE_NOTES: |
-    Desktop app for Unsloth Studio.
+    Desktop app for Unsloth.
 
     **macOS**: Download the Apple Silicon `.dmg`.
     **Windows**: Download the `-setup.exe` installer.
@@ -846,7 +846,7 @@ jobs:
           PY
           else
             release_flags=(
-              --title "Unsloth Studio (Desktop) ${STUDIO_VERSION}"
+              --title "Unsloth ${STUDIO_VERSION}"
               --notes-file "$notes_file"
               --target "$GITHUB_SHA"
             )
@@ -1025,7 +1025,7 @@ jobs:
           channel_json="$RUNNER_TEMP/desktop-latest-release.json"
           if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json" 2>/dev/null; then
             gh release create desktop-latest \
-              --title "Unsloth Studio Desktop updater channel" \
+              --title "Unsloth Desktop updater channel" \
               --notes "Machine-managed desktop updater channel; latest.json is replaced by release-desktop.yml." \
               --prerelease \
               --latest=false \

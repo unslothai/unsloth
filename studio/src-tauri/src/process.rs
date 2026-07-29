@@ -531,7 +531,7 @@ pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
     }
 
     find_unsloth_binary()
-        .ok_or_else(|| "Unsloth binary not found. Please install Unsloth Studio first.".to_string())
+        .ok_or_else(|| "Unsloth binary not found. Please install Unsloth first.".to_string())
 }
 
 fn backend_args(port: u16) -> Vec<String> {

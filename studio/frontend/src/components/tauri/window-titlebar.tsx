@@ -279,7 +279,7 @@ export function WindowTitlebar({
                     className="size-5 shrink-0 rounded-[6px] object-cover"
                   />
                   <span className="min-w-0 truncate text-ui-13 font-semibold leading-none tracking-[0.01em] text-nav-fg">
-                    Unsloth Studio
+                    Unsloth
                   </span>
                 </div>
                 <button
