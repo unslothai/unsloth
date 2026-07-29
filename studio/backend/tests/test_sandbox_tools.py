@@ -654,6 +654,50 @@ class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
         [
+            (
+                "import yaml\n"
+                "vars(yaml.constructor.SafeConstructor).get('yaml_constructors')"
+                "['!run'] = run\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "def inject(cls):\n"
+                "    cls.add_constructor('!run', run)\n"
+                "inject(yaml.SafeLoader)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "name = 'Loader'\n"
+                "getattr(yaml.loader, name)("
+                "'!!python/object/apply:builtins.eval [\"40+2\"]'"
+                ").get_single_data()"
+            ),
+            (
+                "import yaml\n"
+                "yaml.constructor.BaseConstructor.yaml_multi_constructors"
+                "['!run:'] = run\n"
+                "yaml.safe_load('!run:x value')"
+            ),
+        ],
+    )
+    def test_loader_namespace_and_inherited_registry_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "locator.locate(name)",
+            "resolver.resolve_name(name)",
+        ],
+    )
+    def test_unrelated_resolver_method_names_allowed(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
             "from yaml import loader as yl\nyl.Loader('a: 1')",
             ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
             "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",

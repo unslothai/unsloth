@@ -713,6 +713,7 @@ _PYYAML_SAFE_LOADERS = frozenset(
         "CSafeLoader",
         # SafeLoader inherits these registries, so mutating either constructor
         # class changes what yaml.safe_load can instantiate.
+        "BaseConstructor",
         "SafeConstructor",
         "CSafeConstructor",
     }
@@ -902,36 +903,80 @@ def _reflected_member(node) -> tuple[object, str] | None:
             return namespace.args[0], member
         if isinstance(namespace, ast.Attribute) and namespace.attr == "__dict__":
             return namespace.value, member
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"get", "pop", "setdefault", "__getitem__"}
+        and node.args
+    ):
+        member = _subscript_key(node.args[0])
+        if member is None:
+            return None
+        namespace = node.func.value
+        if (
+            isinstance(namespace, ast.Call)
+            and isinstance(namespace.func, ast.Name)
+            and namespace.func.id == "vars"
+            and len(namespace.args) == 1
+        ):
+            return namespace.args[0], member
+        if isinstance(namespace, ast.Attribute) and namespace.attr == "__dict__":
+            return namespace.value, member
     return None
 
 
-def _pyyaml_resolver_target(node, resolver_aliases: set[str]) -> str | None:
+def _pyyaml_resolver_target(
+    node,
+    resolver_aliases: set[str],
+    resolver_module_aliases: set[str] = frozenset({"pydoc", "pkgutil"}),
+) -> str | None:
     """Return a literal PyYAML target produced by pydoc/pkgutil resolvers."""
-    if not (_is_pyyaml_resolver_call(node, resolver_aliases) and _is_yaml_string(node.args[0])):
+    if not (
+        _is_pyyaml_resolver_call(node, resolver_aliases, resolver_module_aliases)
+        and _is_yaml_string(node.args[0])
+    ):
         return None
     return _subscript_key(node.args[0])
 
 
-def _is_pyyaml_resolver_call(node, resolver_aliases: set[str]) -> bool:
+def _is_pyyaml_resolver_call(
+    node,
+    resolver_aliases: set[str],
+    resolver_module_aliases: set[str] = frozenset({"pydoc", "pkgutil"}),
+) -> bool:
     """Whether ``node`` calls a stdlib string-to-object resolver."""
     return bool(
         isinstance(node, ast.Call)
         and node.args
-        and _is_pyyaml_resolver_reference(node.func, resolver_aliases)
+        and _is_pyyaml_resolver_reference(node.func, resolver_aliases, resolver_module_aliases)
     )
 
 
-def _is_pyyaml_resolver_reference(node, resolver_aliases: set[str]) -> bool:
+def _is_pyyaml_resolver_reference(
+    node,
+    resolver_aliases: set[str],
+    resolver_module_aliases: set[str] = frozenset({"pydoc", "pkgutil"}),
+) -> bool:
     """Whether ``node`` is a pydoc/pkgutil string resolver callable."""
     contained = _literal_container_item(node)
     if contained is not None:
-        return _is_pyyaml_resolver_reference(contained, resolver_aliases)
+        return _is_pyyaml_resolver_reference(contained, resolver_aliases, resolver_module_aliases)
     if isinstance(node, ast.Name):
         return node.id in resolver_aliases
     reflected = _reflected_member(node)
     if reflected is not None:
-        return reflected[1] in {"locate", "resolve_name"}
-    return isinstance(node, ast.Attribute) and node.attr in {"locate", "resolve_name"}
+        base, member = reflected
+        return (
+            member in {"locate", "resolve_name"}
+            and isinstance(base, ast.Name)
+            and base.id in resolver_module_aliases
+        )
+    return bool(
+        isinstance(node, ast.Attribute)
+        and node.attr in {"locate", "resolve_name"}
+        and isinstance(node.value, ast.Name)
+        and node.value.id in resolver_module_aliases
+    )
 
 
 def _is_pyyaml_module_expr(
@@ -942,6 +987,18 @@ def _is_pyyaml_module_expr(
 ) -> bool:
     if isinstance(node, ast.Name):
         return node.id in yaml_aliases
+    if isinstance(node, ast.Attribute):
+        parts = []
+        current = node
+        while isinstance(current, ast.Attribute):
+            parts.append(current.attr)
+            current = current.value
+        return (
+            isinstance(current, ast.Name)
+            and current.id in yaml_aliases
+            and bool(parts)
+            and all(part in _PYYAML_SUBMODULE_NAMES for part in parts)
+        )
     if isinstance(node, ast.Subscript):
         if not _is_dynamic_namespace(node.value, dynamic_namespace_aliases):
             return False
@@ -5436,6 +5493,7 @@ def _check_signal_escape_patterns(code: str):
             self.dynamic_namespace_aliases: set[str] = {"__builtins__", "builtins"}
             self.pyyaml_resolver_aliases: set[str] = set()
             self.yaml_object_aliases: set[str] = set()
+            self.pyyaml_resolver_module_aliases: set[str] = {"pydoc", "pkgutil"}
             self.function_parameter_aliases: set[str] = set()
             # Direct yaml.load(..., SafeLoader) calls are allowed. References to
             # either callable in any other position fail closed because Python
@@ -5469,6 +5527,8 @@ def _check_signal_escape_patterns(code: str):
                     self.dynamic_import_module_aliases.add(alias.asname or alias.name)
                     if alias.name == "builtins":
                         self.dynamic_namespace_aliases.add(alias.asname or alias.name)
+                elif alias.name in {"pydoc", "pkgutil"}:
+                    self.pyyaml_resolver_module_aliases.add(alias.asname or alias.name)
                 elif alias.name.split(".", 1)[0] == "yaml":
                     self.yaml_aliases.add(alias.asname or "yaml")
             self.generic_visit(node)
@@ -5700,12 +5760,21 @@ def _check_signal_escape_patterns(code: str):
                 value, self.dynamic_namespace_aliases
             )
             resolver_callable = value is not None and _is_pyyaml_resolver_reference(
-                value, self.pyyaml_resolver_aliases
+                value,
+                self.pyyaml_resolver_aliases,
+                self.pyyaml_resolver_module_aliases,
             )
             resolver_target = (
-                _pyyaml_resolver_target(value, self.pyyaml_resolver_aliases)
+                _pyyaml_resolver_target(
+                    value,
+                    self.pyyaml_resolver_aliases,
+                    self.pyyaml_resolver_module_aliases,
+                )
                 if value is not None
                 else None
+            )
+            resolver_module_alias = (
+                isinstance(value, ast.Name) and value.id in self.pyyaml_resolver_module_aliases
             )
             yaml_object_alias = False
             if value is not None:
@@ -5749,6 +5818,7 @@ def _check_signal_escape_patterns(code: str):
             self.dynamic_namespace_aliases.difference_update(names)
             self.pyyaml_resolver_aliases.difference_update(names)
             self.yaml_object_aliases.difference_update(names)
+            self.pyyaml_resolver_module_aliases.difference_update(names)
 
             if safe_loader:
                 self.yaml_safe_loader_aliases.update(names)
@@ -5780,6 +5850,8 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_resolver_aliases.update(names)
             if yaml_object_alias:
                 self.yaml_object_aliases.update(names)
+            if resolver_module_alias:
+                self.pyyaml_resolver_module_aliases.update(names)
 
         def _pyyaml_scope_state(self):
             return (
@@ -5796,6 +5868,7 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_namespace_aliases.copy(),
                 self.pyyaml_resolver_aliases.copy(),
                 self.yaml_object_aliases.copy(),
+                self.pyyaml_resolver_module_aliases.copy(),
             )
 
         def _restore_pyyaml_scope_state(self, state):
@@ -5813,6 +5886,7 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_namespace_aliases,
                 self.pyyaml_resolver_aliases,
                 self.yaml_object_aliases,
+                self.pyyaml_resolver_module_aliases,
             ) = state
 
         def _merge_pyyaml_scope_states(self, *states):
@@ -5831,6 +5905,7 @@ def _check_signal_escape_patterns(code: str):
             self.dynamic_namespace_aliases = set().union(*(state[10] for state in states))
             self.pyyaml_resolver_aliases = set().union(*(state[11] for state in states))
             self.yaml_object_aliases = set().union(*(state[12] for state in states))
+            self.pyyaml_resolver_module_aliases = set().union(*(state[13] for state in states))
 
         def visit_If(self, node):
             self.visit(node.test)
@@ -6042,6 +6117,7 @@ def _check_signal_escape_patterns(code: str):
                         (self.dynamic_namespace_aliases, 10),
                         (self.pyyaml_resolver_aliases, 11),
                         (self.yaml_object_aliases, 12),
+                        (self.pyyaml_resolver_module_aliases, 13),
                     )
                     for outer_aliases, state_index in dangerous_scopes:
                         outer_aliases.update(
@@ -6401,6 +6477,39 @@ def _check_signal_escape_patterns(code: str):
                     "Unsafe PyYAML deserialization registry escapes through call arguments",
                 )
             func = node.func
+            direct_load_kind = _pyyaml_load_reference_kind(
+                func,
+                self.yaml_aliases,
+                self.yaml_load_aliases,
+                self.yaml_unsafe_load_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            )
+            inspected_loader_argument_ids = set()
+            if direct_load_kind in _PYYAML_LOAD_NAMES:
+                if len(node.args) >= 2:
+                    inspected_loader_argument_ids.add(id(node.args[1]))
+                inspected_loader_argument_ids.update(
+                    id(keyword.value) for keyword in node.keywords if keyword.arg == "Loader"
+                )
+            if any(
+                id(argument) not in inspected_loader_argument_ids
+                and _pyyaml_loader_is_safe(
+                    argument,
+                    self.yaml_aliases,
+                    self.yaml_safe_loader_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+                for argument in (
+                    *node.args,
+                    *(keyword.value for keyword in node.keywords),
+                )
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization loader class escapes through call arguments",
+                )
             if (
                 isinstance(func, ast.Attribute)
                 and func.attr in {"items", "values"}
@@ -6410,9 +6519,17 @@ def _check_signal_escape_patterns(code: str):
                     node,
                     "Unsafe PyYAML deserialization via dynamic module namespace iteration",
                 )
-            resolver_target = _pyyaml_resolver_target(node, self.pyyaml_resolver_aliases)
+            resolver_target = _pyyaml_resolver_target(
+                node,
+                self.pyyaml_resolver_aliases,
+                self.pyyaml_resolver_module_aliases,
+            )
             if resolver_target is not None or (
-                _is_pyyaml_resolver_call(node, self.pyyaml_resolver_aliases)
+                _is_pyyaml_resolver_call(
+                    node,
+                    self.pyyaml_resolver_aliases,
+                    self.pyyaml_resolver_module_aliases,
+                )
                 and _subscript_key(node.args[0]) is None
             ):
                 self._record_unsafe_pyyaml(
@@ -6423,15 +6540,10 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(func, ast.Call)
                 and func.args
                 and (_is_yaml_string(func.args[0]) or _subscript_key(func.args[0]) is None)
-                and (
-                    (
-                        isinstance(func.func, ast.Attribute)
-                        and func.func.attr in {"locate", "resolve_name"}
-                    )
-                    or (
-                        isinstance(func.func, ast.Name)
-                        and func.func.id in self.pyyaml_resolver_aliases
-                    )
+                and _is_pyyaml_resolver_reference(
+                    func.func,
+                    self.pyyaml_resolver_aliases,
+                    self.pyyaml_resolver_module_aliases,
                 )
             ):
                 self._record_unsafe_pyyaml(
