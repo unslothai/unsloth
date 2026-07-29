@@ -1433,9 +1433,7 @@ def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
     # settings variant, which is the loader's filename label nulled out for a
     # standalone .gguf, so both surfaces name one config per file.
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert (
-        "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
-    )
+    assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
 
     signature = " ".join(_read("features/model-picker/model-config/config-signature.ts").split())
     # "No live config yet" has to be its own value: that transition is exactly
@@ -1507,8 +1505,7 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     # Nulled for the settings identity, and used for every field that keys it.
     assert (
-        "const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;"
-        in sidebar
+        "const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;" in sidebar
     )
     assert "ggufVariant: settingsGgufVariant," in sidebar
     assert "ggufVariant: settingsGgufVariant ?? undefined," in sidebar
