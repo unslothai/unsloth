@@ -2761,6 +2761,34 @@ exit 0
         }
     }
 
+    # ── CI only: overlay a source checkout over the package just installed ──
+    # Mirrors install.sh. Not a consumer knob: no switch, absent from the usage text,
+    # ignored unless UNSLOTH_CI_SOURCE_OVERLAY names a directory with a pyproject.toml.
+    #
+    # The clean-machine legs run THIS script from a branch but install unsloth from
+    # PyPI, the consumer path, so everything Python-side (studio/setup.ps1,
+    # install_python_stack.py and every requirements/constraints file they reach via
+    # Path(__file__)) would be the released wheel's and a branch could not be
+    # validated. `& $UnslothExe studio setup` below goes through the CLI, and an
+    # editable overlay makes _PACKAGE_ROOT in unsloth_cli/commands/studio.py resolve to
+    # the working tree by PEP 660 __file__, so setup.ps1 comes from this ref. NOT
+    # --local: that also installs `unsloth-zoo @ git+https://...`, which genuinely needs
+    # the git these legs remove; editable + --no-deps resolves and clones nothing, so it
+    # survives git, cmake and MSVC all missing.
+    if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
+        $CiOverlayRoot = $env:UNSLOTH_CI_SOURCE_OVERLAY
+        if (-not (Test-Path -LiteralPath (Join-Path $CiOverlayRoot "pyproject.toml"))) {
+            Write-Host "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$CiOverlayRoot' but there is no pyproject.toml there." -ForegroundColor Red
+            return (Exit-InstallFailure "UNSLOTH_CI_SOURCE_OVERLAY has no pyproject.toml: $CiOverlayRoot")
+        }
+        substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
+        # Retry: the editable build fetches its backend from PyPI, same network risk.
+        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { uv pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
+        if ($CiOverlayExit -ne 0) {
+            return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)
+        }
+    }
+
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
     # CUDA Toolkit, and other dependencies automatically via winget. Node.js is
