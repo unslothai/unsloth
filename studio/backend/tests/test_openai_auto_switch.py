@@ -3142,7 +3142,11 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
 
 
 def _count_tokens_backend(
-    monkeypatch, loaded_id = "org/A-GGUF", count = 10, *, supports_tools = False
+    monkeypatch,
+    loaded_id = "org/A-GGUF",
+    count = 10,
+    *,
+    supports_tools = False,
 ):
     """A loaded GGUF backend wired into the count endpoint.
 
@@ -3154,7 +3158,12 @@ def _count_tokens_backend(
     switched: list = []
     counted: dict = {}
 
-    def _count(messages, system, tools, strict = False):
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+    ):
         counted.update(messages = messages, system = system, tools = tools, strict = strict)
         return count
 
@@ -3168,7 +3177,11 @@ def _count_tokens_backend(
     return switched, counted
 
 
-def _count_request(messages, model = "org/A-GGUF", **fields):
+def _count_request(
+    messages,
+    model = "org/A-GGUF",
+    **fields,
+):
     """A /chat/count_tokens payload built from plain message dicts."""
     from models.inference import ChatCountTokensRequest, ChatMessage
     return ChatCountTokensRequest(
@@ -3219,9 +3232,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     )
     assert _counted_body(payload) == {"input_tokens": 99}
     assert gate.get("tools_on") is True
-    assert [t.get("function", {}).get("name") for t in counted.get("tools") or []] == [
-        "web_search"
-    ]
+    assert [t.get("function", {}).get("name") for t in counted.get("tools") or []] == ["web_search"]
     assert any(
         message.get("role") == "system" and "web_search" in str(message.get("content", ""))
         for message in counted.get("messages") or []
