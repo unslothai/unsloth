@@ -75,6 +75,7 @@ const PREFS_KEYS: string[] = [
   // UI state
   "sidebar_pinned",
   "sidebar_width",
+  "chat_settings_width",
   "unsloth_sidebar_navigate_open",
   "unsloth_settings_active_tab",
   // Chat runtime prefs

@@ -6,7 +6,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 
 // Every localStorage key written by a panel width store.
-const PANEL_WIDTH_KEYS = ["sidebar_width"];
+const PANEL_WIDTH_KEYS = ["sidebar_width", "chat_settings_width"];
 
 // The store reads window at import time, so stub it before importing.
 const stubWindow = {
