@@ -69,6 +69,9 @@ def _manager_with_active_job():
     m._mp_q = _ScriptedQueue([])
     m._pump_thread = None
     m._completed_artifacts = {}
+    m._record_completed_artifact_handoff = lambda *_args: None
+    m._load_completed_artifact_handoff = lambda *_args: None
+    m._release_completed_artifact_handoff = lambda *_args: None
     return m
 
 

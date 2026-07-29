@@ -761,6 +761,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS data_recipe_completed_artifacts (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            job_id TEXT NOT NULL CHECK(length(job_id) BETWEEN 1 AND 128),
+            artifact_path TEXT NOT NULL CHECK(length(artifact_path) > 0),
+            execution_type TEXT NOT NULL CHECK(execution_type IN ('preview', 'full')),
+            completed_at INTEGER NOT NULL CHECK(completed_at >= 0),
+            PRIMARY KEY (owner_subject, job_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS user_asset_legacy_imports (
             owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
             source TEXT NOT NULL CHECK(length(source) > 0),

@@ -4,6 +4,7 @@
 import pytest
 from fastapi import HTTPException
 
+from core.data_recipe.jobs.manager import JobManager
 from core.user_assets_validation import MAX_TIMESTAMP_MS, UserAssetValidationError
 from models.user_assets import ExecutionUpsertRequest, RecipeUpdateRequest
 from models.data_recipe import PublishDatasetRequest
@@ -67,6 +68,28 @@ def test_recipe_summaries_are_payload_free_and_paginated():
     assert second["nextCursor"] is None
 
 
+def test_recipe_pagination_does_not_drop_a_recipe_updated_between_pages(monkeypatch):
+    timestamps = iter((100, 200, 300, 400))
+    monkeypatch.setattr(user_assets_db, "_now_ms", lambda: next(timestamps))
+    for asset_id in ("r1", "r2", "r3"):
+        user_assets_db.create_recipe("owner", recipe(asset_id))
+
+    first = user_assets_db.list_recipe_summaries("owner", limit = 2)
+    updated = user_assets_db.get_recipe("owner", "r3")
+    user_assets_db.update_recipe(
+        "owner", "r3", {**recipe("r3"), "name": "Updated"}, updated["revision"]
+    )
+    second = user_assets_db.list_recipe_summaries(
+        "owner", cursor = first["nextCursor"], limit = 2
+    )
+
+    assert [item["id"] for item in first["recipes"] + second["recipes"]] == [
+        "r1",
+        "r2",
+        "r3",
+    ]
+
+
 def test_unicode_ids_generate_reusable_bounded_cursors():
     ids = ["a", "界" * 128, "🙂" * 128]
     for asset_id in ids:
@@ -107,6 +130,48 @@ def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch
         user_assets_db.upsert_recipe_execution(
             "owner", "r1", "bad", execution("bad", createdAt = 100, finishedAt = 99)
         )
+
+
+def test_completed_artifact_handoff_survives_manager_restart(monkeypatch):
+    user_assets_db.create_recipe("owner", recipe())
+    inserted = user_assets_db.upsert_recipe_execution(
+        "owner",
+        "r1",
+        "e1",
+        execution(
+            status = "active",
+            finishedAt = None,
+            artifact_path = None,
+            jobId = "completed-job",
+            kind = "full",
+        ),
+    )
+    user_assets_db.record_completed_artifact_handoff(
+        "owner", "completed-job", "recipes/recipe_r1", "full"
+    )
+    restarted_manager = JobManager()
+    monkeypatch.setattr(data_recipe_jobs, "get_job_manager", lambda: restarted_manager)
+    monkeypatch.setattr(user_assets_recipes, "get_job_manager", lambda: restarted_manager)
+
+    status = data_recipe_jobs.job_status("completed-job", "owner")
+    saved = user_assets_recipes.upsert_recipe_execution(
+        "r1",
+        "e1",
+        ExecutionUpsertRequest(
+            **execution(
+                artifact_path = "recipes/recipe_r1",
+                jobId = "completed-job",
+                kind = "full",
+                revision = inserted["revision"],
+            )
+        ),
+        "owner",
+    )
+
+    assert status["status"] == "completed"
+    assert status["artifact_path"] == "recipes/recipe_r1"
+    assert saved["artifact_path"] == "recipes/recipe_r1"
+    assert restarted_manager.get_completed_artifact_status("completed-job", "owner") is None
 
 
 def test_execution_update_uses_immutable_stored_creation_timestamp():
@@ -581,4 +646,8 @@ def test_legacy_import_ledger_is_keyset_paginated():
 def test_route_unsafe_ids_are_never_persisted():
     with pytest.raises(UserAssetValidationError, match = "URL path segment"):
         user_assets_db.create_recipe("owner", recipe("folder/recipe"))
+    with pytest.raises(UserAssetValidationError, match = "URL path segment"):
+        user_assets_db.create_recipe("owner", recipe("\x00recipe"))
+    with pytest.raises(UserAssetValidationError, match = "non-empty"):
+        user_assets_db.create_recipe("owner", {**recipe(), "name": "\x00Recipe"})
     assert user_assets_db.list_recipes("owner") == []

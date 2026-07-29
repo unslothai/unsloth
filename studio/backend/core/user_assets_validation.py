@@ -336,7 +336,7 @@ def validate_id(value: Any, field_name: str = "id") -> str:
             "invalid_id",
             f"{field_name} must be a non-empty string of at most {MAX_ID_CHARS} characters",
         )
-    if value in {".", ".."} or "/" in value or "\\" in value:
+    if value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
         raise UserAssetValidationError(
             "invalid_id",
             f"{field_name} must be safe to use as one URL path segment",
@@ -348,7 +348,7 @@ def validate_name(value: Any, field_name: str = "name") -> str:
     if not isinstance(value, str):
         raise UserAssetValidationError("invalid_name", f"{field_name} must be a string")
     trimmed = value.strip()
-    if not trimmed or len(trimmed) > MAX_NAME_CHARS:
+    if not trimmed or len(trimmed) > MAX_NAME_CHARS or "\x00" in trimmed:
         raise UserAssetValidationError(
             "invalid_name",
             f"{field_name} must be non-empty and at most {MAX_NAME_CHARS} characters",

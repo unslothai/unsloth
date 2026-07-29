@@ -183,7 +183,7 @@ def _recipe_summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 def _encode_recipe_cursor(updated_at: int, asset_id: str) -> str:
     payload = json.dumps(
-        {"v": 1, "updatedAt": updated_at, "id": asset_id},
+        {"v": 2, "updatedAt": updated_at, "id": asset_id},
         separators = (",", ":"),
         ensure_ascii = False,
     ).encode("utf-8")
@@ -200,7 +200,7 @@ def _decode_recipe_cursor(cursor: str) -> tuple[int, str]:
             validate = True,
         )
         value = json.loads(decoded.decode("utf-8"))
-        if not isinstance(value, dict) or value.get("v") != 1:
+        if not isinstance(value, dict) or value.get("v") != 2:
             raise ValueError
         updated_at = validate_timestamp(value.get("updatedAt"), "cursor updatedAt")
         asset_id = validate_id(value.get("id"), "cursor recipe id")
@@ -241,24 +241,24 @@ def list_recipe_summaries(
                        revision, created_at, updated_at
                 FROM data_recipes
                 WHERE owner_subject = ? AND deleted_at IS NULL
-                ORDER BY updated_at DESC, id ASC
+                ORDER BY id ASC
                 LIMIT ?
                 """,
                 (owner, limit + 1),
             ).fetchall()
         else:
-            cursor_updated_at, cursor_id = cursor_values
+            _cursor_version, cursor_id = cursor_values
             rows = conn.execute(
                 """
                 SELECT id, name, learning_recipe_id, learning_recipe_title,
                        revision, created_at, updated_at
                 FROM data_recipes
                 WHERE owner_subject = ? AND deleted_at IS NULL
-                  AND (updated_at < ? OR (updated_at = ? AND id > ?))
-                ORDER BY updated_at DESC, id ASC
+                  AND id > ?
+                ORDER BY id ASC
                 LIMIT ?
                 """,
-                (owner, cursor_updated_at, cursor_updated_at, cursor_id, limit + 1),
+                (owner, cursor_id, limit + 1),
             ).fetchall()
         page_rows = rows[:limit]
         next_cursor = None
@@ -621,6 +621,80 @@ def get_completed_recipe_execution_by_job_id(
             (owner, asset_job_id),
         ).fetchone()
         return _execution_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def record_completed_artifact_handoff(
+    owner_subject: str,
+    job_id: str,
+    artifact_path: str,
+    execution_type: str,
+) -> None:
+    owner = _require_owner(owner_subject)
+    asset_job_id = validate_id(job_id, "job id")
+    if not isinstance(artifact_path, str) or not artifact_path:
+        raise ValueError("artifact_path must be a non-empty string")
+    if execution_type not in {"preview", "full"}:
+        raise ValueError("execution_type must be preview or full")
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO data_recipe_completed_artifacts
+                (owner_subject, job_id, artifact_path, execution_type, completed_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(owner_subject, job_id) DO UPDATE SET
+                artifact_path = excluded.artifact_path,
+                execution_type = excluded.execution_type,
+                completed_at = excluded.completed_at
+            """,
+            (owner, asset_job_id, artifact_path, execution_type, _now_ms()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_completed_artifact_handoff(
+    owner_subject: str, job_id: str
+) -> dict[str, Any] | None:
+    owner = _require_owner(owner_subject)
+    asset_job_id = validate_id(job_id, "job id")
+    conn = studio_db.get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT artifact_path, execution_type FROM data_recipe_completed_artifacts
+            WHERE owner_subject = ? AND job_id = ?
+            """,
+            (owner, asset_job_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "artifact_path": row["artifact_path"],
+            "execution_type": row["execution_type"],
+        }
+    finally:
+        conn.close()
+
+
+def release_completed_artifact_handoff(
+    owner_subject: str, job_id: str, artifact_path: str
+) -> None:
+    owner = _require_owner(owner_subject)
+    asset_job_id = validate_id(job_id, "job id")
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            """
+            DELETE FROM data_recipe_completed_artifacts
+            WHERE owner_subject = ? AND job_id = ? AND artifact_path = ?
+            """,
+            (owner, asset_job_id, artifact_path),
+        )
+        conn.commit()
     finally:
         conn.close()
 

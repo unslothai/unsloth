@@ -159,7 +159,35 @@ class JobManager:
         self._subs: list[Subscription] = []
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
-        self._completed_artifacts: dict[tuple[str, str], str] = {}
+        self._completed_artifacts: dict[tuple[str, str], tuple[str, str]] = {}
+
+    @staticmethod
+    def _record_completed_artifact_handoff(
+        owner_subject: str, job_id: str, artifact_path: str, execution_type: str
+    ) -> None:
+        from storage import user_assets_db
+
+        user_assets_db.record_completed_artifact_handoff(
+            owner_subject, job_id, artifact_path, execution_type
+        )
+
+    @staticmethod
+    def _load_completed_artifact_handoff(
+        owner_subject: str, job_id: str
+    ) -> dict[str, Any] | None:
+        from storage import user_assets_db
+
+        return user_assets_db.get_completed_artifact_handoff(owner_subject, job_id)
+
+    @staticmethod
+    def _release_completed_artifact_handoff(
+        owner_subject: str, job_id: str, artifact_path: str
+    ) -> None:
+        from storage import user_assets_db
+
+        user_assets_db.release_completed_artifact_handoff(
+            owner_subject, job_id, artifact_path
+        )
 
     def _has_blocking_job_locked(self) -> bool:
         """Check process-global admission while holding ``_lock``."""
@@ -406,7 +434,31 @@ class JobManager:
                 and self._job.status == "completed"
             ):
                 return self._job.artifact_path
-            return self._completed_artifacts.get((owner_subject, job_id))
+            completed = self._completed_artifacts.get((owner_subject, job_id))
+            if completed is not None:
+                return completed[0]
+        handoff = self._load_completed_artifact_handoff(owner_subject, job_id)
+        return handoff["artifact_path"] if handoff is not None else None
+
+    def get_completed_artifact_status(
+        self, job_id: str, owner_subject: str
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            if (
+                self._job is not None
+                and self._job.job_id == job_id
+                and self._job.owner_subject == owner_subject
+                and self._job.status == "completed"
+                and self._job.artifact_path
+            ):
+                return {
+                    "artifact_path": self._job.artifact_path,
+                    "execution_type": self._job.execution_type or "full",
+                }
+            completed = self._completed_artifacts.get((owner_subject, job_id))
+            if completed is not None:
+                return {"artifact_path": completed[0], "execution_type": completed[1]}
+        return self._load_completed_artifact_handoff(owner_subject, job_id)
 
     def release_completed_artifact_path(
         self, job_id: str, owner_subject: str, artifact_path: str
@@ -414,8 +466,10 @@ class JobManager:
         """Release a handoff only after the same artifact is durably persisted."""
         with self._lock:
             key = (owner_subject, job_id)
-            if self._completed_artifacts.get(key) == artifact_path:
+            completed = self._completed_artifacts.get(key)
+            if completed is not None and completed[0] == artifact_path:
                 self._completed_artifacts.pop(key, None)
+        self._release_completed_artifact_handoff(owner_subject, job_id, artifact_path)
 
     def get_dataset(
         self,
@@ -789,6 +843,7 @@ class JobManager:
         msg = event.get("message") if et == "log" else None
 
         terminal = False
+        completed_handoff: tuple[str, str, str, str] | None = None
         prepared: tuple[tuple[Subscription, ...], dict] | None = None
         with self._lock:
             generation = JobGeneration(job_id = job.job_id, owner_subject = job.owner_subject)
@@ -810,7 +865,14 @@ class JobManager:
                 self._job.processor_artifacts = event.get("processor_artifacts")
                 if isinstance(self._job.artifact_path, str) and self._job.artifact_path:
                     self._completed_artifacts[(self._job.owner_subject, self._job.job_id)] = (
-                        self._job.artifact_path
+                        self._job.artifact_path,
+                        self._job.execution_type or "full",
+                    )
+                    completed_handoff = (
+                        self._job.owner_subject,
+                        self._job.job_id,
+                        self._job.artifact_path,
+                        self._job.execution_type or "full",
                     )
                 if self._job.progress.total and self._job.progress.total > 0:
                     self._job.progress.done = self._job.progress.total
@@ -830,6 +892,9 @@ class JobManager:
                     apply_update(self._job, upd)
 
             prepared = self._prepare_event_locked(generation, event)
+
+        if completed_handoff is not None:
+            self._record_completed_artifact_handoff(*completed_handoff)
 
         self._fanout_prepared(prepared)
 

@@ -499,10 +499,29 @@ def _persisted_completed_job_status(job_id: str, owner_subject: str) -> dict[str
     }
 
 
+def _completed_handoff_job_status(
+    manager: Any, job_id: str, owner_subject: str
+) -> dict[str, Any] | None:
+    get_handoff = getattr(manager, "get_completed_artifact_status", None)
+    if not callable(get_handoff):
+        return None
+    handoff = get_handoff(job_id, owner_subject)
+    if handoff is None:
+        return None
+    return {
+        "job_id": job_id,
+        "status": "completed",
+        "execution_type": handoff["execution_type"],
+        "artifact_path": handoff["artifact_path"],
+    }
+
+
 @router.get("/jobs/{job_id}/status")
 def job_status(job_id: str, current_subject: str = Depends(get_current_subject)):
     mgr = get_job_manager()
     state = mgr.get_status(job_id, current_subject)
+    if state is None:
+        state = _completed_handoff_job_status(mgr, job_id, current_subject)
     if state is None:
         state = _persisted_completed_job_status(job_id, current_subject)
         if state is None:
@@ -586,9 +605,11 @@ def publish_job_dataset(
             status_code = 409,
             detail = "Only completed full runs can be published.",
         )
-    persisted_status = (
-        _persisted_completed_job_status(job_id, current_subject) if status is None else None
-    )
+    persisted_status = None
+    if status is None:
+        persisted_status = _completed_handoff_job_status(mgr, job_id, current_subject)
+    if status is None and persisted_status is None:
+        persisted_status = _persisted_completed_job_status(job_id, current_subject)
     if status is None and persisted_status is None:
         raise HTTPException(status_code = 404, detail = "job not found")
     resolved_status = status if status is not None else persisted_status

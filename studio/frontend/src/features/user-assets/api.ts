@@ -209,7 +209,10 @@ export async function listServerRecipes(
     recipes.push(...response.recipes);
     cursor = response.nextCursor;
   } while (cursor);
-  return recipes;
+  return recipes.sort(
+    (left, right) =>
+      right.updatedAt - left.updatedAt || left.id.localeCompare(right.id),
+  );
 }
 
 export function getServerRecipe<TPayload>(
