@@ -894,7 +894,12 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     # The two rules that keep a path out: no separator in the tail, and a head
     # that is not a .gguf cannot carry a free-form label.
     assert 'if (tail.includes("/") || tail.includes("\\\\"))' in identity
-    assert 'head.toLowerCase().endsWith(".gguf") ? [head, tail] : null' in identity
+    assert 'if (!head.toLowerCase().endsWith(".gguf")) { return null; }' in identity
+    # A .gguf head is not enough on its own: the suffix has to be the label the
+    # scanner derives from that filename, or a name that itself contains ".gguf:"
+    # ("/models/llama.gguf:Bar.gguf" and its lowercase sibling, two real POSIX
+    # files) folds onto one key and one file's settings never migrate.
+    assert "tail.toLowerCase() === ggufQuantLabel(filename).toLowerCase()" in identity
 
     migrate = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "const split = splitQuantSuffix(key);" in migrate
@@ -905,12 +910,27 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     ).read_text(encoding = "utf-8")
     assert "def split_quant_suffix(" in backend, "the rule this mirrors"
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
+    assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
     # Both sides accept the same quant vocabulary; the regex lives with the loader.
     quants = (WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
         encoding = "utf-8"
     )
     for token in ("MXFP", "IQ", "TQ", "BF16", "F16", "F32"):
         assert token in quants and token in identity, token
+    # The label helpers the .gguf branch leans on are ported too, shard suffix and
+    # float-precision fallback included, or the two sides label a filename apart.
+    gguf = (WORKDIR / "studio" / "backend" / "hub" / "utils" / "gguf.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "def extract_quant_label(" in gguf and "def _gguf_stem(" in gguf
+    assert "function ggufQuantLabel(" in identity and "function ggufStem(" in identity
+    assert "_GGUF_SPLIT_SUFFIX_RE" in gguf and "GGUF_SPLIT_SUFFIX" in identity
+    assert "_FLOAT_PRECISION_QUANTS" in gguf and "FLOAT_PRECISION_QUANTS" in identity
+    # The executable half of this contract, checked case by case against the
+    # answers split_quant_suffix gives.
+    assert (
+        WORKDIR / "studio" / "frontend" / "tests" / "quant-suffix-split.test.ts"
+    ).is_file()
 
 
 def test_the_detail_card_also_gates_ollama_out_of_the_api_promise():

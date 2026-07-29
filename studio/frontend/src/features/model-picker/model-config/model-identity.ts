@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Straight from the module rather than the hub barrel, which also re-exports the
+// download manager and its React components: these are pure string helpers, and
+// pulling the barrel in puts every one of those in the way of loading them.
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
-} from "@/features/hub";
+} from "@/features/hub/lib/model-identity";
 
 export {
   isOllamaLinkPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
-} from "@/features/hub";
+} from "@/features/hub/lib/model-identity";
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";
 
@@ -72,9 +75,51 @@ export function ggufVariantFromStorageKey(key: string): string | null {
 // Mirrors split_quant_suffix in studio/backend/utils/openai_auto_switch_settings.py.
 // The bpw modifier ("IQ4_XS-3.53bpw") is optional: the backend label helpers disagree.
 const BPW_SUFFIX = /-[0-9]+(?:\.[0-9]+)?bpw$/i;
-const KNOWN_QUANT =
-  /^(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)$/i;
+// One source for the anchored test and the scan below, so they cannot drift apart.
+// Mirrors _GGUF_QUANT_RE in studio/backend/hub/utils/gguf.py.
+const QUANT_TOKEN_SOURCE =
+  "(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)";
+const KNOWN_QUANT = new RegExp(`^${QUANT_TOKEN_SOURCE}$`, "i");
+const QUANT_TOKEN = new RegExp(QUANT_TOKEN_SOURCE, "gi");
 const MAX_QUANT_SUFFIX_LEN = 64;
+// Mirrors _GGUF_SPLIT_SUFFIX_RE in studio/backend/hub/utils/gguf.py.
+const GGUF_SPLIT_SUFFIX = /-[0-9]{3,}-of-[0-9]{3,}/gi;
+const BACKSLASHES = /\\/g;
+// A float precision only labels a file when nothing sharper does, matching the
+// backend's _select_quant_match.
+const FLOAT_PRECISION_QUANTS: ReadonlySet<string> = new Set([
+  "BF16",
+  "F16",
+  "F32",
+]);
+
+/** Mirrors _gguf_stem in studio/backend/hub/utils/gguf.py, for a bare filename. */
+function ggufStem(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  const withoutExtension = dot >= 0 ? filename.slice(0, dot) : filename;
+  return withoutExtension.replace(GGUF_SPLIT_SUFFIX, "").trim();
+}
+
+/**
+ * Mirrors extract_quant_label in studio/backend/hub/utils/gguf.py, for a bare
+ * filename. The parent-directory pass there cannot fire on a basename, so this
+ * is the stem's own quant token or, failing that, the stem itself.
+ */
+function ggufQuantLabel(filename: string): string {
+  const stem = ggufStem(filename);
+  let fallback: RegExpExecArray | null = null;
+  for (const match of stem.matchAll(QUANT_TOKEN)) {
+    if (FLOAT_PRECISION_QUANTS.has(match[2].toUpperCase())) {
+      fallback ??= match;
+      continue;
+    }
+    return `${match[1] ?? ""}${match[2]}`;
+  }
+  if (fallback) {
+    return `${fallback[1] ?? ""}${fallback[2]}`;
+  }
+  return stem || "gguf";
+}
 
 /**
  * `[head, quant]` for a `head:QUANT` key, or null when the colon is not one.
@@ -100,5 +145,15 @@ export function splitQuantSuffix(value: string): [string, string] | null {
   }
   // A .gguf with no recognizable quant is labelled by its stem, so
   // "/models/CustomModel.gguf:custommodel" exists; a non-.gguf head is a plain colon.
-  return head.toLowerCase().endsWith(".gguf") ? [head, tail] : null;
+  if (!head.toLowerCase().endsWith(".gguf")) {
+    return null;
+  }
+  // The suffix has to be that exact label, as the backend requires. A colon is legal
+  // in a POSIX filename, so "/models/llama.gguf:Bar.gguf" and its lowercase sibling
+  // are two real files: reading the suffix as a variant folds them onto one key and
+  // strands one file's settings, since the variant half is stored lowercased.
+  const filename = head.replace(BACKSLASHES, "/").split("/").pop() ?? head;
+  return tail.toLowerCase() === ggufQuantLabel(filename).toLowerCase()
+    ? [head, tail]
+    : null;
 }
