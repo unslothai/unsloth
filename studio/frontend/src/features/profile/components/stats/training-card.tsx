@@ -65,14 +65,18 @@ export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
               className="flex items-center justify-between gap-3 py-2"
             >
               <div className="flex min-w-0 flex-col gap-0.5">
+                {/* A renamed run leads with the name the user chose, so the
+                    model moves down beside the dataset to stay visible. */}
                 <span
                   className="min-w-0 truncate text-sm text-foreground"
                   title={run.name}
                 >
-                  {run.modelLabel}
+                  {run.name}
                 </span>
                 <span className="min-w-0 truncate text-ui-11 text-muted-foreground">
-                  {run.datasetLabel}
+                  {run.name === run.modelLabel
+                    ? run.datasetLabel
+                    : `${run.modelLabel} · ${run.datasetLabel}`}
                 </span>
               </div>
               <div className="flex shrink-0 items-center gap-4 text-xs tabular-nums">

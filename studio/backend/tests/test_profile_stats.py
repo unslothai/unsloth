@@ -343,16 +343,20 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
     """A resume continues the source's counters, so only the tail is counted."""
     conn = studio_db.get_connection()
     try:
-        # 'stopped' at step 10, then claimed by the resume below.
+        # 'stopped' at step 10, then claimed by the resume below. The claim sets
+        # resume_blocked and leaves output_dir, which is how it is told apart
+        # from a cancelled run.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, resume_blocked) "
-            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, 1)",
+            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
+            "'/runs/out', 1)",
         )
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, resume_blocked) "
-            "VALUES ('cont', 'completed', 'm', 'd', '{}', '2026-01-02T10:00:00', 20, 15, 300, 0)",
+            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+            "VALUES ('cont', 'completed', 'm', 'd', '{}', '2026-01-02T10:00:00', 20, 15, 300, "
+            "'/runs/out', 0)",
         )
         conn.executemany(
             "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
@@ -371,6 +375,151 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
     assert training["tokens"] == 1500
     # Both attempts still show up as runs.
     assert training["runs"] == 2
+
+
+def test_cancelled_runs_keep_the_work_they_did(stats_db):
+    """Cancelling sets resume_blocked too, but nothing resumed from that run."""
+    conn = studio_db.get_connection()
+    try:
+        # mark_run_cancel_requested clears output_dir and sets resume_blocked.
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+            "VALUES ('cancelled', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 8, "
+            "400, NULL, 1)",
+        )
+        conn.executemany(
+            "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
+            [("cancelled", step, step * 100) for step in range(1, 9)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    training = compute_profile_stats(days = 7)["training"]
+
+    assert training["runs"] == 1
+    assert training["steps"] == 8
+    assert training["tokens"] == 800
+
+
+def test_forks_count_as_chats_before_their_first_new_turn(stats_db):
+    """A fork is a visible thread the moment it exists."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "orig", "m", [(now - timedelta(hours = 2), _metadata(100, 50))])
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, "
+            "updated_at, forked_from_thread_id, forked_from_message_id) "
+            "VALUES ('branch', 'fork', 'base', 'm', ?, ?, 'orig', 'orig-a0')",
+            (_ms(now), _ms(now)),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('branch-a0', 'branch', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2))),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = compute_profile_stats(days = 7)
+
+    # Two conversations, but the cloned turn is not counted twice.
+    assert stats["totals"]["threads"] == 2
+    assert stats["totals"]["messages"] == 2
+    assert stats["totals"]["totalTokens"] == 150
+
+
+def test_tokens_follow_the_model_that_answered(stats_db):
+    """A routed provider records the real producer in responseDetails."""
+    now = datetime.now()
+    metadata = _metadata(100, 50)
+    metadata["contextUsage"]["modelId"] = "openrouter/auto"
+    metadata["responseDetails"] = {"responseModelId": "anthropic/claude-sonnet-4"}
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "routed", "openrouter/auto", [(now, metadata)])
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = compute_profile_stats(days = 7)
+
+    assert stats["models"][0]["id"] == "anthropic/claude-sonnet-4"
+    assert stats["models"][0]["tokens"] == 150
+
+
+def test_recent_run_name_prefers_the_users_rename(stats_db):
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, display_name) VALUES ('named', 'completed', 'unsloth/llama-3-8b', "
+            "'tatsu-lab/alpaca', '{}', '2026-01-02T10:00:00', 'Support triage v3')",
+        )
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at) VALUES ('plain', 'completed', 'unsloth/qwen3-4b', 'my/dataset', '{}', "
+            "'2026-01-01T10:00:00')",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    recent = {run["id"]: run for run in compute_profile_stats(days = 7)["training"]["recent"]}
+
+    assert recent["named"]["name"] == "Support triage v3"
+    assert recent["named"]["modelLabel"] == "llama-3-8b"
+    # Unnamed runs fall back to the short label, not the full repo id.
+    assert recent["plain"]["name"] == "qwen3-4b"
+
+
+def test_historical_daylight_saving_offsets_are_respected(stats_db):
+    """A fixed offset would put a winter message in the wrong hour."""
+    # 2026-01-15 02:30 UTC. New York is UTC-5 in January, so 21:30 on the 14th.
+    winter = datetime(2026, 1, 15, 2, 30, tzinfo = timezone.utc)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at) "
+            "VALUES ('dst', 'dst', 'base', 'm', ?, ?)",
+            (int(winter.timestamp() * 1000), int(winter.timestamp() * 1000)),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('dst-a0', 'dst', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(10, 10)), int(winter.timestamp() * 1000)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # A browser on summer time sends offset 240 (UTC-4) with the zone name.
+    named = compute_profile_stats(days = 366, tz_offset_minutes = 240, tz_name = "America/New_York")
+    invalidate_profile_stats_cache()
+    offset_only = compute_profile_stats(days = 366, tz_offset_minutes = 240)
+
+    assert named["hourly"][21] == 1
+    assert {day["date"] for day in named["daily"] if day["messages"]} == {"2026-01-14"}
+
+    # The fixed offset lands an hour late, which is what the zone name fixes.
+    assert offset_only["hourly"][22] == 1
+
+
+def test_unknown_timezone_falls_back_to_the_offset(stats_db):
+    now = datetime.now()
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "tzbad", "m", [(now, _metadata(10, 10))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = compute_profile_stats(days = 7, tz_offset_minutes = 0, tz_name = "Not/A/Zone")
+
+    assert stats["totals"]["totalTokens"] == 20
 
 
 def test_days_and_hours_use_the_callers_timezone(stats_db):
@@ -450,7 +599,11 @@ def test_route_does_not_block_the_event_loop(stats_db, monkeypatch):
 
     from routes import profile_stats as route_module
 
-    def slow_compute(days = 366, tz_offset_minutes = 0):
+    def slow_compute(
+        days = 366,
+        tz_offset_minutes = 0,
+        tz_name = "",
+    ):
         time.sleep(0.5)
         return {"totals": {"messages": 0}}
 

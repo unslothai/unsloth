@@ -20,6 +20,7 @@ import json
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -68,16 +69,31 @@ def _iso(day: date) -> str:
     return day.isoformat()
 
 
-def _local_stamp(created_at_ms: int, tz_offset_minutes: int) -> Optional[datetime]:
-    """Wall-clock time in the caller's timezone, not the server's.
+def _clean_str(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
 
-    ``tz_offset_minutes`` follows the browser's ``getTimezoneOffset()``: minutes
-    to add to local time to reach UTC, so UTC-5 sends 300.
+
+def _resolve_zone(tz_name: str, tz_offset_minutes: int):
+    """The caller's zone, preferring an IANA name over a single offset.
+
+    A fixed offset is only correct for the half of the year the caller happens
+    to be in, so a winter message read during summer lands an hour out and can
+    cross midnight. An IANA name carries each date's own offset. The offset
+    stays as the fallback for callers that send no name, or hosts with no tzdata.
     """
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except (ValueError, ZoneInfoNotFoundError, OSError):
+            logger.debug("unknown timezone %r, falling back to fixed offset", tz_name)
+    return timezone(timedelta(minutes = -tz_offset_minutes))
+
+
+def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
+    """Wall-clock time in the caller's timezone, not the server's."""
     if created_at_ms <= 0:
         return None
-    utc = datetime.fromtimestamp(created_at_ms / 1000, tz = timezone.utc)
-    return (utc - timedelta(minutes = tz_offset_minutes)).replace(tzinfo = None)
+    return datetime.fromtimestamp(created_at_ms / 1000, tz = zone).replace(tzinfo = None)
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
@@ -160,7 +176,7 @@ class _MessageFold:
         bucket["threads"].add(thread_id)
 
 
-def _fold_messages(conn, tz_offset_minutes: int = 0) -> _MessageFold:
+def _fold_messages(conn, zone) -> _MessageFold:
     fold = _MessageFold()
     rows = conn.execute(
         """
@@ -202,6 +218,10 @@ def _fold_messages(conn, tz_offset_minutes: int = 0) -> _MessageFold:
             thread_messages = 0
             previous_created = None
 
+        # A fork is its own visible conversation, so it counts towards the chat
+        # total from the moment it exists, before any new turn is added.
+        fold.threads.add(thread_id)
+
         # Forking clones the whole ancestry into the new thread, keeping each
         # copy's original timestamp. Counting those again would double every
         # metric for the branched-from conversation, so skip anything older
@@ -209,7 +229,6 @@ def _fold_messages(conn, tz_offset_minutes: int = 0) -> _MessageFold:
         if row["forked_from_thread_id"] and created_at < _as_int(row["thread_created_at"]):
             continue
 
-        fold.threads.add(thread_id)
         fold.messages += 1
         thread_messages += 1
 
@@ -219,7 +238,7 @@ def _fold_messages(conn, tz_offset_minutes: int = 0) -> _MessageFold:
                 thread_seconds += gap
         previous_created = created_at
 
-        stamp = _local_stamp(created_at, tz_offset_minutes)
+        stamp = _local_stamp(created_at, zone)
         role = row["role"]
         if role == "user":
             fold.user_messages += 1
@@ -267,11 +286,16 @@ def _fold_messages(conn, tz_offset_minutes: int = 0) -> _MessageFold:
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
-            # Only the checkpoint recorded on the turn itself. The thread's
-            # model_id tracks whatever is selected now, so using it as a
-            # fallback credits older turns to the wrong model after a switch.
-            raw_model_id = usage.get("modelId")
-            model_id = raw_model_id.strip() if isinstance(raw_model_id, str) else ""
+            # responseDetails carries the model that actually answered, which
+            # differs from the requested checkpoint whenever a provider routes
+            # or resolves an alias. contextUsage.modelId is the request, so it
+            # is only the fallback. The thread's model_id is never used: it
+            # tracks the current selection, not the one that ran.
+            details = metadata.get("responseDetails")
+            details = details if isinstance(details, dict) else {}
+            model_id = _clean_str(details.get("responseModelId")) or _clean_str(
+                usage.get("modelId")
+            )
             if model_id:
                 fold.note_model(model_id, message_tokens)
 
@@ -318,6 +342,16 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
     return series
 
 
+def _superseded(prefix: str) -> str:
+    """SQL for "a later run resumed from this one, so its counters live there".
+
+    ``create_run``'s resume claim sets ``resume_blocked`` and leaves
+    ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the
+    same flag, so the flag alone cannot tell the two apart.
+    """
+    return f"{prefix}resume_blocked = 1 AND {prefix}output_dir IS NOT NULL"
+
+
 def _training_stats(conn) -> dict[str, Any]:
     row = conn.execute(
         """
@@ -333,22 +367,23 @@ def _training_stats(conn) -> dict[str, Any]:
 
     # A resumed run continues its source's step and token counters from the
     # checkpoint, so both absolute totals already include the source's work.
-    # resume_blocked marks a run that some later run resumed from; counting
-    # only the unresumed tails avoids adding the same progress twice.
+    # Only a run superseded by a resume is dropped: create_run's claim sets
+    # resume_blocked while leaving output_dir intact, whereas cancelling clears
+    # output_dir, so a cancelled run keeps contributing the work it did do.
     steps = conn.execute(
-        "SELECT COALESCE(SUM(final_step), 0) FROM training_runs WHERE resume_blocked = 0"
+        f"SELECT COALESCE(SUM(final_step), 0) FROM training_runs WHERE NOT ({_superseded('')})"
     ).fetchone()[0]
 
     # num_tokens is state.num_input_tokens_seen, a running total logged at each
     # step, so summing the samples multiplies the real figure. Take each run's
     # final counter, the same value get_run_metrics reports.
     tokens = conn.execute(
-        """
+        f"""
         SELECT COALESCE(SUM(run_tokens), 0) FROM (
             SELECT MAX(m.num_tokens) AS run_tokens
             FROM training_metrics m
             JOIN training_runs r ON r.id = m.run_id
-            WHERE r.resume_blocked = 0
+            WHERE NOT ({_superseded("r.")})
             GROUP BY m.run_id
         )
         """
@@ -356,7 +391,7 @@ def _training_stats(conn) -> dict[str, Any]:
 
     recent = conn.execute(
         """
-        SELECT id, COALESCE(display_name, model_name) AS name, model_name, dataset_name,
+        SELECT id, display_name, model_name, dataset_name,
                status, final_loss, final_step, duration_seconds, started_at
         FROM training_runs
         ORDER BY started_at DESC
@@ -377,7 +412,9 @@ def _training_stats(conn) -> dict[str, Any]:
         "recent": [
             {
                 "id": item["id"],
-                "name": item["name"],
+                # A renamed run keeps the name the user gave it; otherwise fall
+                # back to the short model label rather than the full repo id.
+                "name": _clean_str(item["display_name"]) or _model_label(item["model_name"] or ""),
                 "modelLabel": _model_label(item["model_name"] or ""),
                 "datasetLabel": _model_label(item["dataset_name"] or ""),
                 "status": item["status"],
@@ -401,15 +438,20 @@ def _fingerprint(conn) -> tuple:
     return (message_row[0], message_row[1], run_row[0], run_row[1])
 
 
-def compute_profile_stats(days: int = MAX_DAILY_DAYS, tz_offset_minutes: int = 0) -> dict[str, Any]:
+def compute_profile_stats(
+    days: int = MAX_DAILY_DAYS,
+    tz_offset_minutes: int = 0,
+    tz_name: str = "",
+) -> dict[str, Any]:
     """Aggregate every profile statistic in one pass, memoised per history state."""
     days = max(1, min(int(days), MAX_DAILY_DAYS))
     tz_offset_minutes = max(
         -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
     )
+    zone = _resolve_zone(tz_name, tz_offset_minutes)
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn), days, tz_offset_minutes)
+        fingerprint = (_fingerprint(conn), days, tz_offset_minutes, tz_name)
         now = time.monotonic()
         with _cache_lock:
             if (
@@ -420,12 +462,12 @@ def compute_profile_stats(days: int = MAX_DAILY_DAYS, tz_offset_minutes: int = 0
                 return _cache["payload"]
 
         started = time.perf_counter()
-        fold = _fold_messages(conn, tz_offset_minutes)
+        fold = _fold_messages(conn, zone)
         training = _training_stats(conn)
 
         # "Today" has to match the buckets above, or the newest column and the
         # current streak drift by a day whenever the caller is elsewhere.
-        today = (_local_stamp(int(time.time() * 1000), tz_offset_minutes) or datetime.now()).date()
+        today = (_local_stamp(int(time.time() * 1000), zone) or datetime.now()).date()
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 

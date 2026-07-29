@@ -31,20 +31,25 @@ logger = get_logger(__name__)
 async def get_profile_stats(
     days: int = Query(MAX_DAILY_DAYS, ge = 1, le = MAX_DAILY_DAYS),
     tz_offset_minutes: int = Query(0, ge = -MAX_TZ_OFFSET_MINUTES, le = MAX_TZ_OFFSET_MINUTES),
+    tz: str = Query("", max_length = 64),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, Any]:
     """Usage stats for the signed-in user's local history.
 
-    ``tz_offset_minutes`` is the caller's ``Date.getTimezoneOffset()``. Days and
-    hours are bucketed with it so a remote browser does not read the server's
-    calendar.
+    Days and hours are bucketed in the caller's timezone so a remote browser
+    does not read the server's calendar. ``tz`` is an IANA name, which carries
+    each date's own daylight-saving offset; ``tz_offset_minutes`` is the
+    ``Date.getTimezoneOffset()`` fallback for hosts with no tzdata.
     """
     try:
         # A cold pass parses every message's metadata JSON: ~90 ms at 10k
         # messages, ~1.2 s at 260k. Off the event loop so it cannot stall token
         # streaming when Settings is opened mid-generation.
         return await asyncio.to_thread(
-            compute_profile_stats, days = days, tz_offset_minutes = tz_offset_minutes
+            compute_profile_stats,
+            days = days,
+            tz_offset_minutes = tz_offset_minutes,
+            tz_name = tz,
         )
     except Exception as exc:
         raise log_and_http_error(
