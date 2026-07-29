@@ -524,6 +524,10 @@ function getIsLoraCompareFromState(
 }
 
 const COMPARE_INVENTORY_WAIT_MS = 10_000;
+const COMPARE_THREAD_LOOKUP_WAIT_MS = 8_000;
+type StoredCompareThread = Awaited<
+  ReturnType<typeof listStoredChatThreads>
+>[number];
 
 const CompareContent = memo(function CompareContent({
   pairId,
@@ -555,6 +559,8 @@ const CompareContent = memo(function CompareContent({
   const [isLoraCompare, setIsLoraCompare] = useState<boolean | null>(null);
   const [inventoryRefreshComplete, setInventoryRefreshComplete] =
     useState(false);
+  const [storedThreads, setStoredThreads] = useState<StoredCompareThread[]>([]);
+  const [storedThreadsReady, setStoredThreadsReady] = useState(false);
 
   useEffect(() => {
     let canceled = false;
@@ -569,7 +575,6 @@ const CompareContent = memo(function CompareContent({
     setInventoryRefreshComplete(false);
     void onRefreshModelInventories().finally(() => {
       if (!canceled) {
-        window.clearTimeout(fallbackTimeoutId);
         setInventoryRefreshComplete(true);
       }
     });
@@ -579,11 +584,62 @@ const CompareContent = memo(function CompareContent({
     };
   }, [onRefreshModelInventories]);
 
-  // Wait for this compare mount's full LoRA inventory before choosing a layout.
-  // Once either the inventory or the bounded fallback chooses one, keep it for
-  // the lifetime of the pair so its persisted thread types remain visible.
   useEffect(() => {
-    if (isLoraCompare !== null || !inventoryRefreshComplete) return;
+    let settled = false;
+    const settle = (threads: StoredCompareThread[]) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      setStoredThreads(threads);
+      setStoredThreadsReady(true);
+    };
+    const timeoutId = window.setTimeout(
+      () => settle([]),
+      COMPARE_THREAD_LOOKUP_WAIT_MS,
+    );
+    void listStoredChatThreads({ pairId })
+      .then(settle)
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          toast.error("Could not restore compare conversations", {
+            description:
+              error instanceof Error
+                ? error.message
+                : "Starting fresh compare conversations instead.",
+          });
+        }
+        settle([]);
+      });
+    return () => {
+      settled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [pairId]);
+
+  // Wait for this compare mount's full LoRA inventory before choosing a layout.
+  // Existing thread types own the layout; only a new pair consults the active
+  // checkpoint. Once chosen, keep the layout for the lifetime of the pair.
+  useEffect(() => {
+    if (isLoraCompare !== null || !storedThreadsReady) return;
+    if (
+      storedThreads.some(
+        (thread) =>
+          thread.modelType === "model1" || thread.modelType === "model2",
+      )
+    ) {
+      setIsLoraCompare(false);
+      return;
+    }
+    if (
+      storedThreads.some(
+        (thread) =>
+          thread.modelType === "base" || thread.modelType === "lora",
+      )
+    ) {
+      setIsLoraCompare(true);
+      return;
+    }
+    if (!inventoryRefreshComplete) return;
     if (modelsError) {
       setIsLoraCompare(false);
       return;
@@ -597,6 +653,8 @@ const CompareContent = memo(function CompareContent({
     modelRuntimeHydrated,
     modelsError,
     isLoraCompare,
+    storedThreads,
+    storedThreadsReady,
   ]);
 
   if (isLoraCompare === null) {
@@ -608,6 +666,7 @@ const CompareContent = memo(function CompareContent({
       pairId={pairId}
       onExitCompare={onExitCompare}
       projectId={projectId}
+      initialThreads={storedThreads}
     />
   ) : (
     <GeneralCompareContent
@@ -620,6 +679,7 @@ const CompareContent = memo(function CompareContent({
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
       onExitCompare={onExitCompare}
+      initialThreads={storedThreads}
     />
   );
 });
@@ -721,14 +781,20 @@ const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
   onExitCompare,
   projectId,
+  initialThreads,
 }: {
   pairId: string;
   onExitCompare?: () => void;
   projectId?: string | null;
+  initialThreads: StoredCompareThread[];
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
-  const [baseThreadId, setBaseThreadId] = useState<string>();
-  const [loraThreadId, setLoraThreadId] = useState<string>();
+  const [baseThreadId, setBaseThreadId] = useState<string | undefined>(
+    () => initialThreads.find((thread) => thread.modelType === "base")?.id,
+  );
+  const [loraThreadId, setLoraThreadId] = useState<string | undefined>(
+    () => initialThreads.find((thread) => thread.modelType === "lora")?.id,
+  );
   const active = useChatActive();
 
   const compareRunning = useChatRuntimeStore(
@@ -909,6 +975,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   deleteDisabled,
   onExitCompare,
   onComparingChange,
+  initialThreads,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -920,10 +987,23 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
   onComparingChange?: (comparing: boolean) => void;
+  initialThreads: StoredCompareThread[];
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
-  const [model1ThreadId, setModel1ThreadId] = useState<string>();
-  const [model2ThreadId, setModel2ThreadId] = useState<string>();
+  const [model1ThreadId, setModel1ThreadId] = useState<string | undefined>(
+    () =>
+      initialThreads.find(
+        (thread) =>
+          thread.modelType === "model1" || thread.modelType === "base",
+      )?.id,
+  );
+  const [model2ThreadId, setModel2ThreadId] = useState<string | undefined>(
+    () =>
+      initialThreads.find(
+        (thread) =>
+          thread.modelType === "model2" || thread.modelType === "lora",
+      )?.id,
+  );
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -948,9 +1028,6 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
-  const initialThreadLookupCompleteRef = useRef(false);
-  const [initialThreadLookupComplete, setInitialThreadLookupComplete] =
-    useState(false);
 
   useEffect(() => {
     // A bounded inventory fallback can mount this path from a cached catalog.
@@ -1013,47 +1090,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     [onComparingChange],
   );
 
-  // Resolve the persisted pair independently of submission state. A send can
-  // begin before IndexedDB returns; cancelling that first lookup would make the
-  // panes silently create new threads and lose the existing compare context.
-  useEffect(() => {
-    let isActive = true;
-    initialThreadLookupCompleteRef.current = false;
-    setInitialThreadLookupComplete(false);
-    lookupCompareThreadIds()
-      .then((ids) => {
-        if (!isActive) return;
-        initialThreadLookupCompleteRef.current = true;
-        applyCompareThreadIds(ids);
-        setInitialThreadLookupComplete(true);
-      })
-      .catch((error) => {
-        if (!isActive) return;
-        if (!isExpectedBackgroundChatStorageError(error)) {
-          toast.error("Could not restore compare conversations", {
-            description:
-              error instanceof Error
-                ? error.message
-                : "Starting fresh compare conversations instead.",
-          });
-        }
-        // Storage is unavailable, so there are no persisted IDs to wait for.
-        // Allow the panes to continue with fresh local threads.
-        initialThreadLookupCompleteRef.current = true;
-        setInitialThreadLookupComplete(true);
-      });
-    return () => {
-      isActive = false;
-    };
-  }, [applyCompareThreadIds, lookupCompareThreadIds]);
-
   // Once the initial lookup is known, refresh IDs after completed sends so
   // newly-created compare threads become the next turn's continuation targets.
   useEffect(() => {
     if (
       compareRunning ||
-      compareSubmitting ||
-      !initialThreadLookupCompleteRef.current
+      compareSubmitting
     ) {
       return;
     }
@@ -1117,7 +1159,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             onComparingChange={handleComparingChange}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
-            submissionReady={initialThreadLookupComplete}
+            submissionReady={true}
           />
         ) : (
           <></>

@@ -196,6 +196,50 @@ function isNativeComposing(event: Event) {
 // never fires `compositionend` after IME commit, so the compose flag would
 // otherwise stay true forever.
 const IME_STUCK_TIMEOUT_MS = 2500;
+const COMPARE_CANCEL_STATUS_POLL_MS = 750;
+const COMPARE_CANCEL_SETTLED_OBSERVATIONS = 3;
+
+async function cancelCompareBackendLoad(modelId: string): Promise<void> {
+  try {
+    await unloadModel({ model_path: modelId });
+    return;
+  } catch (unloadError) {
+    // The browser-side load request was already aborted. Until the backend
+    // proves its corresponding job ended, expose no checkpoint and keep the
+    // compare run busy so an orphaned load cannot silently replace the model
+    // behind a later prompt.
+    useChatRuntimeStore.getState().clearCheckpoint();
+    let settledObservations = 0;
+    while (
+      settledObservations < COMPARE_CANCEL_SETTLED_OBSERVATIONS
+    ) {
+      try {
+        const status = await getInferenceStatus();
+        const targetStillLoading = status.loading.some(
+          (loadingId) =>
+            loadingId.toLowerCase() === modelId.toLowerCase(),
+        );
+        settledObservations = targetStillLoading
+          ? 0
+          : settledObservations + 1;
+      } catch {
+        settledObservations = 0;
+      }
+      if (
+        settledObservations < COMPARE_CANCEL_SETTLED_OBSERVATIONS
+      ) {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, COMPARE_CANCEL_STATUS_POLL_MS);
+        });
+      }
+    }
+    const detail =
+      unloadError instanceof Error
+        ? unloadError.message
+        : "The backend rejected the cancellation request.";
+    throw new Error(`Could not cancel the backend model load: ${detail}`);
+  }
+}
 
 function fileToBase64DataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -1574,7 +1618,14 @@ export function SharedComposer({
           toast.success("Compare complete", { id: toastId, duration: 2000 });
         }
       } catch (err) {
-        if (run.cleanup) await run.cleanup;
+        let cleanupError: unknown = null;
+        if (run.cleanup) {
+          try {
+            await run.cleanup;
+          } catch (error) {
+            cleanupError = error;
+          }
+        }
         if (compareRunsRef.current.owns(run)) {
           compareStepSucceededRef.current = false;
           const originIsExternal = isExternalModelId(
@@ -1608,7 +1659,18 @@ export function SharedComposer({
             useChatRuntimeStore.setState(compareTurnOptions);
           }
           if (isCompareCancellation(err, compareSignal)) {
-            toast.info("Compare stopped", { id: toastId, duration: 2000 });
+            if (cleanupError) {
+              toast.error("Compare stopped after cancellation failed", {
+                id: toastId,
+                description:
+                  cleanupError instanceof Error
+                    ? cleanupError.message
+                    : "The model load ended, but the backend cancellation failed.",
+                duration: 5000,
+              });
+            } else {
+              toast.info("Compare stopped", { id: toastId, duration: 2000 });
+            }
           } else {
             toast.error("Compare failed", {
               id: toastId,
@@ -1618,7 +1680,10 @@ export function SharedComposer({
           }
         }
       } finally {
-        if (run.cleanup) await run.cleanup;
+        // The catch path above reports a cleanup failure after the backend load
+        // is confirmed settled. The finally path only shares that same promise
+        // so ownership is not released before reconciliation completes.
+        if (run.cleanup) await run.cleanup.catch(() => undefined);
         if (compareRunsRef.current.release(run)) {
           useChatRuntimeStore.getState().setModelLoading(false);
           setComparing(false);
@@ -1644,9 +1709,7 @@ export function SharedComposer({
         // The fetch abort only releases the browser. /unload is the backend
         // cancellation path for an in-flight download/load and is intentionally
         // not tied to the aborted compare signal.
-        const cleanup = unloadModel({ model_path: loadingModel.id }).catch(
-          () => {},
-        );
+        const cleanup = cancelCompareBackendLoad(loadingModel.id);
         compareRunsRef.current.setCleanup(run, cleanup);
       }
     }

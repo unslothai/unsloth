@@ -17,13 +17,21 @@ def _read(name: str) -> str:
 def test_cleanup_reconciles_the_origin_checkpoint_before_clearing_it():
     composer = _read("shared-composer.tsx")
     catch = composer.split("} catch (err) {", 1)[1].split("} finally {", 1)[0]
-    assert "if (run.cleanup) await run.cleanup;" in catch
+    assert "await run.cleanup;" in catch
+    assert "cleanupError = error;" in catch
     assert "const status = await getInferenceStatus();" in catch
-    assert catch.index("if (run.cleanup) await run.cleanup;") < catch.index(
+    assert catch.index("await run.cleanup;") < catch.index(
         "const status = await getInferenceStatus();"
     )
     assert "!run.cleanup" not in catch
     assert "(!originIsExternal && run.cleanup)" not in catch
+    cancel = composer.split("async function cancelCompareBackendLoad(", 1)[1].split(
+        "function fileToBase64DataURL", 1
+    )[0]
+    assert "useChatRuntimeStore.getState().clearCheckpoint();" in cancel
+    assert "status.loading.some(" in cancel
+    assert "COMPARE_CANCEL_SETTLED_OBSERVATIONS" in cancel
+    assert "throw new Error(`Could not cancel the backend model load:" in cancel
 
 
 def test_compare_layout_waits_for_inventory_then_freezes():
@@ -38,7 +46,15 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     assert "COMPARE_INVENTORY_WAIT_MS" in compare
     assert "window.setTimeout(" in compare
     assert "current ?? false" in compare
-    assert "if (isLoraCompare !== null || !inventoryRefreshComplete) return;" in compare
+    assert "const [storedThreads, setStoredThreads]" in compare
+    assert "COMPARE_THREAD_LOOKUP_WAIT_MS" in compare
+    assert "listStoredChatThreads({ pairId })" in compare
+    assert "if (isLoraCompare !== null || !storedThreadsReady) return;" in compare
+    assert 'thread.modelType === "model1"' in compare
+    assert 'thread.modelType === "model2"' in compare
+    assert 'thread.modelType === "base"' in compare
+    assert 'thread.modelType === "lora"' in compare
+    assert "if (!inventoryRefreshComplete) return;" in compare
     assert "if (modelsError)" in compare
     assert "setIsLoraCompare(false);" in compare
     assert "const [isLoraCompare, setIsLoraCompare]" in compare
@@ -98,20 +114,21 @@ def test_overlapping_compare_sends_are_rejected_before_file_conversion():
     assert "sendInProgressRef.current = false;" in send
 
 
-def test_initial_thread_lookup_blocks_submission_until_ids_are_applied():
+def test_initial_thread_lookup_is_bounded_and_applied_before_mount():
     page = _read("chat-page.tsx")
-    initial_lookup = page.split(
-        "// Resolve the persisted pair independently of submission state.", 1
-    )[1].split("// Once the initial lookup is known", 1)[0]
-    assert "applyCompareThreadIds(ids);" in initial_lookup
-    assert "setInitialThreadLookupComplete(true);" in initial_lookup
-    assert initial_lookup.index("applyCompareThreadIds(ids);") < initial_lookup.index(
-        "setInitialThreadLookupComplete(true);"
-    )
-    assert "if (!isActive) return;" in initial_lookup
-    assert 'toast.error("Could not restore compare conversations"' in initial_lookup
+    compare = page.split("const CompareContent = memo(", 1)[1].split(
+        "return isLoraCompare ?", 1
+    )[0]
+    assert "const settle = (threads: StoredCompareThread[])" in compare
+    assert "if (settled) return;" in compare
+    assert "() => settle([])" in compare
+    assert "COMPARE_THREAD_LOOKUP_WAIT_MS" in compare
+    assert "setStoredThreads(threads);" in compare
+    assert "setStoredThreadsReady(true);" in compare
+    assert 'toast.error("Could not restore compare conversations"' in compare
     general = page.split("const GeneralCompareContent = memo(", 1)[1]
-    assert "submissionReady={initialThreadLookupComplete}" in general
+    assert "initialThreads.find(" in general
+    assert "submissionReady={true}" in general
 
 
 def test_compare_load_target_starts_at_the_request_boundary():
