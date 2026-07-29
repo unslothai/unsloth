@@ -602,6 +602,73 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
     }
 
 
+def test_fork_chat_thread_detaches_research_run_metadata(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.upsert_chat_message(_msg("user", None, 1))
+    studio_db.upsert_chat_message(
+        {
+            "id": "research-report",
+            "threadId": "src",
+            "parentId": "user",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "# Copied report",
+                    "researchRunId": "run-source",
+                },
+                {
+                    "type": "source",
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "researchStatus": "completed",
+                },
+            ],
+            "metadata": {
+                "researchRunId": "run-source",
+                "researchStatus": "completed",
+                "researchPlanRevision": 1,
+                "serverManaged": True,
+                "model": "local-model",
+            },
+            "createdAt": 2,
+        }
+    )
+
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "research-report",
+        new_thread_id = "fork-1",
+        new_title = "fork",
+        created_at = 3,
+        id_factory = iter(("fork-user", "fork-report")).__next__,
+    )
+
+    report = next(
+        message
+        for message in studio_db.list_chat_messages("fork-1")
+        if message["role"] == "assistant"
+    )
+    assert report["content"][0]["text"] == "# Copied report"
+    assert report["content"][1]["url"] == "https://example.com"
+    assert all(
+        not ({"researchRunId", "researchStatus", "serverManaged"} & set(part))
+        for part in report["content"]
+    )
+    assert report["metadata"] == {"model": "local-model"}
+
+
+def test_fork_detachment_detects_non_id_research_content_keys():
+    content_json, metadata_json = studio_db._detach_research_message_json(
+        '[{"type":"text","text":"Report","serverManaged":true}]',
+        '{"model":"local-model"}',
+    )
+
+    assert "serverManaged" not in content_json
+    assert metadata_json == '{"model": "local-model"}'
+
+
 def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     result = studio_db.fork_chat_thread(

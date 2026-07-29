@@ -84,9 +84,8 @@ Replace `claude` with any supported agent:
 | Hermes Agent | `unsloth start hermes` |
 | OpenClaw | `unsloth start openclaw` |
 | OpenCode | `unsloth start opencode` |
-| Pi Coding Agent | `unsloth start pi` |
 
-Claude Code, Codex, OpenCode and Pi can keep their current model and use Unsloth as a local
+Claude Code, Codex and OpenCode can keep their current model and use Unsloth as a local
 subagent:
 
 ```bash
@@ -103,7 +102,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Training, MLX and GGUF inference are ALL supported.
 * **AMD:** Training, RL, chat and deployment work on Windows, WSL and Linux. [Read the AMD guide](https://unsloth.ai/docs/basics/amd).
-* **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819).
+* **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819). Vulkan accelerates GGUF inference only; training still requires a supported PyTorch or MLX backend.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
 #### macOS, Linux, WSL:
@@ -112,11 +111,27 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 Use the same command to update.
 
+To force the Vulkan llama.cpp backend, set `UNSLOTH_FORCE_VULKAN=1` **before installing or updating**. The setting selects the llama.cpp binary bundle, so setting it only when launching Studio cannot replace an existing CPU bundle:
+
+```bash
+export UNSLOTH_FORCE_VULKAN=1
+curl -fsSL https://unsloth.ai/install.sh | sh
+```
+
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
 Use the same command to update.
+
+To force the Vulkan llama.cpp backend, set the environment variable before running the installer or updater:
+
+```powershell
+$env:UNSLOTH_FORCE_VULKAN=1
+irm https://unsloth.ai/install.ps1 | iex
+```
+
+Re-running the current installer replaces a previously selected CPU bundle when the backend differs. A separate Vulkan SDK is not required; the GPU driver must provide a working Vulkan runtime.
 
 #### Launch
 ```bash
@@ -188,7 +203,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 ## 🦥 Unsloth News
 - **AMD training**: Train, run RL, chat and deploy on AMD GPUs across Windows, WSL and Linux. [Guide](https://unsloth.ai/docs/basics/amd)
 - **GGUF hardware controls**: Choose GPU/layer placement, offload MoE experts and use multi-GPU or Tensor Parallelism. [#6414](https://github.com/unslothai/unsloth/pull/6414)
-- **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw, Pi and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
+- **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
 - **MCP control endpoint**: Let compatible clients manage models, training, recipes, checkpoints and exports. [#7191](https://github.com/unslothai/unsloth/pull/7191)
 - **Local inference reliability**: Resume long chats faster, recover stalled downloads and reuse existing GGUF files. [#7204](https://github.com/unslothai/unsloth/pull/7204) • [#6858](https://github.com/unslothai/unsloth/pull/6858) • [#7209](https://github.com/unslothai/unsloth/pull/7209)
 - **New models**: [Qwen-AgentWorld](https://huggingface.co/unsloth/Qwen-AgentWorld-35B-A3B-GGUF), [Ornith](https://huggingface.co/unsloth/models?search=ornith), [Kimi K2.7 Code](https://unsloth.ai/docs/models/kimi-k2.7-code) and [MiniMax M3](https://unsloth.ai/docs/models/minimax-m3)
@@ -262,6 +277,8 @@ unsloth studio --secure -p 8888
 unsloth studio -H 0.0.0.0 -p 8888
 ```
 The Cloudflare tunnel is **off by default**: `-H 0.0.0.0` exposes the raw port only, not a public internet URL. Pair the wildcard bind with `--cloudflare` (`unsloth studio -H 0.0.0.0 --cloudflare`) to also publish a public `https://*.trycloudflare.com` link, or prefer `--secure` (above), which keeps the raw port private. `--cloudflare` has no effect on a loopback bind.
+
+On a wildcard bind Unsloth works out the address to share by asking `ifconfig.me` for the public IP, then asks `check-host.net` whether that port is reachable so it can tell you if a firewall is in the way. Both contact a third party. Set `UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK=1` to skip them; the banner then shows the LAN address and no reachability line.
 
 The first time Unsloth is published on a public URL (`--secure` or `--cloudflare`) with the auto-generated admin password still in place, it asks for a new admin password in the terminal (masked input with confirmation) before the public link goes up. Without an attached terminal it warns instead and keeps the bootstrap deadline: Unsloth shuts down after `UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT` (default 1 hour) unless the password is changed in the web UI.
 

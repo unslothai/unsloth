@@ -3,6 +3,7 @@
 
 "use client";
 
+import { useAuiState } from "@assistant-ui/react";
 import { createContext, useContext } from "react";
 import type { ModelType } from "./types";
 
@@ -20,10 +21,58 @@ export function toolPaneScope(modelType?: ModelType, pairId?: string): string {
   return `${modelType ?? "base"}\u0000${pairId ?? ""}`;
 }
 
+/**
+ * Narrow a pane scope to one conversation: two threads in a pane can both be mid "call_0",
+ * so without the thread in the key they share a store entry and swap outputs.
+ */
+export function toolThreadScope(paneScope: string, threadId?: string): string {
+  return `${paneScope}\u0000${threadId ?? ""}`;
+}
+
 export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
 
+/**
+ * Store-key scope for the conversation this component renders in, taken from the surrounding
+ * runtime so reader and writer agree without a prop.
+ *
+ * `remoteId`, not `id`: the adapter gets `unstable_threadId`, which assistant-ui sources from
+ * `remoteId`, and an uninitialized thread has `id` but no `remoteId`. Reading `id` split the
+ * keys apart for the first turn of every New Chat, so live tool output never reached the card.
+ */
 export function useToolPaneScope(): string {
-  return useContext(ToolPaneScopeContext);
+  const paneScope = useContext(ToolPaneScopeContext);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  return toolThreadScope(paneScope, threadId);
+}
+
+/**
+ * Read a tool-output map for one call, tolerating a run that started before its thread had an id.
+ *
+ * The adapter captures its scope once at run start, so a first turn writes under the unresolved
+ * scope for its whole life. The autosave can assign `remoteId` mid-run, which moves this
+ * component's key but not the writer's, and the card went blank. Falling back to the pane-wide
+ * scope keeps those entries reachable; only an unpersisted first turn can be filed there.
+ */
+/** The scope a run that started before its thread had an id writes under. */
+export function useUnresolvedToolPaneScope(): string {
+  return toolThreadScope(useContext(ToolPaneScopeContext), undefined);
+}
+
+export function useToolOutputFor(
+  map: Record<string, string>,
+  paneScope: string,
+  toolCallId: string,
+): string {
+  // Unconditional: hooks cannot sit behind the early return below.
+  const unresolvedScope = useUnresolvedToolPaneScope();
+  // Only a thread mid-run can be the one that just gained its id. Local ids repeat
+  // ("call_0"), so an unconditional fallback showed a live first turn's stdout in every
+  // older conversation whose own entry had been cleared.
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const own = map[toolOutputKey(paneScope, toolCallId)];
+  if (own !== undefined) return own;
+  if (!isRunning) return "";
+  return map[toolOutputKey(unresolvedScope, toolCallId)] ?? "";
 }
 
 /** Store key for the live/full tool output maps: pane scope + tool call id. */

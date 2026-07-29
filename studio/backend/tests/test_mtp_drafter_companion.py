@@ -29,11 +29,14 @@ from hub.utils.gguf_plan import (
     preferred_mtp_sibling,
 )
 from utils.models.model_config import (
+    ModelConfig,
     _is_mtp_drafter,
+    _local_gguf_companion_search_root,
     detect_gguf_model,
     detect_mtp_file,
     extract_model_size_b,
 )
+from utils.native_path_leases import native_gguf_companion_parent_allowed
 
 
 # ── Predicate + layering mirrors ─────────────────────────────────────
@@ -209,6 +212,152 @@ def test_detect_mtp_file_search_root(tmp_path):
     (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
     found = detect_mtp_file(str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path))
     assert found is not None and found.endswith("mtp-gemma-4-12b-it.gguf")
+
+
+def test_quant_directory_selection_finds_repo_root_mtp(tmp_path):
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    mtp_dir = tmp_path / "MTP"
+    mtp_dir.mkdir()
+    drafter = mtp_dir / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    drafter.write_bytes(b"x")
+
+    search_root = _local_gguf_companion_search_root(str(quant_dir), str(weight))
+    assert Path(search_root).resolve() == tmp_path.resolve()
+    config = ModelConfig.from_identifier(str(quant_dir))
+    assert config.is_local
+    assert config.gguf_file == str(weight.resolve())
+    assert config.gguf_mtp_file == str(drafter.resolve())
+
+
+def test_bare_relative_gguf_directory_is_local_source(tmp_path, monkeypatch):
+    model_dir = tmp_path / "outputs" / "gemma"
+    model_dir.mkdir(parents = True)
+    weight = model_dir / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+
+    config = ModelConfig.from_identifier("outputs/gemma")
+    assert config.is_local
+    assert config.gguf_file == str(weight.resolve())
+
+
+def test_detect_mtp_file_falls_back_to_new_scheme_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-gemma-4-E4B-it-BF16.gguf").write_bytes(b"x")
+    q4 = sub / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    q4.write_bytes(b"x")
+
+    found = detect_mtp_file(str(weight))
+    assert found == str(q4.resolve())
+
+
+def test_detect_mtp_file_falls_back_to_old_scheme_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-12b-it-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    drafter.write_bytes(b"x")
+
+    found = detect_mtp_file(str(weight))
+    assert found == str(drafter.resolve())
+
+
+def test_detect_mtp_file_root_still_wins_over_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    root = tmp_path / "mtp-gemma-4-E4B-it.gguf"
+    root.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-gemma-4-E4B-it-Q4_0.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(root.resolve())
+
+
+def test_detect_mtp_file_subdir_skips_foreign_drafter(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-gemma-4-12b-it-Q4_0.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) is None
+
+
+@pytest.mark.parametrize(
+    "companion_path",
+    ["mtp-gemma-4-E4B-it-Q4_0.gguf", "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf"],
+)
+def test_detect_mtp_file_requires_model_name_boundary(tmp_path, companion_path):
+    weight = tmp_path / "gemma-4-E4B-item-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    companion = tmp_path / companion_path
+    companion.parent.mkdir(parents = True, exist_ok = True)
+    companion.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) is None
+
+
+def test_detect_mtp_file_accepts_case_variant_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "mtp"
+    sub.mkdir()
+    drafter = sub / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    drafter.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(drafter.resolve())
+
+
+def test_native_companion_parent_accepts_root_and_mtp_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    root_drafter = tmp_path / "mtp-gemma-4-E4B-it.gguf"
+    root_drafter.write_bytes(b"x")
+    sub = tmp_path / "MtP"
+    sub.mkdir()
+    nested_drafter = sub / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    nested_drafter.write_bytes(b"x")
+
+    assert native_gguf_companion_parent_allowed(root_drafter, weight)
+    assert native_gguf_companion_parent_allowed(nested_drafter, weight, allow_mtp_subdir = True)
+
+
+def test_native_companion_parent_rejects_other_nested_directory(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "other"
+    sub.mkdir()
+    drafter = sub / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    drafter.write_bytes(b"x")
+
+    assert not native_gguf_companion_parent_allowed(drafter, weight)
+
+
+def test_native_companion_parent_rejects_mtp_symlink_escape(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    weight = model_dir / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    drafter = outside / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    drafter.write_bytes(b"x")
+    try:
+        (model_dir / "MTP").symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    assert not native_gguf_companion_parent_allowed(
+        model_dir / "MTP" / drafter.name, weight, allow_mtp_subdir = True
+    )
 
 
 # ── Reload dedup includes the drafter ────────────────────────────────
@@ -483,3 +632,198 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     b._download_companion_gguf = _fake_companion
     assert b._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF") is None
     assert reached.get("hit") is True
+
+
+def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
+    """llama-server takes shard 1 as the model path, so a split MTP/ copy must
+    not resolve to whichever shard happens to be smallest."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    first = sub / "mtp-model-Q4_0-00001-of-00002.gguf"
+    first.write_bytes(b"x" * 4096)
+    (sub / "mtp-model-Q4_0-00002-of-00002.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(first.resolve())
+
+
+def test_detect_mtp_file_skip_root_ignores_root_drafter(tmp_path):
+    """skip_root is how a native load recovers when the root drafter is out
+    of bounds for its grant."""
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"x")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    subdir_copy = sub / "mtp-model-Q4_0.gguf"
+    subdir_copy.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight), str(tmp_path)) == str(
+        (tmp_path / "mtp-model.gguf").resolve()
+    )
+    assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True) == str(subdir_copy.resolve())
+
+
+def test_detect_mtp_file_rejects_weight_copy_inside_mtp_dir(tmp_path):
+    """Everything under MTP/ counts as a drafter for menu exclusion, but only
+    a published drafter name may be launched as --model-draft."""
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "gemma-4-E4B-it-qat-Q4_0.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) is None
+
+
+def test_detect_mtp_file_pairs_k_quant_subdir_drafter(tmp_path):
+    """Pairing must use the full quant vocabulary, not just Q<d>_<d>/BF16/F16."""
+    weight = tmp_path / "gemma-4-12b-it-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "mtp-gemma-4-12b-it-UD-Q4_K_XL.gguf"
+    drafter.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(drafter.resolve())
+
+
+def test_detect_mtp_file_keeps_snapshot_path_for_sharded_subdir_drafter(tmp_path):
+    """A split copy stored as HF snapshot symlinks must launch from the
+    snapshot path: the blob target has no sibling shard names."""
+    blobs = tmp_path / "blobs"
+    snapshot = tmp_path / "snapshots" / "abc"
+    sub = snapshot / "MTP"
+    blobs.mkdir(parents = True)
+    sub.mkdir(parents = True)
+
+    (blobs / "sha_weight").write_bytes(b"w")
+    weight = snapshot / "model-Q4_0.gguf"
+    try:
+        weight.symlink_to(blobs / "sha_weight")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    first = sub / "mtp-model-Q4_0-00001-of-00002.gguf"
+    second = sub / "mtp-model-Q4_0-00002-of-00002.gguf"
+    (blobs / "sha_1").write_bytes(b"d" * 4096)
+    (blobs / "sha_2").write_bytes(b"d")
+    first.symlink_to(blobs / "sha_1")
+    second.symlink_to(blobs / "sha_2")
+
+    found = detect_mtp_file(str(weight), str(snapshot))
+    assert found == str(first)
+    assert (Path(found).parent / second.name).exists()
+
+
+def test_detect_mtp_file_pairs_sharded_old_scheme_subdir_drafter(tmp_path):
+    """An old-scheme split copy is <model>-Q8_0-MTP-00001-of-00002.gguf, whose
+    stem does not end in -mtp until the shard suffix comes off."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    first = sub / "model-Q8_0-MTP-00001-of-00002.gguf"
+    first.write_bytes(b"x" * 4096)
+    (sub / "model-Q8_0-MTP-00002-of-00002.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(first)
+
+
+def test_detect_mtp_file_keeps_snapshot_path_for_sharded_root_drafter(tmp_path):
+    """The root branch needs the same shard handling as the MTP/ branch."""
+    blobs = tmp_path / "blobs"
+    snapshot = tmp_path / "snapshots" / "abc"
+    blobs.mkdir(parents = True)
+    snapshot.mkdir(parents = True)
+
+    (blobs / "sha_weight").write_bytes(b"w")
+    weight = snapshot / "model-Q4_0.gguf"
+    try:
+        weight.symlink_to(blobs / "sha_weight")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    first = snapshot / "mtp-model-Q4_0-00001-of-00002.gguf"
+    second = snapshot / "mtp-model-Q4_0-00002-of-00002.gguf"
+    (blobs / "sha_1").write_bytes(b"d" * 4096)
+    (blobs / "sha_2").write_bytes(b"d")
+    first.symlink_to(blobs / "sha_1")
+    second.symlink_to(blobs / "sha_2")
+
+    found = detect_mtp_file(str(weight), str(snapshot))
+    assert found == str(first)
+    assert (Path(found).parent / second.name).exists()
+
+
+def test_detect_mtp_file_pairs_bpw_qualified_subdir_drafter(tmp_path):
+    """_extract_quant_label supports bpw-qualified names, so pairing must too."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "mtp-model-IQ4_XS-3.53bpw.gguf"
+    drafter.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(drafter.resolve())
+
+
+def test_detect_mtp_file_skips_incomplete_split_drafter(tmp_path):
+    """An incomplete shard set fails llama-server's draft startup, so a
+    complete copy must win rather than MTP being disabled."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    # Declares two shards but ships only the first.
+    (sub / "mtp-model-Q4_0-00001-of-00002.gguf").write_bytes(b"x" * 50)
+    complete = sub / "mtp-model-BF16.gguf"
+    complete.write_bytes(b"x" * 100)
+
+    assert detect_mtp_file(str(weight)) == str(complete.resolve())
+
+
+def test_detect_mtp_file_ranks_split_drafter_by_total_size(tmp_path):
+    """Candidates collapse to shard 1, so a split copy must be summed or it
+    outranks a smaller single file."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-model-Q8_0-00001-of-00002.gguf").write_bytes(b"x" * 90)
+    (sub / "mtp-model-Q8_0-00002-of-00002.gguf").write_bytes(b"x" * 90)
+    smaller = sub / "mtp-model-BF16.gguf"
+    smaller.write_bytes(b"x" * 100)
+
+    assert detect_mtp_file(str(weight)) == str(smaller.resolve())
+
+
+def test_companion_search_root_promotes_bpw_quant_directory(tmp_path):
+    """A bpw-qualified quant directory must resolve to the repository root, or
+    the repo-root MTP/ copy is never in scope for it."""
+    quant_dir = tmp_path / "IQ4_XS-3.53bpw"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "mtp-model.gguf"
+    drafter.write_bytes(b"x")
+
+    # Directory selection and the file inside it agree on the root.
+    assert _local_gguf_companion_search_root(str(quant_dir), str(weight)) == str(tmp_path)
+    assert _local_gguf_companion_search_root(str(weight), str(weight)) == str(tmp_path)
+    assert detect_mtp_file(str(weight), str(tmp_path)) == str(drafter.resolve())
+
+
+def test_companion_search_root_keeps_non_quant_directories(tmp_path):
+    """Sharing the quant vocabulary must not widen what gets promoted."""
+    for name in ("DeepSeek-V3-UD-Q2_K_XL", "outputs", "Q4_0-extra", "Q4_0bpw"):
+        directory = tmp_path / name
+        directory.mkdir()
+        weight = directory / "model.gguf"
+        weight.write_bytes(b"x")
+        assert _local_gguf_companion_search_root(str(directory), str(weight)) == str(directory)
