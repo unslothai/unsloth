@@ -552,24 +552,28 @@ def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
 
 
 @pytest.mark.parametrize(
-    "backend, legacy, expected",
+    "backend, legacy, expected_backend, expected",
     [
-        ("vulkan", None, True),
-        (" VULKAN ", None, True),
-        ("auto", "1", True),
-        (None, "true", True),
-        (None, "on", True),
-        ("auto", None, False),
-        ("cpu", "0", False),
-        ("hip", "1", False),
-        ("rocm", "on", False),
+        (None, None, None, False),
+        ("vulkan", None, "vulkan", True),
+        (" VULKAN ", None, "vulkan", True),
+        ("auto", "1", None, True),
+        (None, "true", None, True),
+        (None, "on", None, True),
+        ("auto", None, None, False),
+        ("cpu", "0", "cpu", False),
+        ("hip", "1", "hip", False),
+        ("rocm", "on", "hip", False),
+        (" HIP ", "1", "hip", False),
+        (" ROCM ", "1", "hip", False),
     ],
 )
 def test_force_vulkan_requested_accepts_public_selector_and_legacy_alias(
-    monkeypatch, backend, legacy, expected
+    monkeypatch, backend, legacy, expected_backend, expected
 ):
     # UNSLOTH_LLAMA_CPP_BACKEND is the public selector; a recognized non-vulkan
     # value is authoritative, so it opts out even against a stale legacy alias.
+    # auto/unset/unknown leave the backend unpinned so selection stays automatic.
     for name, value in (
         ("UNSLOTH_LLAMA_CPP_BACKEND", backend),
         ("UNSLOTH_FORCE_VULKAN", legacy),
@@ -578,6 +582,7 @@ def test_force_vulkan_requested_accepts_public_selector_and_legacy_alias(
             monkeypatch.delenv(name, raising = False)
         else:
             monkeypatch.setenv(name, value)
+    assert ilp.llama_backend_from_env() == expected_backend
     assert ilp.force_vulkan_requested() is expected
 
 
@@ -662,31 +667,20 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert routed is host
 
 
+@pytest.mark.parametrize("via", ["env", "argument"])
 @pytest.mark.parametrize("backend", ["hip", "rocm", "cpu"])
-def test_explicit_non_vulkan_backend_suppresses_intel_auto_route(monkeypatch, backend):
-    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", backend)
+def test_non_vulkan_backend_suppresses_intel_auto_route(monkeypatch, backend, via):
+    # The selector suppresses the Intel auto-route the same way whether it arrives
+    # from the environment or from --llama-backend.
+    kwargs = {}
+    if via == "env":
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", backend)
+    else:
+        kwargs["llama_backend"] = backend
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
 
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
-        host, FORK, "b9596-mix-abc", force_cpu = False
-    )
-
-    assert routed is host
-    assert repo == FORK
-    assert tag == "b9596-mix-abc"
-    assert persist is None
-
-
-@pytest.mark.parametrize("backend", ["hip", "rocm", "cpu"])
-def test_non_vulkan_backend_argument_suppresses_intel_auto_route(backend):
-    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
-
-    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
-        host,
-        FORK,
-        "b9596-mix-abc",
-        force_cpu = False,
-        llama_backend = backend,
+        host, FORK, "b9596-mix-abc", force_cpu = False, **kwargs
     )
 
     assert routed is host
@@ -1371,28 +1365,6 @@ def test_direct_upstream_windows_amd_legacy_gfx_routes_to_vulkan():
     plan = ilp.direct_upstream_release_plan(rel, routed, repo, "latest")
     assert persist == "vulkan"
     assert plan.attempts[0].install_kind == "windows-vulkan"
-
-
-def test_llama_cpp_backend_env_requests_vulkan(monkeypatch):
-    assert ilp.llama_backend_from_env() is None
-    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
-    assert ilp.llama_backend_from_env() == "vulkan"
-    assert ilp.force_vulkan_requested() is True
-
-
-def test_llama_cpp_backend_auto_does_not_trigger_vulkan(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
-    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
-    assert ilp.llama_backend_from_env() is None
-    assert ilp.force_vulkan_requested() is False
-
-
-@pytest.mark.parametrize("backend", ["hip", "rocm", " HIP ", " ROCM "])
-def test_hip_backend_env_opts_out_of_vulkan(monkeypatch, backend):
-    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", backend)
-    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
-    assert ilp.llama_backend_from_env() == "hip"
-    assert ilp.force_vulkan_requested() is False
 
 
 def test_hip_backend_env_suppresses_auto_vulkan_fallback_on_unsupported_gfx(monkeypatch):
