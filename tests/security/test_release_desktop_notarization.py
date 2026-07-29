@@ -216,11 +216,7 @@ def test_nonaccepted_service_result_fails_even_when_notarytool_exits_zero(tmp_pa
         )
 
         assert result.returncode == 1
-        assert _command_names(commands) == [
-            "codesign",
-            "notarytool submit",
-            "notarytool log",
-        ]
+        assert _command_names(commands) == ["codesign", "notarytool submit", "notarytool log"]
         assert f"status={status}" in result.stderr
 
 
