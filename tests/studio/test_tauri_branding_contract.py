@@ -47,8 +47,8 @@ def test_desktop_package_transitions_preserve_legacy_installs() -> None:
     installer = read(TAURI / "windows/installer.nsi")
     assert '!define INSTALLIDENTITY "Unsloth Studio (Desktop)"' in installer
     assert "Uninstall\\${INSTALLIDENTITY}" in installer
-    assert '${MANUKEY}\\${INSTALLIDENTITY}' in installer
-    assert '$LOCALAPPDATA\\${INSTALLIDENTITY}' in installer
+    assert "${MANUKEY}\\${INSTALLIDENTITY}" in installer
+    assert "$LOCALAPPDATA\\${INSTALLIDENTITY}" in installer
     assert 'Rename "$SMPROGRAMS\\${INSTALLIDENTITY}.lnk"' in installer
     assert 'Rename "$DESKTOP\\${INSTALLIDENTITY}.lnk"' in installer
 
