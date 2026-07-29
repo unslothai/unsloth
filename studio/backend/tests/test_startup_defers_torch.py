@@ -27,6 +27,7 @@ studio-backend-ci matrix.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import subprocess
 import sys
@@ -230,3 +231,142 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys):
     # structlog renders to stdout, not through the stdlib root handler caplog
     # attaches to, so assert on what the operator would actually see.
     assert "stage exploded" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The warm window: routes must not block uvicorn's loop while torch loads
+# ---------------------------------------------------------------------------
+#
+# Detection used to finish before the socket bound, so get_device() was free by
+# the time any request arrived and an `async def` could call it inline. It is
+# not free any more: for the length of the warm it blocks on _DETECT_LOCK and
+# the torch import. Called on the event loop that stalls every other request --
+# measured at 1547ms on a /api/liveness that touches nothing.
+#
+# These are the first-paint and polled routes, i.e. the ones certain to land
+# inside the warm window. Each must reach its blocking helper only through
+# asyncio.to_thread.
+
+_OFFLOAD_REQUIRED = [
+    ("main.py", "get_gpu_visibility", "get_backend_visible_gpu_info"),
+    ("routes/training.py", "get_hardware_utilization", "get_gpu_utilization"),
+    ("routes/models.py", "list_models", "get_inference_backend"),
+    ("routes/inference.py", "get_status", "get_inference_backend"),
+    ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
+    ("routes/inference.py", "get_api_monitor", "_monitor_context_length"),
+]
+
+
+def _find_function(tree: ast.AST, name: str) -> ast.AST:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"no function {name!r} in the parsed module")
+
+
+def _is_to_thread(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+    )
+
+
+def _offloaded_nodes(func: ast.AST) -> set[int]:
+    """Every node lexically inside an asyncio.to_thread(...) argument."""
+    offloaded: set[int] = set()
+    for node in ast.walk(func):
+        if not _is_to_thread(node):
+            continue
+        for arg in list(node.args) + [kw.value for kw in node.keywords]:
+            for sub in ast.walk(arg):
+                offloaded.add(id(sub))
+    return offloaded
+
+
+@pytest.mark.parametrize("rel_path, func_name, callee", _OFFLOAD_REQUIRED)
+def test_first_paint_routes_do_not_block_the_event_loop(rel_path, func_name, callee):
+    source = (_BACKEND_DIR / rel_path).read_text(encoding = "utf-8")
+    func = _find_function(ast.parse(source), func_name)
+    assert isinstance(func, ast.AsyncFunctionDef), (
+        f"{rel_path}:{func_name} is no longer `async def`; this guard assumes it runs on "
+        "the loop (a plain `def` handler is already safe -- drop it from the list)"
+    )
+    offloaded = _offloaded_nodes(func)
+
+    # The bare-name form: asyncio.to_thread(callee).
+    handed_off = any(
+        isinstance(n, ast.Name) and n.id == callee and id(n) in offloaded
+        for n in ast.walk(func)
+    )
+    direct = [
+        n
+        for n in ast.walk(func)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == callee
+        and id(n) not in offloaded
+    ]
+    assert not direct, (
+        f"{rel_path}:{func_name} calls {callee}() directly on the event loop at line(s) "
+        f"{[n.lineno for n in direct]}; it blocks on hardware detection until the "
+        "startup warm has imported torch. Wrap it in await asyncio.to_thread(...)."
+    )
+    called_inside = any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == callee
+        and id(n) in offloaded
+        for n in ast.walk(func)
+    )
+    assert handed_off or called_inside, (
+        f"{rel_path}:{func_name} no longer references {callee}; update this guard"
+    )
+
+
+def test_a_failed_detection_degrades_instead_of_raising():
+    """A torch that raises must not leave DEVICE unset.
+
+    The warm thread swallows stage failures, so a raising detection would leave
+    DEVICE None -- and then every get_device() retries the same broken import
+    (re-running torch/__init__ against the submodules a partial import left in
+    sys.modules) and /api/health, which waits on this, answers 500.
+    """
+    from utils.hardware import hardware as hw
+
+    saved_device, saved_impl = hw.DEVICE, hw._detect_hardware_locked
+    saved_chat, saved_reason = hw.CHAT_ONLY, hw.CHAT_ONLY_REASON
+    hw.DEVICE = None
+    calls = []
+    try:
+        def boom():
+            calls.append(1)
+            raise OSError("libcudart.so.12: cannot open shared object file")
+
+        hw._detect_hardware_locked = boom
+        assert hw.ensure_hardware_detected() == hw.DeviceType.CPU
+        assert hw.CHAT_ONLY is True
+        assert hw.CHAT_ONLY_REASON == "detection_failed"
+        # Cached: the second call must not re-enter the failing import.
+        assert hw.ensure_hardware_detected() == hw.DeviceType.CPU
+        assert len(calls) == 1, f"retried the broken import {len(calls)} times"
+    finally:
+        hw._detect_hardware_locked = saved_impl
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = saved_device, saved_chat, saved_reason
+
+
+def test_a_broken_torch_counts_as_no_torch(monkeypatch):
+    """_has_torch() must not let a non-ImportError escape into detection."""
+    import builtins
+
+    from utils.hardware import hardware as hw
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            raise OSError("undefined symbol: cudaGetDeviceCount")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert hw._has_torch() is False
