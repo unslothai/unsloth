@@ -77,6 +77,18 @@ def _only_repo(cache_root: Path, monkeypatch):
     return repos[0]
 
 
+def _empty_cache_info(cls):
+    """An empty ``HFCacheInfo`` across huggingface_hub versions.
+
+    Fields are read off the dataclass rather than named, so a release that adds
+    a required one (``incomplete_files``) or drops one cannot fail this test on
+    a signature it never exercises. Shipping code rebuilds a scan with
+    ``dataclasses.replace``, which carries such fields over untouched.
+    """
+    known = {"size_on_disk": 0, "repos": frozenset(), "warnings": []}
+    return cls(**{f.name: known.get(f.name, frozenset()) for f in dataclasses.fields(cls)})
+
+
 # --- the #7374 symptom -------------------------------------------------------
 
 
@@ -213,7 +225,7 @@ def test_an_unreadable_repo_does_not_abort_the_recovery(tmp_path):
     if os.access(locked / "refs", os.R_OK):
         pytest.skip("filesystem does not enforce directory permissions")
     try:
-        scan = HFCacheInfo(size_on_disk = 0, repos = frozenset(), warnings = [])
+        scan = _empty_cache_info(HFCacheInfo)
         merged = inventory_scan._with_repos_hidden_by_dangling_refs(scan, tmp_path)
         assert sorted(repo.repo_id for repo in merged.repos) == ["Org/Model"]
         assert _ref_names(hidden) == ["main"]
