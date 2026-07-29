@@ -260,23 +260,43 @@ def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
     return int(candidate.get("size_bytes") or 0) > int(existing.get("size_bytes") or 0)
 
 
-def _cache_inventory_fields(
+class _LoadIdentity(NamedTuple):
+    """What a row hands out as its load target, and where that lands on disk.
+
+    *load_snapshot* is the directory the load actually reads. It is not always
+    ``Path(load_id)``: when *load_id* stays the repo id, ``from_pretrained``
+    resolves it through ``refs/main``, so the row describes THAT snapshot and
+    not the newest one the caller happened to pass in.
+    """
+
+    load_id: str
+    active_cache: bool
+    load_snapshot: Optional[Path]
+
+
+def _resolve_load_identity(
     repo_id: str,
-    model_format: ModelFormat,
     *,
     repo_path: Optional[Path] = None,
     snapshot_path: Optional[Path] = None,
     active_hub_cache: Optional[Path] = None,
-    partial: bool = False,
-    requires_variant: bool = False,
     payload_snapshots: Optional[frozenset[str]] = None,
-) -> dict:
-    # *snapshot_path* becomes the load identity whenever the repo id will not
-    # resolve, so callers must pass a snapshot that holds the payload this row
-    # advertises, not merely the newest one. *payload_snapshots* are every
-    # snapshot that does hold it, used to judge where the repo id would land;
-    # None means the caller does not track payloads and *snapshot_path* is
-    # taken on trust.
+) -> _LoadIdentity:
+    """Single answer to "what will this row load, and from which directory".
+
+    Every per-row decision that depends on a snapshot -- the partial flag, the
+    local metadata probe, the load id itself -- has to be taken against the
+    same directory, or the row describes one revision while loading another.
+    Resolving it once here is what keeps them in step; asking the question
+    again at each call site is how they drifted apart.
+
+    *snapshot_path* becomes the load identity whenever the repo id will not
+    resolve, so callers must pass a snapshot that holds the payload this row
+    advertises, not merely the newest one. *payload_snapshots* are every
+    snapshot that does hold it, used to judge where the repo id would land;
+    None means the caller does not track payloads and *snapshot_path* is taken
+    on trust.
+    """
     load_id = repo_id
     active_cache = True
     if repo_path is not None:
@@ -296,6 +316,7 @@ def _cache_inventory_fields(
     # caller falls back to the newest snapshot, and handing that out names a
     # directory the load cannot use; the repo id at least still completes the
     # missing files from the hub.
+    default_snapshot: Optional[Path] = None
     if (
         load_id == repo_id
         and snapshot_path is not None
@@ -313,10 +334,37 @@ def _cache_inventory_fields(
             payload_snapshots and str(default_snapshot) not in payload_snapshots
         ):
             load_id = str(snapshot_path)
+    # Keeping the repo id means refs/main decides, and it may name an older
+    # payload snapshot than *snapshot_path*: that older one is what loads, so
+    # it is what the rest of the row has to be judged against. Every other
+    # branch above already set load_id to str(snapshot_path), and when there is
+    # no snapshot at all there is nothing better to offer than what came in.
+    load_snapshot = (default_snapshot or snapshot_path) if load_id == repo_id else snapshot_path
+    return _LoadIdentity(load_id, active_cache, load_snapshot)
+
+
+def _cache_inventory_fields(
+    repo_id: str,
+    model_format: ModelFormat,
+    *,
+    repo_path: Optional[Path] = None,
+    snapshot_path: Optional[Path] = None,
+    active_hub_cache: Optional[Path] = None,
+    partial: bool = False,
+    requires_variant: bool = False,
+    payload_snapshots: Optional[frozenset[str]] = None,
+) -> dict:
+    identity = _resolve_load_identity(
+        repo_id,
+        repo_path = repo_path,
+        snapshot_path = snapshot_path,
+        active_hub_cache = active_hub_cache,
+        payload_snapshots = payload_snapshots,
+    )
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
-        "load_id": load_id,
-        "active_cache": active_cache,
+        "load_id": identity.load_id,
+        "active_cache": identity.active_cache,
         "model_format": model_format,
         "runtime": _runtime_for_format(model_format),
         "format_variant": None,
@@ -760,10 +808,22 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                local_metadata = _cached_model_local_metadata(
-                    repo_path,
-                    payload.payload_snapshot,
-                )
+                # Resolved once, from the same arguments _cache_inventory_fields
+                # is handed below, so the metadata probe, the partial walk and
+                # the load id cannot disagree about which revision this row is.
+                # The newest payload snapshot is NOT that answer on its own: a
+                # load id left as the repo id resolves through refs/main, which
+                # may name an older payload snapshot, and describing the newer
+                # one there marked a complete row partial and let a newer
+                # revision's model card speak for a revision that never loads.
+                load_snapshot = _resolve_load_identity(
+                    repo_id,
+                    repo_path = repo_path,
+                    snapshot_path = payload.payload_snapshot or snapshot_path,
+                    active_hub_cache = active_hub_cache,
+                    payload_snapshots = payload.payload_snapshots,
+                ).load_snapshot
+                local_metadata = _cached_model_local_metadata(repo_path, load_snapshot)
                 if local_metadata.pop("_hidden_stt", False):
                     skipped_stt += 1
                     continue
@@ -774,7 +834,7 @@ def _scan_cached_models() -> list[dict]:
                     "model",
                     repo_id,
                     repo_path,
-                    snapshot_dir = payload.payload_snapshot,
+                    snapshot_dir = load_snapshot,
                 )
                 row = {
                     "repo_id": repo_id,

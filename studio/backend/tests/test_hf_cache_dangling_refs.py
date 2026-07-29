@@ -712,7 +712,7 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
 
 
 @pytest.mark.parametrize(
-    "older_files, newer_files, pinned",
+    "older_files, newer_files, ref, pinned",
     [
         # ``quant_method`` and the model-card fields were read from the newest
         # snapshot while the load id names the payload one, so the row described
@@ -727,6 +727,7 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
                 "README.md": MODEL_CARD,
             },
             {"config.json": b"{}"},
+            NEWER,
             True,
             id = "payload-snapshot-supplies-the-row",
         ),
@@ -735,19 +736,37 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
         pytest.param(
             {"model.safetensors": b"\0" * 11},
             {"config.json": QUANTIZED_CONFIG, "README.md": MODEL_CARD},
+            NEWER,
             False,
             id = "newest-snapshot-fallback",
+        ),
+        # Both revisions are self-contained payloads and ``refs/main`` resolves
+        # onto the OLDER one, so the load id deliberately stays the repo id --
+        # and ``from_pretrained`` then reads the OLDER directory. Describing the
+        # row from the newest payload snapshot instead let a revision that never
+        # loads name the quant method and the model card; a newer speech
+        # revision could hide the chat model the ref actually resolves to.
+        pytest.param(
+            {
+                "config.json": QUANTIZED_CONFIG,
+                "model.safetensors": b"\0" * 11,
+                "README.md": MODEL_CARD,
+            },
+            {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+            OLDER,
+            False,
+            id = "repo-id-resolves-onto-the-older-payload",
         ),
     ],
 )
 def test_metadata_describes_the_snapshot_the_row_hands_out(
-    older_files, newer_files, pinned, tmp_path, monkeypatch
+    older_files, newer_files, ref, pinned, tmp_path, monkeypatch
 ):
     repo_dir = _two_snapshot_repo(
         tmp_path,
         older_files = older_files,
         newer_files = newer_files,
-        ref = NEWER,
+        ref = ref,
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -787,6 +806,58 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
         f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a " "companion drafter"
     )
     assert load_dir == repo_dir / "snapshots" / OLDER
+
+
+@pytest.mark.parametrize(
+    "older_files, newer_files, has_vision",
+    [
+        # A projector fetched on its own lands in a newer snapshot that holds no
+        # main quant, so the row pins the older one. OR-ing the vision flag over
+        # the whole walk advertised a vision model whose projector the load can
+        # never reach, and the served quant then answered image turns blind.
+        pytest.param(
+            {"Model-Q4_K_M.gguf": b"\0" * 32},
+            {"mmproj-F16.gguf": b"\0" * 64},
+            False,
+            id = "projector-stranded-in-another-snapshot",
+        ),
+        # Negative side: colocated with the pinned quant it is reachable, so the
+        # flag must survive. Dropping vision for a real VLM would be its own bug.
+        pytest.param(
+            {"Model-Q4_K_M.gguf": b"\0" * 32, "mmproj-F16.gguf": b"\0" * 64},
+            {"config.json": b"{}"},
+            True,
+            id = "projector-beside-the-pinned-quant",
+        ),
+    ],
+)
+def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
+    older_files, newer_files, has_vision, tmp_path, monkeypatch
+):
+    """The load path looks for companions no higher than the selected snapshot
+    directory, so a projector in any other snapshot is unreachable from the load
+    identity and must not be advertised."""
+    from hub.utils.gguf import list_gguf_variants_from_hf_cache
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = older_files,
+        newer_files = newer_files,
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+    load_dir = Path(rows[0]["load_id"])
+    assert load_dir == repo_dir / "snapshots" / OLDER
+
+    listed = list_gguf_variants_from_hf_cache("Org/Model", root = tmp_path)
+    assert listed is not None
+    variants, reported_vision = listed
+    # The quant on disk stays offered either way; only the flag may move.
+    assert [v.quant for v in variants] == ["Q4_K_M"]
+    assert reported_vision is has_vision
+    # Behavioural anchor for the flag: the loader's companion search stops at
+    # the pinned snapshot, so vision is real exactly when the projector is here.
+    assert (load_dir / "mmproj-F16.gguf").is_file() is has_vision
 
 
 def test_a_repo_root_drafter_still_leaves_a_real_quant_selectable(tmp_path, monkeypatch):
@@ -858,6 +929,19 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             False,
             id = "unmaterialised-attempt",
         ),
+        # ``refs/main`` resolves onto the OLDER payload snapshot while the newer
+        # one is a self-contained payload too, so the load id stays the repo id
+        # and the load reads the OLDER directory. The signal still belongs to
+        # the newest snapshot, so checking the row against that one charged an
+        # interrupted update to a revision it does not describe and dropped
+        # ``can_chat`` for a model that loads.
+        pytest.param(
+            {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+            OLDER,
+            "Org/Model",
+            False,
+            id = "repo-id-resolves-onto-the-older-payload",
+        ),
     ],
 )
 def test_repo_wide_partial_signals_are_charged_to_the_newest_snapshot(
@@ -877,7 +961,12 @@ def test_repo_wide_partial_signals_are_charged_to_the_newest_snapshot(
 
     rows = _autoload_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / advertised
+    # *advertised* is a commit whose snapshot the row pins, or the repo id when
+    # the row keeps it and lets ``refs/main`` resolve the directory.
+    expected_load_id = (
+        advertised if advertised == "Org/Model" else str(repo_dir / "snapshots" / advertised)
+    )
+    assert rows[0]["load_id"] == expected_load_id
     assert rows[0].get("partial") is partial
     assert rows[0]["capabilities"].get("can_chat") is not partial
 

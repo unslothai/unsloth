@@ -335,21 +335,22 @@ def list_gguf_variants_from_hf_cache(
     # interrupted one and hide the finished quant behind an older revision's
     # larger one, which auto-load may not have the memory for.
     #
-    # The vision flag is OR-ed in because a skipped newer snapshot can be a
-    # projector fetched on its own. When no snapshot has a whole quant the first
-    # one with anything wins, as it did before.
-    any_vision = False
+    # The vision flag travels with the snapshot that won and is never OR-ed
+    # across the walk. A projector fetched on its own into some other snapshot
+    # is not reachable from the one the row pins -- the loader looks for
+    # companions no higher than the selected snapshot dir -- so carrying that
+    # flag over advertised a vision model that then loads blind. When no
+    # snapshot has a whole quant the first one with anything wins, as before.
     fallback: Optional[tuple[list[GgufVariantInfo], bool]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
-        any_vision = any_vision or has_vision
         if variants:
             complete = complete_snapshot_variants(str(snapshot))
             # A quant with no label cannot be judged, so it is kept rather than
             # dropped; with nothing complete the list stays as it was.
             usable = [v for v in variants if not v.quant or v.quant in complete]
             if usable:
-                return usable, any_vision
+                return usable, has_vision
         if fallback is None and (variants or has_vision):
             fallback = (variants, has_vision)
     return fallback
