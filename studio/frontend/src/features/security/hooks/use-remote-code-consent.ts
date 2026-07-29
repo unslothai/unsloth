@@ -53,21 +53,21 @@ export async function confirmRemoteCodeIfNeeded({
     };
   }
 
-  const discardScanDownloads = () => {
+  const discardScanDownloads = async (): Promise<void> => {
     const toPurge =
       scan.scanCreatedRepos.length > 0
         ? scan.scanCreatedRepos
         : scan.createdByScan
           ? [scan.modelName]
           : [];
-    for (const repo of toPurge) void discardRemoteCodeDownload(repo);
+    await Promise.all(toPurge.map((repo) => discardRemoteCodeDownload(repo)));
   };
 
   // Cancellation can race the scan request. Do not create a new owned dialog
   // after the cancelling run already tried to dismiss its pending decisions,
   // but still purge any unapproved repositories the scan downloaded.
   if (signal?.aborted) {
-    discardScanDownloads();
+    await discardScanDownloads();
     return false;
   }
 
@@ -89,7 +89,7 @@ export async function confirmRemoteCodeIfNeeded({
   if (!confirmed) {
     // Declined: purge every repo our scan first downloaded (a LoRA scan pulls adapter +
     // base) so untrusted code is not left on disk. Fall back to the primary flag for an older backend.
-    discardScanDownloads();
+    await discardScanDownloads();
     return false;
   }
   onApprove(scan.fingerprint);

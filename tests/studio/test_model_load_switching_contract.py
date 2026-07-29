@@ -246,9 +246,10 @@ def test_abort_signal_reaches_validation_and_scan_cleanup():
         ").isDiffusion", 1
     )[0]
     assert "{ signal: abortCtrl.signal }" in staged_metadata
-    assert "const discardScanDownloads = () =>" in remote_code
+    assert "const discardScanDownloads = async (): Promise<void> =>" in remote_code
     aborted = remote_code.split("if (signal?.aborted)", 1)[1].split("// No custom code", 1)[0]
-    assert "discardScanDownloads();" in aborted
+    assert "await discardScanDownloads();" in aborted
+    assert "await Promise.all(toPurge.map" in remote_code
 
 
 def test_cancellation_targets_an_inflight_rollback_load():
