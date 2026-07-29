@@ -664,9 +664,7 @@ def test_partial_ignores_an_incomplete_blob_left_by_a_newer_revision(tmp_path, m
     assert rows[0]["capabilities"].get("can_chat") is True
 
 
-def test_an_incomplete_blob_against_the_advertised_snapshot_is_still_partial(
-    tmp_path, monkeypatch
-):
+def test_an_incomplete_blob_against_the_advertised_snapshot_is_still_partial(tmp_path, monkeypatch):
     """Negative side of the same rule: when the row advertises the newest
     snapshot, the ``.incomplete`` blob does belong to it and must still count."""
     repo_dir = _two_snapshot_repo(
