@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Barrel import (lint rule); the model-picker cycle is fine because the call
+// happens at runtime, not module eval.
+import { resolveInitialConfig } from "@/features/model-picker";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -131,6 +134,9 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
+  /** The caller verified the status is the model this tab just picked, so the
+   * slot control it holds belongs to that model and must survive. */
+  readoptingSameModel?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -201,6 +207,22 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
+  // A model/variant change underneath this tab, as opposed to re-adopting the
+  // model the tab just picked, where hydratingExistingModel fires on the stale
+  // checkpoint. The echo cannot stand in: a new model can report the old count.
+  const slotsModelChanged =
+    hydratingExistingModel && !options.readoptingSameModel;
+  // This model's remembered override, read only on a fresh store or a model
+  // change, so a steady poll cannot re-pin a control the user just blanked.
+  const slotsUnseeded =
+    prevState.loadedNParallel === null && prevState.nParallel === null;
+  const remembered =
+    status.is_gguf && (slotsUnseeded || slotsModelChanged)
+      ? resolveInitialConfig(checkpointId, status.gguf_variant ?? null)
+      : null;
+  const rememberedNParallel = remembered?.remembered
+    ? (remembered.config.nParallel ?? null)
+    : null;
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
@@ -321,6 +343,35 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
+      }),
+    // Baseline only, never the control: the echo is the RESOLVED count and would
+    // pin a blank "server default" control. The rollback re-sends the baseline,
+    // so without this a rollback after a tab reload loses the override.
+    ...(seedLoadParams &&
+      status.requested_parallel_slots != null &&
+      (prevState.loadedNParallel === null || hydratingExistingModel) && {
+        loadedNParallel: status.requested_parallel_slots,
+      }),
+    // A slotless model must not keep the previous GGUF's baseline: the rollback
+    // re-sends it. /status omits the echo for non-GGUF and sends an explicit
+    // null for diffusion, so an absent field on a GGUF is an older backend.
+    ...(seedLoadParams &&
+      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+        loadedNParallel: null,
+      }),
+    // Per-model: a change underneath this tab blanks the control like
+    // performLoad's cross-model reset, or the old count follows onto the new
+    // model. The baseline above still carries the rollback.
+    ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
+    // AFTER that clear, which both a first hydration and a model change trip:
+    // either would leave the control blank while the model runs on a remembered
+    // override, so the next Apply would save the blank over it. Adopted only
+    // when the running count matches, proving it is this model's own.
+    ...(seedLoadParams &&
+      (slotsUnseeded || slotsModelChanged) &&
+      rememberedNParallel != null &&
+      rememberedNParallel === status.requested_parallel_slots && {
+        nParallel: rememberedNParallel,
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last

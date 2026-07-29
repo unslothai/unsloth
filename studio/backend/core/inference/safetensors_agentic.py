@@ -35,9 +35,11 @@ from core.inference.tool_call_parser import (
     _strip_mistral_reasoning,
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS,
+    NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
+    is_reprompt_repeat,
     is_short_intent_without_action,
     parse_tool_calls_from_text,
     reprompt_to_act_message,
@@ -59,6 +61,7 @@ from core.tool_healing import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
+    awaiting_approval_status,
     coerce_tool_arguments,
     status_for_tool,
     tool_event_provenance,
@@ -563,6 +566,8 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
+    last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
     # re-prompt (which would raise the confirmation gate again).
     tool_denied = False
@@ -1013,9 +1018,11 @@ def run_safetensors_tool_loop(
                     and not rag_autoinjected
                     and not tool_denied
                     and not any(record.executed for record in tool_controller.history)
+                    and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
                 ):
                     reprompt_count += 1
+                    last_reprompt_text = intent_text
                     logger.info(
                         "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
@@ -1031,9 +1038,10 @@ def run_safetensors_tool_loop(
                             "content": reprompt_to_act_message(tool_hint),
                         }
                     )
-                    # Empty status clears the badge and resets the route's
-                    # per-turn text cursor before the re-prompted turn streams.
+                    # Blank first: it clears the badge and resets the route's per-turn
+                    # text cursor. The badge then shows the pause is a re-prompt, not a stall.
                     yield {"type": "status", "text": ""}
+                    yield {"type": "status", "text": NUDGE_TOOL_CALLS_STATUS}
                     continue
 
                 # Final answer. If a literal tool marker in prose was buffered but
@@ -1209,18 +1217,30 @@ def run_safetensors_tool_loop(
             start_event["awaiting_confirmation"] = needs_confirm
 
             try:
-                yield {"type": "status", "text": decision.status_text}
+                # A gated call has not started: say waiting, not "Running" (GGUF parity).
+                yield {
+                    "type": "status",
+                    "text": (
+                        awaiting_approval_status(decision.tool_name)
+                        if needs_confirm
+                        else decision.status_text
+                    ),
+                }
                 yield start_event
 
-                if (
-                    decision_slot is not None
-                    and wait_tool_decision(
+                _decision = (
+                    wait_tool_decision(
                         decision_slot,
                         approval_id,
                         cancel_event = cancel_event,
                     )
-                    == "deny"
-                ):
+                    if decision_slot is not None
+                    else None
+                )
+                if _decision is not None and _decision != "deny":
+                    # Approved: now it really is running.
+                    yield {"type": "status", "text": decision.status_text}
+                if _decision == "deny":
                     decision_slot = None
                     if provisional_match:
                         provisional_resolved = True
