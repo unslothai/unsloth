@@ -92,6 +92,7 @@ from utils.subprocess_compat import (
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
+    NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
@@ -12419,7 +12420,10 @@ class LlamaCppBackend:
                             _it_r = _iter_timings or {}
                             _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_r.get("predicted_n", 0)
+                            # Blank first (the route resets its text cursor only on an
+                            # empty status), then the badge so the retry is not a hang.
                             yield {"type": "status", "text": ""}
+                            yield {"type": "status", "text": _NUDGE_TOOL_CALLS_STATUS}
                             continue
 
                         if _forced_tool_call_pending:
