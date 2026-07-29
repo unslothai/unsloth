@@ -379,7 +379,6 @@ def _replayed_assistant_content(content):
     structural and stays, exactly as on the API replay path (#7334).
     """
     from core.inference.chat_template_helpers import neutralize_message_content_for_role
-
     return neutralize_message_content_for_role("assistant", content)
 
 
