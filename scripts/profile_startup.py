@@ -147,16 +147,20 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
         return
     if os.name == "nt":
         try:
-            subprocess.run(
+            killed = subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 capture_output = True,
                 timeout = 30,
                 check = False,
             )
-            return
+            if killed.returncode == 0:
+                return
         except Exception:
             # taskkill missing or timed out; fall through so the stub still dies.
             pass
+        # Nonzero taskkill (access denied, tree partly gone) does not raise under
+        # check=False, so returning here would skip terminate() as well and leave
+        # even the stub running until the wait() timeout.
     proc.terminate()
 
 
@@ -306,6 +310,10 @@ def main(argv: list[str]) -> int:
     # the value instead, since --repeats comes straight from a dispatch input.
     if a.repeats < 1:
         ap.error("--repeats must be at least 1")
+    # Same reason: --import-only never launches anything, so pairing it with a
+    # budget asks for a gate that can only pass.
+    if a.import_only and a.max_healthz_seconds is not None:
+        ap.error("--max-healthz-seconds cannot be combined with --import-only")
 
     report: dict = {
         "platform": platform.system().lower(),
@@ -376,7 +384,15 @@ def main(argv: list[str]) -> int:
             )
             return 1
         if med is None:
-            print("::warning::no healthz measurement; not enforcing the budget")
+            # No measurement at all (the CLI was never found, so the launch phase
+            # was skipped). Warning and exiting 0 made an explicitly requested
+            # budget pass without a single health request, so fail closed.
+            print(
+                "::error::startup regression: no healthz measurement, so the "
+                f"{a.max_healthz_seconds}s budget was never checked "
+                f"({launch.get('skipped') or 'launch phase produced no runs'})"
+            )
+            return 1
         elif med > a.max_healthz_seconds:
             print(
                 f"::error::startup regression: {med}s median to a healthy port "
