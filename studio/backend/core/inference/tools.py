@@ -9812,39 +9812,62 @@ def _check_signal_escape_patterns(code: str):
                 )
             )
 
+        function_aliases = {name: {name} for name in definitions}
+        changed = True
+        while changed:
+            changed = False
+            for candidate in ast.walk(tree):
+                if not isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                    continue
+                targets = (
+                    candidate.targets if isinstance(candidate, ast.Assign) else (candidate.target,)
+                )
+                if not (
+                    isinstance(candidate.value, ast.Name) and candidate.value.id in function_aliases
+                ):
+                    continue
+                originals = function_aliases[candidate.value.id]
+                for target in targets:
+                    for name in assigned_names(target):
+                        previous = function_aliases.setdefault(name, set())
+                        if not originals.issubset(previous):
+                            previous.update(originals)
+                            changed = True
+
         supplied: dict[str, set[str]] = {}
         for candidate in ast.walk(tree):
             if not (
                 isinstance(candidate, ast.Call)
                 and isinstance(candidate.func, ast.Name)
-                and candidate.func.id in definitions
+                and candidate.func.id in function_aliases
             ):
                 continue
-            for positional, keyword_only, vararg, kwarg in definitions[candidate.func.id]:
-                for index, argument in enumerate(candidate.args):
-                    if not _is_dynamic_import_callable(
-                        argument,
-                        import_aliases,
-                        namespace_aliases,
-                        import_module_aliases,
-                    ):
-                        continue
-                    if index < len(positional):
-                        supplied.setdefault(candidate.func.id, set()).add(positional[index])
-                    elif vararg:
-                        supplied.setdefault(candidate.func.id, set()).add(vararg)
-                for keyword in candidate.keywords:
-                    if not _is_dynamic_import_callable(
-                        keyword.value,
-                        import_aliases,
-                        namespace_aliases,
-                        import_module_aliases,
-                    ):
-                        continue
-                    if keyword.arg in {*positional, *keyword_only}:
-                        supplied.setdefault(candidate.func.id, set()).add(keyword.arg)
-                    elif keyword.arg is None and kwarg:
-                        supplied.setdefault(candidate.func.id, set()).add(kwarg)
+            for original in function_aliases[candidate.func.id]:
+                for positional, keyword_only, vararg, kwarg in definitions[original]:
+                    for index, argument in enumerate(candidate.args):
+                        if not _is_dynamic_import_callable(
+                            argument,
+                            import_aliases,
+                            namespace_aliases,
+                            import_module_aliases,
+                        ):
+                            continue
+                        if index < len(positional):
+                            supplied.setdefault(original, set()).add(positional[index])
+                        elif vararg:
+                            supplied.setdefault(original, set()).add(vararg)
+                    for keyword in candidate.keywords:
+                        if not _is_dynamic_import_callable(
+                            keyword.value,
+                            import_aliases,
+                            namespace_aliases,
+                            import_module_aliases,
+                        ):
+                            continue
+                        if keyword.arg in {*positional, *keyword_only}:
+                            supplied.setdefault(original, set()).add(keyword.arg)
+                        elif keyword.arg is None and kwarg:
+                            supplied.setdefault(original, set()).add(kwarg)
         return supplied
 
     import_parameters_by_function = _function_import_parameters()
@@ -9877,6 +9900,7 @@ def _check_signal_escape_patterns(code: str):
             self.pyyaml_entry_point_constructor_aliases: set[str] = set()
             self.pyyaml_entry_point_module_aliases: set[str] = set()
             self.pyyaml_entry_point_loader_aliases: set[str] = set()
+            self.pyyaml_callable_aliases: set[str] = set()
             self.function_parameter_aliases: set[str] = set()
             # Direct yaml.load(..., SafeLoader) calls are allowed. References to
             # either callable in any other position fail closed because Python
@@ -9963,6 +9987,23 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_unsafe_loader_aliases.update(_PYYAML_UNSAFE_LOADERS)
                         self.yaml_safe_loader_aliases.update(_PYYAML_SAFE_LOADERS)
                         self.yaml_module_mutator_aliases.update(_PYYAML_SAFE_LOADER_MUTATORS)
+                        self.pyyaml_callable_aliases.update(
+                            {
+                                "compose",
+                                "compose_all",
+                                "dump",
+                                "dump_all",
+                                "emit",
+                                "parse",
+                                "safe_dump",
+                                "safe_dump_all",
+                                "safe_load",
+                                "safe_load_all",
+                                "scan",
+                                "serialize",
+                                "serialize_all",
+                            }
+                        )
                     elif alias.name in _PYYAML_SUBMODULE_NAMES:
                         self.yaml_aliases.add(bound)
                         self.dynamic_namespace_aliases.add(bound)
@@ -9978,6 +10019,11 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_module_mutator_aliases.add(bound)
                     elif alias.name == "YAMLObject":
                         self.yaml_object_aliases.add(bound)
+                    else:
+                        # Unknown exports may still be functions defined in the
+                        # yaml package. Preserve that provenance so their
+                        # ``__globals__`` mapping cannot expose unsafe loaders.
+                        self.pyyaml_callable_aliases.add(bound)
             elif node.module in {"importlib", "builtins"}:
                 for alias in node.names:
                     if alias.name in {"import_module", "__import__"}:
@@ -10041,6 +10087,21 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Assign(self, node):
             self.visit(node.value)
+            if _pyyaml_loader_is_safe(
+                node.value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ) and any(
+                isinstance(target, (ast.Attribute, ast.Subscript))
+                for assignment_target in node.targets
+                for target in ast.walk(assignment_target)
+            ):
+                self._record_unsafe_pyyaml(
+                    node.value,
+                    "Unsafe PyYAML deserialization loader state escapes through object storage",
+                )
             if self._container_holds_pyyaml_loader_state(node.value):
                 self._record_unsafe_pyyaml(
                     node.value,
@@ -10080,6 +10141,20 @@ def _check_signal_escape_patterns(code: str):
                 self.visit(node.annotation)
             if node.value is not None:
                 self.visit(node.value)
+                if _pyyaml_loader_is_safe(
+                    node.value,
+                    self.yaml_aliases,
+                    self.yaml_safe_loader_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                ) and any(
+                    isinstance(target, (ast.Attribute, ast.Subscript))
+                    for target in ast.walk(node.target)
+                ):
+                    self._record_unsafe_pyyaml(
+                        node.value,
+                        "Unsafe PyYAML deserialization loader state escapes through object storage",
+                    )
                 if self._container_holds_pyyaml_loader_state(node.value):
                     self._record_unsafe_pyyaml(
                         node.value,
@@ -10179,6 +10254,17 @@ def _check_signal_escape_patterns(code: str):
             return (
                 is_entry_point and self._entry_point_value_can_resolve_pyyaml(entry_point_value)
             ) or (isinstance(base, ast.Name) and base.id in self.pyyaml_entry_point_loader_aliases)
+
+        def _is_pyyaml_callable_reference(self, node):
+            if isinstance(node, ast.Name):
+                return node.id in self.pyyaml_callable_aliases
+            path = _pyyaml_attribute_path(
+                node,
+                self.yaml_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            )
+            return bool(path) and not all(part in _PYYAML_SUBMODULE_NAMES for part in path)
 
         def _update_pyyaml_bindings(self, targets, value):
             if (
@@ -10289,6 +10375,7 @@ def _check_signal_escape_patterns(code: str):
             entry_point_loader_alias = (
                 is_entry_point and self._entry_point_value_can_resolve_pyyaml(entry_point_value)
             )
+            pyyaml_callable_alias = value is not None and self._is_pyyaml_callable_reference(value)
             yaml_object_alias = False
             if value is not None:
                 yaml_object_path = _pyyaml_attribute_path(
@@ -10338,6 +10425,7 @@ def _check_signal_escape_patterns(code: str):
             self.pyyaml_entry_point_constructor_aliases.difference_update(names)
             self.pyyaml_entry_point_module_aliases.difference_update(names)
             self.pyyaml_entry_point_loader_aliases.difference_update(names)
+            self.pyyaml_callable_aliases.difference_update(names)
 
             if safe_loader:
                 self.yaml_safe_loader_aliases.update(names)
@@ -10378,6 +10466,8 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_entry_point_module_aliases.update(names)
             if entry_point_loader_alias:
                 self.pyyaml_entry_point_loader_aliases.update(names)
+            if pyyaml_callable_alias:
+                self.pyyaml_callable_aliases.update(names)
 
         def _pyyaml_scope_state(self):
             return (
@@ -10398,6 +10488,7 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_entry_point_constructor_aliases.copy(),
                 self.pyyaml_entry_point_module_aliases.copy(),
                 self.pyyaml_entry_point_loader_aliases.copy(),
+                self.pyyaml_callable_aliases.copy(),
             )
 
         def _restore_pyyaml_scope_state(self, state):
@@ -10419,6 +10510,7 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_entry_point_constructor_aliases,
                 self.pyyaml_entry_point_module_aliases,
                 self.pyyaml_entry_point_loader_aliases,
+                self.pyyaml_callable_aliases,
             ) = state
 
         def _merge_pyyaml_scope_states(self, *states):
@@ -10443,6 +10535,7 @@ def _check_signal_escape_patterns(code: str):
             )
             self.pyyaml_entry_point_module_aliases = set().union(*(state[15] for state in states))
             self.pyyaml_entry_point_loader_aliases = set().union(*(state[16] for state in states))
+            self.pyyaml_callable_aliases = set().union(*(state[17] for state in states))
 
         def visit_If(self, node):
             self.visit(node.test)
@@ -10688,6 +10781,7 @@ def _check_signal_escape_patterns(code: str):
                         (self.pyyaml_entry_point_constructor_aliases, 14),
                         (self.pyyaml_entry_point_module_aliases, 15),
                         (self.pyyaml_entry_point_loader_aliases, 16),
+                        (self.pyyaml_callable_aliases, 17),
                     )
                     for outer_aliases, state_index in dangerous_scopes:
                         outer_aliases.update(
@@ -10805,6 +10899,15 @@ def _check_signal_escape_patterns(code: str):
                 )
                 for base in node.bases
             )
+            safe_loader_behavior_override = any(
+                not isinstance(statement, ast.Pass)
+                and not (
+                    isinstance(statement, ast.Expr)
+                    and isinstance(statement.value, ast.Constant)
+                    and isinstance(statement.value.value, str)
+                )
+                for statement in node.body
+            )
             for decorator in node.decorator_list:
                 self.visit(decorator)
             for base in node.bases:
@@ -10822,7 +10925,11 @@ def _check_signal_escape_patterns(code: str):
             finally:
                 self._restore_pyyaml_scope_state(state)
             self._update_pyyaml_bindings([ast.Name(id = node.name, ctx = ast.Store())], None)
-            if safe_loader_subclass:
+            if yaml_object_subclass:
+                self.yaml_object_aliases.add(node.name)
+            if safe_loader_subclass and safe_loader_behavior_override:
+                self.yaml_unsafe_loader_aliases.add(node.name)
+            elif safe_loader_subclass:
                 self.yaml_safe_loader_aliases.add(node.name)
             if body_state is None:
                 return
@@ -10831,7 +10938,7 @@ def _check_signal_escape_patterns(code: str):
             dangerous_class_bindings = set().union(
                 *(
                     body_state[index].intersection(class_bound_names)
-                    for index in (0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16)
+                    for index in (0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17)
                 )
             )
             if dangerous_class_bindings:
@@ -11019,6 +11126,11 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_Attribute(self, node):
+            if node.attr == "__globals__" and self._is_pyyaml_callable_reference(node.value):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization callable globals escape",
+                )
             if (
                 node.attr in (_PYYAML_LOAD_NAMES | _PYYAML_UNSAFE_LOAD_NAMES)
                 and isinstance(node.value, ast.Call)
@@ -11224,12 +11336,15 @@ def _check_signal_escape_patterns(code: str):
                 )
             if any(
                 id(argument) not in inspected_loader_argument_ids
-                and _pyyaml_loader_is_safe(
-                    argument,
-                    self.yaml_aliases,
-                    self.yaml_safe_loader_aliases,
-                    self.dynamic_import_aliases,
-                    self.dynamic_namespace_aliases,
+                and (
+                    _pyyaml_loader_is_safe(
+                        argument,
+                        self.yaml_aliases,
+                        self.yaml_safe_loader_aliases,
+                        self.dynamic_import_aliases,
+                        self.dynamic_namespace_aliases,
+                    )
+                    or self._container_holds_pyyaml_loader_state(argument)
                 )
                 for argument in (
                     *node.args,

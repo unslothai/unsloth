@@ -900,6 +900,66 @@ class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
         [
+            (
+                "import yaml\n"
+                "loader = yaml.safe_load\n"
+                "loader.__globals__['unsafe_load'](payload)"
+            ),
+            (
+                "import yaml\n"
+                "class Base(yaml.YAMLObject):\n"
+                "    pass\n"
+                "class Evil(Base):\n"
+                "    yaml_tag = '!run'\n"
+                "    yaml_loader = yaml.SafeLoader\n"
+                "    @classmethod\n"
+                "    def from_yaml(cls, loader, node):\n"
+                "        return run()\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "type('Evil', (yaml.YAMLObject,), {\n"
+                "    'yaml_tag': '!run',\n"
+                "    'yaml_loader': yaml.SafeLoader,\n"
+                "    'from_yaml': classmethod(lambda cls, loader, node: run()),\n"
+                "})\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "class Evil(yaml.SafeLoader):\n"
+                "    def construct_mapping(self, node, deep=False):\n"
+                "        return run()\n"
+                "yaml.load('a: 1', Loader=Evil)"
+            ),
+            (
+                "import yaml\n"
+                "box.loader = yaml.SafeLoader\n"
+                "box.loader.add_constructor('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "box['loader'] = yaml.SafeLoader\n"
+                "box['loader'].add_constructor('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "def parse(importer):\n"
+                "    return importer('yaml').unsafe_load(payload)\n"
+                "runner = parse\n"
+                "runner(__import__)"
+            ),
+        ],
+    )
+    def test_callable_class_factory_and_storage_pyyaml_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+        assert _python_is_potentially_unsafe(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
             "from yaml import loader as yl\nyl.Loader('a: 1')",
             ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
             "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",
