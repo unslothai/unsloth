@@ -9268,6 +9268,12 @@ async def openai_chat_completions(
             tools_to_use = await _select_request_tools(
                 payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
             )
+            # An enabled MCP server's inputSchema is third-party too, and it is
+            # appended after payload.tools was checked, so re-run the check over
+            # the selection: its byte-exact parts reach the template raw (#7334).
+            _mcp_schema_error = _schema_control_markup_error(tools_to_use)
+            if _mcp_schema_error is not None:
+                raise _reject(400, _mcp_schema_error)
             # Selected tools (client + MCP schemas) render into the chat template
             # and the nudge as prompt text, as on the non-loop path (#7066).
             from core.inference.chat_template_helpers import neutralize_tools_control_markup
@@ -10668,6 +10674,11 @@ async def openai_chat_completions(
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
+        # Same MCP schema check as the GGUF branch: appended after payload.tools
+        # was validated, and its byte-exact parts render raw (#7334).
+        _sf_mcp_schema_error = _schema_control_markup_error(_sf_tools_to_use)
+        if _sf_mcp_schema_error is not None:
+            raise _reject(400, _sf_mcp_schema_error)
         # Selected tools (client + MCP schemas) reach local template rendering
         # and the nudge, as on the non-loop path (#7066).
         from core.inference.chat_template_helpers import neutralize_tools_control_markup
@@ -11096,11 +11107,10 @@ async def openai_chat_completions(
         and _sf_features.get("supports_tools", False)
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
-    _sf_heal = (
-        heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)
-        if _sf_client_tools
-        else None
-    )
+    # Tool list backing the healer. Finalized below to the schemas actually
+    # RENDERED, which is what the model echoes back in text-form markup.
+    _sf_heal_tools = payload.tools
+    _sf_heal = None
     if _sf_client_tools:
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
@@ -11137,6 +11147,17 @@ async def openai_chat_completions(
             # carrying </think> would bypass the #7066 message protection above.
             from core.inference.chat_template_helpers import neutralize_tools_control_markup
             gen_kwargs["tools"] = neutralize_tools_control_markup(gen_kwargs["tools"])
+        # Build the promotion allowlist and the argument-coercion schemas from the
+        # advertised names, not the raw request ones: neutralization rewrites
+        # function.name, so a model echoing the RENDERED name would otherwise match
+        # nothing and be left as prose. The forced choice is realigned the same way
+        # so it still narrows the allowlist to its tool (#7334).
+        _sf_heal_tools = gen_kwargs.get("tools") or payload.tools
+        _sf_heal = heal_gate(
+            payload.auto_heal_tool_calls,
+            _sf_heal_tools,
+            _align_forced_tool_choice(payload.tool_choice, _sf_heal_tools),
+        )
 
     # The potential tool context above is needed before server/client routing is
     # known. This standard path now has the exact schemas that will be rendered,
@@ -11192,7 +11213,7 @@ async def openai_chat_completions(
 
                 # Client-tool passthrough: heal text-form calls on the fly
                 # (None => relay verbatim).
-                healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
+                healer = StreamToolCallHealer(_sf_heal, _sf_heal_tools) if _sf_heal else None
                 heal_state = {"idx": 0}
 
                 prev_text = ""
@@ -11416,13 +11437,13 @@ async def openai_chat_completions(
                 _msg["reasoning_content"] = _reasoning_text
             _finish = "stop"
             if _sf_heal:
-                if heal_openai_message(_msg, _sf_heal, payload.tools):
+                if heal_openai_message(_msg, _sf_heal, _sf_heal_tools):
                     _finish = "tool_calls"
                 elif nudge_enabled(payload.nudge_tool_calls):
                     _data = {
                         "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
                     }
-                    if nudge_should_retry(_data, _sf_heal, payload.tools):
+                    if nudge_should_retry(_data, _sf_heal, _sf_heal_tools):
                         # A failed retry must not 500 the request; keep the first
                         # response (GGUF nudge parity). The retry's generate()
                         # overwrites stats_holder, so save the first attempt's stats
@@ -11444,7 +11465,7 @@ async def openai_chat_completions(
                             retry_msg = {"role": "assistant", "content": _retry_visible}
                             if _retry_reasoning:
                                 retry_msg["reasoning_content"] = _retry_reasoning
-                            if heal_openai_message(retry_msg, _sf_heal, payload.tools):
+                            if heal_openai_message(retry_msg, _sf_heal, _sf_heal_tools):
                                 _visible_text, _msg, _finish = (
                                     _retry_visible,
                                     retry_msg,
@@ -16169,31 +16190,35 @@ def _llama_compatible_tools(openai_tools):
     return compatible_tools
 
 
-def _reject_schema_control_markup(tools) -> None:
-    """400 on a tool schema whose byte-exact parts carry a turn sentinel (#7066).
+def _schema_control_markup_error(tools):
+    """Error body for a tool schema whose byte-exact parts carry a turn sentinel.
 
     Property keys, ``required`` and the grammar-constrained values reach the
     template unchanged by design -- rewriting one would name a property the
     schema no longer declares, or make the decoder emit a value nothing maps
     back. gemma-4.jinja splices them straight into its ``<|tool>`` block, so a
     raw ``<tool|>`` there ends the declaration and the rest forges a model turn.
-    Refuse before any load, like the other tool validation on this path.
+    ``None`` when the schemas are safe (#7066).
     """
     from core.inference.chat_template_helpers import schema_control_markup_conflict
 
     offender = schema_control_markup_conflict(tools)
     if offender is None:
-        return
-    raise HTTPException(
-        status_code = 400,
-        detail = openai_error_body(
-            "Invalid 'tools': a schema name or constrained value contains a reserved "
-            f"chat-template marker and cannot be forwarded safely: {offender[:120]!r}.",
-            status = 400,
-            code = "invalid_value",
-            param = "tools",
-        ),
+        return None
+    return openai_error_body(
+        "Invalid 'tools': a schema name or constrained value contains a reserved "
+        f"chat-template marker and cannot be forwarded safely: {offender[:120]!r}.",
+        status = 400,
+        code = "invalid_value",
+        param = "tools",
     )
+
+
+def _reject_schema_control_markup(tools) -> None:
+    """400 before any load, like the other tool validation on this path (#7066)."""
+    detail = _schema_control_markup_error(tools)
+    if detail is not None:
+        raise HTTPException(status_code = 400, detail = detail)
 
 
 def _align_forced_tool_choice(tool_choice, tools):

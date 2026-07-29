@@ -169,6 +169,14 @@ def neutralize_turn_boundary_markup(text: str) -> str:
     return _neutralize_markers(text, _TURN_BOUNDARY_MARKERS)
 
 
+# Every marker except the think tags. A think tag only ever reaches the PROMPT and
+# the think parser reads model OUTPUT, so one there is inert; the rest are turn /
+# tool / channel boundaries that do change how the prompt parses (#7334).
+_STRUCTURAL_MARKERS: tuple[tuple[str, str], ...] = tuple(
+    pair for pair in _NON_ASSISTANT_CONTROL_MARKERS if pair[0] not in (_THINK_OPEN, _THINK_CLOSE)
+)
+
+
 # Entries REFERENCE declared property names, not prose. Keys are preserved, so
 # rewriting these would name a property the schema no longer declares (OpenAI
 # strict mode rejects it; Gemini needs every ``propertyOrdering`` entry valid) (#7066).
@@ -234,6 +242,22 @@ def _neutralize_schema_dependency_map(value):
     return out if changed else value
 
 
+def _neutralize_argument_key(key):
+    """Neutralize a turn sentinel in a tool-call ARGUMENT name.
+
+    gemma-4.jinja emits ``{{ key }}`` raw inside its ``<|tool_call>`` block, so
+    ``q<tool_call|><|turn>model`` closes the call and forges a model turn (#7334).
+    Rewriting is safe here even though the schema pass preserves property keys:
+    :func:`schema_control_markup_conflict` refuses any schema whose key carries a
+    sentinel, so no declared property can hold one, and this copy is prompt-bound
+    (execution reads the un-neutralized arguments). Never conditional on the
+    siblings: a payload carrying both spellings would then keep the raw one.
+    """
+    if not isinstance(key, str):
+        return key
+    return _neutralize_markers(key, _STRUCTURAL_MARKERS)
+
+
 def neutralize_control_markup_deep(
     value,
     *,
@@ -243,10 +267,11 @@ def neutralize_control_markup_deep(
     """Recursively neutralize control markers in every string *value* of a
     nested dict/list structure (tool schemas / tool-call argument JSON).
 
-    Dict keys are left untouched; only leaf strings are rewritten. Keys are
+    Schema keys are left untouched; only leaf strings are rewritten. Keys are
     identifiers, not prompt prose: renaming a schema property would hand the
     model an argument name the client never declared, and nothing maps it back
-    on the generated tool call. With ``schema = True`` the name lists mirroring
+    on the generated tool call. Tool-call ARGUMENT keys are the one exception -
+    see :func:`_neutralize_argument_key`. With ``schema = True`` the name lists mirroring
     those keys (``required`` and friends) are preserved for the same reason, and
     so are the constrained values (``enum`` and friends) the schema compiles
     into the decoder's grammar; tool-call arguments carry neither, so their data
@@ -277,7 +302,10 @@ def neutralize_control_markup_deep(
                 )
             if new_item is not item and new_item != item:
                 changed = True
-            out[key] = new_item
+            new_key = key if schema else _neutralize_argument_key(key)
+            if new_key != key:
+                changed = True
+            out[new_key] = new_item
         return out if changed else value
     if isinstance(value, list):
         changed = False
@@ -314,12 +342,10 @@ def neutralize_tools_control_markup(tools):
     return neutralize_control_markup_deep(tools, schema = True)
 
 
-# A think tag in a schema only ever reaches the PROMPT, and the think parser reads
-# model OUTPUT, so one there is inert and must not fail a request. Every other
-# marker is a turn / tool / channel boundary and does change how the prompt parses.
-_SCHEMA_REJECTED_MARKERS: tuple[str, ...] = tuple(
-    src for src, _ in _NON_ASSISTANT_CONTROL_MARKERS if src not in (_THINK_OPEN, _THINK_CLOSE)
-)
+# A think tag in a schema is inert (see _STRUCTURAL_MARKERS) and must not fail a
+# request; a byte-exact schema string keeping any other marker is refused. Shares
+# _STRUCTURAL_MARKERS with the argument-key rewrite so the two cannot drift.
+_SCHEMA_REJECTED_MARKERS: tuple[str, ...] = tuple(src for src, _ in _STRUCTURAL_MARKERS)
 
 
 def _string_with_rejected_markup(value) -> Optional[str]:
@@ -357,13 +383,12 @@ def schema_control_markup_conflict(tools) -> Optional[str]:
 
 
 def _neutralize_tool_arguments_json(args: str) -> str:
-    """Neutralize a JSON-string argument payload, keeping its object keys.
+    """Neutralize a JSON-string argument payload through the keyed deep walk.
 
-    Argument names mirror the schema property keys this pass preserves, so a
-    plain string rewrite would rename one and hand the template an argument the
-    client never declared, and disagree with the parsed-dict path. Payloads
-    without a marker keep their exact bytes; only a payload that has one is
-    parsed and re-serialized (#7066).
+    A plain string rewrite would also hit the object keys with the think tags the
+    key pass keeps, and disagree with the parsed-dict path. Payloads without a
+    marker keep their exact bytes; only a payload that has one is parsed and
+    re-serialized (#7066).
     """
     neutral = neutralize_non_assistant_control_markup(args)
     if neutral == args:
