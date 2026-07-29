@@ -598,7 +598,7 @@ def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
     codepage on the write side while its reader was pinned to UTF-8."""
     cases = {
         "text.py": 'import os\nos.fdopen(fd, "w")\n',
-        "default_mode.py": 'import os\nos.fdopen(fd)\n',  # defaults to "r", still text
+        "default_mode.py": "import os\nos.fdopen(fd)\n",  # defaults to "r", still text
         "binary.py": 'import os\nos.fdopen(fd, "wb")\n',
         "keyword.py": 'import os\nos.fdopen(fd, "w", encoding = "utf-8")\n',
         "positional.py": 'import os\nos.fdopen(fd, "w", 1, "utf-8")\n',
