@@ -487,9 +487,9 @@ export function ResourcesTab() {
               ? formatPercent(safePercent)
               : unknownLabel;
             return (
-              // Name over backend on the left, figures and meter beside them.
-              // The meter is deliberately short: at full width it read as a
-              // rule across the pane rather than a reading for one device.
+              // Name over backend on the left, figures over the meter on the
+              // right. The meter tracks the figures' width rather than the
+              // pane's, so it reads as one device's usage, not a rule.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
                 className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3"
@@ -506,13 +506,17 @@ export function ResourcesTab() {
                             index: ordinal,
                           })}, ${backendLabel}`}
                     </span>
-                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-ui-11 tabular-nums text-muted-foreground dark:bg-white/[0.08]">
+                    {/* Same accent pill as the New tags, which stays legible
+                        on the light background. */}
+                    <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                       {percentText}{" "}
                       {t("settings.resources.gpu.vramUtilization")}
                     </span>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-4">
+                {/* Meter under the figures, so it spans their width instead of
+                    being squeezed into the gap beside them. */}
+                <div className="flex shrink-0 flex-col items-stretch gap-1.5">
                   <div className="flex gap-3 font-mono text-xs tabular-nums text-muted-foreground">
                     <span className="truncate">
                       {t("settings.resources.gpu.used", { value: usedText })}
@@ -529,7 +533,7 @@ export function ResourcesTab() {
                   <Progress
                     value={safePercent}
                     aria-label={device.name ?? "GPU"}
-                    className="h-1.5 w-24 shrink-0 rounded-full bg-muted dark:bg-black/40"
+                    className="h-1.5 w-full rounded-full bg-muted dark:bg-black/40"
                     indicatorClassName={usageIndicatorClass(safePercent)}
                   />
                 </div>
