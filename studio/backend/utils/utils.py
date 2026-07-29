@@ -109,6 +109,7 @@ def hf_proxy_usable_by_urllib(proxy: Optional[str]) -> bool:
     if not proxy:
         return True
     from urllib.parse import urlparse
+
     scheme = urlparse(proxy if "://" in proxy else "http://" + proxy).scheme.lower()
     return scheme in ("http", "https")
 

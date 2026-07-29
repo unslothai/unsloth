@@ -1597,6 +1597,7 @@ class TestIpv6Endpoint:
 
         monkeypatch.setattr(_socket, "getaddrinfo", _nxdomain)
         from utils.utils import dns_host_dead
+
         assert dns_host_dead("no-such-host.invalid", timeout = 2.0) is True
 
 
@@ -2100,7 +2101,8 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
         # patching the latter left this test doing a real lookup and never exercising
         # the "DNS up" branch it is named for.
         monkeypatch.setattr(
-            _socket, "getaddrinfo",
+            _socket,
+            "getaddrinfo",
             lambda *a, **k: [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
         )
 
@@ -2240,12 +2242,14 @@ class TestProxyDetectionWithoutRequests:
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
         self._without_requests(monkeypatch)
         from utils.utils import hf_proxy_for_endpoint
+
         assert hf_proxy_for_endpoint("https://huggingface.co") == "http://proxy.internal:3128"
 
     def test_all_proxy_still_found_without_requests(self, monkeypatch):
         monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
         self._without_requests(monkeypatch)
         from utils.utils import hf_proxy_for_endpoint
+
         assert hf_proxy_for_endpoint("https://huggingface.co") == "http://proxy.internal:3128"
 
     def test_no_proxy_still_bypasses_without_requests(self, monkeypatch):
@@ -2253,6 +2257,7 @@ class TestProxyDetectionWithoutRequests:
         monkeypatch.setenv("NO_PROXY", "huggingface.co")
         self._without_requests(monkeypatch)
         from utils.utils import hf_proxy_for_endpoint
+
         assert hf_proxy_for_endpoint("https://huggingface.co") is None
 
     def test_dns_shortcut_stands_down_without_requests(self, monkeypatch):
@@ -2260,6 +2265,7 @@ class TestProxyDetectionWithoutRequests:
         monkeypatch.setenv("HF_ENDPOINT", "https://does-not-resolve.invalid")
         self._without_requests(monkeypatch)
         from utils.utils import hf_dns_dead
+
         assert hf_dns_dead(timeout = 1.0) is False
 
 
@@ -2273,6 +2279,7 @@ class TestSocksProxyIsNotEgressEvidence:
 
     def test_socks_scheme_is_not_usable_by_urllib(self):
         from utils.utils import hf_proxy_usable_by_urllib
+
         assert hf_proxy_usable_by_urllib("socks5://127.0.0.1:1080") is False
         assert hf_proxy_usable_by_urllib("socks5h://127.0.0.1:1080") is False
         assert hf_proxy_usable_by_urllib("http://127.0.0.1:3128") is True
@@ -2290,6 +2297,7 @@ class TestSocksProxyIsNotEgressEvidence:
 
         monkeypatch.setattr(urllib.request, "urlopen", _boom)
         from utils.transformers_version import hf_endpoint_unreachable
+
         assert hf_endpoint_unreachable(1) is False
 
 
@@ -2307,10 +2315,12 @@ class TestProbeFailsOpenOnNonNetworkErrors:
 
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
         monkeypatch.setattr(
-            urllib.request, "urlopen",
+            urllib.request,
+            "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(exc),
         )
         from utils.transformers_version import hf_endpoint_unreachable
+
         assert hf_endpoint_unreachable(1) is False
 
     def test_client_side_urlerror_is_inconclusive(self, monkeypatch):
@@ -2321,10 +2331,12 @@ class TestProbeFailsOpenOnNonNetworkErrors:
 
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
         monkeypatch.setattr(
-            urllib.request, "urlopen",
+            urllib.request,
+            "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("no host given")),
         )
         from utils.transformers_version import hf_endpoint_unreachable
+
         assert hf_endpoint_unreachable(1) is False
 
     def test_socket_reason_urlerror_is_still_offline(self, monkeypatch):
@@ -2334,12 +2346,14 @@ class TestProbeFailsOpenOnNonNetworkErrors:
 
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
         monkeypatch.setattr(
-            urllib.request, "urlopen",
+            urllib.request,
+            "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(
                 urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
             ),
         )
         from utils.transformers_version import hf_endpoint_unreachable
+
         assert hf_endpoint_unreachable(1) is True
 
     def test_socket_error_is_still_offline(self, monkeypatch):
@@ -2347,10 +2361,12 @@ class TestProbeFailsOpenOnNonNetworkErrors:
 
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
         monkeypatch.setattr(
-            urllib.request, "urlopen",
+            urllib.request,
+            "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(OSError("network unreachable")),
         )
         from utils.transformers_version import hf_endpoint_unreachable
+
         assert hf_endpoint_unreachable(1) is True
 
     def test_undeterminable_connect_target_fails_open(self, monkeypatch):
