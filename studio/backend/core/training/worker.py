@@ -2344,7 +2344,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             flush = True,
         )
 
-    # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
+    # Offline auto-detect: skip ~25s of HF retries per call when the hub is unreachable.
     if "HF_HUB_OFFLINE" not in os.environ:
         import socket as _socket
         import threading as _threading
@@ -2362,13 +2362,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _t = _threading.Thread(target = _probe, daemon = True)
         _t.start()
         _t.join(2.0)
+        if _result[0] is False:
+            # DNS answers even when there is no egress (WAN down, captive portal), so
+            # confirm with the bounded, proxy-aware reachability probe. HF_ENDPOINT aware.
+            try:
+                from utils.transformers_version import hf_endpoint_unreachable
+                from utils.utils import hf_probe_disabled
+
+                if not hf_probe_disabled() and hf_endpoint_unreachable():
+                    _result[0] = True
+            except Exception:
+                pass
         if _result[0] is None or _result[0] is True:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
             os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
             # logger isn't configured yet; print to stderr instead.
             print(
-                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
+                "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 set for this worker.",
                 file = sys.stderr,
                 flush = True,
             )

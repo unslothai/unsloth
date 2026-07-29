@@ -5,6 +5,8 @@
 
 import os
 import structlog
+import threading
+import time
 from loggers import get_logger
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +35,150 @@ def hf_env_offline() -> bool:
         if os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES:
             return True
     return False
+
+
+# One load makes many hub calls, so the reachability verdict is shared for a short window.
+_HF_REACHABILITY_TTL_S = 60.0
+_hf_reachability: Optional[tuple] = None
+_hf_reachability_lock = threading.Lock()
+
+
+def hf_probe_disabled() -> bool:
+    """True when UNSLOTH_OFFLINE_PROBE opts out of the reachability probe."""
+    return os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def reset_hf_reachability_cache() -> None:
+    """Drop the memoised verdict so the next call re-probes (tests, network changes)."""
+    global _hf_reachability
+    with _hf_reachability_lock:
+        _hf_reachability = None
+
+
+def hf_unreachable(timeout: int = 3) -> bool:
+    """True when the HF endpoint is unreachable, memoised for _HF_REACHABILITY_TTL_S.
+
+    Resolving DNS does not mean the Hub is reachable: a router that is up with the WAN
+    down, a captive portal or a stale DNS cache all answer lookups while every request
+    then burns huggingface_hub's retry backoff. This is the bounded, proxy-aware probe
+    the export path already uses; disable it with UNSLOTH_OFFLINE_PROBE=0.
+
+    Fails open: an unavailable probe reports reachable, so the load decides as it does today.
+    """
+    if hf_probe_disabled():
+        return False
+
+    global _hf_reachability
+    cached = _hf_reachability
+    if cached is not None and time.monotonic() - cached[0] < _HF_REACHABILITY_TTL_S:
+        return cached[1]
+
+    with _hf_reachability_lock:
+        cached = _hf_reachability
+        if cached is not None and time.monotonic() - cached[0] < _HF_REACHABILITY_TTL_S:
+            return cached[1]
+        try:
+            from utils.transformers_version import hf_endpoint_unreachable
+
+            unreachable = hf_endpoint_unreachable(timeout)
+        except Exception:
+            unreachable = False
+        _hf_reachability = (time.monotonic(), unreachable)
+        return unreachable
+
+
+def _reset_hf_sessions() -> None:
+    """Drop cached hub sessions so they remount with the current offline adapter."""
+    try:
+        from huggingface_hub.utils import _http
+
+        for name in ("_get_session_from_cache", "get_session"):
+            cache_clear = getattr(getattr(_http, name, None), "cache_clear", None)
+            if cache_clear is not None:
+                cache_clear()
+        reset = getattr(_http, "reset_sessions", None)
+        if reset is not None:
+            reset()
+    except Exception:
+        pass
+
+
+# Process-global, so nested/concurrent loads refcount rather than restore out from under
+# each other.
+_force_offline_depth = 0
+_force_offline_saved: list = []
+_force_offline_saved_env: dict = {}
+_force_offline_lock = threading.Lock()
+
+_OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+_OFFLINE_CONSTANTS = (
+    ("huggingface_hub.constants", ("HF_HUB_OFFLINE",)),
+    ("transformers.utils.hub", ("_is_offline_mode", "OFFLINE")),
+)
+
+
+@contextmanager
+def force_hf_offline():
+    """Force HF offline for this block, in-process.
+
+    Setting the env vars is not enough once the process is running: huggingface_hub and
+    transformers read their offline constants at import, and hub sessions cache a
+    non-offline adapter. Flip the constants too and rebuild the sessions, so hub calls
+    fail fast instead of retrying. Everything is restored on exit.
+    """
+    global _force_offline_depth, _force_offline_saved, _force_offline_saved_env
+    import importlib
+
+    with _force_offline_lock:
+        if _force_offline_depth == 0:
+            saved: list = []
+            saved_env: dict = {}
+            # Snapshot constants BEFORE forcing the env, else a module first imported
+            # inside the window reads the "1" and we would restore it as offline.
+            for mod_name, attrs in _OFFLINE_CONSTANTS:
+                try:
+                    mod = importlib.import_module(mod_name)
+                except Exception:
+                    continue
+                for attr in attrs:
+                    if hasattr(mod, attr):
+                        saved.append((mod, attr, getattr(mod, attr)))
+            for key in _OFFLINE_ENV_KEYS:
+                saved_env[key] = os.environ.get(key)
+                os.environ[key] = "1"
+            for mod, attr, _ in saved:
+                try:
+                    setattr(mod, attr, True)
+                except Exception:
+                    pass
+            _force_offline_saved = saved
+            _force_offline_saved_env = saved_env
+            _reset_hf_sessions()
+        _force_offline_depth += 1
+    try:
+        yield
+    finally:
+        with _force_offline_lock:
+            _force_offline_depth -= 1
+            if _force_offline_depth == 0:
+                for mod, attr, val in _force_offline_saved:
+                    try:
+                        setattr(mod, attr, val)
+                    except Exception:
+                        pass
+                _force_offline_saved = []
+                for key, val in _force_offline_saved_env.items():
+                    if val is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = val
+                _force_offline_saved_env = {}
+                _reset_hf_sessions()
 
 
 def st_repo_id_candidates(model_name: str) -> list:

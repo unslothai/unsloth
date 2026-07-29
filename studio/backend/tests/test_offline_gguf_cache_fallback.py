@@ -81,7 +81,7 @@ from core.inference.llama_cpp import (
     LlamaCppBackend,
     _cached_colocated_split_main,
     _gguf_files_for_variant,
-    _hf_offline_if_dns_dead,
+    _hf_offline_if_unreachable,
     _probe_dns_dead,
     _resolve_repo_id_casing,
 )
@@ -871,7 +871,7 @@ class TestDetectGgufModelRemoteOffline:
 
 
 # ---------------------------------------------------------------------------
-# _probe_dns_dead / _hf_offline_if_dns_dead
+# _probe_dns_dead / _hf_offline_if_unreachable
 # ---------------------------------------------------------------------------
 
 
@@ -900,6 +900,18 @@ def dns(monkeypatch):
     return _DnsState(monkeypatch)
 
 
+@pytest.fixture
+def reachable(monkeypatch):
+    """Control the endpoint reachability probe; defaults to reachable so no test hits the network."""
+    import utils.utils as _utils
+
+    def _set(unreachable: bool):
+        monkeypatch.setattr(_utils, "hf_unreachable", lambda *a, **k: unreachable)
+
+    _set(False)
+    return _set
+
+
 class TestProbeDnsDead:
     def test_returns_false_on_success(self, dns):
         dns.ok()
@@ -919,11 +931,11 @@ class TestProbeDnsDead:
             socket.setdefaulttimeout(None)
 
 
-class TestHfOfflineIfDnsDead:
-    def test_dns_fail_sets_env_inside_block_only(self, dns, clean_offline_env):
+class TestHfOfflineIfUnreachable:
+    def test_dns_fail_sets_env_inside_block_only(self, dns, reachable, clean_offline_env):
         dns.fail()
         assert "HF_HUB_OFFLINE" not in os.environ
-        with _hf_offline_if_dns_dead() as did_set:
+        with _hf_offline_if_unreachable() as did_set:
             assert did_set is True
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
             assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
@@ -931,38 +943,54 @@ class TestHfOfflineIfDnsDead:
         assert "HF_HUB_OFFLINE" not in os.environ
         assert "TRANSFORMERS_OFFLINE" not in os.environ
 
-    def test_dns_ok_is_noop(self, dns, clean_offline_env):
+    def test_dns_ok_and_reachable_is_noop(self, dns, reachable, clean_offline_env):
         dns.ok()
-        with _hf_offline_if_dns_dead() as did_set:
+        with _hf_offline_if_unreachable() as did_set:
             assert did_set is False
             assert "HF_HUB_OFFLINE" not in os.environ
 
-    def test_dns_recovers_between_calls(self, dns, clean_offline_env):
+    def test_dns_ok_but_endpoint_unreachable_engages(self, dns, reachable, clean_offline_env):
+        # WAN down behind a live router: DNS answers, egress does not.
+        dns.ok()
+        reachable(True)
+        with _hf_offline_if_unreachable() as did_set:
+            assert did_set is True
+            assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        assert "HF_HUB_OFFLINE" not in os.environ
+
+    def test_probe_opt_out_keeps_dns_only_behaviour(self, dns, clean_offline_env, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
+        dns.ok()
+        with _hf_offline_if_unreachable() as did_set:
+            assert did_set is False
+            assert "HF_HUB_OFFLINE" not in os.environ
+
+    def test_dns_recovers_between_calls(self, dns, reachable, clean_offline_env):
         # First call: DNS dead -> env set inside, cleared on exit.
         dns.fail()
-        with _hf_offline_if_dns_dead():
+        with _hf_offline_if_unreachable():
             pass
         assert "HF_HUB_OFFLINE" not in os.environ
         # Second call: DNS healthy -> no env mutation.
         dns.ok()
-        with _hf_offline_if_dns_dead() as did_set:
+        with _hf_offline_if_unreachable() as did_set:
             assert did_set is False
             assert "HF_HUB_OFFLINE" not in os.environ
 
-    def test_user_set_hf_hub_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
+    def test_user_set_hf_hub_offline_is_preserved(self, dns, reachable, clean_offline_env, monkeypatch):
         # User explicitly set offline before launching Unsloth.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         dns.fail()
-        with _hf_offline_if_dns_dead() as did_set:
+        with _hf_offline_if_unreachable() as did_set:
             assert did_set is False
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
         # Helper must not pop a variable it did not set.
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
 
-    def test_user_set_transformers_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
+    def test_user_set_transformers_offline_is_preserved(self, dns, reachable, clean_offline_env, monkeypatch):
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
         dns.fail()
-        with _hf_offline_if_dns_dead():
+        with _hf_offline_if_unreachable():
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
             assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
         # HF_HUB_OFFLINE was set by helper -> removed.
@@ -970,14 +998,73 @@ class TestHfOfflineIfDnsDead:
         # TRANSFORMERS_OFFLINE pre-existed -> preserved.
         assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
 
-    def test_exception_inside_block_still_restores_env(self, dns, clean_offline_env):
+    def test_exception_inside_block_still_restores_env(self, dns, reachable, clean_offline_env):
         dns.fail()
         with pytest.raises(RuntimeError, match = "boom"):
-            with _hf_offline_if_dns_dead():
+            with _hf_offline_if_unreachable():
                 raise RuntimeError("boom")
         # Cleanup must happen on exception as well.
         assert "HF_HUB_OFFLINE" not in os.environ
         assert "TRANSFORMERS_OFFLINE" not in os.environ
+
+
+class TestHfUnreachableProbe:
+    """``utils.utils.hf_unreachable``: memoised, opt-outable, fails open."""
+
+    @pytest.fixture(autouse = True)
+    def _reset(self):
+        from utils.utils import reset_hf_reachability_cache
+
+        reset_hf_reachability_cache()
+        yield
+        reset_hf_reachability_cache()
+
+    def _patch_probe(self, monkeypatch, result, calls):
+        import utils.transformers_version as tv
+
+        def _probe(*_a, **_k):
+            calls.append(1)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
+
+    def test_probes_once_then_memoises(self, monkeypatch, clean_offline_env):
+        from utils.utils import hf_unreachable
+
+        calls: list = []
+        self._patch_probe(monkeypatch, True, calls)
+        assert hf_unreachable() is True
+        assert hf_unreachable() is True
+        assert len(calls) == 1
+
+    def test_opt_out_skips_probe(self, monkeypatch, clean_offline_env):
+        from utils.utils import hf_unreachable
+
+        calls: list = []
+        self._patch_probe(monkeypatch, True, calls)
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
+        assert hf_unreachable() is False
+        assert calls == []
+
+    def test_probe_failure_reports_reachable(self, monkeypatch, clean_offline_env):
+        from utils.utils import hf_unreachable
+
+        calls: list = []
+        self._patch_probe(monkeypatch, RuntimeError("boom"), calls)
+        # Fail open: a broken probe must not strand a working install offline.
+        assert hf_unreachable() is False
+
+    def test_reset_forces_reprobe(self, monkeypatch, clean_offline_env):
+        from utils.utils import hf_unreachable, reset_hf_reachability_cache
+
+        calls: list = []
+        self._patch_probe(monkeypatch, True, calls)
+        assert hf_unreachable() is True
+        reset_hf_reachability_cache()
+        assert hf_unreachable() is True
+        assert len(calls) == 2
 
 
 class TestExtractQuantLabelSubdir:

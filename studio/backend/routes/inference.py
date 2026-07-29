@@ -1007,7 +1007,7 @@ try:
         _canonicalize_spec_mode,
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
-        _hf_offline_if_dns_dead,
+        _hf_offline_if_unreachable,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -1051,7 +1051,7 @@ except ImportError:
         _canonicalize_spec_mode,
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
-        _hf_offline_if_dns_dead,
+        _hf_offline_if_unreachable,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -3672,7 +3672,10 @@ def _target_is_vision(load_path: str) -> bool:
     # paths, where the token is unused, but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
-        return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
+        # Guarded: this runs per request, so an unreachable hub would re-pay its retry
+        # backoff on every image/audio call.
+        with _hf_offline_if_unreachable():
+            return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
     except Exception as exc:
         # Detection failure: don't block the swap, let the load decide.
         logger.debug("auto-switch: vision probe failed for %s: %s", load_path, exc)
@@ -5467,7 +5470,7 @@ async def _load_model_impl(
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
-        with _hf_offline_if_dns_dead():
+        with _hf_offline_if_unreachable():
             config = ModelConfig.from_identifier(
                 model_id = model_identifier,
                 hf_token = request.hf_token,

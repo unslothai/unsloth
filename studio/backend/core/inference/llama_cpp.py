@@ -527,29 +527,63 @@ def _hf_env_offline() -> bool:
         return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _hf_unreachable() -> bool:
+    """True when the Hub can't be reached: dead DNS, or DNS that resolves with no egress.
+
+    DNS alone misses the common offline shapes (WAN down behind a live router, captive
+    portal, stale DNS cache), leaving every hub call to burn its full retry backoff.
+    """
+    if _probe_dns_dead():
+        return True
+    try:
+        from utils.utils import hf_unreachable
+        return hf_unreachable()
+    except Exception:
+        return False
+
+
 @contextlib.contextmanager
-def _hf_offline_if_dns_dead():
-    """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
+def _hf_offline_if_unreachable():
+    """Set HF_HUB_OFFLINE for this block only when the Hub is unreachable;
     restores env on exit so a transient hiccup can't quarantine the process.
     No-op if the user already set it."""
     if "HF_HUB_OFFLINE" in os.environ:
         yield False
         return
-    if not _probe_dns_dead():
+    if not _hf_unreachable():
         yield False
         return
 
+    logger.warning("Hugging Face endpoint unreachable; using local HF cache for this load.")
+
+    # Env vars alone do not take effect mid-process: huggingface_hub and transformers read
+    # their offline constants at import, so the calls below would still retry.
+    force_ctx = None
+    try:
+        from utils.utils import force_hf_offline
+
+        force_ctx = force_hf_offline()
+        force_ctx.__enter__()
+    except Exception:
+        force_ctx = None
+
     transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    if not transformers_was_set:
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    logger.warning("huggingface.co unreachable; using local HF cache for this load.")
+    if force_ctx is None:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        if not transformers_was_set:
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
     try:
         yield True
     finally:
-        os.environ.pop("HF_HUB_OFFLINE", None)
-        if not transformers_was_set:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        if force_ctx is not None:
+            try:
+                force_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+        else:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            if not transformers_was_set:
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
 
 try:
@@ -6889,7 +6923,7 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
-                with _hf_offline_if_dns_dead():
+                with _hf_offline_if_unreachable():
                     _preflight_model_path = self._download_gguf(
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
@@ -6931,7 +6965,7 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
-                with _hf_offline_if_dns_dead():
+                with _hf_offline_if_unreachable():
                     model_path = _preflight_model_path or self._download_gguf(
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
