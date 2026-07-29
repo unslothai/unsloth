@@ -30,6 +30,25 @@ _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 _bootstrap_password: Optional[str] = None
 
 
+def _bootstrap_file_bytes(password: str) -> bytes:
+    """The exact on-disk form: the secret plus one LF.
+
+    Encoded rather than written as text because text mode translates "\\n" to
+    CRLF on Windows, and `$(cat ...)` strips the LF but leaves the CR attached
+    to the credential.
+    """
+    return (password + "\n").encode("utf-8")
+
+
+def _persist_bootstrap_password(password: str) -> None:
+    """Write the bootstrap password 0600, with a trailing LF on every OS."""
+    _BOOTSTRAP_PW_PATH.write_bytes(_bootstrap_file_bytes(password))
+    try:
+        os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
+    except OSError:
+        pass
+
+
 def generate_bootstrap_password() -> str:
     """Generate a 4-word diceware passphrase and persist it to disk.
 
@@ -44,8 +63,17 @@ def generate_bootstrap_password() -> str:
 
     # Persisted from a previous run?
     if _BOOTSTRAP_PW_PATH.is_file():
-        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
+        raw = _BOOTSTRAP_PW_PATH.read_bytes()
+        _bootstrap_password = raw.decode("utf-8").strip()
         if _bootstrap_password:
+            # Older releases wrote no terminator, so upgrades kept the `cat`
+            # problem. Rewrite anything that isn't exactly "<secret>\n".
+            # Best-effort: a read-only auth dir must not fail startup.
+            if raw != _bootstrap_file_bytes(_bootstrap_password):
+                try:
+                    _persist_bootstrap_password(_bootstrap_password)
+                except OSError:
+                    pass
             return _bootstrap_password
 
     # First startup: generate a fresh passphrase.
@@ -57,12 +85,7 @@ def generate_bootstrap_password() -> str:
 
     # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
-    # Newline so `cat` doesn't run it into the shell prompt; readers strip.
-    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password + "\n", encoding = "utf-8")
-    try:
-        os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
-    except OSError:
-        pass
+    _persist_bootstrap_password(_bootstrap_password)
 
     return _bootstrap_password
 

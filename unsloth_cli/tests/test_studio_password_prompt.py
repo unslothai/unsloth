@@ -1211,9 +1211,8 @@ def test_write_auth_secret_terminates_the_file_with_a_newline(monkeypatch, tmp_p
 
     studio_mod._write_auth_secret(path, "desktop-abc123")
 
-    raw = path.read_text(encoding = "utf-8")
-    assert raw == "desktop-abc123\n"
-    assert raw.strip() == "desktop-abc123"
+    # Bytes, not read_text: that decodes CRLF back to "\n" and hides a CR.
+    assert path.read_bytes() == b"desktop-abc123\n"
 
 
 def test_seeded_bootstrap_file_ends_with_a_newline(monkeypatch, tmp_path):
@@ -1221,9 +1220,9 @@ def test_seeded_bootstrap_file_ends_with_a_newline(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     _seed_auth(studio_mod)
 
-    raw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text(encoding = "utf-8")
+    raw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_bytes()
 
-    assert raw.endswith("\n")
+    assert raw.endswith(b"\n") and not raw.endswith(b"\r\n")
 
     conn = sqlite3.connect(_auth_db(tmp_path))
     try:
@@ -1233,7 +1232,9 @@ def test_seeded_bootstrap_file_ends_with_a_newline(monkeypatch, tmp_path):
         ).fetchone()
     finally:
         conn.close()
-    assert studio_mod._pbkdf2_hex(raw.strip(), salt.encode("utf-8")) == pwd_hash
+    assert studio_mod._pbkdf2_hex(
+        raw.decode("utf-8").strip(), salt.encode("utf-8")
+    ) == pwd_hash
 
 
 # ── non-interactive --password / UNSLOTH_STUDIO_PASSWORD / stdin ──────

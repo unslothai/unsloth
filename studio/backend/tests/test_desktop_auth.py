@@ -138,11 +138,10 @@ def test_bootstrap_password_file_ends_with_a_newline():
     # Otherwise `cat` welds the passphrase to the shell prompt and both get copied.
     storage.ensure_default_admin()
 
-    raw = storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8")
+    # Bytes, not read_text: that decodes CRLF back to "\n" and hides a CR.
+    raw = storage._BOOTSTRAP_PW_PATH.read_bytes()
 
-    assert raw.endswith("\n")
-    assert raw.strip() == storage.get_bootstrap_password()
-    assert "\n" not in raw.strip()
+    assert raw == storage.get_bootstrap_password().encode("utf-8") + b"\n"
 
 
 def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
@@ -152,6 +151,32 @@ def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
     storage._bootstrap_password = None
 
     assert storage.generate_bootstrap_password() == original
+
+
+def test_legacy_bootstrap_password_without_a_newline_is_migrated():
+    # Upgrades kept the `cat` problem: the file is read, not rewritten.
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    assert storage.generate_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
+
+
+def test_legacy_bootstrap_password_with_crlf_is_migrated():
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"crlf-bootstrap-secret\r\n")
+
+    assert storage.generate_bootstrap_password() == "crlf-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"crlf-bootstrap-secret\n"
+
+
+def test_migrating_a_legacy_bootstrap_password_survives_a_read_only_dir(monkeypatch):
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    def refuse(*args, **kwargs):
+        raise OSError("read-only auth dir")
+
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+
+    assert storage.generate_bootstrap_password() == "legacy-bootstrap-secret"
 
 
 def test_ensure_default_admin_does_not_generate_for_empty_existing_bootstrap():
@@ -378,7 +403,7 @@ def test_write_desktop_secret_file_is_0600_on_unix(tmp_path):
 
     studio_cli._write_auth_secret(path, "desktop-secret")
 
-    assert path.read_text() == "desktop-secret\n"
+    assert path.read_bytes() == b"desktop-secret\n"
     if platform.system() != "Windows":
         assert oct(path.stat().st_mode & 0o777) == "0o600"
 
