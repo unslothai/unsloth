@@ -960,6 +960,37 @@ class TestPyYamlDeserialization:
                 "safe_load.__getattribute__('__globals__')['unsafe_load'](payload)"
             ),
             ("from yaml import __dict__ as namespace\nnamespace['unsafe_load'](payload)"),
+            (
+                "import yaml\n"
+                "list(map(yaml.SafeLoader.add_constructor, ['!run'], [run]))\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "def decorate(cls):\n"
+                "    cls.add_constructor('!run', run)\n"
+                "    return cls\n"
+                "@decorate\n"
+                "class Evil(yaml.SafeLoader):\n"
+                "    pass\n"
+                "yaml.load('!run x', Loader=Evil)"
+            ),
+            (
+                "def parse(payload):\n"
+                "    return yaml_module.unsafe_load(payload)\n"
+                "import yaml as yaml_module\n"
+                "parse(payload)"
+            ),
+            (
+                "from yaml import safe_load\n"
+                "wrapped = [safe_load][0]\n"
+                "wrapped.__globals__['unsafe_load'](payload)"
+            ),
+            (
+                "from yaml import safe_load\n"
+                "importer = safe_load.__builtins__.get('__import__')\n"
+                "importer('yaml').unsafe_load(payload)"
+            ),
         ],
     )
     def test_callable_class_factory_and_storage_pyyaml_bypasses_blocked(self, code):
