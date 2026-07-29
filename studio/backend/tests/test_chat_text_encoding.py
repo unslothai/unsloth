@@ -83,7 +83,11 @@ def test_remote_code_scan_reads_non_ascii_sources(tmp_path: Path) -> None:
     source = "# Grüße über Öl\nVALUE = '世界'\n"
     # newline = "" pins the bytes on disk: Windows would otherwise translate the line
     # ends, so the read back would differ by \r for a reason unrelated to encoding.
-    (tmp_path / "modeling_custom.py").write_text(source, encoding = "utf-8", newline = "")
+    # open() rather than Path.write_text(), which only grew newline in 3.10.
+    with open(
+        tmp_path / "modeling_custom.py", "w", encoding = "utf-8", newline = "",
+    ) as handle:
+        handle.write(source)
 
     files = remote_code_scan.repo_remote_code_files(str(tmp_path))
 
