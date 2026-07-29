@@ -456,9 +456,7 @@ export function ResourcesTab() {
             </span>
           </div>
         )}
-        {/* Sized against this pane, not the viewport: the Settings dialog caps
-            the tab at roughly 650px however wide the window is. */}
-        <div className="@container">
+        <div>
           {hasGpu ? (
             metrics.devices.map((device, index) => {
               const ordinal = deviceOrdinal(device);
@@ -490,29 +488,37 @@ export function ResourcesTab() {
                 ? formatPercent(safePercent)
                 : unknownLabel;
               return (
-                // One row per device: a full-width bar under a single GPU read
-                // as a page-wide rule, so the bar is sized to the row instead.
+                // Two compact lines per device. The settings pane is about
+                // 664px at any window size, which cannot hold the name, three
+                // figures, meter and percentage on one row, so no breakpoint
+                // would ever fire. Splitting them keeps the name readable and
+                // the meter narrow instead of running the width of the pane.
                 <div
                   key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                  className="flex min-w-0 flex-col items-stretch gap-2 py-3 @[50rem]:flex-row @[50rem]:items-center @[50rem]:gap-4"
+                  className="flex min-w-0 flex-col gap-2 py-3"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {device.name ?? t("settings.resources.gpu.unknownDevice")}
+                  <div className="flex min-w-0 items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-foreground">
+                        {device.name ??
+                          t("settings.resources.gpu.unknownDevice")}
+                      </div>
+                      <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {ordinal === undefined
+                          ? backendLabel
+                          : `${t("settings.resources.gpu.deviceWithIndex", {
+                              index: ordinal,
+                            })}, ${backendLabel}`}
+                      </div>
                     </div>
-                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {ordinal === undefined
-                        ? backendLabel
-                        : `${t("settings.resources.gpu.deviceWithIndex", {
-                            index: ordinal,
-                          })}, ${backendLabel}`}
+                    <div className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+                      {percentText}{" "}
+                      {t("settings.resources.gpu.vramUtilization")}
                     </div>
                   </div>
-                  {/* Stacked until the pane is genuinely wide enough: the
-                    figures, meter and percentage need about 50rem before the
-                    name has room left to read. */}
-                  <div className="flex flex-col items-stretch gap-2 @[50rem]:flex-row @[50rem]:shrink-0 @[50rem]:items-center @[50rem]:gap-4">
-                    <div className="flex justify-between gap-3 font-mono text-xs tabular-nums text-muted-foreground @[50rem]:shrink-0 @[50rem]:justify-start">
+                  {/* Wraps rather than overflows once the pane gets narrow. */}
+                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                    <div className="flex min-w-0 gap-3 font-mono text-xs tabular-nums text-muted-foreground">
                       <span className="truncate">
                         {t("settings.resources.gpu.used", { value: usedText })}
                       </span>
@@ -525,20 +531,12 @@ export function ResourcesTab() {
                         })}
                       </span>
                     </div>
-                    <div className="flex min-w-0 items-center gap-4">
-                      {/* Fills the space left by the percentage rather than
-                        claiming the full row, which overflowed once stacked. */}
-                      <Progress
-                        value={safePercent}
-                        aria-label={device.name ?? "GPU"}
-                        className="h-1.5 min-w-0 flex-1 rounded-full bg-muted @[50rem]:w-40 @[50rem]:flex-none dark:bg-black/40"
-                        indicatorClassName={usageIndicatorClass(safePercent)}
-                      />
-                      <div className="w-[5.5rem] shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
-                        {percentText}{" "}
-                        {t("settings.resources.gpu.vramUtilization")}
-                      </div>
-                    </div>
+                    <Progress
+                      value={safePercent}
+                      aria-label={device.name ?? "GPU"}
+                      className="h-1.5 w-40 max-w-full shrink-0 rounded-full bg-muted dark:bg-black/40"
+                      indicatorClassName={usageIndicatorClass(safePercent)}
+                    />
                   </div>
                 </div>
               );

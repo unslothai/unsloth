@@ -671,6 +671,13 @@ html[data-chat-font] .aui-root {
 	border-color: transparent;
 }
 
+/* The card removes its outline, so the border is the only focus indicator.
+   This rule is unlayered like the one above, which would otherwise beat
+   Tailwind's layered focus-visible:border-ring and leave nothing visible. */
+.dark .palette-card:focus-visible {
+	border-color: var(--ring);
+}
+
 .palette-card:hover {
 	border-color: var(--ring-soft);
 }

@@ -1113,233 +1113,240 @@ export function AgentsTab() {
         aria-label={t("settings.agents.commandBuilder")}
         className="flex w-full flex-col gap-6"
       >
-        <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(9rem,0.5fr)] items-start gap-3 max-md:grid-cols-1">
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <div className="flex items-center justify-between gap-3">
+        {/* Keyed to this pane, not the viewport. The dialog leaves the tab
+            about 440px at a 768px window, where three columns crush the agent
+            and model controls; 34rem is the point all three stay usable. */}
+        <div className="@container">
+          <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(9rem,0.5fr)]">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <span
+                  data-settings-label={t("settings.agents.agent")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.agent")}
+                </span>
+                <a
+                  href={selectedAgentDetails.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t("settings.agents.agentDocs", {
+                    agent: selectedAgentDetails.name,
+                  })}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {t("settings.agents.docs")}
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+                </a>
+              </div>
+              <Select
+                value={selectedAgent}
+                onValueChange={(agent) => {
+                  agentSelectionChanged.current = true;
+                  setSelectedAgent(agent);
+                  resetCopied();
+                }}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.agents.agent")}
+                  className="w-full rounded-lg"
+                >
+                  <SelectValue>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <AgentIcon
+                        logo={selectedAgentDetails.logo}
+                        icon={selectedAgentDetails.icon}
+                        darkIcon={selectedAgentDetails.darkIcon}
+                        invertIconInDark={selectedAgentDetails.invertIconInDark}
+                        color={selectedAgentDetails.color}
+                        mark={selectedAgentDetails.mark}
+                      />
+                      <span className="truncate">
+                        {selectedAgentDetails.name}
+                      </span>
+                    </span>
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {agents.map((agentId) => {
+                    const agent = detailsFor(agentId);
+                    return (
+                      <SelectItem key={agent.id} value={agent.id}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <AgentIcon
+                            logo={agent.logo}
+                            icon={agent.icon}
+                            darkIcon={agent.darkIcon}
+                            invertIconInDark={agent.invertIconInDark}
+                            color={agent.color}
+                            mark={agent.mark}
+                          />
+                          <span className="truncate">{agent.name}</span>
+                          {localDetection &&
+                          loaded &&
+                          detectedAgents.has(agent.id) ? (
+                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                              {t("settings.agents.quickstart.installed")}
+                            </span>
+                          ) : null}
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-1.5">
               <span
-                data-settings-label={t("settings.agents.agent")}
+                data-settings-label={t("settings.agents.model")}
                 className="text-xs font-medium text-foreground"
               >
-                {t("settings.agents.agent")}
+                {t("settings.agents.model")}
               </span>
-              <a
-                href={selectedAgentDetails.docsUrl}
-                target="_blank"
-                rel="noreferrer"
-                aria-label={t("settings.agents.agentDocs", {
-                  agent: selectedAgentDetails.name,
-                })}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              <Popover
+                open={modelPickerOpen}
+                onOpenChange={(open) => {
+                  setModelPickerOpen(open);
+                  if (!open) {
+                    setModelSearch("");
+                  }
+                }}
               >
-                {t("settings.agents.docs")}
-                <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-              </a>
-            </div>
-            <Select
-              value={selectedAgent}
-              onValueChange={(agent) => {
-                agentSelectionChanged.current = true;
-                setSelectedAgent(agent);
-                resetCopied();
-              }}
-            >
-              <SelectTrigger
-                aria-label={t("settings.agents.agent")}
-                className="w-full rounded-lg"
-              >
-                <SelectValue>
-                  <span className="flex min-w-0 items-center gap-2">
-                    <AgentIcon
-                      logo={selectedAgentDetails.logo}
-                      icon={selectedAgentDetails.icon}
-                      darkIcon={selectedAgentDetails.darkIcon}
-                      invertIconInDark={selectedAgentDetails.invertIconInDark}
-                      color={selectedAgentDetails.color}
-                      mark={selectedAgentDetails.mark}
-                    />
-                    <span className="truncate">
-                      {selectedAgentDetails.name}
+                <PopoverTrigger asChild={true}>
+                  <button
+                    type="button"
+                    aria-label={t("settings.agents.model")}
+                    aria-expanded={modelPickerOpen}
+                    title={selectedModel}
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+                  >
+                    <span className="min-w-0 truncate font-mono text-xs">
+                      {labelFor(selectedModel)}
                     </span>
-                  </span>
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="start">
-                {agents.map((agentId) => {
-                  const agent = detailsFor(agentId);
-                  return (
-                    <SelectItem key={agent.id} value={agent.id}>
-                      <span className="flex min-w-0 items-center gap-2">
-                        <AgentIcon
-                          logo={agent.logo}
-                          icon={agent.icon}
-                          darkIcon={agent.darkIcon}
-                          invertIconInDark={agent.invertIconInDark}
-                          color={agent.color}
-                          mark={agent.mark}
-                        />
-                        <span className="truncate">{agent.name}</span>
-                        {localDetection &&
-                        loaded &&
-                        detectedAgents.has(agent.id) ? (
-                          <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
-                            {t("settings.agents.quickstart.installed")}
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      strokeWidth={2}
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  sideOffset={4}
+                  className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
+                >
+                  <Command
+                    shouldFilter={false}
+                    className="rounded-none bg-transparent p-0"
+                  >
+                    <CommandInput
+                      value={modelSearch}
+                      onValueChange={setModelSearch}
+                      aria-label={t("settings.agents.searchModels")}
+                      placeholder={t("settings.agents.searchModels")}
+                      className="font-mono text-xs"
+                    />
+                    <CommandList>
+                      <CommandEmpty>
+                        {t("settings.agents.noModels")}
+                      </CommandEmpty>
+                      {visibleModels.map((model) => (
+                        <CommandItem
+                          key={model}
+                          value={model}
+                          data-checked={model === selectedModel}
+                          onSelect={() => {
+                            modelSelectionChanged.current = true;
+                            setSelectedModel(model);
+                            setSelectedVariant(knownVariants[model] ?? null);
+                            setVariants([]);
+                            setVariantsFailed(false);
+                            setVariantsLoading(isHuggingFaceRepo(model));
+                            setModelSearch("");
+                            setModelPickerOpen(false);
+                            resetCopied();
+                          }}
+                          className="cursor-pointer font-mono text-xs"
+                        >
+                          <span className="min-w-0 truncate" title={model}>
+                            {labelFor(model)}
+                          </span>
+                        </CommandItem>
+                      ))}
+                    </CommandList>
+                    {matchingModels.length > visibleModels.length ? (
+                      <p className="border-t border-border/60 px-3 py-2 text-ui-11 text-muted-foreground">
+                        {t("settings.agents.showingModels", {
+                          shown: visibleModels.length,
+                          total: matchingModels.length,
+                        })}
+                      </p>
+                    ) : null}
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <span
+                data-settings-label={t("settings.agents.quantization")}
+                className="text-xs font-medium text-foreground"
+              >
+                {t("settings.agents.quantization")}
+              </span>
+              <Select
+                value={selectedVariant ?? undefined}
+                onValueChange={(variant) => {
+                  chosenVariant.current = { model: selectedModel, variant };
+                  setSelectedVariant(variant);
+                  resetCopied();
+                }}
+                disabled={variantsLoading || variants.length === 0}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.agents.quantization")}
+                  className="w-full rounded-lg font-mono text-xs"
+                >
+                  <SelectValue
+                    placeholder={
+                      variantsLoading
+                        ? t("settings.agents.loadingQuantizations")
+                        : t("settings.agents.noQuantizations")
+                    }
+                  >
+                    {selectedVariant}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start" className="min-w-[16rem]">
+                  {variants.map((variant) => {
+                    // Size only: the recommended/downloaded tags wrapped every
+                    // row onto two lines and made the list hard to scan.
+                    const size = formatBytes(
+                      variant.download_size_bytes ?? variant.size_bytes,
+                    );
+                    return (
+                      <SelectItem
+                        key={variant.quant}
+                        value={variant.quant}
+                        // Stretch the item text so the size can sit flush right,
+                        // giving the list a clean two-column read.
+                        className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
+                      >
+                        <span className="font-mono text-xs whitespace-nowrap">
+                          {variant.quant}
+                        </span>
+                        {size ? (
+                          <span className="text-ui-10 whitespace-nowrap text-muted-foreground">
+                            {size}
                           </span>
                         ) : null}
-                      </span>
-                    </SelectItem>
-                  );
-                })}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <span
-              data-settings-label={t("settings.agents.model")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.model")}
-            </span>
-            <Popover
-              open={modelPickerOpen}
-              onOpenChange={(open) => {
-                setModelPickerOpen(open);
-                if (!open) {
-                  setModelSearch("");
-                }
-              }}
-            >
-              <PopoverTrigger asChild={true}>
-                <button
-                  type="button"
-                  aria-label={t("settings.agents.model")}
-                  aria-expanded={modelPickerOpen}
-                  title={selectedModel}
-                  className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
-                >
-                  <span className="min-w-0 truncate font-mono text-xs">
-                    {labelFor(selectedModel)}
-                  </span>
-                  <HugeiconsIcon
-                    icon={ChevronDownStandardIcon}
-                    strokeWidth={2}
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                sideOffset={4}
-                className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
-              >
-                <Command
-                  shouldFilter={false}
-                  className="rounded-none bg-transparent p-0"
-                >
-                  <CommandInput
-                    value={modelSearch}
-                    onValueChange={setModelSearch}
-                    aria-label={t("settings.agents.searchModels")}
-                    placeholder={t("settings.agents.searchModels")}
-                    className="font-mono text-xs"
-                  />
-                  <CommandList>
-                    <CommandEmpty>{t("settings.agents.noModels")}</CommandEmpty>
-                    {visibleModels.map((model) => (
-                      <CommandItem
-                        key={model}
-                        value={model}
-                        data-checked={model === selectedModel}
-                        onSelect={() => {
-                          modelSelectionChanged.current = true;
-                          setSelectedModel(model);
-                          setSelectedVariant(knownVariants[model] ?? null);
-                          setVariants([]);
-                          setVariantsFailed(false);
-                          setVariantsLoading(isHuggingFaceRepo(model));
-                          setModelSearch("");
-                          setModelPickerOpen(false);
-                          resetCopied();
-                        }}
-                        className="cursor-pointer font-mono text-xs"
-                      >
-                        <span className="min-w-0 truncate" title={model}>
-                          {labelFor(model)}
-                        </span>
-                      </CommandItem>
-                    ))}
-                  </CommandList>
-                  {matchingModels.length > visibleModels.length ? (
-                    <p className="border-t border-border/60 px-3 py-2 text-ui-11 text-muted-foreground">
-                      {t("settings.agents.showingModels", {
-                        shown: visibleModels.length,
-                        total: matchingModels.length,
-                      })}
-                    </p>
-                  ) : null}
-                </Command>
-              </PopoverContent>
-            </Popover>
-          </div>
-
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <span
-              data-settings-label={t("settings.agents.quantization")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.quantization")}
-            </span>
-            <Select
-              value={selectedVariant ?? undefined}
-              onValueChange={(variant) => {
-                chosenVariant.current = { model: selectedModel, variant };
-                setSelectedVariant(variant);
-                resetCopied();
-              }}
-              disabled={variantsLoading || variants.length === 0}
-            >
-              <SelectTrigger
-                aria-label={t("settings.agents.quantization")}
-                className="w-full rounded-lg font-mono text-xs"
-              >
-                <SelectValue
-                  placeholder={
-                    variantsLoading
-                      ? t("settings.agents.loadingQuantizations")
-                      : t("settings.agents.noQuantizations")
-                  }
-                >
-                  {selectedVariant}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="start" className="min-w-[16rem]">
-                {variants.map((variant) => {
-                  // Size only: the recommended/downloaded tags wrapped every
-                  // row onto two lines and made the list hard to scan.
-                  const size = formatBytes(
-                    variant.download_size_bytes ?? variant.size_bytes,
-                  );
-                  return (
-                    <SelectItem
-                      key={variant.quant}
-                      value={variant.quant}
-                      // Stretch the item text so the size can sit flush right,
-                      // giving the list a clean two-column read.
-                      className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
-                    >
-                      <span className="font-mono text-xs whitespace-nowrap">
-                        {variant.quant}
-                      </span>
-                      {size ? (
-                        <span className="text-ui-10 whitespace-nowrap text-muted-foreground">
-                          {size}
-                        </span>
-                      ) : null}
-                    </SelectItem>
-                  );
-                })}
-              </SelectContent>
-            </Select>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 
