@@ -212,7 +212,7 @@ def lmstudio_model_dirs() -> list[Path]:
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
-            with open(settings_path, encoding = "utf-8") as f:
+            with open(settings_path, encoding = "utf-8-sig") as f:
                 settings = json.load(f)
             downloads = settings.get("downloadsFolder", "")
             if downloads:
