@@ -733,6 +733,59 @@ class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
         [
+            (
+                "import yaml\n"
+                "registry = yaml.SafeLoader.yaml_constructors\n"
+                "put = registry.__setitem__\n"
+                "put('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "box = [yaml.SafeLoader]\n"
+                "box[0].add_constructor('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "box = [yaml.SafeLoader.yaml_constructors]\n"
+                "box[0]['!run'] = run\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "def inject(loader=yaml.SafeLoader):\n"
+                "    loader.add_constructor('!run', run)\n"
+                "inject()\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "def inject(registry=yaml.SafeLoader.yaml_constructors):\n"
+                "    registry['!run'] = run\n"
+                "inject()\n"
+                "yaml.safe_load('!run x')"
+            ),
+        ],
+    )
+    def test_aliased_contained_and_defaulted_loader_state_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "registry.import_module(input())",
+            "plugins.modules[name]('arg')",
+            "registry.modules.get(input())",
+            "registry.modules.values()",
+        ],
+    )
+    def test_unrelated_importer_and_module_namespace_names_allowed(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
             "from yaml import loader as yl\nyl.Loader('a: 1')",
             ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
             "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",
