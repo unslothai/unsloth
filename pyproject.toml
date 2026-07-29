@@ -1257,8 +1257,11 @@ intel = [
 ]
 amd = [
     "unsloth[huggingfacenotorch]",
-    "bitsandbytes>=0.49.1 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
-    "bitsandbytes>=0.49.1 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    # 4-bit decode is unreliable on ROCm before 0.50.0, the first PyPI release
+    # carrying the full path: blocksize/warp decoupling (bnb #1887), fused SIMT
+    # GEMM on RDNA (#1979), RDNA3/4 workgroup fix (#2012).
+    "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+    "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 rocm702-torch280 = [
     "unsloth[amd]",

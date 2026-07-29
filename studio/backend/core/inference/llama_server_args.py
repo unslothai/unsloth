@@ -16,11 +16,18 @@ from __future__ import annotations
 import os
 from typing import Iterable, Mapping, Optional
 
+# Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
+# Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
+# studio.py (_PARALLEL_MIN/MAX), per-model-config.ts (N_PARALLEL_MIN/MAX);
+# test_parallel_slots_per_load.py pins them together.
+PARALLEL_MIN = 1
+PARALLEL_MAX = 64
+
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
-    # Parallel slots: owned by typer --parallel; a pass-through would desync
-    # app.state.llama_parallel_slots from llama-server.
+    # Parallel slots: owned by typer --parallel and LoadRequest.n_parallel; a
+    # pass-through would desync the slot bookkeeping from llama-server.
     frozenset({"-np", "--parallel", "--n-parallel"}),
     # Model identity: Unsloth resolves it from LoadRequest; a second -m would
     # load a different model than Unsloth thinks it loaded.

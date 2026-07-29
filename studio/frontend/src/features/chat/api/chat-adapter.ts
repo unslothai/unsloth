@@ -1604,6 +1604,7 @@ async function autoLoadSmallestModel(): Promise<{
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
+              n_parallel: config.nParallel ?? null,
             }
           : {}),
       }))
@@ -1637,6 +1638,8 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
+            // Per-model too, or the auto-load reverts a remembered override.
+            n_parallel: config.nParallel ?? null,
           }
         : {}),
     });
@@ -1689,6 +1692,11 @@ async function autoLoadSmallestModel(): Promise<{
         effectiveGpuLayers,
         config.customContextLength ?? null,
       );
+      // Slots this auto-load committed. Diffusion ignores --parallel, so a count
+      // there would mint a phantom override a saved preset carries onto a GGUF.
+      const committedSlots = (loadResp.is_diffusion ?? false)
+        ? null
+        : (config.nParallel ?? null);
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
@@ -1703,6 +1711,9 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // Click-time value, not the resolved backend echo (see performLoad).
+        nParallel: committedSlots,
+        loadedNParallel: committedSlots,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
@@ -1728,6 +1739,10 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // GGUF-only and never sent here: a staged override would be saved for
+        // a model that cannot use it.
+        nParallel: null,
+        loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -2001,6 +2016,10 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // The request above omits n_parallel: a staged override left from a
+        // preset would read as applied and be re-sent by the next Apply.
+        nParallel: null,
+        loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
