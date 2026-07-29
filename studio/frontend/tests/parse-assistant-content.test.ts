@@ -6,49 +6,42 @@ import test from "node:test";
 
 import { parseAssistantContent } from "../src/features/chat/utils/parse-assistant-content.ts";
 
-const reasoning = (raw: string): string =>
+const partsOfType = (raw: string, type: string): string =>
   parseAssistantContent(raw)
-    .filter((part) => part.type === "reasoning")
+    .filter((part) => part.type === type)
     .map((part) => (part as { text: string }).text)
     .join("");
 
-const answer = (raw: string): string =>
-  parseAssistantContent(raw)
-    .filter((part) => part.type === "text")
-    .map((part) => (part as { text: string }).text)
-    .join("");
+// One case per distinct verdict the literal-close classifier has to reach. The
+// unescaped quoted mention and the unequal delimiter runs are dropped here: the
+// python contract test drives the same parser through the same two shapes
+// (`quoted_literal`, `unequal_runs`) and asserts the whole part list.
+const cases: [string, string, string, string][] = [
+  // A serialized quotation escapes both quotes, so both are excluded from the
+  // parity count and the mention read as the structural close: the drawer shut
+  // on the first tag and the rest of the thought was rendered as the answer
+  // (#7334). The backend extractor has the same escaped-pair case
+  // (_is_literal_think_close).
+  [
+    "a symmetric escaped pair stays inside the reasoning drawer",
+    '<think>serialized \\"</think>\\" still reasoning</think>answer',
+    'serialized \\"</think>\\" still reasoning',
+    "answer",
+  ],
+  // The escaped-pair case must not swallow real closes: the checks that already
+  // resolve a quoted tag as structural still win.
+  ["a bare close tag is still structural", "<think>draft</think>answer", "draft", "answer"],
+  [
+    "an escaped closing quote running into a word still opens the answer",
+    '<think>a \\"</think>\\"The answer is 42.',
+    'a \\"',
+    '\\"The answer is 42.',
+  ],
+];
 
-// A serialized quotation escapes both quotes, so both are excluded from the
-// parity count and the mention read as the structural close: the drawer shut on
-// the first tag and the rest of the thought was rendered as the answer (#7334).
-// The backend extractor has the same escaped-pair case (_is_literal_think_close).
-test("a symmetric escaped pair stays inside the reasoning drawer", () => {
-  const raw = '<think>serialized \\"</think>\\" still reasoning</think>answer';
-  assert.equal(reasoning(raw), 'serialized \\"</think>\\" still reasoning');
-  assert.equal(answer(raw), "answer");
-});
-
-test("an unescaped quoted pair still reads as a mention", () => {
-  const raw = '<think>quoted "</think>" still reasoning</think>answer';
-  assert.equal(reasoning(raw), 'quoted "</think>" still reasoning');
-  assert.equal(answer(raw), "answer");
-});
-
-// The escaped-pair case must not swallow real closes: the checks that already
-// resolve a quoted tag as structural still win.
-test("a bare close tag is still structural", () => {
-  assert.equal(reasoning("<think>draft</think>answer"), "draft");
-  assert.equal(answer("<think>draft</think>answer"), "answer");
-});
-
-test("an escaped closing quote running into a word still opens the answer", () => {
-  const raw = '<think>a \\"</think>\\"The answer is 42.';
-  assert.equal(reasoning(raw), 'a \\"');
-  assert.equal(answer(raw), '\\"The answer is 42.');
-});
-
-test("mismatched delimiter runs are still structural", () => {
-  const raw = "<think>`</think>```python\ncode";
-  assert.equal(reasoning(raw), "`");
-  assert.equal(answer(raw), "```python\ncode");
-});
+for (const [name, raw, wantReasoning, wantAnswer] of cases) {
+  test(name, () => {
+    assert.equal(partsOfType(raw, "reasoning"), wantReasoning);
+    assert.equal(partsOfType(raw, "text"), wantAnswer);
+  });
+}

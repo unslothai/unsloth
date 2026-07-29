@@ -24,17 +24,6 @@ def test_frontend_exports_neutralize_think_markup():
     # line-break class ZW and would let a neutralized tag wrap mid-tag (#7334).
     assert "\\u2060" in src or "\u2060" in src
     assert "\\u200b" not in src and "\u200b" not in src
-    assert "#7066" in src
-
-
-def test_chat_adapter_neutralizes_reasoning_before_think_wrap():
-    src = ADAPTER_TS.read_text(encoding = "utf-8")
-    assert "drainThinkMarkupBuffer" in src
-    assert "reasoningMarkupBuffer" in src
-    assert "safeReasoning" in src
-    # Mixed reasoning/content chunks must not drop delta when reasoning is held.
-    assert "if (!safeReasoning) {\n                  continue;" not in src
-    assert "`<think>${emit}`" in src
 
 
 _HARNESS = """
@@ -393,9 +382,19 @@ def _run_parse_harness(tmp_path):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def test_parse_assistant_content_literal_close_semantics(tmp_path):
+@pytest.fixture(scope = "module")
+def harness(tmp_path_factory):
+    """Run the node harness ONCE; every assertion below reads the same result.
+
+    The harness carries the perf guards, so ten separate runs paid for ten
+    warm-up loops over an 8k reasoning span each time (#7334).
+    """
+    return _run_parse_harness(tmp_path_factory.mktemp("parse_harness"))
+
+
+def test_parse_assistant_content_literal_close_semantics(harness):
     """Literal vs structural `</think>` classification, end to end (#7066, #7334)."""
-    out = _run_parse_harness(tmp_path)
+    out = harness
     parsed, closed = out["parsed"], out["closed"]
 
     # A quoted mention stays inside the thinking block; the bare tag ends it.
@@ -472,7 +471,7 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     assert closed["nested_backtick_span"] is True
 
 
-def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):
+def test_mid_stream_unclosed_fence_decision_is_deferred(harness):
     """A tag inside a not-yet-closed ``` fence must not read as the block end.
 
     Mid-stream ``</think>`` inside a fence that closes a delta later would
@@ -481,7 +480,7 @@ def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):
     back, and `chat-adapter` latches `reasoningDuration` on a tag that was never
     the real close and never corrects it (#7334).
     """
-    streaming = _run_parse_harness(tmp_path)["streaming"]
+    streaming = harness["streaming"]
 
     # The real close is the 5th delta; nothing before it may read as closed.
     assert streaming["streamClosed"] == [False, False, False, False, True, True]
@@ -500,7 +499,7 @@ def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):
     assert streaming["unclosedStreaming"]["types"] == ["reasoning"]
 
 
-def test_mid_stream_quoted_close_waits_for_its_trailing_flank(tmp_path):
+def test_mid_stream_quoted_close_waits_for_its_trailing_flank(harness):
     """A close tag ending the delta must not read as the block end.
 
     `</think>` is one token for every provider, so a quoted mention arrives as
@@ -512,7 +511,7 @@ def test_mid_stream_quoted_close_waits_for_its_trailing_flank(tmp_path):
     excluded every second of reasoning after the mention (#7334). The backend
     extractor holds the same buffer (`_should_hold_quoted_think_close`).
     """
-    streaming = _run_parse_harness(tmp_path)["streaming"]
+    streaming = harness["streaming"]
 
     # No delta of a quoted mention ever reads as closed, and the deferred
     # candidate is reported so the adapter can time the thought from it.
@@ -535,7 +534,7 @@ def test_mid_stream_quoted_close_waits_for_its_trailing_flank(tmp_path):
     assert streaming["quoteAtEof"]["streamingClosed"] is False
 
 
-def test_known_synthetic_close_is_not_re_derived(tmp_path):
+def test_known_synthetic_close_is_not_re_derived(harness):
     """The adapter's own `</think>` must survive the streaming deferral.
 
     A provider can end structured reasoning_content inside an unfinished ```
@@ -543,7 +542,7 @@ def test_known_synthetic_close_is_not_re_derived(tmp_path):
     already known. Running the raw-marker fence heuristics over it kept every
     answer delta in the thinking drawer until the stream ended (#7334).
     """
-    synthetic = _run_parse_harness(tmp_path)["streaming"]["synthetic"]
+    synthetic = harness["streaming"]["synthetic"]
 
     assert synthetic["known"] == [
         {"type": "reasoning", "text": "draft ```"},
@@ -555,14 +554,14 @@ def test_known_synthetic_close_is_not_re_derived(tmp_path):
     assert synthetic["rawMarker"] == ["reasoning"]
 
 
-def test_deferred_close_is_reported_for_reasoning_timing(tmp_path):
+def test_deferred_close_is_reported_for_reasoning_timing(harness):
     """A deferred close must be reported so the thought can be timed at it.
 
     ``<think>draft ```</think>long answer`` defers the close mid-stream and only
     resolves it as structural at the end, so `reasoningDuration` was measured to
     end of stream and counted the whole visible answer as thought time (#7334).
     """
-    deferred = _run_parse_harness(tmp_path)["streaming"]["deferred"]
+    deferred = harness["streaming"]["deferred"]
 
     # This replay passes no `resume` cache, so every delta rescans from the top
     # and re-reports; either way the offset is the real close.
@@ -581,7 +580,7 @@ def test_deferred_close_is_reported_for_reasoning_timing(tmp_path):
     assert deferred["literalConfirmed"] != deferred["literalFirstDeferred"]
 
 
-def test_streaming_resume_matches_a_cold_scan(tmp_path):
+def test_streaming_resume_matches_a_cold_scan(harness):
     """A resumed scan must answer exactly like a full rescan, every delta.
 
     The scan carries fence and quote cursors across SSE deltas so a delta costs
@@ -589,11 +588,11 @@ def test_streaming_resume_matches_a_cold_scan(tmp_path):
     the inspected prefix does not settle would skip the real close and put the
     visible answer back in the thinking drawer, i.e. #7066 again.
     """
-    streaming = _run_parse_harness(tmp_path)["streaming"]
+    streaming = harness["streaming"]
     assert streaming["resumeMismatches"] == []
 
 
-def test_deferred_close_first_report_is_unchanged_by_resume(tmp_path):
+def test_deferred_close_first_report_is_unchanged_by_resume(harness):
     """Resuming drops repeat reports, never the FIRST one.
 
     `chat-adapter` records the arrival instant of a deferred close the first
@@ -601,7 +600,7 @@ def test_deferred_close_first_report_is_unchanged_by_resume(tmp_path):
     A resumed scan reports each candidate once, on the same delta a cold scan
     first reports it, which is when the tag arrived (#7334).
     """
-    firing = _run_parse_harness(tmp_path)["streaming"]["firing"]
+    firing = harness["streaming"]["firing"]
     warm, cold = firing["warm"], firing["cold"]
 
     # The observable part: same offsets, first seen on the same delta.
@@ -617,9 +616,55 @@ def test_deferred_close_first_report_is_unchanged_by_resume(tmp_path):
     assert cold["total"] > warm["total"]
 
 
-def test_chat_adapter_times_reasoning_from_the_deferred_close(tmp_path):
-    """The adapter must record deferred offsets and read them back at finalize."""
+def test_parse_assistant_content_literal_scan_is_single_pass(harness):
+    """200 literal mentions in an 8k reasoning span must stay within a small
+    multiple of the clean parse; restarting the quote scan per candidate was
+    ~6000x and ran on every SSE delta (#7334)."""
+    perf = harness["perf"]
+    ratio = perf["many_us"] / perf["clean_us"]
+    assert ratio < 500, f"many {perf['many_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
+    # 200 FENCED literals share one open fence and one "is there a later close
+    # tag" answer; memoizing it keeps the parse near linear (~7x the clean
+    # control, vs ~17x re-scanning and worse as the trailing span grows).
+    fenced_ratio = perf["fenced_us"] / perf["clean_us"]
+    assert fenced_ratio < 60, f"fenced {perf['fenced_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
+
+
+def test_streaming_replay_is_not_quadratic(harness):
+    """Replaying a stream must cost O(text), not O(text) per delta.
+
+    Without the resume cache every SSE delta re-walks the whole cumulative
+    buffer, so streaming a 16k reasoning span holding 400 literal mentions cost
+    ~50x what resuming does. The bound is loose because CI timing is noisy; the
+    real gap is one to two orders of magnitude (#7334).
+    """
+    perf = harness["perf"]
+    ratio = perf["stream_cold_ms"] / max(perf["stream_cached_ms"], 1e-6)
+    assert (
+        ratio > 4
+    ), f"cached {perf['stream_cached_ms']:.1f}ms vs cold {perf['stream_cold_ms']:.1f}ms"
+
+
+def test_chat_adapter_wires_the_parser_it_is_paired_with():
+    """Every hook `parse-assistant-content` exposes has to be used by the adapter.
+
+    The parser only prevents #7066 / #7334 if `chat-adapter` neutralizes what it
+    forwards, marks the delimiters it inserts itself as known, times the thought
+    off the deferred close and mints one resume cache per stream. Each group
+    below is a separate wiring failure that hid the visible answer in the
+    thinking drawer or froze the reported thinking time.
+    """
     src = ADAPTER_TS.read_text(encoding = "utf-8")
+
+    # Reasoning is neutralized (and held across deltas) before the <think> wrap.
+    assert "drainThinkMarkupBuffer" in src
+    assert "reasoningMarkupBuffer" in src
+    assert "safeReasoning" in src
+    # Mixed reasoning/content chunks must not drop delta when reasoning is held.
+    assert "if (!safeReasoning) {\n                  continue;" not in src
+    assert "`<think>${emit}`" in src
+
+    # Deferred offsets are recorded and read back at finalize.
     assert "deferredCloseTimes" in src
     assert "onDeferredClose" in src
     assert "lastStructuralThinkCloseIndex" in src
@@ -633,67 +678,24 @@ def test_chat_adapter_times_reasoning_from_the_deferred_close(tmp_path):
         "reasoningDurationTracker.startGroup();", start_at
     )
 
-
-def test_chat_adapter_marks_its_own_reasoning_close_as_known(tmp_path):
-    """The adapter must record the offsets it inserts and pass them down."""
-    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    # The adapter records the close offsets it inserts and passes them down, so
+    # the raw-marker heuristics never re-derive a boundary that is already known.
     assert "syntheticCloses" in src
     assert "syntheticCloses.add(cumulativeText.length)" in src
     assert "isKnownClose" in src
-
-
-def test_structured_content_wrapper_closes_are_known(tmp_path):
-    """The `<think>` wrapper around a structured thinking part is ours too.
-
-    A provider streaming reasoning as a `delta.content` thinking part that ends
-    inside an unfinished ``` fence had its inserted `</think>` re-derived by the
-    raw-marker heuristics, keeping every answer delta in the drawer until the
-    stream ended (#7334).
-    """
-    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    # The `<think>` wrapper around a structured thinking part is ours too: a
+    # provider streaming reasoning as a `delta.content` thinking part that ends
+    # inside an unfinished ``` fence had its inserted `</think>` re-derived by
+    # the raw-marker heuristics, keeping every answer delta in the drawer until
+    # the stream ended (#7334).
     assert "closeOffsets" in src
     assert "syntheticCloses.add(cumulativeText.length + offset)" in src
     # The wrapper close must be emitted separately so its offset is recorded.
     assert "`<think>${neutralizeThinkMarkup(thinking)}</think>`" not in src
 
-
-def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):
-    """200 literal mentions in an 8k reasoning span must stay within a small
-    multiple of the clean parse; restarting the quote scan per candidate was
-    ~6000x and ran on every SSE delta (#7334)."""
-    perf = _run_parse_harness(tmp_path)["perf"]
-    ratio = perf["many_us"] / perf["clean_us"]
-    assert ratio < 500, f"many {perf['many_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
-    # 200 FENCED literals share one open fence and one "is there a later close
-    # tag" answer; memoizing it keeps the parse near linear (~7x the clean
-    # control, vs ~17x re-scanning and worse as the trailing span grows).
-    fenced_ratio = perf["fenced_us"] / perf["clean_us"]
-    assert fenced_ratio < 60, f"fenced {perf['fenced_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
-
-
-def test_streaming_replay_is_not_quadratic(tmp_path):
-    """Replaying a stream must cost O(text), not O(text) per delta.
-
-    Without the resume cache every SSE delta re-walks the whole cumulative
-    buffer, so streaming a 16k reasoning span holding 400 literal mentions cost
-    ~50x what resuming does. The bound is loose because CI timing is noisy; the
-    real gap is one to two orders of magnitude (#7334).
-    """
-    perf = _run_parse_harness(tmp_path)["perf"]
-    ratio = perf["stream_cold_ms"] / max(perf["stream_cached_ms"], 1e-6)
-    assert (
-        ratio > 4
-    ), f"cached {perf['stream_cached_ms']:.1f}ms vs cold {perf['stream_cold_ms']:.1f}ms"
-
-
-def test_chat_adapter_resume_caches_are_per_stream(tmp_path):
-    """The caches must be minted per stream, and their keys must be stable.
-
-    A cache is only valid while the buffer it scans grows by appending, so it
-    belongs to one stream; and the slot is keyed on the callbacks by identity,
-    so a fresh arrow per delta would silently disable the resume (#7334).
-    """
-    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    # A resume cache is only valid while the buffer it scans grows by appending,
+    # so it belongs to ONE stream; and the slot is keyed on the callbacks by
+    # identity, so a fresh arrow per delta would silently disable the resume.
     assert "createScanResumeCache" in src
     assert "resume: pollResume" in src
     assert "resume: buildResume" in src
