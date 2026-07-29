@@ -69,6 +69,22 @@ function Get-StepCount([string]$Path) {
   @(Select-String -Path $Path -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue).Count
 }
 
+function Get-LastStep([string]$Path) {
+  $steps = @(Select-String -Path $Path -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue)
+  if ($steps.Count) { return $steps[-1].Line }
+  return ''
+}
+
+# True when the marker names a [TAURI:STEP] line that is no longer the last one: the step
+# ended before the poll noticed it. Sub-step markers ('studio deps') print no step line of
+# their own, so they are never judged here.
+function Test-MarkedStepOver {
+  if (-not $Marker) { return $false }
+  $steps = @(Select-String -Path $LogPath -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue)
+  if (-not ($steps | Where-Object { $_.Line -match $Marker })) { return $false }
+  return ((Get-LastStep $LogPath) -notmatch $Marker)
+}
+
 $killed = $false
 $reason = ''
 # Half-second slices: a step lasting under a second is over by the time a 1s poll notices
@@ -80,12 +96,16 @@ for ($i = 0; $i -lt ($KillAtSeconds * 2); $i++) {
     if ($hit) {
       # Same beat as the POSIX driver, waited in slices and cut short once a later
       # [TAURI:STEP] line appears, so a fast step finishing inside the beat does not send
-      # the signal into the step after it.
-      $stepsAtMarker = Get-StepCount $LogPath
-      for ($j = 0; $j -lt ($KillAfterMarkerSeconds * 5); $j++) {
-        Start-Sleep -Milliseconds 200
-        if ($proc.HasExited) { break }
-        if ((Get-StepCount $LogPath) -ne $stepsAtMarker) { break }
+      # the signal into the step after it. Skipped when the step is ALREADY over: the
+      # cut-short cannot help once the next step's line is in the log before the first
+      # sample, and beating on would push the signal deeper into the following step.
+      if (-not (Test-MarkedStepOver)) {
+        $stepsAtMarker = Get-StepCount $LogPath
+        for ($j = 0; $j -lt ($KillAfterMarkerSeconds * 5); $j++) {
+          Start-Sleep -Milliseconds 200
+          if ($proc.HasExited) { break }
+          if ((Get-StepCount $LogPath) -ne $stepsAtMarker) { break }
+        }
       }
       # The installer can finish inside the delay; recording marker-hit before it
       # let a COMPLETED install satisfy the landing assertion and probe HEALTHY.
@@ -136,15 +156,18 @@ if ($Marker -and -not (Select-String -Path $LogPath -Pattern $Marker -ErrorActio
 # poll notices its line, and the leg then silently kills the NEXT step while its matrix
 # label still claims the marked one. Sub-step markers ('studio deps') print no
 # [TAURI:STEP] line of their own, so the test skips them rather than warning every leg.
-$steps = @(Select-String -Path $LogPath -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue)
-$lastStep = if ($steps.Count) { $steps[-1].Line } else { '' }
+$lastStep = Get-LastStep $LogPath
 Write-Host "[interrupt] step at kill: $lastStep"
-if ($Marker -and ($steps | Where-Object { $_.Line -match $Marker }) -and $lastStep -notmatch $Marker) {
+$mismatch = Test-MarkedStepOver
+if ($mismatch) {
   Write-Host "::warning::killed in '$lastStep', not the marked step -- that step was already over"
 }
+# Lower-cased so the workflow can compare it the same way on every platform, and only
+# simple values: the POSIX side sources this file.
 @(
   "interrupt_reason=$reason"
   "interrupt_killed=$killed"
   "installer_exit=$rc"
+  "interrupt_step_mismatch=$(if ($mismatch) { 'true' } else { 'false' })"
 ) | Set-Content -Path (Join-Path (Split-Path -Parent $LogPath) 'interrupt.env') -Encoding utf8
 exit 0

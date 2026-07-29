@@ -41,6 +41,16 @@ PID=$!
 set +m
 echo "[interrupt] installer pid/pgid=$PID marker='${MARKER}' deadline=${KILL_AT_SECONDS}s"
 
+# True when the marker names a [TAURI:STEP] line that is no longer the last one: the step
+# ended before the poll noticed it. Sub-step markers ("studio deps") print no step line of
+# their own, so they are never judged here.
+marked_step_over() {
+  [ -n "$MARKER" ] || return 1
+  grep -E '^\[TAURI:STEP\]' "$LOG" 2>/dev/null | grep -qE "$MARKER" || return 1
+  grep -E '^\[TAURI:STEP\]' "$LOG" 2>/dev/null | tail -1 | grep -qE "$MARKER" && return 1
+  return 0
+}
+
 killed=false
 reason=""
 # Half-second slices: a sub-second step is over before a 1s poll sees its line.
@@ -54,12 +64,18 @@ for i in $(seq 1 $(( KILL_AT_SECONDS * 2 ))); do
     # [TAURI:STEP] line appears: the venv takes ~0.1s, so a flat 3s sleep put the venv
     # leg's signal in "Installing PyTorch", a duplicate of the torch leg. Sub-step
     # markers ("studio deps") print no step line, so they keep the whole beat.
-    _steps_at_marker="$(grep -cE '^\[TAURI:STEP\]' "$LOG" 2>/dev/null || true)"
-    for _ in $(seq 1 $(( ${KILL_AFTER_MARKER_SECONDS:-3} * 5 ))); do
-      sleep 0.2
-      kill -0 "$PID" 2>/dev/null || break
-      [ "$(grep -cE '^\[TAURI:STEP\]' "$LOG" 2>/dev/null || true)" = "$_steps_at_marker" ] || break
-    done
+    # Skipped entirely when the step is ALREADY over: cutting the beat short cannot help
+    # once the next step's line is in the log before the first sample, which is the normal
+    # case for a 0.1s step, and beating on would only push the signal deeper into the step
+    # after it. Kill now and let the mismatch check below report where it landed.
+    if ! marked_step_over; then
+      _steps_at_marker="$(grep -cE '^\[TAURI:STEP\]' "$LOG" 2>/dev/null || true)"
+      for _ in $(seq 1 $(( ${KILL_AFTER_MARKER_SECONDS:-3} * 5 ))); do
+        sleep 0.2
+        kill -0 "$PID" 2>/dev/null || break
+        [ "$(grep -cE '^\[TAURI:STEP\]' "$LOG" 2>/dev/null || true)" = "$_steps_at_marker" ] || break
+      done
+    fi
     # ...but a cached step can FINISH inside the beat. Recording marker-hit before it
     # handed the landing assertion a COMPLETED install that interrupted nothing.
     if ! kill -0 "$PID" 2>/dev/null; then
@@ -120,14 +136,16 @@ fi
 # markers print no [TAURI:STEP] line, so the test skips them instead of always warning.
 _last_step="$(grep -E '^\[TAURI:STEP\]' "$LOG" 2>/dev/null | tail -1)"
 echo "[interrupt] step at kill: $_last_step"
-if [ -n "$MARKER" ] &&
-   grep -E '^\[TAURI:STEP\]' "$LOG" 2>/dev/null | grep -qE "$MARKER" &&
-   ! printf '%s\n' "$_last_step" | grep -qE "$MARKER"; then
+mismatch=false
+if marked_step_over; then
+  mismatch=true
   echo "::warning::killed in '$_last_step', not the marked step -- that step was already over"
 fi
+# Only simple values: the workflow sources this file, so the step text stays out of it.
 {
   echo "interrupt_reason=$reason"
   echo "interrupt_killed=$killed"
   echo "installer_exit=$rc"
+  echo "interrupt_step_mismatch=$mismatch"
 } > "$(dirname "$LOG")/interrupt.env"
 exit 0

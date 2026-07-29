@@ -77,7 +77,13 @@ jobs:
           # The exact reported case: killed during the step that installs structlog.
           - {os: macos-14, label: studio-deps, marker: 'studio deps', experimental: false}
           # Coarse phases, earliest to latest -- each leaves a different partial venv.
-          - {os: macos-14, label: venv,        marker: '\[TAURI:STEP\] Creating virtual environment', experimental: false}
+          # venv is experimental because the step is not reliably interruptible: with a
+          # warm uv cache creating it takes ~0.1s (staging run 30419729244 logged
+          # 03:31:07.371 -> 07.478 between its step line and "Installing PyTorch"), less
+          # than the log poll, so the kill often lands in the next step. The landing check
+          # now FAILS that instead of warning, and this leg must not block the PR on a race
+          # no log poll can win. It still probes the earliest torn state whenever it lands.
+          - {os: macos-14, label: venv,        marker: '\[TAURI:STEP\] Creating virtual environment', experimental: true}
           - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch',           experimental: false}
           - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth',           experimental: false}
           - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup',        experimental: false}
@@ -141,6 +147,17 @@ jobs:
             echo "::error::installer exited 0 -- it COMPLETED inside the kill window, so"
             echo "::error::nothing was interrupted and this leg asserts nothing."
             tail -30 logs/install.log || true
+            exit 1
+          fi
+          # ...and the signal has to have landed in the step this leg is named after. A
+          # step whose line is no longer the last one was already over when the poll saw
+          # it, so the kill hit the NEXT step and the leg silently duplicates another one
+          # while its label claims otherwise. A warning here proves nothing, so it fails.
+          # Sub-step markers ("studio deps") print no [TAURI:STEP] line and are exempt.
+          if [ "$interrupt_step_mismatch" = "true" ]; then
+            echo "::error::the signal landed after '${{ matrix.marker }}' finished, so this"
+            echo "::error::leg interrupted a later step than the one it is named for."
+            grep -E '^\[TAURI:STEP\]' logs/install.log || true
             exit 1
           fi
 
@@ -275,6 +292,15 @@ jobs:
             Write-Host '::error::installer exited 0 -- it COMPLETED inside the kill window, so'
             Write-Host '::error::nothing was interrupted and this leg asserts nothing.'
             Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+          }
+          # Same landing check as the POSIX leg: a step that was already over when the poll
+          # saw its line means the kill hit the NEXT step, so the leg duplicates another
+          # one while its label claims otherwise.
+          if ($vals['interrupt_step_mismatch'] -eq 'true') {
+            Write-Host "::error::the signal landed after '${{ matrix.marker }}' finished, so this"
+            Write-Host '::error::leg interrupted a later step than the one it is named for.'
+            Select-String -Path logs/install.log -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue
             exit 1
           }
 
