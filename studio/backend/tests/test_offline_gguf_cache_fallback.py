@@ -1215,6 +1215,48 @@ class TestDownloadMmprojOfflineCacheFallback:
         assert out is not None, "mmproj must resolve from cache when offline"
         assert "mmproj-vision-F16.gguf" in out
 
+    def test_offline_lookup_rejects_projector_from_unrelated_snapshot(
+        self, hf_cache, monkeypatch
+    ):
+        weights = _build_cache(
+            hf_cache,
+            "unsloth/audio-GGUF",
+            {"audio-Q4_K_M.gguf": 1},
+            snapshot_sha = "a" * 40,
+        )
+        _build_cache(
+            hf_cache,
+            "unsloth/audio-GGUF",
+            {"mmproj.gguf": 1},
+            snapshot_sha = "b" * 40,
+        )
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+        out = LlamaCppBackend()._download_mmproj(
+            hf_repo = "unsloth/audio-GGUF",
+            near_path = str(weights / "audio-Q4_K_M.gguf"),
+        )
+
+        assert out is None
+
+    def test_offline_lookup_keeps_same_snapshot_projector(self, hf_cache, monkeypatch):
+        snapshot = _build_cache(
+            hf_cache,
+            "unsloth/audio-GGUF",
+            {
+                "audio-Q4_K_M.gguf": 1,
+                "mmproj-audio-F16.gguf": 1,
+            },
+        )
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+        out = LlamaCppBackend()._download_mmproj(
+            hf_repo = "unsloth/audio-GGUF",
+            near_path = str(snapshot / "audio-Q4_K_M.gguf"),
+        )
+
+        assert out == str(snapshot / "mmproj-audio-F16.gguf")
+
     def test_prefers_f16_variant_when_multiple_mmproj_in_cache(self, hf_cache):
         _build_cache(
             hf_cache,

@@ -103,9 +103,9 @@ def test_audio_projector_loads_retry_and_share_download_exclusion():
     route_source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
 
     assert "has_audio_input = has_audio_input" in backend_source
-    assert "has_audio_input and not self._has_audio_input" in inspect.getsource(
-        llama_cpp.LlamaCppBackend._already_in_target_state
-    )
+    target_guard_source = inspect.getsource(llama_cpp.LlamaCppBackend._already_in_target_state)
+    assert "not self._has_audio_input" in target_guard_source
+    assert "not extra_args_disable_mmproj(extra_args)" in target_guard_source
     assert 'kwargs.get("is_vision") or kwargs.get("has_audio_input")' in guard_source
     assert "(config.is_vision or config.has_audio_input)" in route_source
     assert "config and config.has_audio_input" in route_source

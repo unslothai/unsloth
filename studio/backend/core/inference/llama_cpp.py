@@ -6178,6 +6178,17 @@ class LlamaCppBackend:
         ``self._cancel_event`` (defaults to it). ``near_path`` prefers a
         copy co-located with the main GGUF's cache snapshot.
         """
+        if _hf_env_offline() and near_path:
+            # Do not pair cached weights with an arbitrary projector from a
+            # different repo revision. A same-snapshot companion is safe; a
+            # cross-snapshot companion must pass the stricter identity check
+            # used by ModelConfig (including the same cached weight blob).
+            cached = _companion_snapshot_sibling(near_path, _pick_mmproj)
+            if cached:
+                logger.info("Reusing cached mmproj: %s", cached)
+                return cached
+            from utils.models.model_config import _compatible_cached_mmproj
+            return _compatible_cached_mmproj(hf_repo, near_path)
 
         return self._download_companion_gguf(
             hf_repo = hf_repo,
@@ -9868,7 +9879,11 @@ class LlamaCppBackend:
         # A previous HF load may have started text-only while its audio
         # projector was unavailable. Retry once the request knows audio input
         # is required instead of deduping to that degraded session forever.
-        if has_audio_input and not self._has_audio_input:
+        if (
+            has_audio_input
+            and not self._has_audio_input
+            and not extra_args_disable_mmproj(extra_args)
+        ):
             return False
         if (self._model_identifier or "").lower() != (model_identifier or "").lower():
             return False
