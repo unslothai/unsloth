@@ -153,6 +153,35 @@ huggingface = [
     "pyyaml",
     "nest-asyncio",
 ]
+huggingfacenotorch = [
+    "unsloth_zoo>=2026.7.6",
+    "wheel>=0.42.0",
+    "packaging",
+    "numpy",
+    "tqdm",
+    "psutil",
+    "tyro",
+    "protobuf",
+    "sentencepiece>=0.2.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
+    "accelerate>=0.34.1",
+    "peft>=0.18.0,!=0.11.0",
+    "huggingface_hub>=0.34.0",
+    "hf_transfer",
+    "diffusers",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
+    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "sentence-transformers",
+]
+amd = [
+    "unsloth[huggingfacenotorch]",
+    # 4-bit decode is unreliable on ROCm before 0.50.0, the first PyPI release
+    # carrying the full path: blocksize/warp decoupling (bnb #1887), fused SIMT
+    # GEMM on RDNA (#1979), RDNA3/4 workgroup fix (#2012). Keep in step with
+    # install.sh and studio/install_python_stack.py.
+    "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+    "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
 windows = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
