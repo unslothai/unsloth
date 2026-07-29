@@ -13,7 +13,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from core.inference.tools import _check_code_safety
+from core.inference.tools import _check_code_safety, _python_is_potentially_unsafe
 
 
 def _ok(code: str):
@@ -824,6 +824,39 @@ class TestPyYamlDeserialization:
     )
     def test_constructor_import_callable_and_namespace_copy_bypasses_blocked(self, code):
         _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "class X:\n    import yaml\nX.yaml.unsafe_load(payload)",
+            (
+                "import sys, yaml\n"
+                "_, yaml_module = sys.modules.popitem()\n"
+                "yaml_module.unsafe_load(payload)"
+            ),
+            (
+                "from importlib.metadata import EntryPoint\n"
+                "fn = EntryPoint(name='x', value='yaml:unsafe_load', group='x').load()\n"
+                "fn(payload)"
+            ),
+            (
+                "import yaml\n"
+                "class Evil(yaml.SafeLoader):\n"
+                "    pass\n"
+                "Evil.add_constructor('!run', run)\n"
+                "Evil(payload).get_single_data()"
+            ),
+            (
+                "import yaml\n"
+                "loader = yaml.SafeLoader(payload)\n"
+                "loader.add_constructor('!run', run)\n"
+                "loader.get_single_data()"
+            ),
+        ],
+    )
+    def test_class_entry_point_and_loader_instance_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+        assert _python_is_potentially_unsafe(code)
 
     @pytest.mark.parametrize(
         "code",
