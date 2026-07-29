@@ -3294,10 +3294,25 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
+def _parallel_slot_echo(llama_backend: LlamaCppBackend) -> dict:
+    """requested/effective parallel-slot fields for /load and /status echoes.
+
+    The diffusion runner ignores ``--parallel`` and never commits a count, so it
+    reports None like the non-GGUF paths; echoing the reset placeholder 1 would
+    fabricate an "invoked with 1 slot"."""
+    if llama_backend.is_diffusion:
+        return {"requested_parallel_slots": None, "parallel_slots": None}
+    return {
+        "requested_parallel_slots": llama_backend.requested_parallel_slots,
+        "parallel_slots": llama_backend.effective_parallel_slots,
+    }
+
+
 def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
+    requested_parallel_slots: Optional[int] = None,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -3306,10 +3321,21 @@ def _request_matches_loaded_settings(
     launched (user override, else a bundled family template such as the
     gemma-4 override), so the dedup compares against what the backend actually
     holds rather than the raw request field. Defaults to the request field for
-    callers that do not resolve a bundled override."""
+    callers that do not resolve a bundled override.
+
+    ``requested_parallel_slots`` is the resolved count the load would use
+    (per-load ``n_parallel``, else the server-wide default); None skips it."""
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
+        return False
+    # Requested-vs-requested for the same reason: the fitter may launch fewer
+    # slots. Diffusion ignores --parallel, so a change there must not reload.
+    if (
+        requested_parallel_slots is not None
+        and not llama_backend.is_diffusion
+        and int(requested_parallel_slots) != llama_backend.requested_parallel_slots
+    ):
         return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
@@ -4730,6 +4756,20 @@ def _guard_chat_load_against_training(
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
         )
 
+    # Size with the count that will actually launch, or a load that fits gets a
+    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
+    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
+    if is_gguf and n_parallel > 1:
+        if diffusion_kind is True:
+            n_parallel = 1
+        else:
+            try:
+                caps = LlamaCppBackend.probe_server_capabilities()
+                if caps.get("found") and not caps.get("supports_kv_unified"):
+                    n_parallel = 1
+            except Exception as e:
+                logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
+
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
@@ -5272,6 +5312,17 @@ async def _load_model_impl(
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
 
+        # Resolve the slot count once (per-load field, else the server-wide
+        # --parallel default) so the dedupe, the training guard and the load
+        # kwargs all size against what launches. app.state stays the launch
+        # intent / admission fallback; getattr because direct callers have no app.
+        _app_state = getattr(getattr(fastapi_request, "app", None), "state", None)
+        _n_parallel = (
+            request.n_parallel
+            if request.n_parallel is not None
+            else getattr(_app_state, "llama_parallel_slots", 1)
+        )
+
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         if request.gguf_variant or is_direct_gguf_request:
             gguf_variant_matches = is_direct_gguf_request or bool(
@@ -5289,6 +5340,7 @@ async def _load_model_impl(
                     request,
                     llama_backend,
                     effective_chat_template_override,
+                    requested_parallel_slots = _n_parallel,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
@@ -5343,6 +5395,7 @@ async def _load_model_impl(
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
                     requested_gpu_ids = llama_backend.requested_gpu_ids,
+                    **_parallel_slot_echo(llama_backend),
                 )
         else:
             if (
@@ -5481,7 +5534,7 @@ async def _load_model_impl(
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
-            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            n_parallel = _n_parallel,
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = bool(request.tensor_parallel),
             gpu_memory_mode = request.gpu_memory_mode,
@@ -5558,7 +5611,6 @@ async def _load_model_impl(
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests
             # during the (potentially long) GGUF download + llama-server start.
-            _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
 
             # Load kwargs common to HF and local modes; the two differ only by
             # the model-source args (hf_repo/-token vs gguf_path/mmproj).
@@ -5756,6 +5808,7 @@ async def _load_model_impl(
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
+                **_parallel_slot_echo(llama_backend),
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -6156,9 +6209,14 @@ async def validate_model(
                 requested_gpu_ids = effective_gpu_ids,
                 llama_extra_args = effective_extra_args,
                 n_parallel = (
-                    getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
-                    if fastapi_request is not None
-                    else 1
+                    request.n_parallel
+                    if request.n_parallel is not None
+                    # Same getattr chain as the load path: preflight must size like the load.
+                    else getattr(
+                        getattr(getattr(fastapi_request, "app", None), "state", None),
+                        "llama_parallel_slots",
+                        1,
+                    )
                 ),
                 cache_type_kv = request.cache_type_kv,
                 tensor_parallel = request.tensor_parallel,
@@ -6987,6 +7045,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
+                **_parallel_slot_echo(llama_backend),
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
