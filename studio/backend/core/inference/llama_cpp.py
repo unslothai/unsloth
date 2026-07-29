@@ -1697,9 +1697,20 @@ def _kv_unified_from_args(
     return enabled
 
 
-def _flash_attn_enabled_from_args(args: Optional[Iterable[str]], default: bool = True) -> bool:
-    """Resolve llama.cpp's last-wins flash-attention CLI setting."""
+def _flash_attn_enabled_from_args(
+    args: Optional[Iterable[str]],
+    default: bool = True,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Resolve llama.cpp's environment and last-wins flash-attention settings."""
     enabled = default
+    # llama.cpp applies LLAMA_ARG_FLASH_ATTN before parsing argv (arg.cpp set_env),
+    # so the CLI still wins. --flash-attn has no args_neg, so no LLAMA_ARG_NO_ twin.
+    value = (os.environ if env is None else env).get("LLAMA_ARG_FLASH_ATTN")
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        enabled = False
+    elif value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+        enabled = True
     values = [str(arg) for arg in args] if args else []
     for i, raw in enumerate(values):
         if _flag_name(raw) not in {"-fa", "--flash-attn"}:
@@ -9054,7 +9065,8 @@ class LlamaCppBackend:
                     int(self._DEFAULT_N_UBATCH if _effective_ubatch is None else _effective_ubatch),
                 )
                 self._flash_attn_enabled = (
-                    _flash_attn_enabled_from_args(_last_spawn_cmd) and self._architecture != "grok"
+                    _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)
+                    and self._architecture != "grok"
                 )
                 self._effective_cache_types = _effective_main_cache_types(
                     _last_spawn_cmd,
