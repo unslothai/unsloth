@@ -483,16 +483,21 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if manifest and not get_auto_unload_keep_kv():
                         _delete_resume_files(manifest)
                         manifest = None
+                    # Publish the reload state before unload_model clears the
+                    # active process. /status can then observe either the active
+                    # model or this stash, never a transient empty backend.
+                    _set_last_unloaded(freed, capabilities)
                     try:
                         await asyncio.to_thread(backend.unload_model)
                     except Exception:
-                        # Failed unload means nothing will stash the manifest.
+                        # Roll back the transitional stash only when the backend
+                        # is still resident. A partial teardown must remain
+                        # recoverable through the already-published identity.
+                        if backend.is_loaded:
+                            _set_last_unloaded(None)
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    # unload_model clears these flags; stash them with the
-                    # identity so /status can hydrate a newly opened client.
-                    _set_last_unloaded(freed, capabilities)
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")

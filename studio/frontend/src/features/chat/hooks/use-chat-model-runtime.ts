@@ -770,6 +770,10 @@ export function useChatModelRuntime() {
             !initialInFlightLoad &&
             !pendingReplacementRollback))
       ) {
+        // A resident-model re-selection is still a user intent. Invalidate a
+        // local pick that may be awaiting status/confirmation before it owns a
+        // run or publishes loadingModelPick.
+        if (modelId) modelSelectionIntentEpoch += 1;
         restorePreviousConfig();
         return;
       }
@@ -884,6 +888,9 @@ export function useChatModelRuntime() {
       if (!forceReload && isExternalModelId(selectedCheckpoint)) {
         const residentStatus = await getInferenceStatus().catch(() => null);
         if (modelSelectionIntentEpoch !== loadIntentId) {
+          if (latestExternalSelectionIntentId === modelSelectionIntentEpoch) {
+            restorePreviousConfig();
+          }
           if (throwOnError) {
             throw new Error("Model selection was superseded by a newer choice.");
           }

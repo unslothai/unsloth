@@ -290,6 +290,43 @@ def test_send_time_adoption_accepts_an_idle_unloaded_model():
     assert "if (!status.active_model && !status.idle_unloaded)" in adoption
 
 
+def test_idle_unload_publishes_stash_before_backend_teardown():
+    keepwarm = (
+        ROOT / "studio" / "backend" / "core" / "inference" / "llama_keepwarm.py"
+    ).read_text(encoding="utf-8")
+    transition = keepwarm.split(
+        "# Publish the reload state before unload_model",
+        1,
+    )[1].split("if manifest and freed:", 1)[0]
+    assert transition.index("_set_last_unloaded(freed, capabilities)") < transition.index(
+        "await asyncio.to_thread(backend.unload_model)"
+    )
+
+
+def test_resident_reselection_invalidates_pending_preflight():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    no_op = runtime.split(
+        "// A resident-model re-selection is still a user intent.",
+        1,
+    )[1].split("return;", 1)[0]
+    assert "if (modelId) modelSelectionIntentEpoch += 1;" in no_op
+
+
+def test_external_intent_restores_config_after_stale_status_check():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    # The stale branch immediately following the awaited status lookup is
+    # scoped to a hosted winner, matching the later confirmation branch.
+    stale = runtime.split(
+        "const residentStatus = await getInferenceStatus().catch(() => null);",
+        1,
+    )[1].split(
+        "if (\n          residentStatus &&",
+        1,
+    )[0]
+    assert "latestExternalSelectionIntentId === modelSelectionIntentEpoch" in stale
+    assert "restorePreviousConfig();" in stale
+
+
 def test_native_rollback_rechecks_cancellation_after_token_lease():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     rollback = runtime.split(
