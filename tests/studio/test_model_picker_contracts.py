@@ -1150,7 +1150,9 @@ def test_detail_settings_need_a_resolved_quant():
     bare-key fallback would apply it. openModelSettings already refuses; this
     entry point has to refuse the same way."""
     src = " ".join(_read("features/hub/hub-page.tsx").split())
-    guard = "if ( !ggufVariant && selectedModel.isGguf && selectedModel.requiresVariant )"
+    # `variant`, not the argument: a derived quant may have been replaced by the
+    # resident one first, and the guard has to judge what will actually be saved.
+    guard = "if (!variant && selectedModel.isGguf && selectedModel.requiresVariant) {"
     assert guard in src
     assert src.count("Couldn't determine which quant to configure.") == 2
 
@@ -1204,7 +1206,7 @@ def test_cached_repo_settings_are_keyed_by_the_repo_id():
     assert "model_path: target.id," in config_page
 
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert 'if (kind !== "cache") return resource.runId;' in hub
+    assert 'if (kind !== "cache" && resource.source !== "hub_cache") {' in hub
     assert "return resource.repoId ?? resource.runId;" in hub
     # Both openers and the Hub's own load resolve through it.
     assert hub.count("modelConfigIdentity(") == 3
@@ -1555,3 +1557,29 @@ def test_settings_open_reads_status_before_resolving_the_quant():
     assert "const refreshResidentModelStatus = useCallback((): Promise<void> => {" in page
     assert "const [res] = await Promise.all([ listGgufVariants(" in page
     assert "refreshResidentModelStatus(), ]);" in page
+
+
+def test_cached_repo_settings_key_follows_the_row_not_the_view():
+    """A repo in an inactive HF cache loads by snapshot path while its settings
+    are keyed by repo id. The same row is reachable from Discover, where the view
+    kind is "discover" and only the resource says it is a cache row, so keying
+    off the kind stranded the settings for exactly the case the helper exists to
+    handle: Run from Discover looked up the snapshot path, found nothing, and
+    loaded with default context, GPU and template."""
+    page = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert (
+        'if (kind !== "cache" && resource.source !== "hub_cache") {' in page
+    )
+
+
+def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():
+    """The on-device card resolves the quant it shows from the store's active
+    variant, and nothing re-reads status while the window keeps focus, so an
+    API-driven switch leaves that quant naming the model it displaced. A quant
+    the user picked in the card's selector is a choice and must survive; only a
+    derived one defers to the read."""
+    page = " ".join(_read("features/hub/hub-page.tsx").split())
+    card = " ".join(_read("features/hub/catalog/local-on-device-card.tsx").split())
+    assert "if (!quantIsUserPicked) { await refreshResidentModelStatus();" in page
+    assert "variant = settled.activeGgufVariant;" in page
+    assert "onOpenSettings(selectedQuant ?? null, quantIsUserPicked)" in card

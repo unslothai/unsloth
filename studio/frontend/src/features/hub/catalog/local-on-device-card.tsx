@@ -105,8 +105,14 @@ interface LocalOnDeviceCardProps {
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
-  /** Open settings for the quant this card is showing. */
-  onOpenSettings?: (ggufVariant: string | null) => void;
+  /**
+   * Open settings for the quant this card is showing.
+   *
+   * ``quantIsUserPicked`` says whether that quant came from a pick in this
+   * card's selector or was derived from the resident model, which decides
+   * whether a fresher status read may override it.
+   */
+  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
 }
 
 function formatAdapterLabel(
@@ -371,6 +377,14 @@ export function LocalOnDeviceCard({
         )?.quant ??
         sortedVariants?.[0]?.quant ??
         null);
+  // Only the first branch above is a choice; the rest are fallbacks that read the
+  // store, and the store can be stale for as long as this window keeps focus.
+  const quantIsUserPicked = Boolean(
+    selectedVariantOverride &&
+      sortedVariants?.some((variant) =>
+        ggufVariantsMatch(variant.quant, selectedVariantOverride),
+      ),
+  );
   const selectedVariant =
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
@@ -587,7 +601,9 @@ export function LocalOnDeviceCard({
                   label={`Settings for ${repoId}`}
                   // Pass the quant this card resolved, so the settings page edits the
                   // variant on screen rather than the repo.
-                  onClick={() => onOpenSettings(selectedQuant ?? null)}
+                  onClick={() =>
+                    onOpenSettings(selectedQuant ?? null, quantIsUserPicked)
+                  }
                 />
               )}
               {canUpdate && (

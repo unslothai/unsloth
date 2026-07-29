@@ -125,11 +125,19 @@ import type {
 // handed: a repo cached outside the active HF cache loads by snapshot path, while
 // the chat picker and the auto-switch index key it by repo id, so saving under the
 // path strands the settings. Local rows are keyed by load id in both places.
+// The row decides that, not the view it is being shown in: the same cached repo
+// is reachable from Discover, where the kind is "discover" while the resource is
+// still the cache row with its snapshot-path run id. Keying that off the kind
+// stranded the settings for exactly the case this exists to handle. `hub_cache`
+// is set only for a cached repo; a local row in the active HF cache is `hf_cache`
+// and stays on its run id, as the Downloaded row keys it.
 function modelConfigIdentity(
   kind: SelectedModelView["kind"],
   resource: SelectedResourceRef,
 ): string {
-  if (kind !== "cache") return resource.runId;
+  if (kind !== "cache" && resource.source !== "hub_cache") {
+    return resource.runId;
+  }
   return resource.repoId ?? resource.runId;
 }
 
@@ -1469,25 +1477,49 @@ export function ModelsPage() {
   // Opened from the detail view's on-device card, which passes in the quant it
   // resolved rather than making this re-derive it.
   const openSelectedModelSettings = useCallback(
-    (ggufVariant: string | null) => {
+    async (ggufVariant: string | null, quantIsUserPicked = false) => {
       if (!selectedModel) return;
+      // Share the sequence with openModelSettings: a pending variant lookup for
+      // another row must not land on top of this one.
+      const openSeq = ++settingsOpenSeq.current;
+      let variant = ggufVariant;
+      // The card derived this quant from the store's active variant, and nothing
+      // re-reads status while this window keeps focus, so an API-driven switch
+      // since the last focus event leaves it naming the model that switch
+      // displaced. A quant the user chose in the card is theirs and stands; a
+      // derived one defers to whatever a fresh read says is actually loaded.
+      if (!quantIsUserPicked) {
+        await refreshResidentModelStatus();
+        if (settingsOpenSeq.current !== openSeq) return;
+        const settled = useChatRuntimeStore.getState();
+        const settledCheckpoint =
+          settled.params.checkpoint &&
+          !isExternalModelId(settled.params.checkpoint)
+            ? settled.params.checkpoint
+            : null;
+        // Every name this model answers to, as the row menu path matches them.
+        const aliases = [
+          selectedModel.resource.runId,
+          selectedModel.resource.repoId,
+          selectedModel.resource.localPath,
+        ];
+        if (
+          settled.activeGgufVariant &&
+          aliases.some((alias) => modelIdsMatch(alias, settledCheckpoint))
+        ) {
+          variant = settled.activeGgufVariant;
+        }
+      }
       // The card passes null while its variant lookup is pending or after it failed,
       // so this needs the same guard openModelSettings applies: a model that needs a
       // quant cannot be configured without one.
-      if (
-        !ggufVariant &&
-        selectedModel.isGguf &&
-        selectedModel.requiresVariant
-      ) {
+      if (!variant && selectedModel.isGguf && selectedModel.requiresVariant) {
         toast.error("Couldn't determine which quant to configure.", {
           description:
             "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
         });
         return;
       }
-      // Share the sequence with openModelSettings: a pending variant lookup for
-      // another row must not land on top of this one.
-      settingsOpenSeq.current += 1;
       const id = selectedModel.resource.runId;
       const configId = modelConfigIdentity(
         selectedModel.kind,
@@ -1497,8 +1529,8 @@ export function ModelsPage() {
       setSettingsTarget({
         id,
         configId,
-        displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
-        ggufVariant,
+        displayName: variant ? `${leaf} · ${variant}` : leaf,
+        ggufVariant: variant,
         isGguf: selectedModel.isGguf,
         apiLoadable:
           selectedModel.isGguf &&
@@ -1506,14 +1538,14 @@ export function ModelsPage() {
         meta: {
           source: "local",
           isLora: selectedModel.modelFormat === "adapter",
-          ggufVariant: ggufVariant ?? undefined,
+          ggufVariant: variant ?? undefined,
           isGguf: selectedModel.isGguf,
           isDownloaded: selectedModel.isDownloaded,
           contextLength: null,
         },
       });
     },
-    [selectedModel],
+    [selectedModel, refreshResidentModelStatus],
   );
   // Whether the settings page is open on the model that is actually loaded, so it
   // can show the live launch config. A GGUF loaded from an inactive HF cache or

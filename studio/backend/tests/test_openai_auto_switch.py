@@ -5016,6 +5016,62 @@ def test_removal_of_a_path_still_only_touches_the_exact_key(monkeypatch):
     assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
 
 
+def test_forget_clears_the_filename_derived_key_a_load_still_reads(monkeypatch):
+    # The picker keyed a standalone .gguf by the quant label from its filename
+    # before it settled on the bare path, and the backfill carries those entries
+    # over from an upgraded browser. Forget sends the bare path, which the
+    # resolver cannot fold onto the suffixed key, while the loader reads that
+    # suffixed key after the bare one misses: the settings leave the UI and go
+    # on being applied to every API load, unreachable.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(
+        "/models/Qwen3-8B-Q4_K_M.gguf:q4_k_m", max_seq_length = 8192,
+    )
+    settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "/models/Qwen3-8B-Q4_K_M.gguf", remove = True,
+        ),
+        "tester",
+    )
+    assert settings.get_model_override("/models/Qwen3-8B-Q4_K_M.gguf:Q4_K_M") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_leaves_another_file_own_derived_key_alone(monkeypatch):
+    # The derived key is built from the forgotten file's own path and its own
+    # label, so a neighbour that happens to share a quant keeps its settings.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/Other-Q4_K_M.gguf:q4_k_m", max_seq_length = 4096)
+    settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "/models/Qwen3-8B-Q4_K_M.gguf", remove = True,
+        ),
+        "tester",
+    )
+    assert settings.get_model_override("/models/Other-Q4_K_M.gguf:Q4_K_M")[
+        "max_seq_length"
+    ] == 4096
+
+
+def test_forget_of_a_repo_quant_key_derives_nothing(monkeypatch):
+    # Only a bare .gguf path derives a label. An id that already names a quant is
+    # the entry the caller meant, and a repo id never gets a filename read out of
+    # it, so neither reaches the extra removal.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", remove = True),
+        "tester",
+    )
+    assert settings.get_model_override("unsloth/b-gguf:q4_k_m")["max_seq_length"] == 8192
+
+
 def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
     # A downloaded but unloaded GGUF asked for as org/model:latest missed the resolver,
     # so the switch could not load it (404ing on a quant that was never a quant with

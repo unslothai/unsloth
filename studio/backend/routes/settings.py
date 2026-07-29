@@ -399,6 +399,35 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     return split[0] if split is not None else None
 
 
+def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
+    """The stored ``<path>:LABEL`` entry for a bare standalone .gguf path, if any.
+
+    A loose file has no quant to choose between, so it is keyed by the bare path,
+    but the label derived from its filename is never empty and that is how the
+    picker keyed the same file before, so an upgraded install carries entries
+    under it. The auto-switch loader reads that spelling after the bare path
+    misses; resolve_model_override_key does not, since folding a POSIX path only
+    touches an existing suffix. None for an id that already names a quant, for a
+    repo id, and when nothing is stored under the derived key.
+    """
+    import os
+
+    if not model_id.lower().endswith(".gguf"):
+        return None
+    # Already qualified, so the caller named the entry it meant. Mirrors the
+    # loader, which derives a label only when the resolver gave it no variant.
+    if _bare_model_id(model_id) is not None:
+        return None
+    from hub.utils.gguf import extract_quant_label
+
+    label = extract_quant_label(os.path.basename(model_id))
+    if not label:
+        return None
+    # Through the resolver rather than a raw lookup: the browser lowercases the
+    # variant, and an ambiguous fold resolves to nothing rather than guessing.
+    return resolve_model_override_key(f"{model_id}:{label}")
+
+
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
@@ -450,6 +479,16 @@ def update_openai_auto_switch_override(
             # casing before storing, so a stale entry would survive forgetting.
             target_id = resolve_model_override_key(payload.model_id) or payload.model_id
             set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
+            # A standalone .gguf is keyed by its bare path now, but a load also
+            # reads the filename-derived <path>:LABEL entry an upgraded install
+            # still holds. Clearing only what the resolver sees leaves that one
+            # applying to every later API load, with the settings gone from the
+            # UI and no way left to reach them.
+            legacy_id = _legacy_standalone_gguf_key(payload.model_id)
+            if legacy_id and legacy_id != target_id:
+                set_model_override(
+                    legacy_id, llama_extra_args = [], max_seq_length = None,
+                )
         else:
             # Save under the key a load resolves to, as the removal branch does.
             # Saving the literal id leaves two keys for one model, which makes every
