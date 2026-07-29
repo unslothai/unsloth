@@ -887,3 +887,120 @@ def test_route_does_not_block_the_event_loop(stats_db, monkeypatch):
 
     # ~50 ticks fit in 0.5s; a blocking call on the loop would yield 0.
     assert ticks > 10, f"event loop stalled during stats computation ({ticks} ticks)"
+
+
+def test_an_oversized_token_counter_does_not_break_the_panel(stats_db):
+    """json parses ints of any width; float() gives up long before that."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "sane", "m", [(now - timedelta(hours = 1), _metadata(100, 50))])
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at) "
+            "VALUES ('bad', 'Bad', 'base', 'm', ?, ?)",
+            (_ms(now), _ms(now)),
+        )
+        huge = _metadata(100, 50)
+        # Wider than float can hold, so every counter reads as unusable.
+        oversized = int("9" * 309)
+        for field in ("promptTokens", "completionTokens", "totalTokens"):
+            huge["contextUsage"][field] = oversized
+        huge["timing"]["tokenCount"] = oversized
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('bad-a0', 'bad', 'assistant', '[]', ?, ?)",
+            (json.dumps(huge), _ms(now)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # The row degrades to zero instead of raising, and the absurd counter
+    # never reaches the totals; the healthy thread still reports.
+    stats = compute_profile_stats(days = 7)
+    assert stats["totals"]["totalTokens"] == 150
+    assert stats["totals"]["messages"] == 3
+
+
+def test_divergent_sibling_forks_keep_their_own_branch_messages(stats_db):
+    """fork_chat_thread copies one parent_id branch, so siblings differ."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    older = now - timedelta(hours = 3)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "root", "m", [(older, _metadata(100, 50))])
+        # A regeneration of the same turn, a second later.
+        regenerated = older + REPLY_DELAY + timedelta(seconds = 1)
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('root-a1', 'root', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(200, 100)), _ms(regenerated)),
+        )
+        # One fork per branch: each carries only its own reply.
+        for fork_id, stamp, meta in (
+            ("forkA", older + REPLY_DELAY, _metadata(100, 50)),
+            ("forkB", regenerated, _metadata(200, 100)),
+        ):
+            conn.execute(
+                "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, "
+                "updated_at, forked_from_thread_id, forked_from_message_id) "
+                "VALUES (?, 'fork', 'base', 'm', ?, ?, 'root', 'root-a0')",
+                (fork_id, _ms(now), _ms(now)),
+            )
+            conn.execute(
+                "INSERT INTO chat_messages (id, thread_id, role, content_json, "
+                "metadata_json, created_at) VALUES (?, ?, 'assistant', '[]', ?, ?)",
+                (f"{fork_id}-a0", fork_id, json.dumps(meta), _ms(stamp)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Both originals counted, both clones suppressed.
+    assert compute_profile_stats(days = 7)["totals"]["totalTokens"] == 450
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DELETE FROM chat_threads WHERE id = 'root'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    invalidate_profile_stats_cache()
+    stats = compute_profile_stats(days = 7)
+
+    # Each branch survives in exactly one fork, so nothing is lost or doubled.
+    assert stats["totals"]["totalTokens"] == 450
+    assert stats["totals"]["messages"] == 2
+
+
+def test_a_resume_that_never_logged_a_step_keeps_the_source_counters(stats_db):
+    """create_run claims the source before the continuation flushes a metric."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
+            "'/runs/out', 1)",
+        )
+        # Errored before its first training step: no final_step, no metrics.
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+            "VALUES ('cont', 'error', 'm', 'd', '{}', '2026-01-02T10:00:00', 20, NULL, 5, "
+            "'/runs/out', 0)",
+        )
+        conn.executemany(
+            "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
+            [("src", step, step * 100) for step in range(1, 11)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    training = compute_profile_stats(days = 7)["training"]
+
+    # The source's completed work is still the only work there is.
+    assert training["steps"] == 10
+    assert training["tokens"] == 1000

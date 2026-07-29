@@ -12,6 +12,7 @@ import {
   heatLevel,
   parseDayKey,
   seriesForMode,
+  windowBaseline,
 } from "../../utils/stats-format";
 import { StatsCard } from "./stat-primitives";
 
@@ -39,6 +40,7 @@ function buildColumns(
   daily: ProfileStatsDay[],
   values: number[],
   columns: number,
+  mode: ActivityMode,
 ): Cell[][] {
   if (daily.length === 0 || columns <= 0) return [];
 
@@ -52,6 +54,9 @@ function buildColumns(
   const capacity = columns * DAYS_PER_WEEK - trailing;
   const start = Math.max(0, daily.length - capacity);
   const visible = daily.slice(start);
+  // Cumulative is a running total over what the grid shows, so a narrow card
+  // that drops older weeks has to rebase off the last hidden day.
+  const baseline = windowBaseline(values, start, mode);
 
   const cells: Cell[] = [];
   // Pad so every column is a Monday-started week.
@@ -62,7 +67,11 @@ function buildColumns(
     cells.push({ key: `pad-${index}`, day: null, value: 0 });
   }
   for (const [index, day] of visible.entries()) {
-    cells.push({ key: day.date, day, value: values[start + index] ?? 0 });
+    cells.push({
+      key: day.date,
+      day,
+      value: (values[start + index] ?? 0) - baseline,
+    });
   }
 
   const grid: Cell[][] = [];
@@ -245,8 +254,8 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   const shaded = mode === "daily";
   const values = useMemo(() => seriesForMode(daily, mode), [daily, mode]);
   const grid = useMemo(
-    () => buildColumns(daily, values, columns),
-    [daily, values, columns],
+    () => buildColumns(daily, values, columns, mode),
+    [daily, values, columns, mode],
   );
   // The app language, not the browser's: those differ whenever the user picks
   // a language in Settings, and it has to be a dependency so switching while

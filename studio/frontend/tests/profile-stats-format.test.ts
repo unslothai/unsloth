@@ -11,6 +11,7 @@ import {
   heatLevel,
   parseDayKey,
   seriesForMode,
+  windowBaseline,
 } from "../src/features/profile/utils/stats-format.ts";
 
 test("compact numbers match the tile format", () => {
@@ -78,4 +79,35 @@ test("series modes reshape the same daily data", () => {
   // First three days are in the week of Mar 2 (35), Mar 9 starts a new week.
   assert.deepEqual(seriesForMode(daily, "weekly"), [35, 35, 35, 100]);
   assert.deepEqual(seriesForMode([], "weekly"), []);
+});
+
+test("a trimmed cumulative window rebases off the last hidden day", () => {
+  const daily = [
+    { date: "2026-01-01", tokens: 1000 },
+    { date: "2026-01-02", tokens: 2000 },
+    { date: "2026-01-03", tokens: 5 },
+    { date: "2026-01-04", tokens: 10 },
+  ];
+  const values = seriesForMode(daily, "cumulative");
+  assert.deepEqual(values, [1000, 3000, 3005, 3015]);
+
+  // Showing only the last two days: without rebasing, both bars sit at ~3000
+  // and the 5 vs 10 difference is invisible.
+  const baseline = windowBaseline(values, 2, "cumulative");
+  assert.equal(baseline, 3000);
+  assert.deepEqual(
+    values.slice(2).map((value) => value - baseline),
+    [5, 15],
+  );
+});
+
+test("nothing is rebased when the window shows everything", () => {
+  const values = [1, 3, 6];
+  assert.equal(windowBaseline(values, 0, "cumulative"), 0);
+});
+
+test("only cumulative rebases: daily and weekly are already per-window", () => {
+  const values = [10, 20, 5];
+  assert.equal(windowBaseline(values, 2, "daily"), 0);
+  assert.equal(windowBaseline(values, 2, "weekly"), 0);
 });

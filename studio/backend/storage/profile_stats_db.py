@@ -48,13 +48,19 @@ _cache: dict[str, Any] = {"fingerprint": None, "expires_at": 0.0, "payload": Non
 
 
 def _as_float(value: Any) -> Optional[float]:
-    """Coerce JSON numbers defensively; metadata is written by the client."""
+    """Coerce JSON numbers defensively; metadata is written by the client.
+
+    json accepts integers of any width, and float() raises OverflowError past
+    ~1e308, so one oversized counter would 500 the whole panel.
+    """
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return (
-            float(value) if value == value and value not in (float("inf"), float("-inf")) else None
-        )
+        try:
+            number = float(value)
+        except (OverflowError, ValueError):
+            return None
+        return number if number == number and number not in (float("inf"), float("-inf")) else None
     return None
 
 
@@ -187,33 +193,39 @@ class _MessageFold:
         bucket["threads"].add(thread_id)
 
 
-def _fork_keepers(conn) -> set[str]:
-    """One fork per source, elected to stand in for originals that are gone.
+def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
+    """For each original message, the one clone elected to stand in for it.
 
-    A clone is normally ignored because the original is counted instead. When
-    the original is not there any more, whether its thread was deleted or just
-    that message was pruned, the clones become the only record. Letting every
-    sibling count them would multiply the usage, so exactly one fork per source
-    is allowed to: the one holding the most copied rows, which is the fork that
-    branched latest and therefore carries the longest ancestry.
+    A clone is normally ignored because the original is counted instead. Once
+    the original is gone, whether its thread was deleted or just that row was
+    pruned, the clones become the only record. Letting every sibling count them
+    would multiply the usage, so exactly one may.
+
+    Electing per message rather than per fork matters because fork_chat_thread
+    copies one parent_id branch, not the whole thread: sibling forks taken from
+    a retry and a regeneration hold different rows, and a per-fork winner would
+    silently drop whatever only the loser carries.
     """
     rows = conn.execute(
         """
-        SELECT t.id, t.forked_from_thread_id AS source_id,
-               (SELECT COUNT(*) FROM chat_messages m
-                 WHERE m.thread_id = t.id AND m.created_at < t.created_at) AS copied
-        FROM chat_threads t
+        SELECT m.thread_id, m.created_at, m.role,
+               t.forked_from_thread_id AS source_id
+        FROM chat_messages m
+        JOIN chat_threads t ON t.id = m.thread_id
         WHERE t.forked_from_thread_id IS NOT NULL
+          AND m.created_at < t.created_at
         """
-    ).fetchall()
+    )
 
-    best: dict[str, tuple[int, str]] = {}
+    best: dict[tuple[str, int, str], str] = {}
     for row in rows:
-        rank = (_as_int(row["copied"]), row["id"])
-        current = best.get(row["source_id"])
-        if current is None or rank > current:
-            best[row["source_id"]] = rank
-    return {thread_id for _, thread_id in best.values()}
+        key = (row["source_id"], _as_int(row["created_at"]), row["role"])
+        thread_id = row["thread_id"]
+        current = best.get(key)
+        # Any stable winner works; lowest id keeps the choice reproducible.
+        if current is None or thread_id < current:
+            best[key] = thread_id
+    return best
 
 
 def _surviving_original_keys(conn) -> set[tuple[str, int, str]]:
@@ -296,7 +308,7 @@ def _fold_messages(conn, zone) -> _MessageFold:
         source_id = row["forked_from_thread_id"]
         if source_id and created_at < _as_int(row["thread_created_at"]):
             original = (source_id, created_at, row["role"])
-            if original in surviving or thread_id not in keepers:
+            if original in surviving or keepers.get(original) != thread_id:
                 continue
 
         fold.messages += 1
@@ -423,6 +435,11 @@ def _superseded(prefix: str = "r.") -> str:
     ``delete_run`` never clears the flag, so the continuation has to still be
     there. Otherwise deleting it would strand the source at zero while its row
     and metrics stay visible in history.
+
+    The continuation also has to have reached the source's step. ``create_run``
+    claims the source the moment a resume starts, but ``final_step`` is only
+    written on the first metric flush, so a continuation that fails before then
+    would take the source's completed work down with it.
     """
     return f"""
         {prefix}resume_blocked = 1
@@ -431,6 +448,8 @@ def _superseded(prefix: str = "r.") -> str:
             SELECT 1 FROM training_runs continuation
             WHERE continuation.output_dir = {prefix}output_dir
               AND continuation.started_at > {prefix}started_at
+              AND COALESCE(continuation.final_step, 0)
+                  >= COALESCE({prefix}final_step, 0)
         )
     """
 

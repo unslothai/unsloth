@@ -103,6 +103,20 @@ export type ActivityMode = "daily" | "weekly" | "cumulative";
  * since the backend caps the series and seeding it with everything older would
  * flatten every bar against a baseline the grid cannot show.
  */
+/**
+ * What to subtract from a cumulative series once the grid drops older days.
+ * Without it the first visible bar opens at the hidden total and the whole
+ * window flattens against a baseline the user cannot see.
+ */
+export function windowBaseline(
+  values: number[],
+  start: number,
+  mode: ActivityMode,
+): number {
+  if (mode !== "cumulative" || start <= 0) return 0;
+  return values[start - 1] ?? 0;
+}
+
 export function seriesForMode(
   daily: Array<{ date: string; tokens: number }>,
   mode: ActivityMode,
