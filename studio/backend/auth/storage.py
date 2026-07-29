@@ -9,6 +9,7 @@ import ipaddress
 import os
 import secrets
 import sqlite3
+import tempfile
 import threading
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -30,6 +31,97 @@ _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 _bootstrap_password: Optional[str] = None
 
 
+def _bootstrap_file_bytes(password: str) -> bytes:
+    """Exact on-disk form: the secret plus one LF.
+
+    Bytes, not text: text mode writes CRLF on Windows, and `$(cat ...)` strips
+    the LF but leaves the CR attached to the credential.
+    """
+    return (password + "\n").encode("utf-8")
+
+
+def _persist_bootstrap_password(password: str) -> None:
+    """Atomically write the bootstrap password 0600, LF terminated on every OS.
+
+    A partial write would destroy the only plaintext recovery credential.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        prefix = f".{_BOOTSTRAP_PW_PATH.name}.", dir = _BOOTSTRAP_PW_PATH.parent
+    )
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(_bootstrap_file_bytes(password))
+        try:
+            os.chmod(tmp_name, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_name, _BOOTSTRAP_PW_PATH)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
+    """Append the LF a pre-newline release left off.
+
+    Append-only, and only when the file is exactly the credential:
+    clear_bootstrap_password() may unlink or (when unlink fails, notably on
+    Windows while this descriptor is open) truncate through another descriptor
+    after we read, so a rewrite could restore revoked plaintext. An append
+    cannot: worst case is a lone "\\n" over a cleared file, which strips back to
+    no bootstrap password. Pre-newline releases wrote no terminator at all, so
+    that is the only shape in the wild; anything else reads fine, since every
+    reader strips, and is left alone.
+    """
+    if raw != password.encode("utf-8"):
+        return
+
+    # O_BINARY: without it Windows opens in text mode and turns the LF straight
+    # back into CRLF, the bug being fixed.
+    fd = os.open(
+        _BOOTSTRAP_PW_PATH,
+        os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0),
+    )
+    try:
+        os.write(fd, b"\n")
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            # fchmod only reached Windows in 3.13.
+            pass
+    finally:
+        os.close(fd)
+
+
+def _read_persisted_bootstrap_password() -> Optional[str]:
+    """Read the persisted password, normalising the file if it is malformed."""
+    if not _BOOTSTRAP_PW_PATH.is_file():
+        return None
+
+    # No caller handles a raise, so an unreadable file has to mean "no bootstrap
+    # password", not a dead backend. We write UTF-8, so undecodable bytes are
+    # damage whose plaintext is worthless anyway.
+    try:
+        raw = _BOOTSTRAP_PW_PATH.read_bytes()
+        password = raw.decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not password:
+        return None
+
+    # Older releases wrote no terminator; best-effort, a read-only auth dir must
+    # not fail startup.
+    if raw != _bootstrap_file_bytes(password):
+        try:
+            _normalise_bootstrap_file(raw, password)
+        except OSError:
+            pass
+    return password
+
+
 def generate_bootstrap_password() -> str:
     """Generate a 4-word diceware passphrase and persist it to disk.
 
@@ -43,10 +135,10 @@ def generate_bootstrap_password() -> str:
         return _bootstrap_password
 
     # Persisted from a previous run?
-    if _BOOTSTRAP_PW_PATH.is_file():
-        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
-        if _bootstrap_password:
-            return _bootstrap_password
+    persisted = _read_persisted_bootstrap_password()
+    if persisted:
+        _bootstrap_password = persisted
+        return _bootstrap_password
 
     # First startup: generate a fresh passphrase.
     import diceware
@@ -57,11 +149,7 @@ def generate_bootstrap_password() -> str:
 
     # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
-    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password, encoding = "utf-8")
-    try:
-        os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
-    except OSError:
-        pass
+    _persist_bootstrap_password(_bootstrap_password)
 
     return _bootstrap_password
 
@@ -72,19 +160,14 @@ def get_bootstrap_password() -> Optional[str]:
 
 
 def _load_bootstrap_password() -> Optional[str]:
-    """Load an existing bootstrap password without creating one."""
+    """Load an existing bootstrap password without creating one.
+
+    Upgrades take this path, not generate_bootstrap_password()
+    (ensure_default_admin short-circuits once the admin row exists), so it has
+    to normalise too.
+    """
     global _bootstrap_password
-    _bootstrap_password = None
-    if _BOOTSTRAP_PW_PATH.is_file():
-        # No caller handles a raise, so an unreadable file has to mean "no bootstrap
-        # password", not a dead backend. We write UTF-8, so bytes that will not
-        # decode are damage whose plaintext is worthless anyway.
-        try:
-            bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            return _bootstrap_password
-        if bootstrap_password:
-            _bootstrap_password = bootstrap_password
+    _bootstrap_password = _read_persisted_bootstrap_password()
     return _bootstrap_password
 
 
