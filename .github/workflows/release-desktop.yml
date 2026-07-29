@@ -766,6 +766,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
+      PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
@@ -911,6 +912,8 @@ jobs:
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
               'version': os.environ['APP_VERSION'],
+              # App version is SemVer; CHANGELOG.md is keyed by the backend release.
+              'pypi_version': os.environ['PYPI_VERSION'],
               'notes': notes,
               'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
               'platforms': {

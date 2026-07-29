@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.7.5"
+__version__ = "2026.7.6"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -2471,7 +2471,7 @@ def _get_statistics(statistics = None, force_download = True):
                     for vendor_file in vendor_files:
                         path = Path(vendor_file)
                         if path.is_file():
-                            file_content = path.read_text().lower()
+                            file_content = path.read_text(encoding = "utf-8").lower()
                             if "amazon" in file_content:
                                 return "aws"
                             elif "microsoft corporation" in file_content:

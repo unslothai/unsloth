@@ -296,7 +296,7 @@ def detect_hardware() -> DeviceType:
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
         CHAT_ONLY_REASON = "no_gpu"
-    print("Hardware detected: CPU (no GPU backend available)")
+    print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
 
@@ -776,7 +776,7 @@ def _rocm_linux_sysfs_gpu_busy_pct() -> Optional[float]:
         files = glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
         if not files:
             return None
-        values = [int(open(f).read().strip()) for f in files]
+        values = [int(open(f, encoding = "utf-8").read().strip()) for f in files]
         return round(sum(values) / len(values), 1)
     except Exception:
         return None
@@ -790,7 +790,7 @@ def _rocm_linux_sysfs_temp_c() -> Optional[float]:
         files = glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/temp1_input")
         if not files:
             return None
-        temps = [int(open(f).read().strip()) / 1000.0 for f in files]
+        temps = [int(open(f, encoding = "utf-8").read().strip()) / 1000.0 for f in files]
         return round(max(temps), 1)
     except Exception:
         return None
@@ -807,7 +807,9 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         ):
             files = glob.glob(pattern)
             if files:
-                watts = sum(int(open(f).read().strip()) / 1_000_000.0 for f in files)
+                watts = sum(
+                    int(open(f, encoding = "utf-8").read().strip()) / 1_000_000.0 for f in files
+                )
                 return round(watts, 1)
         return None
     except Exception:
@@ -828,6 +830,8 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
@@ -852,8 +856,8 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         total_files = glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
         if not used_files or not total_files:
             return None, None
-        used_bytes = sum(int(open(f).read().strip()) for f in used_files)
-        total_bytes = sum(int(open(f).read().strip()) for f in total_files)
+        used_bytes = sum(int(open(f, encoding = "utf-8").read().strip()) for f in used_files)
+        total_bytes = sum(int(open(f, encoding = "utf-8").read().strip()) for f in total_files)
         if total_bytes == 0:
             return None, None
         return round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2)
@@ -893,7 +897,7 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
             continue
         props: dict[str, int] = {}
         try:
-            with open(os.path.join(node_dir, "properties")) as f:
+            with open(os.path.join(node_dir, "properties"), encoding = "utf-8") as f:
                 for line in f:
                     parts = line.split()
                     if len(parts) == 2:
@@ -901,7 +905,7 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
                             props[parts[0]] = int(parts[1])
                         except ValueError:
                             continue
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return []  # unreadable node could be a GPU: fail closed, don't shift
         if props.get("simd_count", 0) <= 0:
             continue  # CPU node, not a GPU
@@ -979,9 +983,9 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
             if not bdf:
                 continue
             try:
-                with open(os.path.join(dev_dir, "mem_info_vram_used")) as f:
+                with open(os.path.join(dev_dir, "mem_info_vram_used"), encoding = "utf-8") as f:
                     used_bytes = int(f.read().strip())
-                with open(os.path.join(dev_dir, "mem_info_vram_total")) as f:
+                with open(os.path.join(dev_dir, "mem_info_vram_total"), encoding = "utf-8") as f:
                     total_bytes = int(f.read().strip())
             except (OSError, ValueError):
                 continue
@@ -1025,6 +1029,8 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
@@ -1704,7 +1710,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         "backend": _backend_label(device),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 
@@ -2575,8 +2581,70 @@ def _backend_visible_devices_env() -> Optional[str]:
     return os.environ.get("CUDA_VISIBLE_DEVICES")
 
 
+def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """Return llama.cpp Vulkan devices, or None when Vulkan is not installed."""
+    # Vulkan is a llama.cpp inference backend, not a PyTorch training device, so
+    # keep it separate from the PyTorch/MLX training-device report.
+    try:
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _apply_igpu_host_reserve_mib,
+        )
+    except Exception as e:
+        logger.debug("Could not inspect the llama.cpp Vulkan backend: %s", e)
+        return None
+
+    try:
+        if not LlamaCppBackend._is_vulkan_backend():
+            return None
+    except Exception as e:
+        logger.debug("Could not identify the llama.cpp Vulkan backend: %s", e)
+        return None
+
+    result = {
+        "available": False,
+        "backend": "vulkan",
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": [],
+        "index_kind": "vulkan",
+    }
+    try:
+        for row in LlamaCppBackend.vulkan_device_inventory():
+            ordinal = row["index"]
+            shared_memory = bool(row["is_igpu"])
+            free_mib = _apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
+            total_mib = 0 if shared_memory else row["total_mib"]
+            budget_mib = total_mib or free_mib
+            used_mib = max(0, total_mib - free_mib) if total_mib else None
+            result["devices"].append(
+                {
+                    "index": ordinal,
+                    # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins,
+                    # so unlike a torch-xpu relative ordinal these are selectable.
+                    "index_kind": "vulkan",
+                    "visible_ordinal": ordinal,
+                    "name": row["name"],
+                    "memory_total_gb": round(budget_mib / 1024, 2),
+                    "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
+                    "vram_free_gb": round(free_mib / 1024, 2),
+                    "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
+                    if used_mib is not None and total_mib > 0
+                    else None,
+                    "shared_memory": shared_memory,
+                }
+            )
+    except Exception as e:
+        logger.debug("Vulkan GPU visibility query failed: %s", e)
+        return result
+
+    result["available"] = bool(result["devices"])
+    return result
+
+
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
+
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
         # Try native SMI first (nvidia-smi; skipped for ROCm).
@@ -2668,7 +2736,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 

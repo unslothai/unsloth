@@ -2672,7 +2672,7 @@ class TestLatestTierForces16Bit:
 
     def _read(self, rel):
         backend_dir = Path(__file__).resolve().parent.parent
-        return (backend_dir / rel).read_text()
+        return (backend_dir / rel).read_text(encoding = "utf-8")
 
     def test_worker_guard_present(self):
         src = self._read("core/inference/worker.py")

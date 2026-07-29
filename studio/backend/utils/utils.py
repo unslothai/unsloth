@@ -108,13 +108,15 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
                 ref = repo_dir / "refs" / "main"
                 if not ref.is_file():
                     continue
-                commit = ref.read_text().strip()
+                commit = ref.read_text(encoding = "utf-8").strip()
                 if not commit:
                     continue
                 snapshot = repo_dir / "snapshots" / commit
                 if snapshot.is_dir():
                     return snapshot
-            except OSError:
+            # UnicodeDecodeError is a ValueError, not an OSError: a torn refs
+            # file must keep meaning "not cached here", not fail the offline check.
+            except (OSError, UnicodeDecodeError):
                 continue
     return None
 

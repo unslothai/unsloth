@@ -31,6 +31,10 @@ pub const TAIL_MAX_LINES: usize = 1000;
 pub const TAIL_MAX_BYTES: usize = 200 * 1024;
 pub const REPORT_MAX_BYTES: usize = 1024 * 1024;
 
+pub(crate) fn redact_for_display(text: &str) -> String {
+    redaction::redact_text(text, &mut redaction::RedactionReport::default())
+}
+
 pub(crate) const MAX_STATE_ITEMS: usize = 200;
 pub(crate) const MAX_PHASE_LINE_BYTES: usize = 16 * 1024;
 pub(crate) const FOOTER_BUDGET_BYTES: usize = 8 * 1024;
