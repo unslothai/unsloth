@@ -95,7 +95,10 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
 } from "./provider-capabilities";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  isLocalModelPath,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -394,6 +397,9 @@ export function ChatSettingsPanel({
   const isMobile = useIsMobile();
   const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const currentCheckpoint = params.checkpoint;
+  const activeModelIsLocal = useChatRuntimeStore(
+    (s) => s.activeModelIsLocal,
+  );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   // Direct-file / custom-folder GGUFs load without a variant label but still
   // report a GGUF context, so detect them via the context and the checkpoint
@@ -403,6 +409,13 @@ export function ChatSettingsPanel({
     isLoadedGguf ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  // activeModelIsLocal is the backend's own classification and covers native
+  // picks. Two things must not decide this: activeNativePathToken, which
+  // status reconciliation keeps across a switch to a remote GGUF (no
+  // replacement token exists), and a bare .gguf suffix, since the backend
+  // reads a one-slash org/name.gguf as a repository id, not a file.
+  const isLocalGguf =
+    isGguf && (activeModelIsLocal || isLocalModelPath(currentCheckpoint ?? ""));
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
@@ -853,7 +866,9 @@ export function ChatSettingsPanel({
                       : specFallbackReason === "runtime_error"
                         ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
                         : specFallbackReason === "drafter_not_found"
-                          ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                          ? isLocalGguf
+                            ? "This local model supports MTP, but no matching drafter file was found. Place its mtp-*.gguf beside the model or in its MTP folder, then reload the model."
+                            : "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
                           : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
                               llamaUpdateStatus?.update_available
                                 ? " Update llama.cpp to enable it."

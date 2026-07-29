@@ -29,7 +29,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 import hashlib
 import json
 import threading
@@ -1306,6 +1306,47 @@ def _colocated_first_split_shard(path: Path) -> tuple[Optional[Path], bool]:
     return first, first is not None and len(indices) == total
 
 
+def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
+    """Every shard beside *path*, and whether the declared set is complete.
+
+    A non-split path is itself a complete one-file set. Callers that hand a
+    path to llama-server need this: it opens the sibling shards implicitly, so
+    an incomplete set fails at startup and every shard needs validating.
+    """
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return [path], True
+
+    prefix = match.group("prefix").casefold()
+    total_text = match.group("total")
+    total = int(total_text)
+    if total < 1:
+        return [], False
+
+    found: dict[int, Path] = {}
+    try:
+        for sibling in path.parent.iterdir():
+            sibling_match = _GGUF_SPLIT_FILE_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group("prefix").casefold() != prefix
+                or sibling_match.group("total") != total_text
+            ):
+                continue
+            try:
+                if not sibling.is_file():
+                    continue
+            except OSError:
+                continue
+            index = int(sibling_match.group("index"))
+            if 1 <= index <= total:
+                found[index] = sibling
+    except OSError:
+        return [], False
+
+    return [found[i] for i in sorted(found)], len(found) == total
+
+
 def _local_gguf_load_path(path: Path) -> Path:
     """Choose a loadable local path while preserving complete symlink sets."""
     if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
@@ -1446,7 +1487,12 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
-def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+def detect_mtp_file(
+    path: str,
+    search_root: Optional[str] = None,
+    skip_root: bool = False,
+    accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
     """Find the separate MTP drafter (``mtp-*.gguf``) for a local GGUF model.
 
     The drafter that pairs with the main weights sits at the repo/snapshot
@@ -1460,31 +1506,164 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
     unsloth names the drafter ``mtp-<model>.gguf`` where ``<model>`` prefixes
     the weight filename across all Gemma 4 repos (e.g.
     ``mtp-gemma-4-12B-it.gguf`` next to ``gemma-4-12B-it-qat-Q4_0.gguf``).
-    An unmatched drafter is skipped (fail-safe: no MTP).
+    If the root drafter is absent, also accept its precision copy under the
+    repository's ``MTP/`` directory. An unmatched drafter is skipped.
+
+    ``skip_root`` scans only ``MTP/``, for callers that must discard an
+    out-of-bounds root drafter and still want the subdir copy (native loads).
+    ``accept`` filters candidates in preference order, so a caller with extra
+    rules (a native lease) keeps scanning instead of treating the first
+    rejection as no drafter at all.
     """
+
+    def _pairing_stem(name: str) -> str:
+        stem = Path(name).stem.lower()
+        if stem.startswith("mtp-"):
+            stem = stem[len("mtp-") :]
+        # Shard suffix sits outside the quant token, so strip it first or the
+        # anchored strip below cannot match.
+        stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
+        if stem.endswith("-mtp"):
+            stem = stem[: -len("-mtp")]
+        # Full quant vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too.
+        # The optional bpw modifier goes with it, as _extract_quant_label does.
+        return re.sub(
+            rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
+            "",
+            stem,
+            flags = re.IGNORECASE,
+        )
+
+    def _drafter_launch_path(candidate: Path) -> str:
+        # llama-server takes shard 1 as the model path, and a split copy must
+        # stay on its snapshot path: the blob target has no sibling shard
+        # names. Single-file drafters still resolve, as callers expect.
+        loadable = _local_gguf_load_path(candidate)
+        if _GGUF_SPLIT_FILE_RE.match(loadable.name):
+            return str(loadable)
+        return str(loadable.resolve())
+
+    def _matches_weight(candidate: Path) -> bool:
+        if weight_name is None:
+            return True
+        stem = _pairing_stem(candidate.name)
+        return (
+            bool(stem)
+            and weight_name.startswith(stem)
+            and (len(weight_name) == len(stem) or not weight_name[len(stem)].isalnum())
+        )
+
+    def _launchable(candidate: Path) -> bool:
+        # An incomplete split set makes llama-server fail its draft startup and
+        # would disable MTP entirely, so skip it and let a complete copy win.
+        try:
+            _, complete = colocated_split_shards(candidate)
+        except OSError:
+            return False
+        return complete
+
+    def _smallest_first(candidate: Path) -> tuple[int, int, str]:
+        # Cheapest compatible copy wins. Size first: a fixed precision list
+        # ranked unknown quants behind BF16, so a small K-quant lost to a far
+        # larger BF16. Precision breaks size ties, name keeps it stable.
+        # Candidates are collapsed to shard 1, so a split copy must be summed
+        # across its shards or it would outrank a smaller single file.
+        name = candidate.name.lower()
+        try:
+            shards, _ = colocated_split_shards(candidate)
+            size = sum(shard.stat().st_size for shard in shards)
+        except OSError:
+            size = sys.maxsize
+        if "-q4_0" in name:
+            precision = 0
+        elif "-q8_0" in name:
+            precision = 1
+        elif "-bf16" in name or "-f16" in name:
+            precision = 2
+        else:
+            precision = 3
+        return size, precision, name
+
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
     dirs = [start_dir]
     if search_root is not None:
         dirs.append(Path(search_root))
-    for d in dirs:
-        try:
-            entries = sorted(d.iterdir())
-        except OSError:
-            continue
-        for f in entries:
-            name = f.name.lower()
-            if not (name.startswith("mtp-") and name.endswith(".gguf")):
-                continue
-            stem = name[len("mtp-") : -len(".gguf")]
-            if not stem or (weight_name is not None and not weight_name.startswith(stem)):
-                continue
+    if not skip_root:
+        for d in dirs:
             try:
-                if f.is_file():
-                    return str(f.resolve())
+                entries = sorted(d.iterdir())
             except OSError:
                 continue
+            for f in entries:
+                name = f.name.lower()
+                if not (name.startswith("mtp-") and name.endswith(".gguf")):
+                    continue
+                if not _matches_weight(f):
+                    continue
+                try:
+                    if not (f.is_file() and _launchable(f)):
+                        continue
+                    launch = _drafter_launch_path(f)
+                except OSError:
+                    continue
+                if accept is not None and not accept(launch):
+                    continue
+                return launch
+
+    subdir_candidates: list[Path] = []
+    for d in dirs:
+        try:
+            parent_entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        mtp_dirs: list[Path] = []
+        for entry in parent_entries:
+            if entry.name.casefold() != "mtp":
+                continue
+            try:
+                if entry.is_dir():
+                    mtp_dirs.append(entry)
+            except OSError:
+                continue
+        for mtp_dir in mtp_dirs:
+            try:
+                entries = sorted(mtp_dir.iterdir())
+            except OSError:
+                continue
+            for f in entries:
+                # _is_mtp_drafter accepts everything under MTP/ by design (it
+                # excludes them from variant menus). Too broad to include on:
+                # a weight copy here would launch as --model-draft. Require a
+                # published drafter name: mtp-<model> or <model>-MTP.
+                lower = f.name.lower()
+                if not lower.endswith(".gguf"):
+                    continue
+                # Drop the shard suffix first: an old-scheme split copy is
+                # named <model>-Q8_0-MTP-00001-of-00002.gguf, whose stem does
+                # not end in -mtp.
+                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
+                if not (lower.startswith("mtp-") or stem.endswith("-mtp")):
+                    continue
+                if not _matches_weight(f):
+                    continue
+                try:
+                    if f.is_file() and _launchable(f):
+                        # Collapse a split copy to shard 1 before ranking.
+                        subdir_candidates.append(_local_gguf_load_path(f))
+                except OSError:
+                    continue
+
+    for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
+        try:
+            resolved = _drafter_launch_path(candidate)
+        except OSError:
+            continue
+        if accept is not None and not accept(resolved):
+            continue
+        logger.info(f"Detected MTP subdirectory drafter: {resolved}")
+        return resolved
     return None
 
 
@@ -1701,27 +1880,15 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
 
     selected = Path(selected_path)
     gguf_path = Path(gguf_file)
-    if selected.suffix.lower() != ".gguf":
-        return selected_path
-
-    gguf_dir = gguf_path.parent
-    if not gguf_dir.name:
-        return str(gguf_dir)
-
-    quant_dir_re = (
-        r"(UD-)?("
-        r"MXFP[0-9]+(?:_[A-Z0-9]+)*"
-        r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-        r"|TQ[0-9]+_[0-9]+"
-        r"|Q[0-9]+_K_[A-Z]+"
-        r"|Q[0-9]+_[0-9]+"
-        r"|Q[0-9]+_K"
-        r"|BF16|F16|F32"
-        r")"
-    )
-    if re.fullmatch(quant_dir_re, gguf_dir.name, re.IGNORECASE):
-        return str(gguf_dir.parent)
-    return str(gguf_dir)
+    # One quant vocabulary, shared: a local copy of it silently fell behind on
+    # the bpw modifier, which left IQ4_XS-3.53bpw unrecognised as a quant dir.
+    quant_dir_re = rf"{_GGUF_KNOWN_QUANT_RE.pattern}(-[0-9]+(?:\.[0-9]+)?bpw)?"
+    search_dir = gguf_path.parent if selected.suffix.lower() == ".gguf" else selected
+    if not search_dir.name:
+        return str(search_dir)
+    if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
+        return str(search_dir.parent)
+    return str(search_dir)
 
 
 def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):

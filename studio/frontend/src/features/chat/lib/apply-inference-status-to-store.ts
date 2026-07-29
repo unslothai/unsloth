@@ -326,6 +326,7 @@ export function applyActiveModelStatusToStore(
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
+    activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     // The spec / KV seeds share the GPU-fields reseed mechanism below: a
     // non-GGUF status leaves their loaded baselines null, so the "unseeded"
