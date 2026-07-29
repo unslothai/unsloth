@@ -83,7 +83,7 @@ export function OwnerAvatar({
     );
   }
 
-  if (isUnslothOwner(owner)) {
+  if (isUnslothOwner(owner) && !remote) {
     return (
       <ProviderLogoTile
         provider={UNSLOTH_OWNER_LOGO}
