@@ -93,13 +93,10 @@ def _new_chat_effects() -> list[tuple[list[str], str]]:
         "function ThreadNewChatSwitch(",
         "\nfunction ActiveThreadSync(",
     )
-    matches = re.findall(
-        r"useEffect\(\(\) => \{\n(.*?)\n  \}, \[([^\]]*)\]\);", component, re.S
-    )
+    matches = re.findall(r"useEffect\(\(\) => \{\n(.*?)\n  \}, \[([^\]]*)\]\);", component, re.S)
     assert matches, "ThreadNewChatSwitch effects not found"
     effects = [
-        ([name.strip() for name in deps.split(",") if name.strip()], body)
-        for body, deps in matches
+        ([name.strip() for name in deps.split(",") if name.strip()], body) for body, deps in matches
     ]
     for deps, _body in effects:
         unknown = set(deps) - BOUND_NAMES
@@ -367,9 +364,9 @@ def test_reloaded_new_chat_recounts_once_status_hydrates():
             """
         )
     )
-    assert out["beforeHydration"]["counts"] == 0, (
-        "nothing can be counted before the status response names the model"
-    )
+    assert (
+        out["beforeHydration"]["counts"] == 0
+    ), "nothing can be counted before the status response names the model"
     assert out["beforeHydration"]["contextUsage"] is None
     assert out["activeThreadId"] is None
     assert out["counts"] == 1, (
