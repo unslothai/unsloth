@@ -94,7 +94,6 @@ def test_neutralize_covers_every_turn_end_token():
     Pinning the two together stops them drifting apart (#7066).
     """
     from core.inference.chat_eos import _CHAT_TURN_END_TOKENS
-
     for token in _CHAT_TURN_END_TOKENS:
         assert token not in neutralize_control_markup(f"a {token} b"), token
         # A turn end is a turn boundary, so replayed assistant text loses it too.
@@ -199,7 +198,13 @@ class _JinjaTokenizer:
     def __init__(self, template: str):
         self._template = template
 
-    def apply_chat_template(self, messages, tokenize = False, add_generation_prompt = True, **kw):
+    def apply_chat_template(
+        self,
+        messages,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
         def _raise(message):
             raise jinja2.exceptions.TemplateError(message)
 
