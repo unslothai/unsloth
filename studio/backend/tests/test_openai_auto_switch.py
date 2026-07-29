@@ -724,7 +724,6 @@ def _mock_override_store(monkeypatch):
     return store
 
 
-
 @pytest.fixture
 def override_store(monkeypatch):
     """The in-memory override store, for a test that needs nothing else mocked."""
@@ -734,10 +733,11 @@ def override_store(monkeypatch):
 def _put(model_id, **fields):
     """One override PUT through the route, spelled the way the UI sends it."""
     import routes.settings as settings_route
-
     return settings_route.update_openai_auto_switch_override(
-        settings_route.ModelOverridePayload(model_id = model_id, **fields), "tester",
+        settings_route.ModelOverridePayload(model_id = model_id, **fields),
+        "tester",
     )
+
 
 def test_model_override_roundtrip(monkeypatch):
     _mock_override_store(monkeypatch)
@@ -5092,7 +5092,6 @@ def test_fill_absent_fields_put_never_replaces_a_newer_server_value(override_sto
     the entry lacks, so every value already on the server wins."""
     import routes.settings as settings_route
 
-
     # The other tab's save lands first.
     newer = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 8192)
     settings_route.update_openai_auto_switch_override(newer, "tester")
@@ -5167,7 +5166,6 @@ def test_fill_absent_fields_matches_a_legacy_casing_and_never_deletes(override_s
     be duplicated or emptied by a fill for the folded spelling."""
     import routes.settings as settings_route
 
-
     stored = settings_route.ModelOverridePayload(
         model_id = "Unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192
     )
@@ -5198,7 +5196,6 @@ def test_fill_absent_fields_does_not_break_the_empty_payload_removal(override_st
     payload would make every request look non-empty and silently retire the legacy
     "a payload carrying only model_id forgets this model" contract."""
     import routes.settings as settings_route
-
 
     stored = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 4096)
     settings_route.update_openai_auto_switch_override(stored, "tester")
