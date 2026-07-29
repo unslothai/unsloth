@@ -362,6 +362,18 @@ jobs:
           echo "BIN=$BIN" >> "$GITHUB_ENV"
           echo "binary: $BIN"
 
+      # The strip runs before this, but `apt-get install ./dl/*.deb` then pulls the
+      # bundle's DECLARED dependencies, so a release that adds git, cmake or a compiler
+      # to that list puts one back in /usr/bin and both required Linux rows still pass.
+      # `absent` ran only beforehand, so re-run it here, before the bundled installer.
+      # The current dependency closure is 65 packages of runtime libs and no toolchain,
+      # so this is green today and only a new dependency can turn it red.
+      - name: Re-assert the toolchain is still absent after the package install
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        run: |
+          set -a; . ./clean-machine.env; set +a
+          bash .github/scripts/clean-machine-assert.sh absent
+
       - name: Run the bundled installer, the path first launch takes
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
