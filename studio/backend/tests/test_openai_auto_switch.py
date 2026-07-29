@@ -3141,32 +3141,37 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     assert captured["require_vision"] is True
 
 
-def test_chat_count_tokens_returns_input_tokens(monkeypatch):
-    from models.inference import ChatCountTokensRequest, ChatMessage
+# ── /chat/count_tokens: what the recount prices ─────────────────────
 
-    backend = _FakeBackend("org/A-GGUF")
-    backend.count_chat_tokens = lambda *args, **kwargs: 42
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    async def _noop(*args, **kwargs):
+def _count_tokens_backend(
+    monkeypatch,
+    loaded_id = "org/A-GGUF",
+    count = 10,
+    *,
+    supports_tools = False,
+    switched = None,
+):
+    """Loaded GGUF backend wired into the count endpoint, with auto-switch stubbed out.
+
+    Pass ``switched`` a list to record whether the hook was reached at all.
+    """
+    backend = _FakeBackend(loaded_id)
+    backend.supports_tools = supports_tools
+    backend.count_chat_tokens = lambda *a, **k: count
+
+    async def _switch(*a, **k):
+        if switched is not None:
+            switched.append(True)
         return None
 
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "hello")],
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    import json
-
-    assert json.loads(response.body) == {"input_tokens": 42, "model": "org/A-GGUF"}
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    return backend
 
 
-def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    backend = _FakeBackend("org/A-GGUF")
-    backend.supports_tools = True
+def _capture_counted(backend, count = 10):
+    """Record the messages/system/tools the route hands to the tokenizer."""
     captured = {}
 
     def _count(
@@ -3175,270 +3180,166 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         tools,
         strict = False,
     ):
-        captured["tools"] = tools
-        captured["messages"] = messages
-        return 99
+        captured.update(messages = messages, system = system, tools = tools, strict = strict)
+        return count
 
     backend.count_chat_tokens = _count
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    return captured
 
-    async def _noop(*args, **kwargs):
-        return None
 
-    async def _select_tools(payload, *, tools_on, mcp_allowed):
-        captured["tools_on"] = tools_on
-        captured["mcp_allowed"] = mcp_allowed
-        return [{"type": "function", "function": {"name": "web_search"}}]
+def _selected_tools(monkeypatch, names = ("search_knowledge_base",), record = None):
+    """Stub _select_request_tools with a fixed catalog, recording the gate flags."""
 
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
-    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "hello")],
+    async def _select(payload, *, tools_on, mcp_allowed):
+        if record is not None:
+            record.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
+        return [{"type": "function", "function": {"name": name}} for name in names]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+
+
+def _count_request(messages, model = "org/A-GGUF", **fields):
+    """A /chat/count_tokens payload built from plain message dicts."""
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    return ChatCountTokensRequest(
+        model = model,
+        messages = [ChatMessage(**message) for message in messages],
+        **fields,
+    )
+
+
+def _counted_body(payload):
+    """Run the count endpoint and return its decoded JSON body."""
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    return json.loads(response.body)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("hello", id = "plain_string"),
+        # Control for the image guard below: a text-only parts array is unaffected.
+        pytest.param([{"type": "text", "text": "hello"}], id = "text_parts"),
+    ],
+)
+def test_chat_count_tokens_returns_input_tokens(monkeypatch, content):
+    _count_tokens_backend(monkeypatch, count = 42)
+    payload = _count_request([{"role": "user", "content": content}])
+    assert _counted_body(payload) == {"input_tokens": 42, "model": "org/A-GGUF"}
+
+
+def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
+    backend = _count_tokens_backend(monkeypatch, supports_tools = True)
+    counted = _capture_counted(backend, count = 99)
+    gate = {}
+    _selected_tools(monkeypatch, names = ("web_search",), record = gate)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}],
         enable_tools = True,
         enabled_tools = ["web_search"],
     )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    import json
-
-    assert json.loads(response.body) == {"input_tokens": 99, "model": "org/A-GGUF"}
-    assert captured["tools_on"] is True
-    assert captured["tools"][0]["function"]["name"] == "web_search"
+    assert _counted_body(payload) == {"input_tokens": 99, "model": "org/A-GGUF"}
+    assert gate.get("tools_on") is True
+    assert counted["tools"][0]["function"]["name"] == "web_search"
     assert any(
         msg.get("role") == "system" and "web_search" in str(msg.get("content", ""))
-        for msg in captured["messages"]
+        for msg in counted["messages"]
     )
 
 
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):
     # Images become a short /apply-template marker, so counting undercounts: refuse, and
     # refuse before the auto-switch.
-    from fastapi import HTTPException
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    backend = _FakeBackend("org/A-GGUF")
-    counted = {"called": False}
-
-    def _count(*args, **kwargs):
-        counted["called"] = True
-        return 1234
-
-    backend.count_chat_tokens = _count
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    switched = {"called": False}
-
-    async def _switch(*args, **kwargs):
-        switched["called"] = True
-        return None
-
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [
-            ChatMessage(
-                role = "user",
-                content = [
+    switched = []
+    backend = _count_tokens_backend(monkeypatch, switched = switched)
+    counted = _capture_counted(backend, count = 1234)
+    payload = _count_request(
+        [
+            {
+                "role": "user",
+                "content": [
                     {"type": "text", "text": "what is this"},
                     {
                         "type": "image_url",
                         "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
                     },
                 ],
-            )
-        ],
+            }
+        ]
     )
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     assert excinfo.value.status_code == 503
-    assert counted["called"] is False
-    assert switched["called"] is False
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
 
 
-def test_chat_count_tokens_still_counts_text_only_messages(monkeypatch):
-    # Control for the guard above: a text-only payload is unaffected.
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    backend = _FakeBackend("org/A-GGUF")
-    backend.count_chat_tokens = lambda *args, **kwargs: 7
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = [{"type": "text", "text": "hello"}])],
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    import json
-
-    assert json.loads(response.body) == {"input_tokens": 7, "model": "org/A-GGUF"}
-
-
-def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
-    # Other tool paths strip stale tool-call markup from replayed turns; else we price
-    # text that is never sent.
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    backend = _FakeBackend("org/A-GGUF")
-    backend.supports_tools = True
-    captured = {}
-
-    def _count(
-        messages,
-        system,
-        tools,
-        strict = False,
-    ):
-        captured["messages"] = messages
-        return 11
-
-    backend.count_chat_tokens = _count
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    async def _noop(*args, **kwargs):
-        return None
-
-    async def _select_tools(payload, *, tools_on, mcp_allowed):
-        return [{"type": "function", "function": {"name": "web_search"}}]
-
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
-    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [
-            ChatMessage(role = "user", content = "search for cats"),
-            ChatMessage(
-                role = "assistant",
-                content = '<tool_call>{"name": "web_search"}</tool_call>Here you go.',
-            ),
+@pytest.mark.parametrize(
+    ("auto_heal", "markup_survives"),
+    [
+        # Other tool paths strip stale tool-call markup from replayed turns; else we
+        # price text that is never sent.
+        pytest.param(None, False, id = "auto_heal_default_strips"),
+        # With Auto-Heal off the real prompt keeps the markup, so stripping would count a
+        # different prompt than the next completion.
+        pytest.param(False, True, id = "auto_heal_off_keeps"),
+    ],
+)
+def test_chat_count_tokens_follows_the_auto_heal_setting(monkeypatch, auto_heal, markup_survives):
+    backend = _count_tokens_backend(monkeypatch, supports_tools = True)
+    counted = _capture_counted(backend, count = 11)
+    _selected_tools(monkeypatch, names = ("web_search",))
+    fields = {"enable_tools": True, "enabled_tools": ["web_search"]}
+    if auto_heal is not None:
+        fields["auto_heal_tool_calls"] = auto_heal
+    payload = _count_request(
+        [
+            {"role": "user", "content": "search for cats"},
+            {
+                "role": "assistant",
+                "content": '<tool_call>{"name": "web_search"}</tool_call>Here you go.',
+            },
         ],
-        enable_tools = True,
-        enabled_tools = ["web_search"],
+        **fields,
     )
     asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assistant = [m for m in captured["messages"] if m.get("role") == "assistant"]
-    assert assistant, captured["messages"]
-    assert "<tool_call>" not in assistant[0]["content"]
+    assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
+    assert assistant, counted["messages"]
+    assert ("<tool_call>" in assistant[0]["content"]) is markup_survives
     assert "Here you go." in assistant[0]["content"]
-
-
-def test_chat_count_tokens_honours_auto_heal_off(monkeypatch):
-    # With Auto-Heal off the real prompt keeps the markup, so stripping would count a
-    # different prompt than the next completion.
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    backend = _FakeBackend("org/A-GGUF")
-    backend.supports_tools = True
-    captured = {}
-
-    def _count(
-        messages,
-        system,
-        tools,
-        strict = False,
-    ):
-        captured["messages"] = messages
-        return 12
-
-    backend.count_chat_tokens = _count
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    async def _noop(*args, **kwargs):
-        return None
-
-    async def _select_tools(payload, *, tools_on, mcp_allowed):
-        return [{"type": "function", "function": {"name": "web_search"}}]
-
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
-    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [
-            ChatMessage(role = "user", content = "search for cats"),
-            ChatMessage(
-                role = "assistant",
-                content = '<tool_call>{"name": "web_search"}</tool_call>Here you go.',
-            ),
-        ],
-        enable_tools = True,
-        enabled_tools = ["web_search"],
-        auto_heal_tool_calls = False,
-    )
-    asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assistant = [m for m in captured["messages"] if m.get("role") == "assistant"]
-    assert assistant, captured["messages"]
-    assert "<tool_call>" in assistant[0]["content"]
 
 
 def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     # The completion path joins every system/developer turn into one; the count must match.
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    backend = _FakeBackend("org/A-GGUF")
-    captured = {}
-
-    def _count(
-        messages,
-        system,
-        tools,
-        strict = False,
-    ):
-        captured["messages"] = messages
-        return 13
-
-    backend.count_chat_tokens = _count
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [
-            ChatMessage(role = "system", content = "Runtime rules."),
-            ChatMessage(role = "system", content = "Studio prompt."),
-            ChatMessage(role = "user", content = "hello"),
-        ],
+    backend = _count_tokens_backend(monkeypatch)
+    counted = _capture_counted(backend, count = 13)
+    payload = _count_request(
+        [
+            {"role": "system", "content": "Runtime rules."},
+            {"role": "system", "content": "Studio prompt."},
+            {"role": "user", "content": "hello"},
+        ]
     )
     asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    systems = [m for m in captured["messages"] if m.get("role") in ("system", "developer")]
-    assert len(systems) == 1, captured["messages"]
-    assert captured["messages"][0]["role"] == "system"
+    systems = [m for m in counted["messages"] if m.get("role") in ("system", "developer")]
+    assert len(systems) == 1, counted["messages"]
+    assert counted["messages"][0]["role"] == "system"
     assert "Runtime rules." in systems[0]["content"]
     assert "Studio prompt." in systems[0]["content"]
 
 
-def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
+def test_chat_count_tokens_counts_the_loaded_model_and_never_switches(monkeypatch):
     # The recount has no abort signal, so naming a stale model must not drag the backend
-    # back after the user moved on: count whatever is loaded.
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    backend = _FakeBackend("org/B-GGUF")
-    backend.count_chat_tokens = lambda *args, **kwargs: 5
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-
-    switched = {"called": False}
-
-    async def _switch(*args, **kwargs):
-        switched["called"] = True
-        return None
-
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    # back after the user moved on: count whatever is loaded, and name the tokenizer that
+    # counted, in the shape /api/inference/status publishes. Another client can
+    # auto-switch mid-session, so the reported id is the loaded one, not the requested one.
+    switched = []
+    _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 77, switched = switched)
     # A stale recount still naming the previously loaded model A.
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "hello")],
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    import json
-
-    assert json.loads(response.body) == {"input_tokens": 5, "model": "org/B-GGUF"}
-    assert switched["called"] is False
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    assert _counted_body(payload) == {"input_tokens": 77, "model": "org/B-GGUF"}
+    assert switched == []
 
 
 # ── Template rendering, strict counts ───────────────────────────────
@@ -3538,184 +3439,120 @@ def test_count_chat_tokens_strict_counts_the_rendered_template():
         fallback = _real_counter_backend(server).count_chat_tokens(
             _TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS
         )
+    # ``fallback > 0`` is the other half of the contract: generation must keep the
+    # estimate, since its alternative is no completion at all.
     assert rendered > fallback > 0
 
 
-def test_count_chat_tokens_keeps_the_fallback_for_best_effort_callers():
-    # Control: generation must keep the estimate, since its alternative is no completion.
-    with _StubLlamaServer(fail_status = 500) as server:
-        backend = _real_counter_backend(server)
-        assert backend.count_chat_tokens(_TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS) > 0
-
-
-def test_chat_count_tokens_declines_when_the_template_will_not_render(monkeypatch):
-    # The recount replaces saved usage, so an unrenderable template must 503 and leave the bar.
-    from fastapi import HTTPException
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    with _StubLlamaServer(fail_status = 500) as server:
-        backend = _real_counter_backend(server)
-        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-        payload = ChatCountTokensRequest(
-            model = "org/A-GGUF",
-            messages = [ChatMessage(role = "user", content = "search for the newest release")],
-        )
-        with pytest.raises(HTTPException) as excinfo:
-            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert excinfo.value.status_code == 503
-
-
-def test_chat_count_tokens_returns_the_rendered_count(monkeypatch):
-    # Control for the 503 above: a healthy template still answers with a count.
-    from models.inference import ChatCountTokensRequest, ChatMessage
-    with _StubLlamaServer() as server:
+@pytest.mark.parametrize(
+    ("fail_status", "expect_503"),
+    [
+        # The recount replaces saved usage, so an unrenderable template must 503 and
+        # leave the bar alone.
+        pytest.param(500, True, id = "template_will_not_render"),
+        # Control for the 503 above: a healthy template still answers with a count.
+        pytest.param(None, False, id = "template_renders"),
+    ],
+)
+def test_chat_count_tokens_answers_only_when_the_template_renders(
+    monkeypatch,
+    fail_status,
+    expect_503,
+):
+    with _StubLlamaServer(fail_status = fail_status) as server:
         backend = _real_counter_backend(server)
         monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-        payload = ChatCountTokensRequest(
-            model = "org/A-GGUF",
-            messages = [ChatMessage(role = "user", content = "search for the newest release")],
+        payload = _count_request(
+            [{"role": "user", "content": "search for the newest release"}]
         )
-        response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert json.loads(response.body)["input_tokens"] > 0
+        if expect_503:
+            with pytest.raises(HTTPException) as excinfo:
+                asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+            assert excinfo.value.status_code == 503
+        else:
+            assert _counted_body(payload)["input_tokens"] > 0
 
 
 # ── RAG auto-injection, tokenizer identity ──────────────────────────
 
 
-def _count_tokens_backend(
+_RAG_ASK = {"role": "user", "content": "what does the dossier say?"}
+_RAG_SCOPE = {"thread_id": "t1", "autoinject": True}
+
+
+@pytest.mark.parametrize(
+    ("messages", "scope", "tool_names", "expected_count"),
+    [
+        # With auto-injection permitted, the next generation for a thread ending in an
+        # unanswered user turn splices in passages, so a count without them can call a
+        # too-big turn fitting. ``expected_count = None`` means the route must decline.
+        pytest.param(
+            [_RAG_ASK],
+            _RAG_SCOPE,
+            ("search_knowledge_base",),
+            None,
+            id = "pending_user_turn_would_retrieve",
+        ),
+        # One shape over: a trailing tool result resumes the loop and re-runs auto-injection.
+        pytest.param(
+            [
+                _RAG_ASK,
+                {"role": "assistant", "content": "looking"},
+                {"role": "tool", "content": "chunk", "tool_call_id": "c1"},
+            ],
+            _RAG_SCOPE,
+            ("search_knowledge_base",),
+            None,
+            id = "pending_tool_result_resumes_retrieval",
+        ),
+        # Negative control: the same RAG thread ending in an assistant turn still counts -
+        # its next retrieval query does not exist yet, so declining would blank the
+        # ordinary case.
+        pytest.param(
+            [_RAG_ASK, {"role": "assistant", "content": "it says hello"}],
+            _RAG_SCOPE,
+            ("search_knowledge_base",),
+            11,
+            id = "answered_thread_counts",
+        ),
+        # Negative control: auto-injection off injects nothing, so a pending turn counts.
+        pytest.param(
+            [_RAG_ASK],
+            {"thread_id": "t1", "autoinject": False, "whole_doc": False},
+            ("search_knowledge_base",),
+            11,
+            id = "autoinject_off_counts",
+        ),
+        # Negative control: no search_knowledge_base means no retrieval at all.
+        pytest.param(
+            [{"role": "user", "content": "hello"}],
+            None,
+            ("web_search",),
+            11,
+            id = "no_rag_tool_counts",
+        ),
+    ],
+)
+def test_chat_count_tokens_declines_only_a_prompt_retrieval_would_change(
     monkeypatch,
-    loaded_id,
-    count = 10,
+    messages,
+    scope,
+    tool_names,
+    expected_count,
 ):
-    """Loaded GGUF backend wired into the count endpoint, with auto-switch off."""
-    backend = _FakeBackend(loaded_id)
-    backend.supports_tools = True
-    backend.count_chat_tokens = lambda *a, **k: count
-
-    async def _noop(*a, **k):
-        return None
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
-    return backend
-
-
-def _rag_tools(monkeypatch, names = ("search_knowledge_base",)):
-    async def _select_tools(payload, *, tools_on, mcp_allowed):
-        return [{"type": "function", "function": {"name": n}} for n in names]
-
-    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
-
-
-def test_chat_count_tokens_declines_pending_turn_that_would_retrieve(monkeypatch):
-    # With auto-injection permitted, the next generation for a thread ending in an unanswered
-    # user turn splices in passages, so a count without them can call a too-big turn fitting.
-    import pytest as _pytest
-    from fastapi import HTTPException
-
-    import json
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    _count_tokens_backend(monkeypatch, "org/A-GGUF")
-    _rag_tools(monkeypatch)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "what does the dossier say?")],
-        enable_tools = True,
-        enabled_tools = ["search_knowledge_base"],
-        rag_scope = {"thread_id": "t1", "autoinject": True},
-    )
-    with _pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert excinfo.value.status_code == 503
-    assert "retrieve documents" in str(excinfo.value.detail)
-
-
-def test_chat_count_tokens_counts_answered_thread_with_rag(monkeypatch):
-    # Negative control: the same RAG thread ending in an assistant turn still counts - its
-    # next retrieval query does not exist yet, so declining would blank the ordinary case.
-    import json
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 11)
-    _rag_tools(monkeypatch)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [
-            ChatMessage(role = "user", content = "what does the dossier say?"),
-            ChatMessage(role = "assistant", content = "it says hello"),
-        ],
-        enable_tools = True,
-        enabled_tools = ["search_knowledge_base"],
-        rag_scope = {"thread_id": "t1", "autoinject": True},
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert json.loads(response.body)["input_tokens"] == 11
-
-
-def test_chat_count_tokens_declines_pending_tool_result(monkeypatch):
-    # One shape over: a trailing tool result resumes the loop and re-runs auto-injection.
-    import pytest as _pytest
-    from fastapi import HTTPException
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    _count_tokens_backend(monkeypatch, "org/A-GGUF")
-    _rag_tools(monkeypatch)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [
-            ChatMessage(role = "user", content = "what does the dossier say?"),
-            ChatMessage(role = "assistant", content = "looking"),
-            ChatMessage(role = "tool", content = "chunk", tool_call_id = "c1"),
-        ],
-        enable_tools = True,
-        enabled_tools = ["search_knowledge_base"],
-        rag_scope = {"thread_id": "t1", "autoinject": True},
-    )
-    with _pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert excinfo.value.status_code == 503
-
-
-def test_chat_count_tokens_counts_pending_turn_when_autoinject_off(monkeypatch):
-    # Negative control: auto-injection off injects nothing, so a pending user turn counts.
-    import json
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 12)
-    _rag_tools(monkeypatch)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "what does the dossier say?")],
-        enable_tools = True,
-        enabled_tools = ["search_knowledge_base"],
-        rag_scope = {"thread_id": "t1", "autoinject": False, "whole_doc": False},
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert json.loads(response.body)["input_tokens"] == 12
-
-
-def test_chat_count_tokens_counts_pending_turn_without_rag_tool(monkeypatch):
-    # Negative control: no search_knowledge_base means no retrieval, so a pending turn counts.
-    import json
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 13)
-    _rag_tools(monkeypatch, names = ("web_search",))
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "hello")],
-        enable_tools = True,
-        enabled_tools = ["web_search"],
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert json.loads(response.body)["input_tokens"] == 13
+    _count_tokens_backend(monkeypatch, count = 11, supports_tools = True)
+    _selected_tools(monkeypatch, names = tool_names)
+    fields = {"enable_tools": True, "enabled_tools": list(tool_names)}
+    if scope is not None:
+        fields["rag_scope"] = scope
+    payload = _count_request(messages, **fields)
+    if expected_count is None:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+        assert excinfo.value.status_code == 503
+        assert "retrieve documents" in str(excinfo.value.detail)
+    else:
+        assert _counted_body(payload).get("input_tokens") == expected_count
 
 
 def test_rag_autoinject_permitted_matches_build_rag_autoinject_gate(monkeypatch):
@@ -3744,29 +3581,9 @@ def test_rag_autoinject_permitted_matches_build_rag_autoinject_gate(monkeypatch)
     )
 
 
-def test_chat_count_tokens_reports_the_tokenizer_that_counted(monkeypatch):
-    # Another client can auto-switch mid-session, so name the tokenizer that counted, in the
-    # shape /api/inference/status publishes.
-    import json
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
-    _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 77)
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "hello")],
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert json.loads(response.body) == {"input_tokens": 77, "model": "org/B-GGUF"}
-
-
 def test_chat_count_tokens_identity_matches_status_for_native_lease(monkeypatch):
     # A native lease reports no model_identifier, so the count must name the display label
     # or every leased recount is discarded.
-    import json
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
     backend = _count_tokens_backend(monkeypatch, "/abs/path/to/Model-Q4.gguf", count = 3)
     backend._native_grant_backed = True
 
@@ -3776,21 +3593,12 @@ def test_chat_count_tokens_identity_matches_status_for_native_lease(monkeypatch)
     # status publishes model_identifier ?? active_model; the count must agree.
     assert inference_route._llama_status_checkpoint_id(backend) == display
 
-    payload = ChatCountTokensRequest(
-        model = "Model-Q4.gguf",
-        messages = [ChatMessage(role = "user", content = "hello")],
-    )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    assert json.loads(response.body) == {"input_tokens": 3, "model": "Model-Q4.gguf"}
+    payload = _count_request([{"role": "user", "content": "hello"}], model = "Model-Q4.gguf")
+    assert _counted_body(payload) == {"input_tokens": 3, "model": "Model-Q4.gguf"}
 
 
 def test_chat_count_tokens_declines_when_model_swaps_mid_count(monkeypatch):
     # A switch landing mid-count leaves the total attributable to neither model.
-    import pytest as _pytest
-    from fastapi import HTTPException
-
-    from models.inference import ChatCountTokensRequest, ChatMessage
-
     backend = _count_tokens_backend(monkeypatch, "org/A-GGUF")
 
     def _count_then_swap(*a, **k):
@@ -3798,11 +3606,8 @@ def test_chat_count_tokens_declines_when_model_swaps_mid_count(monkeypatch):
         return 55
 
     backend.count_chat_tokens = _count_then_swap
-    payload = ChatCountTokensRequest(
-        model = "org/A-GGUF",
-        messages = [ChatMessage(role = "user", content = "hello")],
-    )
-    with _pytest.raises(HTTPException) as excinfo:
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with pytest.raises(HTTPException) as excinfo:
         asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     assert excinfo.value.status_code == 503
     assert "changed while counting" in str(excinfo.value.detail)

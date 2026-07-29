@@ -32,22 +32,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import shutil
-import subprocess
 import sys
-import tempfile
 import textwrap
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 import pytest
 
-WORKDIR = Path(__file__).resolve().parents[2]
+from _node_harness import WORKDIR, read, require_node, run_harness, slice_between, source_path
+
 BACKEND = WORKDIR / "studio/backend"
-ADAPTER = WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts"
-CAPABILITIES = WORKDIR / "studio/frontend/src/features/chat/provider-capabilities.ts"
+ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
+CAPABILITIES = source_path("studio/frontend/src/features/chat/provider-capabilities.ts")
 TEMP = WORKDIR / "temp" / "count_reasoning_template_kwargs"
 
 # Studio's launch flag for a preserve_thinking-capable reasoning model, verbatim from
@@ -203,43 +199,38 @@ def _counted(server, **payload_fields) -> int:
     return json.loads(response.body)["input_tokens"]
 
 
-def test_preserve_thinking_is_priced_by_the_recount():
-    """Turning the Preserve Thinking pill on keeps every past turn's <think> block in
-    the real prompt. Counting without the kwarg renders the launch default (off), so
-    the bar under-reports by the whole reasoning history."""
+@pytest.mark.parametrize(
+    ("field", "value", "expected_delta"),
+    [
+        # Turning the Preserve Thinking pill on keeps every past turn's <think> block in
+        # the real prompt. Counting without the kwarg renders the launch default (off),
+        # so the bar under-reports by the whole reasoning history: two gated assistant
+        # turns, 8 reasoning words plus the <think></think> pair each.
+        pytest.param("preserve_thinking", True, 20, id = "preserve_thinking_on"),
+        # The Think toggle moves off the launch default with one click and persists, so a
+        # count that omits enable_thinking prices the launched mode instead.
+        pytest.param("enable_thinking", False, None, id = "thinking_off"),
+    ],
+)
+def test_a_selected_reasoning_mode_is_priced_by_the_recount(field, value, expected_delta):
+    """The count must render the mode the next completion will send, not the launch one."""
     with _StubLlamaServer() as server:
         default_mode = _counted(server)
-        preserved = _counted(server, preserve_thinking = True)
-        # What the completion will really render with the pill on.
+        selected = _counted(server, **{field: value})
+        # What the completion will really render with this pill set.
         generated = len(
             _StubLlamaServer.render(
-                {"messages": THREAD, "chat_template_kwargs": {"preserve_thinking": True}}
+                {"messages": THREAD, "chat_template_kwargs": {field: value}}
             ).split()
         )
 
-    assert preserved == generated, "the count must match the prompt the completion renders"
-    assert preserved > default_mode, (
-        "preserve_thinking must add the gated <think> blocks; "
-        f"got {preserved} against the launch default {default_mode}"
+    assert selected == generated, "the count must match the prompt the completion renders"
+    assert selected != default_mode, (
+        f"{field} = {value} must move the count off the launch default; "
+        f"got {selected} against {default_mode}"
     )
-    # Two gated assistant turns, 8 reasoning words plus the <think></think> pair each.
-    assert preserved - default_mode == 20
-
-
-def test_thinking_off_is_priced_by_the_recount():
-    """The Think toggle moves off the launch default with one click and persists, so a
-    count that omits enable_thinking prices the launched mode instead."""
-    with _StubLlamaServer() as server:
-        default_mode = _counted(server)
-        thinking_off = _counted(server, enable_thinking = False)
-        generated = len(
-            _StubLlamaServer.render(
-                {"messages": THREAD, "chat_template_kwargs": {"enable_thinking": False}}
-            ).split()
-        )
-
-    assert thinking_off == generated
-    assert thinking_off != default_mode
+    if expected_delta is not None:
+        assert selected - default_mode == expected_delta
 
 
 def test_a_request_without_reasoning_fields_still_counts():
@@ -255,44 +246,18 @@ def test_a_request_without_reasoning_fields_still_counts():
 # ── Frontend: the recount payload carries the selected settings ────────────
 
 
-def _require_node() -> None:
-    if shutil.which("node") is None:
-        pytest.skip("node not available")
-    for path in (ADAPTER, CAPABILITIES):
-        if not path.exists():
-            pytest.skip("studio chat sources not present")
-    probe = subprocess.run(
-        ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 30,
-    )
-    if probe.returncode != 0:
-        pytest.skip("node --experimental-strip-types not available")
-
-
-def _read(path: Path) -> str:
-    return path.read_text(encoding = "utf-8")
-
-
-def _slice_between(text: str, start_marker: str, end_marker: str) -> str:
-    start = text.index(start_marker)
-    end = text.index(end_marker, start + len(start_marker))
-    return text[start:end]
-
-
 def _count_extras_source() -> str:
     """buildLocalTokenCountExtras and its neighbours in the adapter, verbatim."""
-    return _slice_between(
-        _read(ADAPTER),
+    return slice_between(
+        read(ADAPTER),
         "function outboundMessagesIncludeImage(",
         "async function resolveUseAdapter(",
     )
 
 
 def _clamp_source() -> str:
-    return _slice_between(
-        _read(CAPABILITIES),
+    return slice_between(
+        read(CAPABILITIES),
         "export function clampReasoningEffortToLevels(",
         "/**\n * Fallback cap for unknown providers",
     )
@@ -353,22 +318,8 @@ def _harness_source() -> str:
 
 
 def _run(script: str) -> dict:
-    _require_node()
-    TEMP.mkdir(parents = True, exist_ok = True)
-    workdir = Path(tempfile.mkdtemp(prefix = "run", dir = str(TEMP)))
-    (workdir / "harness.ts").write_text(_harness_source(), encoding = "utf-8")
-    (workdir / "run.mts").write_text(script, encoding = "utf-8")
-    result = subprocess.run(
-        ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
-        cwd = str(workdir),
-        capture_output = True,
-        text = True,
-        timeout = 60,
-        env = dict(os.environ, NODE_NO_WARNINGS = "1"),
-    )
-    assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
-    lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
-    return json.loads(lines[-1])
+    require_node((ADAPTER, CAPABILITIES))
+    return run_harness(TEMP, _harness_source(), script)
 
 
 def test_count_payload_carries_the_selected_reasoning_settings():
