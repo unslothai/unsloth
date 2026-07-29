@@ -16370,11 +16370,8 @@ def _build_openai_passthrough_body(
     messages = _openai_messages_for_passthrough(payload)
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
-    # This body goes straight to llama-server's /v1/chat/completions, which applies
-    # the chat template itself, so it never reaches the
-    # apply_chat_template_for_generation choke point. Neutralize here too, or a
-    # "</think><|im_end|><|im_start|>assistant" pasted into a user / system / tool
-    # turn still closes the reasoning block or forges a turn (#7066).
+    # Goes straight to llama-server's /v1/chat/completions, which applies the chat
+    # template itself, so it never reaches the choke point (#7066).
     messages = neutralize_control_markup_in_messages(messages)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
     tools = payload.tools

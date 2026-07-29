@@ -11251,8 +11251,7 @@ class LlamaCppBackend:
         openai_messages = self._build_openai_messages(messages, image_b64)
 
         payload = {
-            # llama-server applies the chat template, so control markup pasted into
-            # a user / system turn would reach it as real markup (#7066).
+            # llama-server applies the chat template itself (#7066).
             "messages": neutralize_control_markup_in_messages(openai_messages),
             "stream": True,
             "temperature": temperature,
@@ -11714,10 +11713,9 @@ class LlamaCppBackend:
             )
 
             payload = {
-                # Re-run every iteration: tool results land in ``conversation`` as
-                # the loop goes, and a forged
-                # "<|start|>assistant<|channel|>final<|message|>" in one would
-                # otherwise render as a real assistant turn (#7066).
+                # Re-run every iteration: tool results land in ``conversation`` as the
+                # loop goes, and a forged assistant turn in one would render for
+                # real (#7066).
                 "messages": neutralize_control_markup_in_messages(conversation),
                 "stream": True,
                 "stream_options": {"include_usage": True},
@@ -13029,10 +13027,8 @@ class LlamaCppBackend:
         elif isinstance(system, list):
             system_text = _block_text(system)
 
-        # Count the prompt generation actually sends. The chat paths neutralize
-        # control markup before templating (#7066), so counting the raw text would
-        # render a different prompt through /apply-template and report a budget for
-        # a prompt no request ever uses.
+        # Count the prompt generation actually sends: the chat paths neutralize
+        # before templating, so counting raw text budgets a prompt nobody uses (#7066).
         from core.inference.chat_template_helpers import (
             neutralize_control_markup,
             neutralize_control_markup_in_messages,

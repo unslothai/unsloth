@@ -1224,9 +1224,9 @@ class InferenceBackend:
             else:
                 vision_messages = [user_msg]
 
-            # This renders through the processor's own template, so it never reaches
-            # the apply_chat_template_for_generation choke point (#7066). Rebind
-            # user_msg to the neutralized copy so the no-system retry below keeps it.
+            # Renders through the processor's own template, so it skips the choke
+            # point (#7066). Rebind user_msg so the no-system retry below keeps the
+            # neutralized copy.
             vision_messages = neutralize_control_markup_in_messages(vision_messages)
             user_msg = vision_messages[-1]
 
@@ -1445,8 +1445,7 @@ class InferenceBackend:
             },
         ]
 
-        # Same direct-processor render as the vision path: no choke point in the way,
-        # so the transcription prompt has to be neutralized here (#7066).
+        # Direct processor render like the vision path, so neutralize here too (#7066).
         audio_messages = neutralize_control_markup_in_messages(audio_messages)
 
         # apply_chat_template does audio embedding + tokenization in one step

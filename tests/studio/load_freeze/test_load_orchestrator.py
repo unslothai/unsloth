@@ -53,11 +53,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # A bare setdefault parked an empty stub before anything imported the real (lazily
 # imported) structlog, shadowing it session-wide: later modules calling
 # structlog.get_logger at import time died with AttributeError, but only when this
-# file was collected first. Stub only when the package is genuinely missing.
-# Guard on sys.modules FIRST: another test module may have parked its own bare
-# stub, and find_spec() raises ValueError on a module whose __spec__ is None.
-# Anything already there (real or stub) is left alone; only a genuinely absent
-# package gets stubbed.
+# file was collected first. Check sys.modules FIRST, since find_spec() raises
+# ValueError on a module whose __spec__ is None and another test module may have
+# parked its own stub. Only a genuinely absent package gets stubbed.
 if "structlog" not in sys.modules and importlib.util.find_spec("structlog") is None:
     _structlog_stub = types.ModuleType("structlog")
     _structlog_stub.get_logger = lambda *args, **kwargs: _logging.getLogger(

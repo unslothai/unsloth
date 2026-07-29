@@ -26,23 +26,17 @@ _GEMMA_TEMPLATE_OPENERS = (
 )
 
 # Chat-template control markup that must not reach the prompt as raw text from a
-# user / system / tool turn. Left alone, a literal "</think>" pasted into a user
-# message ends the model's reasoning block early and the rest of the thought
-# leaks into the visible answer, and a literal
-# "<|start|>assistant<|channel|>final<|message|>" inside a tool result forges a
-# whole assistant turn (#7066).
-#
-# One lookahead over the three shapes the templates actually emit, so a single
-# sub() can break every marker by inserting one space after the "<":
+# user / system / tool turn: a literal "</think>" ends the reasoning block early,
+# and "<|start|>assistant<|channel|>final<|message|>" in a tool result forges an
+# assistant turn (#7066). One lookahead over the three shapes the templates emit,
+# so a single sub() breaks every marker by inserting one space after the "<":
 #   <|name|> / <|name>   ChatML, Llama-3, Harmony/gpt-oss, Zephyr/Phi-3, Gemma-4
 #   <name>   / </name>   Qwen tool XML, Gemma turn delimiters, think tags
 #   <name|>              Gemma-4 closing delimiters
-# The name list is deliberately closed: bare words that are ordinary markup
-# elsewhere ("<end>", "<user>", "<div>", "List<String>") only match in the
-# pipe-delimited shape, so real HTML/XML in a message is untouched. The bare
-# shapes that do match ("<think>", "<tool_call>", "<start_of_turn>") are
-# template delimiters in their own right, so they are broken even inside a code
-# fence, which is the same trade the structural parsers make.
+# The name list is closed on purpose: bare words match only in the pipe shape, so
+# "<div>", "<End>" and "List<String>" are untouched. The bare words that do match
+# are template delimiters in their own right, so they break even inside a code
+# fence, the same trade the structural parsers make.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_header_id|tool(?:_call|_response)?|end(?:_of_turn)?"
@@ -53,14 +47,13 @@ _CONTROL_MARKUP = re.compile(
     r")"
 )
 
-# The turn-boundary subset, for replayed ASSISTANT content. That text is
-# client-controlled just like a user turn, and a raw boundary in it truncates
-# that turn or forges a new one, so the boundaries still have to go. Everything
-# else stays byte-identical: the assistant's own think / channel / tool markup is
-# structural, and rewriting it would corrupt the transcript the template
-# re-renders. Harmony opens every message with <|start|> and stops on <|call|> /
-# <|return|>, and Zephyr / Phi-3 open a turn with a bare <|user|> / <|assistant|>
-# / <|system|>, so those count as boundaries too (#7066).
+# Turn-boundary subset, for replayed ASSISTANT content: that text is
+# client-controlled too, so a raw boundary in it truncates or forges a turn.
+# Everything else stays byte-identical, because the assistant's own think /
+# channel / tool markup is structural and rewriting it would corrupt the
+# transcript the template re-renders. Harmony opens every message with <|start|>
+# and stops on <|call|> / <|return|>, and Zephyr / Phi-3 open a turn with a bare
+# <|user|> / <|assistant|> / <|system|>, so those are boundaries too (#7066).
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_header_id|im_(?:start|end)|end(?:_of_turn)?|eo[tm]_id"
@@ -75,9 +68,9 @@ def neutralize_control_markup(text: str) -> str:
     """Break chat-template control markup in free text by spacing out the "<".
 
     "</think>" becomes "< /think>": still readable, but no longer a delimiter to
-    the template, the think extractor or the stop-sequence matcher (#7066). The
-    space is visible to the user, which is the deliberate cost of keeping this to
-    one substitution.
+    the template, the think extractor or the stop-sequence matcher (#7066). A
+    plain space, not an invisible joiner: a space is in every tokenizer
+    vocabulary, while U+2060 can fall back to byte junk.
     """
     if not text or "<" not in text:
         return text
@@ -94,14 +87,10 @@ def neutralize_turn_boundary_markup(text: str) -> str:
 def neutralize_control_markup_in_messages(messages: list) -> list:
     """Neutralize control markup in message content and tool-result names (#7066).
 
-    User / system / tool turns lose every control marker. Assistant turns lose
-    only the turn boundaries and keep their structural think / channel / tool
-    markup, because replayed history legitimately holds the model's own
-    "<think>" and "<|channel|>" and rewriting those would corrupt the transcript
-    the template re-renders.
-
-    Returns the same list object when nothing changed, so the common prompt stays
-    byte-for-byte what it was before.
+    User / system / tool turns lose every marker; assistant turns lose only the
+    turn boundaries and keep their structural think / channel / tool markup,
+    which replayed history legitimately holds. Returns the same list object when
+    nothing changed, so the common prompt stays byte-for-byte what it was.
     """
     if not messages:
         return messages
@@ -116,11 +105,9 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             neutralize_turn_boundary_markup if role == "assistant" else neutralize_control_markup
         )
         updates: dict = {}
-        # A tool result's "name" is prompt text too. Gemma-4 falls back to it for
-        # the function name whenever "tool_call_id" matches no preceding call and
-        # concatenates it straight into the "<|tool_response>" block, so a marker
-        # there closes the block and forges a turn exactly like one in "content"
-        # would (#7066).
+        # A tool result's "name" is prompt text too: Gemma-4 falls back to it when
+        # "tool_call_id" matches no preceding call and concatenates it into the
+        # "<|tool_response>" block, so a marker there forges a turn (#7066).
         name = msg.get("name")
         if role == "tool" and isinstance(name, str) and name:
             new_name = neutralize_control_markup(name)
@@ -132,8 +119,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             if isinstance(content, str):
                 new_content = rewrite(content)
             elif isinstance(content, list):
-                # The UI sends OpenAI-style parts; rewrite each part's text on its own
-                # and pass non-text parts (images, audio) through untouched.
+                # OpenAI-style parts: rewrite each text, pass images / audio through.
                 new_content = [
                     {**part, "text": rewrite(part["text"])}
                     if isinstance(part, dict) and isinstance(part.get("text"), str)
@@ -517,8 +503,7 @@ def apply_chat_template_for_generation(
     """Render the chat prompt. Try richest kwargs first; drop one
     group at a time on TypeError. Jinja / missing-variable errors
     propagate."""
-    # Shared choke point for the transformers and MLX backends: a user / system /
-    # tool turn must not smuggle template control markup into the prompt (#7066).
+    # Shared choke point for the transformers and MLX backends (#7066).
     messages = neutralize_control_markup_in_messages(messages)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
