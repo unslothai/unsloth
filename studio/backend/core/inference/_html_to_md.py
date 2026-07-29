@@ -423,7 +423,7 @@ class _MarkdownRenderer(HTMLParser):
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
         body prose. ATX headings carry their own ``#`` here and so score zero."""
-        return _non_heading_chars("".join(self._seg_heading_texts))
+        return _visible_chars("".join(self._seg_heading_texts))
 
     def _drain_pre(self) -> None:
         """Emit the open ``<pre>`` and empty it, so a late ``</pre>`` cannot replay
@@ -433,6 +433,13 @@ class _MarkdownRenderer(HTMLParser):
         self._pre_parts = []
         fence = _fence_for(raw)
         self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
+
+    def _drain_blockquote(self) -> None:
+        """Pop the innermost quote and emit it prefixed. Not used by ``flush_pending``,
+        which re-nests into the parent stack instead of emitting."""
+        prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
+        if prefixed:
+            self._emit_replay("\n\n" + prefixed + "\n\n")
 
     def _emit_replay(self, text: str) -> None:
         """Emit a flushed buffer's own output, which must not be teed as a heading
@@ -596,9 +603,7 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_cell()
             self._finish_row()
         while len(self._bq_stack) > frame.outer_bq_depth:
-            prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
-            if prefixed:
-                self._emit_replay("\n\n" + prefixed + "\n\n")
+            self._drain_blockquote()
         # A list left open in the header would indent the body's lists under phantom nesting.
         while len(self._list_stack) > frame.outer_list_depth:
             if self._list_stack.pop() == "ol" and self._ol_counter:
@@ -842,10 +847,7 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "blockquote":
             if self._bq_stack:
-                content = "".join(self._bq_stack.pop())
-                prefixed = self._prefix_blockquote(content)
-                if prefixed:
-                    self._emit_replay("\n\n" + prefixed + "\n\n")
+                self._drain_blockquote()
 
         elif tag == "ul":
             if self._list_stack and self._list_stack[-1] == "ul":
@@ -860,12 +862,7 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n")
 
         elif tag == "pre" and self._in_pre:
-            raw = "".join(self._pre_parts)
-            self._in_pre = False
-            self._pre_parts = []
-            fence = _fence_for(raw)
-            block = f"{fence}\n{raw}\n{fence}"
-            self._emit_replay("\n\n" + block + "\n\n")
+            self._drain_pre()
 
         # Already closed means a header frame recovered it; a second backtick here would leave the
         # rest of the page formatted as code.
@@ -950,11 +947,7 @@ class _MarkdownRenderer(HTMLParser):
         self._finish_row()
 
         if self._in_pre:
-            raw = "".join(self._pre_parts)
-            self._in_pre = False
-            fence = _fence_for(raw)
-            block = f"{fence}\n{raw}\n{fence}"
-            self._emit_replay("\n\n" + block + "\n\n")
+            self._drain_pre()
 
         # Flatten any open blockquote buffers (innermost first).
         while self._bq_stack:
@@ -1128,7 +1121,7 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        prose = _non_heading_chars(rendered) - heading_prose[i]
+        prose = _visible_chars(rendered) - heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
         size = len(rendered) + min(dropped[i], len(rendered))
@@ -1138,49 +1131,14 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     return best_len, best_render
 
 
-def _is_heading_line(line: str) -> bool:
-    """True when *line* is a heading, allowing blockquote and list prefixes.
+def _visible_chars(text: str) -> int:
+    """Visible characters in *text*, ignoring blank lines and link destinations.
 
-    Scanned rather than matched with a regex: nested prefixes make adjacent
-    whitespace patterns backtrack catastrophically on ``> > > prose``."""
-    i, n = 0, len(line)
-    while i < n:
-        char = line[i]
-        if char in " \t>*+-":
-            i += 1
-        elif char.isdigit():
-            j = i
-            while j < n and line[j].isdigit():
-                j += 1
-            if j >= n or line[j] != ".":
-                return False
-            i = j + 1
-        else:
-            break
-    # ATX rules: 1-6 hashes closed by whitespace or line end; without the close check "#include"
-    # reads as a heading, and this gates whether a scope has content, so a C snippet loses.
-    start = i
-    while i < n and line[i] == "#":
-        i += 1
-    if i == start or i - start > 6:
-        return False
-    return i >= n or line[i] in " \t"
-
-
-def _non_heading_chars(text: str) -> int:
-    """Length of *text* ignoring blanks and heading lines, including headings
-    behind blockquote or list prefixes (``> # Title``). Fenced code counts in
-    full: a ``#`` there is a comment, not a heading."""
-    total, fence = 0, 0
-    for line in text.split("\n"):
-        stripped = line.strip()
-        moved = _fence_state(line, fence)
-        if moved != fence:
-            fence = moved
-            continue
-        if stripped and (fence or not _is_heading_line(line)):
-            total += len(line) if fence else _visible_len(line)
-    return total
+    Headings are NOT discounted here. The renderer already tallies what it marked
+    as a heading (``_seg_heading_prose``), which sees ``role="heading"``, hgroup
+    and a linked ``h1``; re-deriving that from ATX syntax could not, and running
+    both meant two answers to one question."""
+    return sum(_visible_len(line) for line in text.split("\n") if line.strip())
 
 
 def _fence_for(raw: str) -> str:

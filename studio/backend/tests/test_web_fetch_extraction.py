@@ -21,11 +21,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference._html_to_md import (
-    _is_aria_heading,
-    _is_heading_line,
-    html_to_markdown,
-)
+from core.inference._html_to_md import _is_aria_heading, html_to_markdown
 from core.inference.tools import (
     _fetch_page_text,
     _fetch_url_raw,
@@ -1451,35 +1447,6 @@ def test_heading_inside_a_nested_buffer_is_kept_and_the_links_still_go():
     assert out.index("Article body.") < 16000
 
 
-def test_heading_inside_a_table_cell_is_kept():
-    body = (
-        "<main><header><table><tr><td><h1>Page Title</h1></td></tr></table>"
-        "<ul>%s</ul></header><p>%s</p></main>"
-        % (
-            _interlanguage_list(300),
-            "Article body. " * 30,
-        )
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Page Title" in out
-    assert "Lang0" not in out
-
-
-def test_aria_role_heading_is_preserved_like_a_real_heading():
-    body = (
-        "<main><header><div role='heading' aria-level='1'>Page Title</div>"
-        "<ul>%s</ul></header><p>%s</p></main>"
-        % (
-            _interlanguage_list(300),
-            "Article body. " * 30,
-        )
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Page Title" in out
-    assert "Lang0" not in out
-    assert "Article body." in out
-
-
 def test_long_hrefs_count_toward_the_header_size_floor():
     # Short labels, huge destinations: the rendered links are what displace it.
     nav = "".join('<a href="https://e.com/p?%s=%d">L%d</a>' % ("q" * 1000, i, i) for i in range(30))
@@ -1528,20 +1495,6 @@ def test_linked_heading_is_not_emitted_twice():
     assert out.count("Title") == 1
 
 
-def test_header_inside_an_enclosing_blockquote_is_still_stripped():
-    # The blockquote encloses the header, so its content belongs to the frame.
-    body = (
-        "<main><blockquote><header><h1>T</h1><ul>%s</ul></header></blockquote><p>%s</p></main>"
-        % (
-            _interlanguage_list(300),
-            "Article body. " * 30,
-        )
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Lang0" not in out
-    assert out.index("Article body.") < 16000
-
-
 def test_article_still_beats_a_bigger_card_after_its_header_goes():
     # Dropped furniture is added back when ranking siblings, so a stripped header still wins.
     real = "<article><header><h1>Real</h1><ul>%s</ul></header><p>%s</p></article>" % (
@@ -1564,27 +1517,6 @@ def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
     out = html_to_markdown(f"<body><main>{body}{card}</main></body>", main_content = True)
     assert "The real article body the reader wants." in out
     assert "Language 7" not in out
-
-
-def test_unclosed_nested_buffer_inside_a_header_is_still_stripped():
-    # The page omits </blockquote>, so the frame must claim its content before the strip is judged.
-    body = "<main><header><h1>T</h1><blockquote><ul>%s</ul></header><p>%s</p></main>" % (
-        _interlanguage_list(300),
-        "Article body. " * 30,
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Lang0" not in out
-    assert out.index("Article body.") < 16000
-
-
-def test_unclosed_table_cell_inside_a_header_is_still_stripped():
-    body = "<main><header><h1>T</h1><table><tr><td><ul>%s</ul></header><p>%s</p></main>" % (
-        _interlanguage_list(300),
-        "Article body. " * 30,
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Lang0" not in out
-    assert out.index("Article body.") < 16000
 
 
 def test_a_long_heading_href_does_not_condemn_the_rest_of_the_header():
@@ -1626,19 +1558,6 @@ def test_header_inside_an_enclosing_link_renders_once():
     )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert out.count("[# T](/x)") == 1
-
-
-def test_heading_that_is_itself_a_buffered_element_is_kept():
-    body = (
-        "<main><header><a role='heading' href='/title'>Page Title</a><ul>%s</ul></header><p>%s</p></main>"
-        % (
-            _interlanguage_list(300),
-            "Article body. " * 30,
-        )
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Page Title" in out
-    assert "Lang0" not in out
 
 
 def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
@@ -1746,19 +1665,6 @@ def test_enclosing_anchor_text_counts_toward_header_density():
     assert "Article body." in out
 
 
-def test_hgroup_subtitle_survives_a_stripped_header():
-    body = (
-        "<main><header><hgroup><h1>Title</h1><p>Subtitle here</p></hgroup><ul>%s</ul></header><p>%s</p></main>"
-        % (
-            _interlanguage_list(300),
-            "Article body. " * 30,
-        )
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Subtitle here" in out
-    assert "Lang0" not in out
-
-
 def test_truncated_header_flushes_into_its_enclosing_buffer():
     # The header is inside the link/cell, so its text belongs there, in order.
     assert html_to_markdown(
@@ -1801,19 +1707,6 @@ def test_list_left_open_in_a_header_does_not_indent_the_body():
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     item = next(line for line in out.split("\n") if "Body item one" in line)
     assert item.startswith("*"), item
-
-
-def test_link_wrapping_a_heading_keeps_the_title():
-    body = (
-        "<main><header><a href='/post'><h1>Page Title</h1></a><ul>%s</ul></header><p>%s</p></main>"
-        % (
-            _interlanguage_list(300),
-            "Article body. " * 30,
-        )
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Page Title" in out
-    assert "Lang0" not in out
 
 
 def test_deeply_nested_headers_do_not_blow_up_quadratically():
@@ -2082,15 +1975,47 @@ def test_aria_heading_accepts_a_fallback_role_token_list():
     assert "Lang0" not in out
 
 
-def test_only_valid_atx_syntax_counts_as_a_heading():
-    # 1-6 hashes must close with whitespace or line end, else a C snippet of #includes reads empty.
-    assert not _is_heading_line("#include <stdio.h>")
-    assert not _is_heading_line("#hashtag trending")
-    assert not _is_heading_line("####### seven hashes")
-    assert not _is_heading_line("##nospace")
-    assert _is_heading_line("# real heading")
-    assert _is_heading_line("###### six hashes")
-    assert _is_heading_line("> # quoted heading")
+@pytest.mark.parametrize(
+    ("heading_markup", "marker"),
+    [
+        ("<h1>Page Title</h1>", "Page Title"),
+        ("<table><tr><td><h1>Page Title</h1></td></tr></table>", "Page Title"),
+        ("<div role='heading' aria-level='1'>Page Title</div>", "Page Title"),
+        ("<a role='heading' href='/title'>Page Title</a>", "Page Title"),
+        ("<a href='/post'><h1>Page Title</h1></a>", "Page Title"),
+        ("<hgroup><h1>Title</h1><p>Subtitle here</p></hgroup>", "Subtitle here"),
+    ],
+)
+def test_heading_survives_a_stripped_header(heading_markup, marker):
+    # However the title is expressed, reducing a link-only header keeps it and
+    # nothing else: through a cell, an ARIA role, a link, or an hgroup subtitle.
+    body = "<main><header>%s<ul>%s</ul></header><p>%s</p></main>" % (
+        heading_markup,
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert marker in out
+    assert "Lang0" not in out
+    assert "Article body." in out
+
+
+@pytest.mark.parametrize(
+    "body_markup",
+    [
+        # The blockquote encloses the header, so its content belongs to the frame.
+        "<main><blockquote><header><h1>T</h1><ul>{links}</ul></header></blockquote><p>{body}</p></main>",
+        # </blockquote> omitted: the frame must claim the content before judging.
+        "<main><header><h1>T</h1><blockquote><ul>{links}</ul></header><p>{body}</p></main>",
+        # </td> omitted, same requirement through the cell buffer.
+        "<main><header><h1>T</h1><table><tr><td><ul>{links}</ul></header><p>{body}</p></main>",
+    ],
+)
+def test_link_list_is_stripped_through_a_nested_buffer(body_markup):
+    body = body_markup.format(links = _interlanguage_list(300), body = "Article body. " * 30)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Lang0" not in out
+    assert out.index("Article body.") < 16000
 
 
 def test_hash_prefixed_prose_still_wins_its_scope():
