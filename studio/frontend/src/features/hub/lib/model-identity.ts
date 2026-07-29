@@ -36,7 +36,7 @@ export function normalizeModelIdentity(modelId: string): string {
   if (WSL_DRIVE_PATH_RE.test(slashPath)) {
     return normalizeCaseInsensitivePath(trimmed, 6);
   }
-  return trimmed;
+  return trimTrailingSeparators(trimmed, 1);
 }
 
 export function normalizeGgufVariantIdentity(

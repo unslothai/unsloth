@@ -13,9 +13,11 @@ import pytest
 from core.training.provenance import (
     ExactResumeResourcesUnavailable,
     RESOURCE_PROVENANCE_KEY,
+    attest_loaded_dataset,
     build_worker_provenance_event,
     exact_resume_resource_requirements,
     exact_dataset_snapshot_path,
+    exact_model_snapshot_path,
     normalize_worker_provenance_event,
     resource_provenance_allows_resume,
 )
@@ -268,11 +270,127 @@ def test_config_only_snapshot_cannot_attest_model_weights(tmp_path):
     ] == "incomplete"
 
 
+def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
+    snapshot = _model_snapshot(
+        tmp_path,
+        "org/model",
+        "blob-backed",
+        weights = False,
+    )
+    blob = snapshot.parent.parent / "blobs" / "weight-blob"
+    blob.parent.mkdir()
+    blob.write_bytes(b"weights")
+    (snapshot / "model.safetensors").symlink_to("../../blobs/weight-blob")
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") == str(
+        snapshot.resolve()
+    )
+
+
+@pytest.mark.parametrize("filename", ["model.safetensors", "config.json"])
+def test_exact_model_snapshot_rejects_external_file_symlink(
+    tmp_path,
+    filename,
+):
+    snapshot = _model_snapshot(tmp_path, "org/model", "external-link")
+    external = tmp_path / "external" / filename
+    external.parent.mkdir()
+    external.write_bytes(b"external")
+    (snapshot / filename).unlink()
+    (snapshot / filename).symlink_to(external)
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") is None
+
+
+def test_exact_model_snapshot_rejects_cross_snapshot_symlink(tmp_path):
+    snapshot = _model_snapshot(tmp_path, "org/model", "selected")
+    _model_snapshot(tmp_path, "org/model", "other")
+    (snapshot / "model.safetensors").unlink()
+    (snapshot / "model.safetensors").symlink_to(
+        "../other/model.safetensors"
+    )
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") is None
+
+
+def test_exact_model_snapshot_rejects_symlinked_directory(tmp_path):
+    snapshot = _model_snapshot(tmp_path, "org/model", "symlinked-directory")
+    external = tmp_path / "external-directory"
+    external.mkdir()
+    (snapshot / "external-directory").symlink_to(
+        external,
+        target_is_directory = True,
+    )
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") is None
+
+
+def test_exact_model_snapshot_rejects_unreadable_file(tmp_path):
+    snapshot = _model_snapshot(tmp_path, "org/model", "unreadable")
+    unreadable = (snapshot / "model.safetensors").resolve()
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path.resolve() == unreadable:
+            raise PermissionError("unreadable")
+        return original_open(path, *args, **kwargs)
+
+    with patch.object(Path, "open", guarded_open):
+        assert exact_model_snapshot_path(str(snapshot), "org/model") is None
+
+
+def test_exact_model_snapshot_rejects_walk_error(tmp_path):
+    snapshot = _model_snapshot(tmp_path, "org/model", "walk-error")
+
+    with patch(
+        "core.training.provenance.os.walk",
+        side_effect = PermissionError("unreadable"),
+    ):
+        assert exact_model_snapshot_path(str(snapshot), "org/model") is None
+
+
 def test_processed_dataset_cache_is_not_an_immutable_snapshot(tmp_path):
     processed = tmp_path / "datasets-processed" / "org___dataset"
     processed.mkdir()
 
     assert exact_dataset_snapshot_path(str(processed), "org/dataset") is None
+
+
+def test_exact_dataset_snapshot_rejects_cross_snapshot_symlink(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "other-commit",
+    )
+    (snapshot / "train.parquet").unlink()
+    (snapshot / "train.parquet").symlink_to(
+        "../other-commit/train.parquet"
+    )
+
+    assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") is None
+
+
+def test_exact_dataset_snapshot_rejects_unreadable_file(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "unreadable",
+    )
+    unreadable = (snapshot / "train.parquet").resolve()
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path.resolve() == unreadable:
+            raise PermissionError("unreadable")
+        return original_open(path, *args, **kwargs)
+
+    with patch.object(Path, "open", guarded_open):
+        assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") is None
 
 
 def test_dataset_snapshot_without_data_cannot_attest_provenance(tmp_path):
@@ -313,6 +431,309 @@ def test_supported_dataset_payloads_can_attest_exact_snapshot(tmp_path, filename
     )
 
 
+def _loaded_dataset(*sources: str, num_bytes: int = 7):
+    return SimpleNamespace(
+        info = SimpleNamespace(
+            download_checksums = {
+                source: {"num_bytes": num_bytes, "checksum": None}
+                for source in sources
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "hf://datasets/org/dataset@dataset-commit/train.parquet",
+        (
+            "https://huggingface.co/datasets/org/dataset/resolve/"
+            "dataset-commit/train.parquet"
+        ),
+    ],
+)
+def test_loaded_hub_dataset_attests_consumed_commit_snapshot(tmp_path, source):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    loaded = _loaded_dataset(source)
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        str(snapshot.resolve()),
+        None,
+    )
+
+
+def test_loaded_hub_dataset_attests_local_snapshot_source(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    loaded = _loaded_dataset(str(snapshot / "train.parquet"))
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        str(snapshot.resolve()),
+        None,
+    )
+
+
+def test_loaded_hub_dataset_rejects_source_size_mismatch(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    loaded = _loaded_dataset(
+        str(snapshot / "train.parquet"),
+        num_bytes = 6,
+    )
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
+
+
+@pytest.mark.parametrize("num_bytes", [None, True, -1, "7"])
+def test_loaded_hub_dataset_rejects_invalid_recorded_size(tmp_path, num_bytes):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    loaded = SimpleNamespace(
+        info = SimpleNamespace(
+            download_checksums = {
+                str(snapshot / "train.parquet"): {
+                    "num_bytes": num_bytes,
+                    "checksum": None,
+                }
+            }
+        )
+    )
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_revision_unattested",
+    )
+
+
+def test_loaded_hub_dataset_accepts_snapshot_blob_symlink(tmp_path):
+    repo = tmp_path / "datasets--org--dataset"
+    snapshot = repo / "snapshots" / "dataset-commit"
+    blobs = repo / "blobs"
+    snapshot.mkdir(parents = True)
+    blobs.mkdir()
+    (blobs / "payload").write_bytes(b"dataset")
+    (snapshot / "train.parquet").symlink_to("../../blobs/payload")
+    loaded = _loaded_dataset(str(snapshot / "train.parquet"))
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        str(snapshot.resolve()),
+        None,
+    )
+
+
+def test_loaded_hub_dataset_rejects_local_source_symlink_outside_repo(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    external = tmp_path / "external.parquet"
+    external.write_bytes(b"external")
+    source = snapshot / "external.parquet"
+    source.symlink_to(external)
+    loaded = _loaded_dataset(str(source))
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_source_unattested",
+    )
+
+
+def test_loaded_hub_dataset_rejects_cross_snapshot_symlink(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    other_snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "other-commit",
+    )
+    (other_snapshot / "validation.parquet").write_bytes(b"validation")
+    (snapshot / "validation.parquet").symlink_to(
+        "../other-commit/validation.parquet"
+    )
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/validation.parquet"
+    )
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
+
+
+def test_loaded_hub_dataset_rejects_mixed_train_eval_commits(tmp_path):
+    _dataset_snapshot(tmp_path, "org/dataset", "train-commit")
+    _dataset_snapshot(tmp_path, "org/dataset", "eval-commit")
+    train = _loaded_dataset(
+        "hf://datasets/org/dataset@train-commit/train.parquet"
+    )
+    evaluation = _loaded_dataset(
+        "hf://datasets/org/dataset@eval-commit/train.parquet"
+    )
+
+    assert attest_loaded_dataset("org/dataset", train, evaluation) == (
+        None,
+        "dataset_metadata_ambiguous",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://example.com/train.parquet",
+        "hf://datasets/other/dataset@dataset-commit/train.parquet",
+        "/tmp/downloads/train.parquet",
+    ],
+)
+def test_loaded_hub_dataset_rejects_unattested_sources(tmp_path, source):
+    _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+
+    assert attest_loaded_dataset("org/dataset", _loaded_dataset(source)) == (
+        None,
+        "dataset_source_unattested",
+    )
+
+
+def test_loaded_hub_dataset_requires_local_commit_payload(tmp_path):
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@evicted-commit/train.parquet"
+    )
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
+
+
+def test_loaded_hub_dataset_requires_every_consumed_source_file(tmp_path):
+    _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/train.parquet",
+        "hf://datasets/org/dataset@dataset-commit/validation.parquet",
+    )
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
+
+
+def test_loaded_hub_dataset_rejects_encoded_windows_traversal(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    (snapshot.parent / "outside.parquet").write_bytes(b"outside")
+    (snapshot / "..\\outside.parquet").write_bytes(b"outside")
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/%2e%2e%5coutside.parquet"
+    )
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "..\\outside.parquet",
+        "nested\\..\\outside.parquet",
+        "C:outside.parquet",
+        "C:\\outside.parquet",
+        "\\\\server\\share\\outside.parquet",
+        "%5c%5cserver%5cshare%5coutside.parquet",
+        "%2foutside.parquet",
+        "%00outside.parquet",
+    ],
+)
+def test_dataset_snapshot_source_rejects_cross_platform_paths(
+    tmp_path,
+    source_path,
+):
+    from core.training import provenance
+
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+
+    assert provenance._dataset_snapshot_contains(
+        str(snapshot),
+        source_path,
+    ) is False
+
+
+def test_loaded_hub_dataset_rejects_external_snapshot_symlink(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    external = tmp_path / "external.parquet"
+    external.write_bytes(b"external")
+    (snapshot / "external.parquet").symlink_to(external)
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/external.parquet"
+    )
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
+
+
+def test_loaded_hub_dataset_rejects_missing_local_snapshot_source(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+
+    assert attest_loaded_dataset(
+        "org/dataset",
+        _loaded_dataset(str(snapshot / "missing.parquet")),
+    ) == (None, "dataset_source_unattested")
+
+
+def test_loaded_hub_dataset_matches_repo_id_case_insensitively(tmp_path):
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "Org/Dataset",
+        "dataset-commit",
+    )
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/train.parquet"
+    )
+
+    assert attest_loaded_dataset("Org/Dataset", loaded) == (
+        str(snapshot.resolve()),
+        None,
+    )
+
+
 def test_shared_hf_loader_marks_only_successful_exact_dataset_load(tmp_path):
     from core.training import worker
 
@@ -334,6 +755,110 @@ def test_shared_hf_loader_marks_only_successful_exact_dataset_load(tmp_path):
 
     assert loaded is cached
     assert eval_dataset is None
+    assert config["_dataset_loaded_from_exact_snapshot"] is True
+
+
+def test_shared_hf_loader_attests_first_remote_dataset_load(tmp_path):
+    from core.training import worker
+
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/train.parquet"
+    )
+    config = {
+        "hf_dataset": "org/dataset",
+        "train_split": "train",
+    }
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        lambda *_args, **_kwargs: loaded,
+        lambda _message: None,
+    )
+
+    assert dataset is loaded
+    assert eval_dataset is None
+    assert config["dataset_snapshot_path"] == str(snapshot.resolve())
+    assert config["_dataset_loaded_from_exact_snapshot"] is True
+
+
+def test_first_remote_hub_load_produces_resumable_provenance(tmp_path):
+    from core.training import worker
+
+    model = _model_snapshot(
+        tmp_path,
+        "org/model",
+        "model-commit",
+    )
+    dataset = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/train.parquet"
+    )
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model),
+        "hf_dataset": "org/dataset",
+        "load_in_4bit": False,
+    }
+
+    worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        lambda *_args, **_kwargs: loaded,
+        lambda _message: None,
+    )
+    event = build_worker_provenance_event(
+        config,
+        object(),
+        model_load_target = str(model),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = config[
+            "_dataset_loaded_from_exact_snapshot"
+        ],
+    )
+    persisted = {
+        **config,
+        **normalize_worker_provenance_event(event, config),
+    }
+
+    assert persisted["dataset_snapshot_path"] == str(dataset.resolve())
+    assert persisted[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+    assert resource_provenance_allows_resume(persisted) is True
+
+
+def test_embedding_hf_loader_attests_first_remote_dataset_load(tmp_path):
+    from core.training import worker
+
+    snapshot = _dataset_snapshot(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    loaded = _loaded_dataset(
+        "hf://datasets/org/dataset@dataset-commit/train.parquet"
+    )
+    config = {
+        "hf_dataset": "org/dataset",
+        "train_split": "train",
+    }
+
+    dataset = worker._load_embedding_hf_dataset(
+        config,
+        lambda *_args, **_kwargs: loaded,
+        lambda _message: None,
+    )
+
+    assert dataset is loaded
+    assert config["dataset_snapshot_path"] == str(snapshot.resolve())
     assert config["_dataset_loaded_from_exact_snapshot"] is True
 
 

@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { findCanonicalHubResourceId } from "@/components/resource-picker/hub-resource-id";
-import { PickerShell } from "@/components/resource-picker/picker-shell";
+import {
+  type PickerExactQueryCommitResult,
+  PickerShell,
+} from "@/components/resource-picker/picker-shell";
 import { useHfErrorToast } from "@/components/resource-picker/use-hf-error-toast";
 import { usePickerHubPagination } from "@/components/resource-picker/use-picker-hub-pagination";
 import { usePickerState } from "@/components/resource-picker/use-picker-state";
@@ -51,6 +54,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
+  toCachedTrainModelDisplayCandidate,
+  toTrainModelDisplayCandidate,
+  trainModelDisplayCandidateMatchesSelection,
+  trainModelSelectionDisplayName,
+} from "../lib/train-model-selection-display";
+import {
   TrainModelDeviceList,
   TrainModelHubList,
   type TrainModelVramView,
@@ -58,14 +67,12 @@ import {
 import {
   type TrainModelDeviceItem,
   compareTrainModelDeviceItems,
-  findExactTrainModelDeviceItem,
   hasExactTrainingModelMatch,
   hubTrainingModelCandidate,
   hubTrainingModelTypeFlags,
+  resolveExactTrainModelDeviceItem,
   toCachedTrainModelDeviceItem,
   toLocalTrainModelDeviceItem,
-  trainModelDeviceItemMatchesSelection,
-  trainModelSelectionDisplayName,
 } from "./train-model-picker-view-model";
 import { TRAIN_PICKER_TRIGGER_CLASS } from "./train-picker-trigger";
 
@@ -212,6 +219,13 @@ export function TrainModelSelector({
       ].sort(compareTrainModelDeviceItems),
     [cachedRows, localRows, isTrainableCachedRow, isTrainableLocalRow, t],
   );
+  const localModelDisplayCandidates = useMemo(
+    () => [
+      ...cachedRows.map(toCachedTrainModelDisplayCandidate),
+      ...localRows.map(toTrainModelDisplayCandidate),
+    ],
+    [cachedRows, localRows],
+  );
 
   const pickerView = picker.getViewState({
     hasDeviceItems: trainableLocalModels.length > 0,
@@ -231,8 +245,8 @@ export function TrainModelSelector({
 
   const selectedDeviceItemKey = useMemo(() => {
     const matches = filteredLocalModels.filter((item) =>
-      trainModelDeviceItemMatchesSelection({
-        item,
+      trainModelDisplayCandidateMatchesSelection({
+        candidate: item,
         selectedModel,
         selectedLocalPath: modelLocalPath,
         selectedFormat: selectedModelFormat,
@@ -451,21 +465,30 @@ export function TrainModelSelector({
     );
   }
 
-  function commitExactQuery(query: string): boolean {
+  function commitExactQuery(query: string): PickerExactQueryCommitResult {
     if (tab === "hub") {
       const canonicalId = findCanonicalHubResourceId(query, hubResultIds);
       if (!canonicalId) {
-        return false;
+        return { kind: "unhandled" };
       }
       pickHubModel(canonicalId);
-      return true;
+      return { kind: "handled" };
     }
-    const model = findExactTrainModelDeviceItem(query, trainableLocalModels);
-    if (!model) {
-      return false;
+    const resolution = resolveExactTrainModelDeviceItem(
+      query,
+      trainableLocalModels,
+    );
+    if (resolution.kind === "ambiguous") {
+      return {
+        kind: "ambiguous",
+        focusValue: resolution.firstItem.path,
+      };
     }
-    pickDeviceModel(model);
-    return true;
+    if (resolution.kind === "none") {
+      return { kind: "unhandled" };
+    }
+    pickDeviceModel(resolution.item);
+    return { kind: "handled" };
   }
 
   const display = useMemo(
@@ -475,14 +498,14 @@ export function TrainModelSelector({
         knownCached: modelKnownCached,
         selectedLocalPath: modelLocalPath,
         selectedFormat: selectedModelFormat,
-        deviceItems: trainableLocalModels,
+        candidates: localModelDisplayCandidates,
       }),
     [
       modelKnownCached,
       modelLocalPath,
       selectedModel,
       selectedModelFormat,
-      trainableLocalModels,
+      localModelDisplayCandidates,
     ],
   );
   const hasExactMatch = hasExactTrainingModelMatch(
@@ -491,7 +514,7 @@ export function TrainModelSelector({
     hubResultIds,
     trainableLocalModels,
   );
-  const showUseThis = activeQuery.length > 0 && !hasExactMatch;
+  const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;
   const useThisLabel =
     tab === "hub"
       ? t("studio.modelPicker.useAsHubModel")

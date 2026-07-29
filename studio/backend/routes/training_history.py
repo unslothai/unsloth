@@ -84,15 +84,35 @@ def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     }
 
 
-def _summary_from_row(row: dict, sharing_on: bool) -> TrainingRunSummary:
+def _summary_from_row(
+    row: dict,
+    sharing_on: bool,
+    resource_cache: Optional[dict[str, bool]] = None,
+) -> TrainingRunSummary:
+    can_resume = (
+        can_resume_run(row)
+        if resource_cache is None
+        else can_resume_run(row, resource_cache = resource_cache)
+    )
     return TrainingRunSummary(
         **{
             **{k: v for k, v in row.items() if k != "config_json"},
-            "can_resume": can_resume_run(row),
+            "can_resume": can_resume,
             "artifacts_available": artifacts_present(row.get("output_dir")),
             **_preview_fields(row.get("output_dir"), sharing_on),
         }
     )
+
+
+def _summaries_from_rows(
+    rows: list[dict],
+    sharing_on: bool,
+) -> list[TrainingRunSummary]:
+    resource_cache: dict[str, bool] = {}
+    return [
+        _summary_from_row(row, sharing_on, resource_cache)
+        for row in rows
+    ]
 
 
 def _delete_run_output_dir(run_id: str, output_dir: str) -> bool:
@@ -187,8 +207,13 @@ async def list_training_runs(
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
     sharing_on = get_preview_sharing_enabled()
+    runs = await asyncio.to_thread(
+        _summaries_from_rows,
+        result["runs"],
+        sharing_on,
+    )
     return TrainingRunListResponse(
-        runs = [_summary_from_row(r, sharing_on) for r in result["runs"]],
+        runs = runs,
         total = result["total"],
     )
 
@@ -208,8 +233,13 @@ async def get_training_run_detail(run_id: str, current_subject: str = Depends(ge
 
     metrics_data = get_run_metrics(run_id)
 
+    summary = await asyncio.to_thread(
+        _summary_from_row,
+        run,
+        get_preview_sharing_enabled(),
+    )
     return TrainingRunDetailResponse(
-        run = _summary_from_row(run, get_preview_sharing_enabled()),
+        run = summary,
         config = config,
         metrics = TrainingRunMetrics(**metrics_data),
     )
@@ -235,7 +265,11 @@ async def update_training_run(
     refreshed = get_run(run_id)
     if refreshed is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
-    return _summary_from_row(refreshed, get_preview_sharing_enabled())
+    return await asyncio.to_thread(
+        _summary_from_row,
+        refreshed,
+        get_preview_sharing_enabled(),
+    )
 
 
 @router.delete("/runs/{run_id}", response_model = TrainingRunDeleteResponse)

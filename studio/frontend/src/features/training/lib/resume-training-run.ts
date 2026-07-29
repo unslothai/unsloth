@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-import { getHfToken } from "@/features/hub";
+import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
@@ -107,7 +107,10 @@ class ResumeTrainingStartAttempt {
     if (currentToken !== this.expectedHfToken && currentToken !== nextToken) {
       return this.cancel(TRAINING_SETUP_CHANGED_ERROR);
     }
-    this.expectedHfToken = currentToken;
+    if (currentToken !== nextToken) {
+      useHfTokenStore.getState().setToken(nextToken);
+    }
+    this.expectedHfToken = getHfToken();
     return true;
   }
 

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resolveDevicePickerItem } from "@/components/resource-picker/device-item-match";
 import { hubResourceIdsEqual } from "@/components/resource-picker/hub-resource-id";
 import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-focus";
-import { PickerShell } from "@/components/resource-picker/picker-shell";
+import {
+  type PickerExactQueryCommitResult,
+  PickerShell,
+} from "@/components/resource-picker/picker-shell";
 import { useHfErrorToast } from "@/components/resource-picker/use-hf-error-toast";
 import { usePickerHubPagination } from "@/components/resource-picker/use-picker-hub-pagination";
 import { usePickerState } from "@/components/resource-picker/use-picker-state";
@@ -27,7 +31,7 @@ import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo } from "react";
-import { datasetDisplayName } from "../lib/display";
+import { datasetSelectionDisplayName } from "../lib/display";
 import {
   type DatasetDeviceItem,
   DatasetDeviceList,
@@ -41,24 +45,19 @@ const TRIGGER_BASE = cn(
   PICKER_FOCUS_VISIBLE_CLASS,
 );
 
-function findExactLocalDataset(
+function resolveExactDatasetDeviceItem(
   query: string,
   deviceItems: readonly DatasetDeviceItem[],
-): Extract<DatasetDeviceItem, { kind: "local" }> | undefined {
-  return deviceItems.find(
-    (item): item is Extract<DatasetDeviceItem, { kind: "local" }> =>
-      item.kind === "local" && cacheLocalPathMatchesSelection(item.path, query),
-  );
-}
-
-function findExactCachedDataset(
-  query: string,
-  deviceItems: readonly DatasetDeviceItem[],
-): Extract<DatasetDeviceItem, { kind: "cached" }> | undefined {
-  return deviceItems.find(
-    (item): item is Extract<DatasetDeviceItem, { kind: "cached" }> =>
-      item.kind === "cached" && hubResourceIdsEqual(item.repoId, query),
-  );
+) {
+  return resolveDevicePickerItem({
+    query,
+    items: deviceItems,
+    canonicalMatch: (item, candidate) =>
+      item.kind === "cached"
+        ? hubResourceIdsEqual(item.repoId, candidate)
+        : cacheLocalPathMatchesSelection(item.path, candidate),
+    title: (item) => item.title,
+  });
 }
 
 function hasExactDatasetMatch(
@@ -73,29 +72,7 @@ function hasExactDatasetMatch(
   if (tab === "hub") {
     return hubItems.some((item) => hubResourceIdsEqual(item.id, query));
   }
-  return (
-    findExactCachedDataset(query, deviceItems) !== undefined ||
-    findExactLocalDataset(query, deviceItems) !== undefined
-  );
-}
-
-function selectedDatasetDisplay({
-  source,
-  dataset,
-  uploadedFile,
-  localTitle,
-}: {
-  source: "huggingface" | "upload" | "s3";
-  dataset: string | null;
-  uploadedFile: string | null;
-  localTitle: string | null;
-}): string | null {
-  if (source === "upload") {
-    return uploadedFile
-      ? (localTitle ?? datasetDisplayName(uploadedFile))
-      : null;
-  }
-  return dataset ? datasetDisplayName(dataset) : null;
+  return resolveExactDatasetDeviceItem(query, deviceItems).kind !== "none";
 }
 
 export function DatasetSelector({
@@ -252,7 +229,7 @@ export function DatasetSelector({
     hubItems,
     deviceItems,
   );
-  const showUseThis = activeQuery.length > 0 && !hasExactMatch;
+  const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;
   const useThisLabel =
     tab === "hub"
       ? t("studio.datasetPicker.useAsHubDataset")
@@ -272,34 +249,43 @@ export function DatasetSelector({
   };
 
   const commitExactQuery = useCallback(
-    (query: string) => {
+    (query: string): PickerExactQueryCommitResult => {
       if (tab === "hub") {
         const item = hubItems.find((candidate) =>
           hubResourceIdsEqual(candidate.id, query),
         );
         if (!item) {
-          return false;
+          return { kind: "unhandled" };
         }
         selectHubDataset(item.id);
         closePicker();
-        return true;
+        return { kind: "handled" };
       }
-      const cached = findExactCachedDataset(query, deviceItems);
-      if (cached) {
-        selectHfDataset(cached.repoId, {
+      const resolution = resolveExactDatasetDeviceItem(query, deviceItems);
+      if (resolution.kind === "ambiguous") {
+        return {
+          kind: "ambiguous",
+          focusValue:
+            resolution.firstItem.kind === "cached"
+              ? resolution.firstItem.repoId
+              : resolution.firstItem.path,
+        };
+      }
+      if (resolution.kind === "none") {
+        return { kind: "unhandled" };
+      }
+      const item = resolution.item;
+      if (item.kind === "cached") {
+        selectHfDataset(item.repoId, {
           knownCached: true,
-          localPath: cached.cachePath,
+          localPath: item.cachePath,
         });
         closePicker();
-        return true;
-      }
-      const item = findExactLocalDataset(query, deviceItems);
-      if (!item) {
-        return false;
+        return { kind: "handled" };
       }
       selectLocalDataset(item.path);
       closePicker();
-      return true;
+      return { kind: "handled" };
     },
     [
       closePicker,
@@ -312,23 +298,11 @@ export function DatasetSelector({
     ],
   );
 
-  const selectedLocalDatasetTitle = useMemo(() => {
-    if (datasetSource !== "upload" || !uploadedFile) {
-      return null;
-    }
-    const selected = deviceItems.find(
-      (item) =>
-        item.kind === "local" &&
-        cacheLocalPathMatchesSelection(item.path, uploadedFile),
-    );
-    return selected?.title ?? null;
-  }, [datasetSource, uploadedFile, deviceItems]);
-
-  const display = selectedDatasetDisplay({
+  const display = datasetSelectionDisplayName({
     source: datasetSource,
     dataset,
     uploadedFile,
-    localTitle: selectedLocalDatasetTitle,
+    candidates: localRows,
   });
 
   return (

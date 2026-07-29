@@ -105,6 +105,147 @@ def test_summary_reports_artifacts_available(monkeypatch):
     assert without_artifacts.artifacts_available is False
 
 
+def test_resource_resume_validation_is_cached_per_request(monkeypatch):
+    from core.training import provenance
+
+    calls: list[dict] = []
+    monkeypatch.setattr(resume, "has_resume_state", lambda output_dir: True)
+    monkeypatch.setattr(
+        provenance,
+        "resource_provenance_allows_resume",
+        lambda config: calls.append(config) or True,
+    )
+    cache: dict[str, bool] = {}
+    first = _run_row(output_dir = "/tmp/first")
+    second = _run_row(output_dir = "/tmp/second")
+
+    assert resume.can_resume_run(first, resource_cache = cache) is True
+    assert resume.can_resume_run(second, resource_cache = cache) is True
+    assert len(calls) == 1
+    assert resume.can_resume_run(second, resource_cache = {}) is True
+    assert len(calls) == 2
+
+
+def test_resource_resume_cache_key_tracks_snapshot_paths(monkeypatch):
+    from core.training import provenance
+
+    calls: list[dict] = []
+    monkeypatch.setattr(resume, "has_resume_state", lambda output_dir: True)
+    monkeypatch.setattr(
+        provenance,
+        "resource_provenance_allows_resume",
+        lambda config: calls.append(config) or True,
+    )
+    cache: dict[str, bool] = {}
+    first = _run_row(
+        config_json = {
+            "hf_dataset": "org/dataset",
+            "dataset_snapshot_path": "/cache/first",
+        }
+    )
+    second = _run_row(
+        config_json = {
+            "hf_dataset": "org/dataset",
+            "dataset_snapshot_path": "/cache/second",
+        }
+    )
+
+    assert resume.can_resume_run(first, resource_cache = cache) is True
+    assert resume.can_resume_run(second, resource_cache = cache) is True
+    assert len(calls) == 2
+
+
+def test_nonserializable_resume_key_bypasses_cache(monkeypatch):
+    from core.training import provenance
+
+    calls: list[dict] = []
+    monkeypatch.setattr(resume, "has_resume_state", lambda output_dir: True)
+    monkeypatch.setattr(
+        provenance,
+        "resource_provenance_allows_resume",
+        lambda config: calls.append(config) or True,
+    )
+    row = _run_row(config_json = {"hf_dataset": object()})
+    cache: dict[str, bool] = {}
+
+    assert resume.can_resume_run(row, resource_cache = cache) is True
+    assert resume.can_resume_run(row, resource_cache = cache) is True
+    assert len(calls) == 2
+    assert cache == {}
+
+
+def test_summary_batch_preserves_order_and_uses_request_local_cache(monkeypatch):
+    observed_caches: list[dict[str, bool]] = []
+
+    def fake_can_resume(run, *, resource_cache):
+        observed_caches.append(resource_cache)
+        return False
+
+    monkeypatch.setattr(training_history, "can_resume_run", fake_can_resume)
+    monkeypatch.setattr(training_history, "artifacts_present", lambda path: False)
+    rows = [
+        _run_row(id = run_id, output_dir = f"/tmp/{run_id}")
+        for run_id in ("b", "a", "c")
+    ]
+
+    first = training_history._summaries_from_rows(rows, sharing_on = False)
+    first_cache = observed_caches[0]
+    second = training_history._summaries_from_rows(rows, sharing_on = False)
+    second_cache = observed_caches[len(rows)]
+
+    assert [summary.id for summary in first] == ["b", "a", "c"]
+    assert [summary.id for summary in second] == ["b", "a", "c"]
+    assert all(cache is first_cache for cache in observed_caches[: len(rows)])
+    assert all(cache is second_cache for cache in observed_caches[len(rows) :])
+    assert first_cache is not second_cache
+
+
+def test_list_training_runs_offloads_summary_batch(monkeypatch):
+    offloads: list[tuple[object, tuple[object, ...]]] = []
+    rows = [
+        _run_row(id = run_id, output_dir = f"/tmp/{run_id}")
+        for run_id in ("b", "a", "c")
+    ]
+
+    async def record_offload(function, *args):
+        offloads.append((function, args))
+        return function(*args)
+
+    monkeypatch.setattr(training_history.asyncio, "to_thread", record_offload)
+    monkeypatch.setattr(
+        training_history,
+        "list_runs",
+        lambda **kwargs: {"runs": rows, "total": len(rows)},
+    )
+    monkeypatch.setattr(
+        training_history,
+        "get_preview_sharing_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        training_history,
+        "can_resume_run",
+        lambda run, *, resource_cache: False,
+    )
+    monkeypatch.setattr(training_history, "artifacts_present", lambda path: False)
+
+    response = asyncio.run(
+        training_history.list_training_runs(
+            limit = 50,
+            offset = 0,
+            current_subject = "test-user",
+        )
+    )
+
+    assert [summary.id for summary in response.runs] == ["b", "a", "c"]
+    assert offloads == [
+        (
+            training_history._summaries_from_rows,
+            (rows, False),
+        )
+    ]
+
+
 def _delete(
     monkeypatch,
     run_row,

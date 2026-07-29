@@ -245,7 +245,38 @@ def _uses_s3_dataset(run: dict) -> bool:
     return config.get("dataset_source") == "s3" or "s3_dataset" in config
 
 
-def can_resume_run(run: dict) -> bool:
+def _resource_resume_cache_key(config: dict) -> Optional[str]:
+    marker = config.get("resource_provenance")
+    if isinstance(marker, dict):
+        marker = {
+            key: marker.get(key)
+            for key in ("version", "status", "model_status", "dataset_status")
+        }
+    values = {
+        "resource_provenance": marker,
+        "model_name": config.get("model_name"),
+        "actual_model_repo_id": config.get("actual_model_repo_id"),
+        "model_snapshot_path": config.get("model_snapshot_path"),
+        "load_in_4bit": config.get("load_in_4bit"),
+        "hf_dataset": config.get("hf_dataset"),
+        "dataset_snapshot_path": config.get("dataset_snapshot_path"),
+    }
+    try:
+        return json.dumps(
+            values,
+            sort_keys = True,
+            separators = (",", ":"),
+            ensure_ascii = False,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def can_resume_run(
+    run: dict,
+    *,
+    resource_cache: Optional[dict[str, bool]] = None,
+) -> bool:
     if run.get("resumed_later"):
         return False
     # Set when a stop-and-save failed to write a current-step checkpoint.
@@ -277,4 +308,10 @@ def can_resume_run(run: dict) -> bool:
 
     from core.training.provenance import resource_provenance_allows_resume
 
-    return resource_provenance_allows_resume(training_run_config(run))
+    config = training_run_config(run)
+    cache_key = _resource_resume_cache_key(config)
+    if resource_cache is None or cache_key is None:
+        return resource_provenance_allows_resume(config)
+    if cache_key not in resource_cache:
+        resource_cache[cache_key] = resource_provenance_allows_resume(config)
+    return resource_cache[cache_key]

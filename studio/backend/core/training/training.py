@@ -35,7 +35,7 @@ from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
     run_without_native_path_secret,
 )
-from utils.paths import outputs_root
+from utils.paths import is_local_path, outputs_root
 
 logger = get_logger(__name__)
 
@@ -158,6 +158,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "dataset_known_cached": values.get("dataset_known_cached", False),
         "dataset_local_path": values.get("dataset_local_path"),
         "dataset_snapshot_path": values.get("dataset_snapshot_path"),
+        "dataset_revision": values.get("dataset_revision"),
         "local_datasets": values.get("local_datasets"),
         "local_eval_datasets": values.get("local_eval_datasets"),
         "format_type": values.get("format_type", ""),
@@ -316,6 +317,10 @@ def _snapshot_declares_quantization(snapshot_path: str) -> bool:
 def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     resume = bool(config.get("resume_from_checkpoint"))
     model_name = config["model_name"]
+    if is_local_path(model_name):
+        config["actual_model_repo_id"] = None
+        config["model_snapshot_path"] = None
+        return
     requested_pin = config.get("model_snapshot_path")
     model_claimed = bool(config.get("model_known_cached") or config.get("model_local_path"))
     if resume and requested_pin:
@@ -409,10 +414,14 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
     hf_dataset = config.get("hf_dataset") or ""
     requested_ds_pin = config.get("dataset_snapshot_path")
     ds_claimed = bool(config.get("dataset_known_cached") or config.get("dataset_local_path"))
+    config["dataset_revision"] = None
     if not hf_dataset or config.get("dataset_streaming"):
         config["dataset_snapshot_path"] = None
     elif resume and requested_ds_pin:
-        from hub.utils.dataset_cache import dataset_cache_path_from_cache_path
+        from hub.utils.dataset_cache import (
+            dataset_cache_path_from_cache_path,
+            dataset_snapshot_from_cache_path,
+        )
 
         snap = dataset_cache_path_from_cache_path(requested_ds_pin, hf_dataset)
         if snap is None:
@@ -429,15 +438,32 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
                 f"disk; resuming by downloading {hf_dataset} from Hugging Face."
             )
         config["dataset_snapshot_path"] = str(snap) if snap else None
+        snapshot = (
+            dataset_snapshot_from_cache_path(str(snap), hf_dataset)
+            if snap is not None
+            else None
+        )
+        if snapshot is not None:
+            config["dataset_revision"] = snapshot.name
     elif ds_claimed:
-        from hub.utils.dataset_cache import latest_cached_dataset_path
+        from hub.utils.dataset_cache import training_dataset_cache_pin
 
-        snap = latest_cached_dataset_path(hf_dataset, config.get("dataset_local_path"))
+        snap, revision = training_dataset_cache_pin(
+            hf_dataset,
+            config.get("dataset_local_path"),
+        )
+        config["dataset_revision"] = revision
         if snap is None:
-            warnings.append(
-                f"Cached copy of dataset {hf_dataset} not found on disk; downloading from "
-                f"Hugging Face."
-            )
+            if revision:
+                warnings.append(
+                    f"The cached snapshot of dataset {hf_dataset} is incomplete; "
+                    f"downloading its exact revision from Hugging Face."
+                )
+            else:
+                warnings.append(
+                    f"Cached copy of dataset {hf_dataset} not found on disk; downloading from "
+                    f"Hugging Face."
+                )
         config["dataset_snapshot_path"] = str(snap) if snap else None
     else:
         config["dataset_snapshot_path"] = None
@@ -686,6 +712,10 @@ class _MLXTrainerAdapter:
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
         s3_config: dict = None,
+        dataset_local_files_only: bool = False,
+        dataset_local_path: Optional[str] = None,
+        dataset_revision: Optional[str] = None,
+        require_exact_resume_resources: bool = False,
     ) -> Optional[tuple]:
         self._dataset_config = {
             "hf_dataset": dataset_source or "",
@@ -701,6 +731,12 @@ class _MLXTrainerAdapter:
             "dataset_slice_start": dataset_slice_start,
             "dataset_slice_end": dataset_slice_end,
             "s3_config": s3_config,
+            "dataset_known_cached": bool(dataset_local_files_only),
+            "dataset_snapshot_path": dataset_local_path,
+            "dataset_revision": dataset_revision,
+            "require_exact_dataset_resource": bool(
+                require_exact_resume_resources
+            ),
         }
         self.is_cpt = bool(is_cpt)
         self._update_progress(status_message = "Queued MLX dataset load")

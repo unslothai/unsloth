@@ -81,7 +81,7 @@ export function StudioPage(): ReactElement {
     handleHistoryRunSelected,
     handleResumeStarted,
     handleTabChange,
-    isTrainingRunning,
+    trainingRunActive,
     selectedHistoryRunId,
     showTrainingView,
   } = useStudioNavigation();
@@ -151,7 +151,7 @@ export function StudioPage(): ReactElement {
               </p>
             </div>
             {!showTrainingHydrating && (
-              <div className="flex items-center gap-3 border-b border-border/60">
+              <div className="flex min-w-0 items-center gap-3 border-b border-border/60">
                 {showHistoryBack && (
                   <Button
                     variant="ghost"
@@ -165,7 +165,7 @@ export function StudioPage(): ReactElement {
                 )}
                 <TrainSubNav
                   value={activeTab}
-                  isTrainingRunning={isTrainingRunning}
+                  trainingRunActive={trainingRunActive}
                   showTrainingView={showTrainingView}
                 />
               </div>

@@ -5,9 +5,14 @@ import errno
 import json
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
+from hub.utils.dataset_processed_cache import (
+    mark_app_processed_dataset_cache_complete,
+    normalized_commit_hash,
+    prepare_app_processed_dataset_cache,
+)
 from hub.utils.hf_cache_state import (
     iter_repo_cache_dirs,
     ref_snapshot_dir,
@@ -18,6 +23,13 @@ from hub.utils.hf_cache_state import (
 TRAINING_DATA_EXTS = (".parquet", ".json", ".jsonl", ".csv")
 
 _RESERVED_SPLIT_TOKENS = frozenset({"train", "test", "validation", "valid", "val", "eval"})
+
+
+def _canonical_path(path: Any) -> Optional[Path]:
+    try:
+        return Path(path).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
 
 
 def hf_datasets_cache_roots() -> list[Path]:
@@ -211,6 +223,115 @@ def latest_cached_dataset_path(
     return latest_cached_dataset_snapshot(repo_id, local_path)
 
 
+def resolved_dataset_snapshot_file(
+    snapshot: str | Path,
+    source_path: str,
+) -> Optional[Path]:
+    from hub.utils.download_manifest import expected_path_is_safe
+
+    if not expected_path_is_safe(source_path):
+        return None
+    try:
+        snapshot_path = Path(snapshot).resolve(strict = True)
+        repo_dir = snapshot_path.parent.parent.resolve(strict = True)
+        if snapshot_path.parent != repo_dir / "snapshots":
+            return None
+        resolved = snapshot_path.joinpath(
+            *PurePosixPath(source_path).parts
+        ).resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not resolved.is_file() or not (
+        resolved.is_relative_to(snapshot_path)
+        or resolved.is_relative_to(repo_dir / "blobs")
+    ):
+        return None
+    try:
+        with resolved.open("rb"):
+            pass
+    except OSError:
+        return None
+    return resolved
+
+
+def dataset_snapshot_contains_file(
+    snapshot: str | Path,
+    source_path: str,
+) -> bool:
+    return resolved_dataset_snapshot_file(snapshot, source_path) is not None
+
+
+def complete_dataset_snapshot_path(
+    local_path: Optional[str],
+    repo_id: str,
+) -> Optional[Path]:
+    snapshot = dataset_snapshot_from_cache_path(local_path, repo_id)
+    if snapshot is None:
+        return None
+    validated = validated_repo_cache_path(str(snapshot), "dataset", repo_id)
+    if validated is None:
+        return None
+    repo_dir, selected = validated
+    try:
+        snapshot = snapshot.resolve(strict = True)
+        selected = selected.resolve(strict = True)
+        repo_dir = repo_dir.resolve(strict = True)
+        hub_cache = repo_dir.parent.resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if snapshot != selected or snapshot.parent != repo_dir / "snapshots":
+        return None
+
+    from hub.utils import download_manifest
+
+    manifest = download_manifest.read_dataset_completion(
+        repo_id,
+        snapshot.name,
+        hub_cache = hub_cache,
+    )
+    if (
+        manifest is None
+        or manifest.repo_type != "dataset"
+        or manifest.repo_id.casefold() != repo_id.casefold()
+        or manifest.version != 2
+        or not manifest.metadata_derived
+        or manifest.commit_hash != snapshot.name
+        or _canonical_path(manifest.hub_cache) != hub_cache
+        or not manifest.expected_files
+    ):
+        return None
+    for expected in manifest.expected_files:
+        if not dataset_snapshot_contains_file(snapshot, expected.path):
+            return None
+    if not download_manifest.verify_against_disk(manifest, snapshot).ok:
+        return None
+    return snapshot
+
+
+def training_dataset_cache_pin(
+    repo_id: str,
+    local_path: Optional[str] = None,
+) -> tuple[Optional[Path], Optional[str]]:
+    if local_path:
+        selected = dataset_cache_path_from_cache_path(local_path, repo_id)
+    else:
+        selected = latest_cached_dataset_snapshot(repo_id)
+        if selected is None:
+            selected = latest_processed_dataset_cache_path(repo_id)
+    if selected is None:
+        return None, None
+    processed = processed_dataset_cache_path(str(selected), repo_id)
+    if processed is not None:
+        return processed, None
+    snapshot = dataset_snapshot_from_cache_path(str(selected), repo_id)
+    if snapshot is None:
+        return None, None
+    commit_hash = normalized_commit_hash(snapshot.name)
+    if commit_hash is None:
+        return None, None
+    return snapshot, commit_hash
+
+
 def dataset_cache_path_from_cache_path(
     local_path: Optional[str], repo_id: str
 ) -> Optional[Path]:
@@ -288,6 +409,23 @@ def is_cache_artifact_error(error: BaseException | None) -> bool:
     return False
 
 
+def dataset_cache_fallback_allowed(
+    error: BaseException | None,
+    *,
+    require_exact: bool,
+    revision: Optional[str],
+) -> bool:
+    if require_exact:
+        return False
+    offline = any(
+        str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE")
+    )
+    if revision and offline:
+        return False
+    return is_cache_artifact_error(error)
+
+
 def load_cached_hf_dataset(
     repo_id: str,
     local_path: Optional[str],
@@ -304,8 +442,16 @@ def load_cached_hf_dataset(
         raise FileNotFoundError(f"Cached dataset path for {repo_id} is unavailable")
 
     from datasets import DownloadConfig
-    from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+    if snapshot is not None:
+        from datasets import load_dataset
+    else:
+        from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
+    app_cache = (
+        prepare_app_processed_dataset_cache(repo_id, snapshot)
+        if snapshot is not None
+        else None
+    )
     kwargs: dict[str, Any] = {
         "path": repo_id if processed is not None else str(snapshot),
         "split": split,
@@ -313,11 +459,16 @@ def load_cached_hf_dataset(
     }
     if processed is not None:
         kwargs["cache_dir"] = str(processed.parent)
+    elif app_cache is not None:
+        kwargs["cache_dir"] = str(app_cache.cache_dir)
     if subset:
         kwargs["name"] = subset
     if token:
         kwargs["token"] = token
-    return load_dataset(**kwargs)
+    dataset = load_dataset(**kwargs)
+    if app_cache is not None:
+        mark_app_processed_dataset_cache_complete(app_cache)
+    return dataset
 
 
 def cached_dataset_candidates(

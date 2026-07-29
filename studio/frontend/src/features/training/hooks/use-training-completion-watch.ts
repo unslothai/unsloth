@@ -4,7 +4,10 @@
 import { useEffect } from "react";
 
 import { getTrainingStatus } from "../api/train-api";
-import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import {
+  isTrainingStartPending,
+  useTrainingRuntimeStore,
+} from "../stores/training-runtime-store";
 
 const WATCH_INTERVAL_MS = 6000;
 
@@ -17,9 +20,7 @@ const WATCH_INTERVAL_MS = 6000;
  * progress (no traffic when idle). Mount once in an always-rendered shell.
  */
 export function useTrainingCompletionWatch(): void {
-  const active = useTrainingRuntimeStore(
-    (s) => s.isTrainingRunning || s.isStarting,
-  );
+  const active = useTrainingRuntimeStore(isTrainingStartPending);
 
   useEffect(() => {
     if (!active) return;

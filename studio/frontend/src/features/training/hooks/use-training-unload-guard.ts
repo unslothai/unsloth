@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect } from "react";
-import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import {
+  isTrainingStartPending,
+  useTrainingRuntimeStore,
+} from "../stores/training-runtime-store";
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 
@@ -13,7 +16,7 @@ let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 export function useTrainingUnloadGuard() {
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (!useTrainingRuntimeStore.getState().isTrainingRunning) {
+      if (!isTrainingStartPending(useTrainingRuntimeStore.getState())) {
         return;
       }
       e.preventDefault();

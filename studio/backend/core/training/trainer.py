@@ -143,6 +143,7 @@ class UnslothTrainer:
         self.model_name = None
         self.model_load_error = None
         self.dataset_loaded_from_exact_snapshot = False
+        self.dataset_snapshot_path = None
 
         # Training metrics tracking
         self.training_start_time: Optional[float] = None
@@ -2287,6 +2288,7 @@ class UnslothTrainer:
         s3_config: dict = None,
         dataset_local_files_only: bool = False,
         dataset_local_path: Optional[str] = None,
+        dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
     ) -> Optional[tuple]:
         """
@@ -2303,8 +2305,10 @@ class UnslothTrainer:
         s3_download = None
         try:
             self.dataset_loaded_from_exact_snapshot = False
+            self.dataset_snapshot_path = None
             dataset = None
             eval_dataset = None
+            dataset_attestation_source = None
             has_separate_eval_source = False  # True if eval comes from a separate HF split
             eval_enabled = eval_steps is not None and eval_steps > 0
             raw_text_mode = is_cpt or format_type == "raw"
@@ -2406,6 +2410,8 @@ class UnslothTrainer:
                 load_kwargs = {"path": dataset_source, "split": split_name}
                 if subset:
                     load_kwargs["name"] = subset
+                if dataset_revision:
+                    load_kwargs["revision"] = dataset_revision
 
                 if dataset_streaming:
                     self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
@@ -2466,24 +2472,29 @@ class UnslothTrainer:
                                     "is no longer available."
                                 )
                             dataset_loaded_from_cache = True
-                            from core.training.provenance import exact_dataset_snapshot_path
-
+                            from core.training.provenance import (
+                                exact_dataset_snapshot_path,
+                            )
+                            self.dataset_snapshot_path = exact_dataset_snapshot_path(
+                                dataset_local_path,
+                                dataset_source,
+                            )
                             self.dataset_loaded_from_exact_snapshot = bool(
-                                exact_dataset_snapshot_path(
-                                    dataset_local_path,
-                                    dataset_source,
-                                )
+                                self.dataset_snapshot_path
                             )
                             logger.info(
                                 f"Loaded cached dataset for {dataset_source}: "
                                 f"{len(dataset)} rows\n"
                             )
                         except Exception as error:
-                            from hub.utils.dataset_cache import is_cache_artifact_error
+                            from hub.utils.dataset_cache import (
+                                dataset_cache_fallback_allowed,
+                            )
 
-                            if (
-                                require_exact_resume_resources
-                                or not is_cache_artifact_error(error)
+                            if not dataset_cache_fallback_allowed(
+                                error,
+                                require_exact = require_exact_resume_resources,
+                                revision = dataset_revision,
                             ):
                                 raise
                             self._update_progress(
@@ -2507,6 +2518,7 @@ class UnslothTrainer:
                             f"streaming {rows_to_stream} rows\n"
                         )
                         stream = load_dataset(**load_kwargs, streaming = True)
+                        dataset_attestation_source = stream
                         dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
                         logger.info(
                             f"[dataset-slice] Downloaded {len(dataset)} rows "
@@ -2540,6 +2552,8 @@ class UnslothTrainer:
                         eval_load_kwargs = {"path": dataset_source, "split": eval_split}
                         if subset:
                             eval_load_kwargs["name"] = subset
+                        if dataset_revision:
+                            eval_load_kwargs["revision"] = dataset_revision
 
                         if dataset_streaming:
                             # Probe available splits before the streaming load.
@@ -2551,6 +2565,8 @@ class UnslothTrainer:
                             probe_kwargs = {"path": dataset_source}
                             if subset:
                                 probe_kwargs["config_name"] = subset
+                            if dataset_revision:
+                                probe_kwargs["revision"] = dataset_revision
                             try:
                                 available_splits = get_dataset_split_names(**probe_kwargs)
                             except Exception as probe_err:
@@ -2591,11 +2607,14 @@ class UnslothTrainer:
                                             "is no longer available."
                                         )
                                 except Exception as error:
-                                    from hub.utils.dataset_cache import is_cache_artifact_error
+                                    from hub.utils.dataset_cache import (
+                                        dataset_cache_fallback_allowed,
+                                    )
 
-                                    if (
-                                        require_exact_resume_resources
-                                        or not is_cache_artifact_error(error)
+                                    if not dataset_cache_fallback_allowed(
+                                        error,
+                                        require_exact = require_exact_resume_resources,
+                                        revision = dataset_revision,
                                     ):
                                         raise
                                     self._update_progress(
@@ -2607,9 +2626,11 @@ class UnslothTrainer:
                                     remote_train = load_dataset(**load_kwargs)
                                     remote_eval = load_dataset(**eval_load_kwargs)
                                     dataset = remote_train
+                                    dataset_attestation_source = None
                                     eval_dataset = remote_eval
                                     dataset_loaded_from_cache = False
                                     self.dataset_loaded_from_exact_snapshot = False
+                                    self.dataset_snapshot_path = None
                             else:
                                 eval_dataset = load_dataset(**eval_load_kwargs)
 
@@ -2649,11 +2670,33 @@ class UnslothTrainer:
                             available_splits = available_splits,
                             split_loader = split_loader,
                             excluded_split = (train_split or "train").partition("[")[0].strip(),
+                            revision = dataset_revision,
+                            strict_split_loading = (
+                                require_exact_resume_resources
+                                and dataset_loaded_from_cache
+                            ),
                         )
                         if eval_dataset is not None:
                             has_separate_eval_source = True
                 else:
                     logger.info("Eval disabled (eval_steps <= 0), skipping eval split detection\n")
+
+                if not dataset_streaming:
+                    from core.training.provenance import attest_loaded_dataset
+
+                    train_attestation_source = (
+                        dataset_attestation_source
+                        if dataset_attestation_source is not None
+                        else dataset
+                    )
+                    snapshot, _ = attest_loaded_dataset(
+                        dataset_source,
+                        train_attestation_source,
+                        eval_dataset if has_separate_eval_source else None,
+                    )
+                    if snapshot is not None:
+                        self.dataset_snapshot_path = snapshot
+                        self.dataset_loaded_from_exact_snapshot = True
 
             if dataset is None:
                 raise ValueError("No dataset provided")
@@ -2846,6 +2889,8 @@ class UnslothTrainer:
         available_splits: Optional[list[str]] = None,
         split_loader: Optional[Callable[[str], Dataset]] = None,
         excluded_split: Optional[str] = None,
+        revision: Optional[str] = None,
+        strict_split_loading: bool = False,
     ) -> Optional[Dataset]:
         """Auto-detect an eval split from an HF dataset (named split only)."""
         try:
@@ -2855,6 +2900,8 @@ class UnslothTrainer:
                 load_kwargs = {"path": dataset_source}
                 if subset:
                     load_kwargs["config_name"] = subset
+                if revision:
+                    load_kwargs["revision"] = revision
                 available_splits = get_dataset_split_names(**load_kwargs)
             elif available_splits is None or split_loader is None:
                 raise ValueError("Cached split names and loader must be provided together")
@@ -2869,6 +2916,8 @@ class UnslothTrainer:
                         eval_load_kwargs = {"path": dataset_source, "split": candidate}
                         if subset:
                             eval_load_kwargs["name"] = subset
+                        if revision:
+                            eval_load_kwargs["revision"] = revision
                         candidate_ds = load_dataset(**eval_load_kwargs)
                     if len(candidate_ds) >= 16:
                         logger.info(
@@ -2881,6 +2930,8 @@ class UnslothTrainer:
                         )
 
         except Exception as e:
+            if strict_split_loading and split_loader is not None:
+                raise
             logger.warning(f"Could not check dataset splits: {e}")
 
         # No separate HF eval split — caller handles programmatic splitting

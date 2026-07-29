@@ -6,6 +6,8 @@ export {
   useTrainingConfigStore,
 } from "./stores/training-config-store";
 export {
+  isTrainingRunActive,
+  isTrainingStartPending,
   shouldShowTrainingView,
   useTrainingRuntimeStore,
 } from "./stores/training-runtime-store";
@@ -29,8 +31,13 @@ export {
 export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
-export { listLocalDatasets, uploadTrainingDataset } from "./api/datasets-api";
-export type { LocalDatasetInfo } from "./types/datasets";
+export {
+  aiAssistMapping,
+  checkDatasetFormat,
+  listLocalDatasets,
+  uploadTrainingDataset,
+} from "./api/datasets-api";
+export type { CheckFormatResponse, LocalDatasetInfo } from "./types/datasets";
 export { getModelConfig, listLocalModels } from "./api/models-api";
 export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
 export type {

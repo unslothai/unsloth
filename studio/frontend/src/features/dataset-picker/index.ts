@@ -2,4 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { DatasetSelector } from "./components/dataset-selector";
-export { datasetDisplayName } from "./lib/display";
+export {
+  type DatasetDisplayCandidate,
+  datasetDisplayName,
+  datasetSelectionDisplayName,
+} from "./lib/display";

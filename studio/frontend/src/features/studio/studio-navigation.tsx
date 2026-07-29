@@ -9,11 +9,11 @@ import type { TrainSubTab } from "./use-studio-navigation";
 
 export function TrainSubNav({
   value,
-  isTrainingRunning,
+  trainingRunActive,
   showTrainingView,
 }: {
   value: TrainSubTab;
-  isTrainingRunning: boolean;
+  trainingRunActive: boolean;
   showTrainingView: boolean;
 }): ReactElement {
   const t = useT();
@@ -25,7 +25,7 @@ export function TrainSubNav({
     {
       value: "configure",
       label: t("studio.tabs.configure"),
-      disabled: isTrainingRunning,
+      disabled: trainingRunActive,
     },
     {
       value: "current-run",
@@ -37,7 +37,7 @@ export function TrainSubNav({
   return (
     <TabsList
       unstyled={true}
-      className="flex items-center gap-6 text-ui-13 tracking-nav"
+      className="flex min-w-0 flex-1 items-center justify-start gap-3 overflow-x-auto pb-px text-ui-13 tracking-nav sm:gap-6"
     >
       {items.map((item) => {
         const active = value === item.value;
@@ -49,7 +49,7 @@ export function TrainSubNav({
             indicatorClassName="hidden"
             className={cn(
               "relative h-9 flex-none select-none rounded-none border-0 px-0 py-0 text-ui-13 transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-              "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[-1px] after:h-[2px] after:rounded-full after:bg-foreground after:transition-opacity",
+              "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:rounded-full after:bg-foreground after:transition-opacity",
               active
                 ? "font-semibold text-foreground after:opacity-100"
                 : "text-muted-foreground hover:text-foreground after:opacity-0",

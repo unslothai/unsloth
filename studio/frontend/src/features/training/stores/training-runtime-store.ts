@@ -4,12 +4,37 @@
 import { create } from "zustand";
 import type {
   TrainingMetricsResponse,
+  TrainingPhase,
   TrainingProgressPayload,
   TrainingRuntimeState,
   TrainingRuntimeStore,
   TrainingSeriesPoint,
   TrainingStatusResponse,
 } from "../types/runtime";
+
+const ACTIVE_TRAINING_PHASES = new Set<TrainingPhase>([
+  "downloading_model",
+  "downloading_dataset",
+  "loading_model",
+  "loading_dataset",
+  "configuring",
+  "training",
+]);
+
+export function isTrainingRunActive(
+  state: Pick<TrainingRuntimeState, "phase" | "isTrainingRunning">,
+): boolean {
+  return state.isTrainingRunning || ACTIVE_TRAINING_PHASES.has(state.phase);
+}
+
+export function isTrainingStartPending(
+  state: Pick<
+    TrainingRuntimeState,
+    "phase" | "isStarting" | "isTrainingRunning"
+  >,
+): boolean {
+  return state.isStarting || isTrainingRunActive(state);
+}
 
 const initialState: TrainingRuntimeState = {
   jobId: null,
@@ -135,11 +160,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
     tryBeginStarting: () => {
       let acquired = false;
       set((state) => {
-        if (
-          state.isStarting ||
-          state.isTrainingRunning ||
-          state.stopRequested
-        ) {
+        if (isTrainingStartPending(state) || state.stopRequested) {
           return state;
         }
         acquired = true;

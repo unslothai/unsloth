@@ -381,6 +381,73 @@ def _dataset_expected_files(info) -> list:
     ]
 
 
+def _exact_dataset_snapshot_target(
+    repo_id: str,
+    snapshot_path: str,
+    commit_hash,
+):
+    from hub.utils import download_manifest
+    from hub.utils.state_dir import repo_cache_basename
+
+    normalized_commit = download_manifest.normalized_commit_hash(commit_hash)
+    if normalized_commit is None:
+        return None
+    try:
+        snapshot = Path(snapshot_path).expanduser().resolve(strict = True)
+        repo_dir = snapshot.parent.parent
+        hub_cache = repo_dir.parent.resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if (
+        snapshot.name != normalized_commit
+        or snapshot.parent.name != "snapshots"
+        or repo_dir.name.casefold()
+        != repo_cache_basename("dataset", repo_id).casefold()
+    ):
+        return None
+    return normalized_commit, snapshot, hub_cache
+
+
+def _write_dataset_completion_from_metadata(
+    repo_id: str,
+    snapshot_path: str,
+    commit_hash,
+    expected_files,
+    mode: str,
+) -> bool:
+    from hub.utils import download_manifest
+
+    target = _exact_dataset_snapshot_target(repo_id, snapshot_path, commit_hash)
+    files = tuple(expected_files)
+    if target is None or not files:
+        return False
+    normalized_commit, snapshot, hub_cache = target
+    verification_manifest = download_manifest.Manifest(
+        repo_type = "dataset",
+        repo_id = repo_id,
+        variant = None,
+        started_at = "",
+        expected_files = files,
+        transport = mode,
+        hub_cache = str(hub_cache),
+        version = 2,
+        commit_hash = normalized_commit,
+        metadata_derived = True,
+    )
+    if not download_manifest.verify_against_disk(
+        verification_manifest,
+        snapshot,
+    ).ok:
+        return False
+    return download_manifest.write_dataset_completion(
+        repo_id,
+        normalized_commit,
+        files,
+        mode,
+        hub_cache = hub_cache,
+    )
+
+
 def _recover_manifest_after_download(
     repo_type: RepoType,
     repo_id: str,
@@ -391,42 +458,60 @@ def _recover_manifest_after_download(
     expected_files_from_info,
     label: str = "",
 ) -> None:
-    """Best-effort manifest write for a download whose metadata was unavailable
-    at start: re-fetch and record the expected files, else fall back to the
-    on-disk file list. Shared by the model and dataset workers.
-
-    A pre-existing manifest is authoritative and is preserved untouched. This is
-    load-bearing: when access is lost on resume (token revoked/changed on a
-    gated/private repo), snapshot_download returns the cached partial snapshot
-    WITHOUT downloading, so rebuilding the manifest from on-disk files would record
-    the partial set as expected and let _verify_completed_download certify a
-    half-finished download as complete.
-
-    The same hazard exists with NO prior manifest. When metadata is still
-    unavailable here, leftover ``.incomplete`` blobs prove a cached partial was
-    returned without downloading, so we fail (exit 1) instead of deriving a
-    self-certifying manifest, leaving the partial intact for a later resume. That
-    signal misses a file that never started (no ``.incomplete``), so a kill
-    between files is accepted optimistically from the on-disk subset; a later
-    metadata-bearing attempt writes the true manifest and catches any shortfall."""
     from hub.utils import download_manifest
     from hub.utils.hf_cache_state import has_active_incomplete_blobs
 
-    if download_manifest.read_manifest(repo_type, repo_id, None) is not None:
-        return
+    existing = download_manifest.read_manifest(repo_type, repo_id, None)
+    if existing is not None:
+        if repo_type != "dataset":
+            return
+        if existing.metadata_derived and existing.commit_hash is not None:
+            _write_dataset_completion_from_metadata(
+                repo_id,
+                snapshot_path,
+                existing.commit_hash,
+                existing.expected_files,
+                mode,
+            )
+            return
 
     try:
+        info = fetch_info()
+        expected_files = expected_files_from_info(info)
+        manifest_kwargs = {}
+        if repo_type == "dataset":
+            exact_target = _exact_dataset_snapshot_target(
+                repo_id,
+                snapshot_path,
+                getattr(info, "sha", None),
+            )
+            if exact_target is not None:
+                manifest_kwargs = {
+                    "commit_hash": exact_target[0],
+                    "metadata_derived": True,
+                }
+            _write_dataset_completion_from_metadata(
+                repo_id,
+                snapshot_path,
+                getattr(info, "sha", None),
+                expected_files,
+                mode,
+            )
         if download_manifest.write_manifest(
             repo_type,
             repo_id,
             None,
-            expected_files_from_info(fetch_info()),
+            expected_files,
             mode,
+            **manifest_kwargs,
         ):
             return
         reason = "manifest write failed"
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
+
+    if existing is not None:
+        return
 
     if has_active_incomplete_blobs(repo_type, repo_id):
         print(
@@ -690,15 +775,19 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
     download_manifest.clear_cancel_marker("dataset", repo_id, None)
     if info is not None:
         expected_files = _dataset_expected_files(info)
+        commit_hash = getattr(info, "sha", None)
         download_manifest.write_manifest(
             "dataset",
             repo_id,
             None,
             expected_files,
             mode,
+            commit_hash = commit_hash,
+            metadata_derived = True,
         )
     else:
         expected_files = []
+        commit_hash = None
     purged = prepare_cache_for_transport("dataset", repo_id, mode)
     if purged:
         print(
@@ -707,11 +796,16 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             file = sys.stderr,
         )
     _preflight_disk_space("dataset", repo_id, expected_files)
+    download_kwargs = {
+        "repo_id": repo_id,
+        "token": _hf_token_arg(hf_token),
+        "repo_type": "dataset",
+        "max_workers": 1,
+    }
+    if isinstance(commit_hash, str) and commit_hash.strip():
+        download_kwargs["revision"] = commit_hash.strip()
     snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        repo_type = "dataset",
-        max_workers = 1,
+        **download_kwargs,
     )
     if info is None:
         _recover_manifest_after_download(
@@ -730,6 +824,14 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
         snapshot_path,
         metadata_unavailable = info is None,
     )
+    if info is not None:
+        _write_dataset_completion_from_metadata(
+            repo_id,
+            snapshot_path,
+            getattr(info, "sha", None),
+            expected_files,
+            mode,
+        )
 
 
 def main() -> None:

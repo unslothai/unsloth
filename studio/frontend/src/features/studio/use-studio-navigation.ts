@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  isTrainingRunActive,
   shouldShowTrainingView,
   useTrainingRuntimeStore,
 } from "@/features/training";
@@ -13,20 +14,20 @@ export type TrainSubTab = "configure" | "current-run" | "history";
 
 function initialStudioTab(
   selectedHistoryRunId: string | null,
-  isTrainingRunning: boolean,
+  trainingRunActive: boolean,
 ): TrainSubTab {
   if (selectedHistoryRunId) {
     return "history";
   }
-  return isTrainingRunning ? "current-run" : "configure";
+  return trainingRunActive ? "current-run" : "configure";
 }
 
 function activeStudioTab(
   requestedTab: TrainSubTab,
-  isTrainingRunning: boolean,
+  trainingRunActive: boolean,
   showTrainingView: boolean,
 ): TrainSubTab {
-  if (isTrainingRunning && requestedTab !== "history") {
+  if (trainingRunActive && requestedTab !== "history") {
     return "current-run";
   }
   if (requestedTab === "current-run" && !showTrainingView) {
@@ -36,17 +37,21 @@ function activeStudioTab(
 }
 
 function runtimeRequestedTab({
-  isTrainingRunning,
-  previousIsTrainingRunning,
+  jobId,
+  previousTrainingRunActive,
+  previousJobId,
   previousSelectedHistoryRunId,
   requestedTab,
   selectedHistoryRunId,
+  trainingRunActive,
 }: {
-  isTrainingRunning: boolean;
-  previousIsTrainingRunning: boolean;
+  jobId: string | null;
+  previousTrainingRunActive: boolean;
+  previousJobId: string | null;
   previousSelectedHistoryRunId: string | null;
   requestedTab: TrainSubTab;
   selectedHistoryRunId: string | null;
+  trainingRunActive: boolean;
 }): TrainSubTab | null {
   if (
     selectedHistoryRunId &&
@@ -56,8 +61,8 @@ function runtimeRequestedTab({
     return "history";
   }
   if (
-    isTrainingRunning &&
-    !previousIsTrainingRunning &&
+    ((jobId !== null && jobId !== previousJobId && trainingRunActive) ||
+      (trainingRunActive && !previousTrainingRunActive)) &&
     requestedTab !== "history" &&
     requestedTab !== "current-run"
   ) {
@@ -92,21 +97,21 @@ export function useStudioNavigation() {
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
   const {
     currentJobId,
-    isTrainingRunning,
+    trainingRunActive,
     selectedHistoryRunId,
     setCurrentRunViewActive,
     setSelectedHistoryRunId,
   } = useTrainingRuntimeStore(
     useShallow((state) => ({
       currentJobId: state.jobId,
-      isTrainingRunning: state.isTrainingRunning,
+      trainingRunActive: isTrainingRunActive(state),
       selectedHistoryRunId: state.selectedHistoryRunId,
       setCurrentRunViewActive: state.setCurrentRunViewActive,
       setSelectedHistoryRunId: state.setSelectedHistoryRunId,
     })),
   );
   const [requestedTab, setRequestedTabState] = useState<TrainSubTab>(() =>
-    initialStudioTab(selectedHistoryRunId, isTrainingRunning),
+    initialStudioTab(selectedHistoryRunId, trainingRunActive),
   );
   const requestedTabRef = useRef(requestedTab);
   const setRequestedTab = useCallback((next: TrainSubTab) => {
@@ -115,7 +120,7 @@ export function useStudioNavigation() {
   }, []);
   const activeTab = activeStudioTab(
     requestedTab,
-    isTrainingRunning,
+    trainingRunActive,
     showTrainingView,
   );
 
@@ -131,11 +136,13 @@ export function useStudioNavigation() {
   useEffect(() => {
     return useTrainingRuntimeStore.subscribe((state, previousState) => {
       const nextTab = runtimeRequestedTab({
-        isTrainingRunning: state.isTrainingRunning,
-        previousIsTrainingRunning: previousState.isTrainingRunning,
+        jobId: state.jobId,
+        previousJobId: previousState.jobId,
+        previousTrainingRunActive: isTrainingRunActive(previousState),
         previousSelectedHistoryRunId: previousState.selectedHistoryRunId,
         requestedTab: requestedTabRef.current,
         selectedHistoryRunId: state.selectedHistoryRunId,
+        trainingRunActive: isTrainingRunActive(state),
       });
       if (!nextTab) {
         return;
@@ -163,13 +170,13 @@ export function useStudioNavigation() {
 
   const handleHistoryRunSelected = useCallback(
     (runId: string) => {
-      if (runId === currentJobId && isTrainingRunning) {
+      if (runId === currentJobId && trainingRunActive) {
         handleTabChange("current-run");
         return;
       }
       setSelectedHistoryRunId(runId);
     },
-    [currentJobId, handleTabChange, isTrainingRunning, setSelectedHistoryRunId],
+    [currentJobId, handleTabChange, setSelectedHistoryRunId, trainingRunActive],
   );
 
   const handleResumeStarted = useCallback(() => {
@@ -183,7 +190,7 @@ export function useStudioNavigation() {
     handleHistoryRunSelected,
     handleResumeStarted,
     handleTabChange,
-    isTrainingRunning,
+    trainingRunActive,
     selectedHistoryRunId,
     showTrainingView,
   };

@@ -123,9 +123,19 @@ def _cache_artifact_fallback_allowed(
     error: BaseException | None,
     resource: str,
 ) -> bool:
-    if config.get("require_exact_resume_resources") or config.get(
-        f"require_exact_{resource}_resource"
-    ):
+    require_exact = bool(
+        config.get("require_exact_resume_resources")
+        or config.get(f"require_exact_{resource}_resource")
+    )
+    if resource == "dataset":
+        from hub.utils.dataset_cache import dataset_cache_fallback_allowed
+
+        return dataset_cache_fallback_allowed(
+            error,
+            require_exact = require_exact,
+            revision = config.get("dataset_revision"),
+        )
+    if require_exact:
         return False
     from hub.utils.dataset_cache import is_cache_artifact_error
 
@@ -145,6 +155,13 @@ def _require_strict_cached_dataset(
             f"The exact cached dataset split '{split}' is no longer available."
         )
     return dataset
+
+
+def _offline_mode_enabled() -> bool:
+    return any(
+        str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE")
+    )
 
 
 def _verify_config_pins(config: dict, event_queue: Any) -> bool:
@@ -200,13 +217,43 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
             config["actual_model_repo_id"] = None
     dataset_path = config.get("dataset_snapshot_path")
     if dataset_path and not require_dataset:
-        from hub.utils.dataset_cache import dataset_cache_path_from_cache_path
+        from hub.utils.dataset_cache import (
+            dataset_cache_path_from_cache_path,
+            dataset_snapshot_from_cache_path,
+        )
 
         resolved = dataset_cache_path_from_cache_path(
             dataset_path,
             config.get("hf_dataset") or "",
         )
+        snapshot = (
+            dataset_snapshot_from_cache_path(
+                str(resolved),
+                config.get("hf_dataset") or "",
+            )
+            if resolved is not None
+            else None
+        )
+        if snapshot is not None:
+            config["dataset_revision"] = snapshot.name
         config["dataset_snapshot_path"] = str(resolved) if resolved else None
+    if (
+        config.get("dataset_revision")
+        and not config.get("dataset_snapshot_path")
+        and _offline_mode_enabled()
+    ):
+        event_queue.put(
+            {
+                "type": "error",
+                "error": (
+                    "The selected dataset snapshot is incomplete and its exact "
+                    "revision cannot be downloaded while offline."
+                ),
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return False
     return True
 
 
@@ -240,6 +287,7 @@ def _load_hf_train_and_eval_datasets(
     subset = config.get("subset")
     train_split = config.get("train_split", "train") or "train"
     eval_split = config.get("eval_split")
+    revision = config.get("dataset_revision")
     dataset = None
     loaded_from_cache = False
     config["_dataset_loaded_from_exact_snapshot"] = False
@@ -248,6 +296,8 @@ def _load_hf_train_and_eval_datasets(
         kwargs = {"split": split, "token": token}
         if subset:
             kwargs["name"] = subset
+        if revision:
+            kwargs["revision"] = revision
         return load_dataset(hf_dataset, **kwargs)
 
     if _dataset_local_files_only(config):
@@ -296,15 +346,20 @@ def _load_hf_train_and_eval_datasets(
             status_callback(f"Eval split load failed: {error}")
             eval_dataset = None
 
-    if loaded_from_cache:
-        from core.training.provenance import exact_dataset_snapshot_path
+    from core.training.provenance import (
+        attest_loaded_dataset,
+        exact_dataset_snapshot_path,
+    )
 
-        config["_dataset_loaded_from_exact_snapshot"] = bool(
-            exact_dataset_snapshot_path(
-                config.get("dataset_snapshot_path"),
-                hf_dataset,
-            )
+    snapshot, _ = attest_loaded_dataset(hf_dataset, dataset, eval_dataset)
+    if snapshot is None and loaded_from_cache:
+        snapshot = exact_dataset_snapshot_path(
+            config.get("dataset_snapshot_path"),
+            hf_dataset,
         )
+    if snapshot is not None:
+        config["dataset_snapshot_path"] = snapshot
+        config["_dataset_loaded_from_exact_snapshot"] = True
     return dataset, eval_dataset
 
 
@@ -319,6 +374,7 @@ def _load_embedding_hf_dataset(
 
     subset = config.get("subset") or None
     train_split = config.get("train_split", "train") or "train"
+    revision = config.get("dataset_revision")
     token = config.get("hf_token", "")
     token = token if token and token.strip() else None
     dataset = None
@@ -340,12 +396,13 @@ def _load_embedding_hf_dataset(
             if dataset is not None:
                 from core.training.provenance import exact_dataset_snapshot_path
 
-                config["_dataset_loaded_from_exact_snapshot"] = bool(
-                    exact_dataset_snapshot_path(
-                        config.get("dataset_snapshot_path"),
-                        hf_dataset,
-                    )
+                snapshot = exact_dataset_snapshot_path(
+                    config.get("dataset_snapshot_path"),
+                    hf_dataset,
                 )
+                if snapshot is not None:
+                    config["dataset_snapshot_path"] = snapshot
+                    config["_dataset_loaded_from_exact_snapshot"] = True
         except Exception as error:
             if not _cache_artifact_fallback_allowed(config, error, "dataset"):
                 raise
@@ -354,12 +411,19 @@ def _load_embedding_hf_dataset(
             config["_dataset_loaded_from_exact_snapshot"] = False
 
     if dataset is None:
-        dataset = load_dataset(
-            hf_dataset,
-            subset,
-            split = train_split,
-            token = token,
-        )
+        load_kwargs = {
+            "split": train_split,
+            "token": token,
+        }
+        if revision:
+            load_kwargs["revision"] = revision
+        dataset = load_dataset(hf_dataset, subset, **load_kwargs)
+    from core.training.provenance import attest_loaded_dataset
+
+    snapshot, _ = attest_loaded_dataset(hf_dataset, dataset)
+    if snapshot is not None:
+        config["dataset_snapshot_path"] = snapshot
+        config["_dataset_loaded_from_exact_snapshot"] = True
     return dataset
 
 
@@ -3380,6 +3444,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 s3_config = config.get("s3_config"),
                 dataset_local_files_only = dataset_local_only,
                 dataset_local_path = config.get("dataset_snapshot_path"),
+                dataset_revision = config.get("dataset_revision"),
                 require_exact_resume_resources = bool(
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
@@ -3392,6 +3457,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 loaded_eval_dataset = None
             if eval_steps is not None and float(eval_steps) <= 0:
                 loaded_eval_dataset = None
+            snapshot = getattr(trainer, "dataset_snapshot_path", None)
+            if snapshot:
+                config["dataset_snapshot_path"] = snapshot
             return loaded_dataset, loaded_eval_dataset
 
         # ── 4a. Lightweight detection + tokenizer (no VRAM) ──

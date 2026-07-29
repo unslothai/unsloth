@@ -10,7 +10,21 @@ from fastapi import HTTPException
 
 from hub.schemas.datasets import CheckFormatRequest, LocalDatasetItem
 from hub.services.datasets import cache_inventory, downloads, formatting, local
-from hub.utils import download_manifest, download_registry, state_dir
+from hub.utils import (
+    dataset_processed_cache,
+    download_manifest,
+    download_registry,
+    hf_cache_state,
+    state_dir,
+)
+
+
+@pytest.fixture(autouse = True)
+def _app_dataset_cache_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.cache_root",
+        lambda: tmp_path / "app-cache",
+    )
 
 
 class _Upload:
@@ -70,6 +84,79 @@ def test_dataset_cache_scan_merges_raw_and_processed_rows(monkeypatch):
     assert rows[0]["repo_id"] == "Org/Data"
     assert rows[0]["size_bytes"] == 250
     assert rows[0]["partial"] is False
+
+
+def test_dataset_cache_scan_attaches_app_bytes_without_replacing_raw_path(monkeypatch):
+    raw_repo = SimpleNamespace(
+        repo_id = "Org/Data",
+        repo_type = "dataset",
+        repo_path = "/cache/hub/datasets--Org--Data",
+        size_on_disk = 100,
+        revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_collect_hf_cache_scans",
+        lambda: ([SimpleNamespace(repos = [raw_repo])], {"/cache/hub"}),
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
+    monkeypatch.setattr(
+        cache_inventory,
+        "_scan_app_processed_dataset_caches",
+        lambda: [
+            {
+                "repo_id": "org/data",
+                "size_bytes": 40,
+                "cache_path": "/app/entry",
+                "processed_cache": True,
+                "app_processed_cache": True,
+                "app_processed_hub_cache": "/cache/hub",
+                "partial": True,
+            }
+        ],
+    )
+
+    rows = cache_inventory._scan_hf_dataset_caches()
+
+    assert rows == [
+        {
+            "repo_id": "Org/Data",
+            "size_bytes": 140,
+            "cache_path": "/cache/hub/datasets--Org--Data",
+            "partial": False,
+            "partial_transport": None,
+            "processed_cache": True,
+            "app_processed_cache": True,
+        }
+    ]
+
+
+def test_app_processed_cache_without_raw_snapshot_is_partial(monkeypatch):
+    monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
+    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
+    app_row = {
+        "repo_id": "Org/Data",
+        "size_bytes": 40,
+        "cache_path": "/app/entry",
+        "processed_cache": True,
+        "app_processed_cache": True,
+        "app_processed_hub_cache": "/cache/hub",
+        "partial": True,
+    }
+    monkeypatch.setattr(
+        cache_inventory,
+        "_scan_app_processed_dataset_caches",
+        lambda: [app_row],
+    )
+
+    assert cache_inventory._scan_hf_dataset_caches() == [app_row]
 
 
 def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_path):
@@ -181,6 +268,231 @@ def test_delete_processed_dataset_scopes_to_selected_root(monkeypatch, tmp_path)
     assert result == {"status": "deleted", "repo_id": "Org/Data"}
     assert not (selected_root / "Org___Data").exists()  # the selected copy is deleted
     assert (other_root / "Org___Data").exists()  # the other cache home is untouched
+
+
+def _app_cache_entry(
+    monkeypatch,
+    hub_cache: Path,
+    repo_id: str,
+    commit_hash: str,
+):
+    repo_root = hub_cache / f"datasets--{repo_id.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / commit_hash
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    roots = getattr(monkeypatch, "_dataset_hub_roots", [])
+    roots.append(hub_cache)
+    monkeypatch._dataset_hub_roots = roots
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: roots)
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(
+        repo_id,
+        snapshot,
+    )
+    dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+    return entry
+
+
+def test_delete_app_processed_cache_isolated_by_hub_root(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    first = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "first" / "hub",
+        repo_id,
+        "commit-a",
+    )
+    second = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "second" / "hub",
+        repo_id,
+        "commit-b",
+    )
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep")
+    (first.cache_dir / "external").symlink_to(external, target_is_directory = True)
+
+    deleted, failures = cache_inventory._delete_app_processed_dataset_cache(
+        repo_id,
+        hub_cache = first.hub_cache,
+    )
+
+    assert deleted is True
+    assert failures == []
+    assert not first.path.exists()
+    assert second.path.exists()
+    assert (external / "keep.txt").read_text() == "keep"
+
+
+def test_delete_raw_scope_purges_corrupt_app_cache_entry(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    entry = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "hub",
+        repo_id,
+        "commit-a",
+    )
+    (entry.path / "metadata.json").write_text("{")
+
+    assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == []
+
+    deleted, failures = cache_inventory._delete_app_processed_dataset_cache(
+        repo_id,
+        hub_cache = entry.hub_cache,
+    )
+
+    assert deleted is True
+    assert failures == []
+    assert not entry.path.exists()
+
+
+def test_delete_app_only_cache_path_isolated_by_hub_root(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    first = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "first" / "hub",
+        repo_id,
+        "commit-a",
+    )
+    second = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "second" / "hub",
+        repo_id,
+        "commit-b",
+    )
+    monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
+    monkeypatch.setattr(
+        cache_inventory,
+        "_delete_processed_dataset_cache",
+        lambda *_args, **_kwargs: (False, []),
+    )
+
+    result = cache_inventory._delete_cached_dataset_blocking(
+        repo_id,
+        str(first.path),
+    )
+
+    assert result == {"status": "deleted", "repo_id": repo_id}
+    assert not first.path.exists()
+    assert second.path.exists()
+    assert (
+        first.hub_cache
+        / "datasets--Org--Data"
+        / "snapshots"
+        / "commit-a"
+        / "train.parquet"
+    ).exists()
+
+
+def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    first = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "first" / "hub",
+        repo_id,
+        "commit-a",
+    )
+    second = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "second" / "hub",
+        repo_id,
+        "commit-b",
+    )
+
+    class _Strategy:
+        def execute(self):
+            return None
+
+    scans = []
+    for entry in (first, second):
+        repo_path = entry.hub_cache / "datasets--Org--Data"
+        scans.append(
+            SimpleNamespace(
+                repos = [
+                    SimpleNamespace(
+                        repo_type = "dataset",
+                        repo_id = repo_id,
+                        repo_path = str(repo_path),
+                        revisions = [
+                            SimpleNamespace(commit_hash = entry.commit_hash)
+                        ],
+                    )
+                ],
+                delete_revisions = lambda *_args: _Strategy(),
+            )
+        )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_collect_hf_cache_scans",
+        lambda: (scans, set()),
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_delete_processed_dataset_cache",
+        lambda *_args, **_kwargs: (False, []),
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "purge_repo_cache_dirs",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "purge_partial_repo",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.download_manifest,
+        "purge_all_state_for_repo",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    result = cache_inventory._delete_cached_dataset_blocking(
+        repo_id,
+        str(first.hub_cache / "datasets--Org--Data"),
+    )
+
+    assert result == {"status": "deleted", "repo_id": repo_id}
+    assert not first.path.exists()
+    assert second.path.exists()
+
+
+def test_app_cache_symlinked_root_is_not_scanned_or_deleted(monkeypatch, tmp_path):
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep")
+    root = tmp_path / "app-processed"
+    root.symlink_to(external, target_is_directory = True)
+
+    assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == []
+    assert cache_inventory._delete_app_processed_dataset_cache("Org/Data") == (
+        False,
+        [],
+    )
+    assert (external / "keep.txt").read_text() == "keep"
+
+
+def test_app_cache_symlinked_entry_is_not_scanned_or_deleted(monkeypatch, tmp_path):
+    entry = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "hub",
+        "Org/Data",
+        "commit-a",
+    )
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep")
+    import shutil
+
+    shutil.rmtree(entry.path)
+    entry.path.symlink_to(external, target_is_directory = True)
+
+    assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == []
+    deleted, failures = cache_inventory._delete_app_processed_dataset_cache(
+        "Org/Data"
+    )
+    assert deleted is False
+    assert failures
+    assert (external / "keep.txt").read_text() == "keep"
 
 
 def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):

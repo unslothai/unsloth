@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import errno
+import json
 import os
 import sys
 import time
@@ -10,12 +11,22 @@ from pathlib import Path
 
 import pytest
 
-from hub.utils import dataset_cache, hf_cache_state
+from hub.utils import (
+    dataset_cache,
+    dataset_processed_cache,
+    download_manifest,
+    hf_cache_state,
+    state_dir,
+)
 
 
 @pytest.fixture(autouse = True)
 def _known_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.cache_root",
+        lambda: tmp_path / "app-cache",
+    )
 
 
 def _dataset_repo(root: Path, repo_id: str, snapshot: str = "rev") -> tuple[Path, Path]:
@@ -155,7 +166,633 @@ def test_cached_snapshot_load_preserves_hf_subset_and_split(monkeypatch, tmp_pat
     assert calls[0]["split"] == "validation"
     assert calls[0]["token"] == "hf_test"
     assert calls[0]["download_config"].local_files_only is True
+    assert calls[0]["cache_dir"].startswith(
+        str(tmp_path / "app-cache" / "hf-datasets" / "snapshot-loads")
+    )
     assert "data_files" not in calls[0]
+
+
+def _metadata_manifest(
+    repo_id: str,
+    hub_cache: Path,
+    commit_hash: str,
+    expected_files: list[download_manifest.ExpectedFile],
+    *,
+    version: int = 2,
+    metadata_derived: bool = True,
+) -> download_manifest.Manifest:
+    return download_manifest.Manifest(
+        repo_type = "dataset",
+        repo_id = repo_id,
+        variant = None,
+        started_at = "",
+        expected_files = tuple(expected_files),
+        hub_cache = str(hub_cache.resolve()),
+        version = version,
+        commit_hash = commit_hash if metadata_derived else None,
+        metadata_derived = metadata_derived,
+    )
+
+
+def test_complete_dataset_snapshot_requires_exact_metadata_commit(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    payload = b"rows"
+    (snapshot / "train.parquet").write_bytes(payload)
+    manifest = _metadata_manifest(
+        repo_id,
+        tmp_path,
+        snapshot.name,
+        [download_manifest.ExpectedFile("train.parquet", len(payload))],
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "read_dataset_completion",
+        lambda *_args, **_kwargs: manifest,
+    )
+
+    assert (
+        dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id)
+        == snapshot.resolve()
+    )
+
+    mismatched = _metadata_manifest(
+        repo_id,
+        tmp_path,
+        "commit-b",
+        [download_manifest.ExpectedFile("train.parquet", len(payload))],
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "read_dataset_completion",
+        lambda *_args, **_kwargs: mismatched,
+    )
+    assert dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id) is None
+
+
+@pytest.mark.parametrize(
+    ("version", "metadata_derived"),
+    [(1, False), (2, False)],
+)
+def test_legacy_or_disk_derived_manifest_cannot_attest_dataset(
+    monkeypatch,
+    tmp_path,
+    version,
+    metadata_derived,
+):
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    manifest = _metadata_manifest(
+        repo_id,
+        tmp_path,
+        snapshot.name,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        version = version,
+        metadata_derived = metadata_derived,
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "read_dataset_completion",
+        lambda *_args, **_kwargs: manifest,
+    )
+
+    assert dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id) is None
+
+
+def test_complete_dataset_snapshot_rejects_external_file_symlink(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    external = tmp_path / "external.parquet"
+    external.write_bytes(b"rows")
+    (snapshot / "train.parquet").symlink_to(external)
+    manifest = _metadata_manifest(
+        repo_id,
+        tmp_path,
+        snapshot.name,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "read_dataset_completion",
+        lambda *_args, **_kwargs: manifest,
+    )
+
+    assert dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id) is None
+
+
+def test_complete_dataset_snapshot_rejects_cross_snapshot_symlink(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    _, other_snapshot = _dataset_repo(tmp_path, repo_id, "commit-b")
+    (other_snapshot / "train.parquet").write_bytes(b"rows")
+    (snapshot / "train.parquet").symlink_to("../commit-b/train.parquet")
+    manifest = _metadata_manifest(
+        repo_id,
+        tmp_path,
+        snapshot.name,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "read_dataset_completion",
+        lambda *_args, **_kwargs: manifest,
+    )
+
+    assert dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id) is None
+
+
+def test_complete_dataset_snapshot_accepts_hub_blob_symlink(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    blob = repo_root / "blobs" / "blob"
+    blob.parent.mkdir()
+    blob.write_bytes(b"rows")
+    (snapshot / "train.parquet").symlink_to("../../blobs/blob")
+    manifest = _metadata_manifest(
+        repo_id,
+        tmp_path,
+        snapshot.name,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "read_dataset_completion",
+        lambda *_args, **_kwargs: manifest,
+    )
+
+    assert (
+        dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id)
+        == snapshot.resolve()
+    )
+
+
+def test_newer_download_preserves_older_complete_snapshot(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, older = _dataset_repo(tmp_path, repo_id, "commit-old")
+    newer = repo_root / "snapshots" / "commit-new"
+    newer.mkdir()
+    for snapshot in (older, newer):
+        (snapshot / "train.parquet").write_bytes(b"rows")
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: types.SimpleNamespace(hub_cache = tmp_path),
+    )
+    expected = [download_manifest.ExpectedFile("train.parquet", 4)]
+
+    assert download_manifest.write_dataset_completion(
+        repo_id,
+        older.name,
+        expected,
+        hub_cache = tmp_path,
+    )
+    assert download_manifest.write_manifest(
+        "dataset",
+        repo_id,
+        None,
+        expected,
+        commit_hash = older.name,
+        metadata_derived = True,
+        hub_cache = tmp_path,
+    )
+    assert download_manifest.write_dataset_completion(
+        repo_id,
+        newer.name,
+        expected,
+        hub_cache = tmp_path,
+    )
+    assert download_manifest.write_manifest(
+        "dataset",
+        repo_id,
+        None,
+        expected,
+        commit_hash = newer.name,
+        metadata_derived = True,
+        hub_cache = tmp_path,
+    )
+
+    assert (
+        dataset_cache.complete_dataset_snapshot_path(str(older), repo_id)
+        == older.resolve()
+    )
+    assert (
+        dataset_cache.complete_dataset_snapshot_path(str(newer), repo_id)
+        == newer.resolve()
+    )
+
+
+def test_dataset_completion_isolated_and_purged_by_hub_cache(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+    _, snapshot_a = _dataset_repo(cache_a, repo_id, "same-commit")
+    _, snapshot_b = _dataset_repo(cache_b, repo_id, "same-commit")
+    (snapshot_a / "train.parquet").write_bytes(b"four")
+    (snapshot_b / "train.parquet").write_bytes(b"five!")
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [cache_a, cache_b])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: types.SimpleNamespace(hub_cache = cache_a),
+    )
+
+    assert download_manifest.write_dataset_completion(
+        repo_id,
+        snapshot_a.name,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        hub_cache = cache_a,
+    )
+    assert download_manifest.write_dataset_completion(
+        repo_id,
+        snapshot_b.name,
+        [download_manifest.ExpectedFile("train.parquet", 5)],
+        hub_cache = cache_b,
+    )
+    assert (
+        dataset_cache.complete_dataset_snapshot_path(str(snapshot_a), repo_id)
+        == snapshot_a.resolve()
+    )
+    assert (
+        dataset_cache.complete_dataset_snapshot_path(str(snapshot_b), repo_id)
+        == snapshot_b.resolve()
+    )
+
+    assert (
+        download_manifest.purge_all_state_for_repo(
+            "dataset",
+            repo_id,
+            hub_cache = cache_a,
+        )
+        > 0
+    )
+    assert dataset_cache.complete_dataset_snapshot_path(str(snapshot_a), repo_id) is None
+    assert (
+        dataset_cache.complete_dataset_snapshot_path(str(snapshot_b), repo_id)
+        == snapshot_b.resolve()
+    )
+
+
+def test_dataset_completion_cache_ownership_uses_platform_case_rules(
+    monkeypatch,
+    tmp_path,
+):
+    hub_cache = tmp_path / "Case-Sensitive-Input"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        download_manifest.os.path,
+        "normcase",
+        lambda value: str(value).casefold(),
+    )
+
+    assert download_manifest.write_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        hub_cache = hub_cache,
+    )
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "commit-a",
+            hub_cache = tmp_path / "case-sensitive-input",
+        )
+        is not None
+    )
+
+
+def test_dataset_completion_bounds_long_state_filenames(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    repo_id = f"{'a' * 96}/{'b' * 96}"
+    commit_hash = "c" * 240
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    assert download_manifest.write_dataset_completion(
+        repo_id,
+        commit_hash,
+        [download_manifest.ExpectedFile("train.parquet", 1)],
+        hub_cache = hub_cache,
+    )
+    paths = list((tmp_path / "state" / "hub-state" / "manifests").rglob("*.json"))
+
+    assert len(paths) == 1
+    assert len(paths[0].name.encode("utf-8")) <= 255
+    assert len(f".{paths[0].name}.tmp-00000000".encode("utf-8")) <= 255
+    assert (
+        download_manifest.read_dataset_completion(
+            repo_id,
+            commit_hash,
+            hub_cache = hub_cache,
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{",
+        '{"version":999,"repo_type":"dataset","repo_id":"Org/Data"}',
+    ],
+)
+def test_dataset_completion_corrupt_schema_fails_closed(
+    monkeypatch,
+    tmp_path,
+    payload,
+):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        [download_manifest.ExpectedFile("train.parquet", 1)],
+        hub_cache = hub_cache,
+    )
+    paths = list((tmp_path / "state" / "hub-state" / "manifests").rglob("*.json"))
+    assert len(paths) == 1
+    paths[0].write_text(payload, encoding = "utf-8")
+
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "commit-a",
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
+def test_dataset_completion_rejects_boolean_file_size(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        [download_manifest.ExpectedFile("train.parquet", 1)],
+        hub_cache = hub_cache,
+    )
+    paths = list((tmp_path / "state" / "hub-state" / "manifests").rglob("*.json"))
+    assert len(paths) == 1
+    payload = json.loads(paths[0].read_text(encoding = "utf-8"))
+    payload["expected_files"][0]["size"] = False
+    paths[0].write_text(json.dumps(payload), encoding = "utf-8")
+
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "commit-a",
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
+def test_preview_snapshot_returns_immutable_revision_with_cache_pin(
+    monkeypatch,
+    tmp_path,
+):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-preview")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    monkeypatch.setattr(
+        download_manifest,
+        "read_dataset_completion",
+        lambda *_args, **_kwargs: None,
+    )
+
+    pin, revision = dataset_cache.training_dataset_cache_pin(
+        repo_id,
+        str(repo_root),
+    )
+
+    assert pin == snapshot.resolve()
+    assert revision == "commit-preview"
+
+
+def test_app_processed_cache_is_deterministic_and_discoverable(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+
+    first = dataset_processed_cache.prepare_app_processed_dataset_cache(
+        repo_id,
+        snapshot,
+    )
+    dataset_processed_cache.mark_app_processed_dataset_cache_complete(first)
+    second = dataset_processed_cache.prepare_app_processed_dataset_cache(
+        repo_id,
+        snapshot,
+    )
+
+    assert second.path == first.path
+    assert second.cache_dir == first.cache_dir
+    assert second.complete is True
+    assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == [
+        second
+    ]
+
+
+def test_app_processed_cache_rejects_symlinked_parent(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    configured_root = tmp_path / "configured-cache"
+    external = tmp_path / "external"
+    configured_root.mkdir()
+    external.mkdir()
+    (configured_root / "hf-datasets").symlink_to(
+        external,
+        target_is_directory = True,
+    )
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.cache_root",
+        lambda: configured_root,
+    )
+
+    with pytest.raises(OSError, match = "Dataset cache root is unavailable"):
+        dataset_processed_cache.prepare_app_processed_dataset_cache(
+            repo_id,
+            snapshot,
+        )
+
+    assert not (external / "snapshot-loads").exists()
+
+
+def test_app_processed_cache_does_not_scan_or_delete_through_parent_symlink(
+    monkeypatch,
+    tmp_path,
+):
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    external_root = tmp_path / "external-cache"
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.cache_root",
+        lambda: external_root,
+    )
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(
+        repo_id,
+        snapshot,
+    )
+    dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+    configured_root = tmp_path / "configured-cache"
+    configured_root.mkdir()
+    (configured_root / "hf-datasets").symlink_to(
+        external_root / "hf-datasets",
+        target_is_directory = True,
+    )
+    monkeypatch.setattr(
+        "utils.paths.storage_roots.cache_root",
+        lambda: configured_root,
+    )
+
+    assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == []
+    assert dataset_processed_cache.delete_app_processed_dataset_caches(
+        repo_id
+    ) == (False, [])
+    assert entry.path.is_dir()
+
+
+def test_manifest_v2_round_trips_metadata_commit(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: types.SimpleNamespace(hub_cache = hub_cache),
+    )
+
+    assert download_manifest.write_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        "http",
+        commit_hash = "commit-a",
+        metadata_derived = True,
+    )
+    manifest = download_manifest.read_manifest("dataset", "Org/Data")
+
+    assert manifest is not None
+    assert manifest.version == 2
+    assert manifest.commit_hash == "commit-a"
+    assert manifest.metadata_derived is True
+
+
+def test_dataset_completion_rejects_missing_recorded_hub_cache(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        hub_cache = hub_cache,
+    )
+    [path] = list((tmp_path / "state" / "hub-state" / "manifests").rglob("*.json"))
+    payload = json.loads(path.read_text(encoding = "utf-8"))
+    payload["hub_cache"] = None
+    path.write_text(json.dumps(payload), encoding = "utf-8")
+
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "commit-a",
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("variant", [False, 0, [], {}])
+def test_manifest_v2_rejects_non_string_variant(monkeypatch, tmp_path, variant):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        None,
+        [download_manifest.ExpectedFile("config.json", 2)],
+        hub_cache = hub_cache,
+    )
+    path = download_manifest.manifest_path(
+        "model",
+        "Org/Model",
+        None,
+        hub_cache = hub_cache,
+    )
+    assert path is not None
+    payload = json.loads(path.read_text(encoding = "utf-8"))
+    payload["variant"] = variant
+    path.write_text(json.dumps(payload), encoding = "utf-8")
+
+    assert (
+        download_manifest.read_manifest(
+            "model",
+            "Org/Model",
+            None,
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
+def test_repo_state_purge_uses_enumerated_variant_path(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile("model.gguf", 4)],
+        hub_cache = hub_cache,
+    )
+    path = download_manifest.manifest_path(
+        "model",
+        "Org/Model",
+        "Q4_K_M",
+        hub_cache = hub_cache,
+    )
+    assert path is not None
+    payload = json.loads(path.read_text(encoding = "utf-8"))
+    payload["variant"] = "Q8_0"
+    path.write_text(json.dumps(payload), encoding = "utf-8")
+
+    assert (
+        download_manifest.purge_all_state_for_repo(
+            "model",
+            "Org/Model",
+            hub_cache = hub_cache,
+        )
+        == 1
+    )
+    assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    "path_value",
+    [
+        "../train.parquet",
+        "%2e%2e/train.parquet",
+        "/train.parquet",
+        "C:train.parquet",
+        "C:\\train.parquet",
+        "\\\\server\\share\\train.parquet",
+        "nested\\train.parquet",
+        "file:stream",
+        "nested/file:stream",
+        "file%3Astream",
+        ".",
+        "\x00train.parquet",
+    ],
+)
+def test_manifest_expected_path_rejects_cross_platform_traversal(path_value):
+    assert download_manifest.expected_path_is_safe(path_value) is False
 
 
 def test_processed_cache_load_uses_selected_cache_root(monkeypatch, tmp_path):

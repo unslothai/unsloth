@@ -72,20 +72,20 @@ function resolveStartTrainingError(input: {
 
 function resolveStartTrainingButtonLabel({
   t,
-  isStarting,
+  startPending,
   isLoadingModel,
   isCheckingDataset,
   hasModel,
   hasDataset,
 }: {
   t: ReturnType<typeof useT>;
-  isStarting: boolean;
+  startPending: boolean;
   isLoadingModel: boolean;
   isCheckingDataset: boolean;
   hasModel: boolean;
   hasDataset: boolean;
 }): string {
-  if (isStarting) {
+  if (startPending) {
     return t("studio.training.starting");
   }
   if (isLoadingModel) {
@@ -131,12 +131,12 @@ export function StartTrainingCta() {
     hasDataset,
     configValidation,
   } = useTrainingReadiness();
-  const { isStarting, startError, startTrainingRun } = useTrainingActions();
+  const { startError, startPending, startTrainingRun } = useTrainingActions();
 
-  const disabled = isStarting || !isReady;
+  const disabled = startPending || !isReady;
   const buttonLabel = resolveStartTrainingButtonLabel({
     t,
-    isStarting,
+    startPending,
     isLoadingModel,
     isCheckingDataset,
     hasModel,

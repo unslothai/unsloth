@@ -1397,6 +1397,262 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
 
 
+def test_download_dataset_recovers_commit_completion_after_transient_metadata_failure(
+    monkeypatch,
+    tmp_path,
+):
+    hub_cache = tmp_path / "hub"
+    snapshot = (
+        hub_cache
+        / "datasets--Org--Data"
+        / "snapshots"
+        / "dataset-commit"
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = snapshot.name,
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    completion = download_manifest.read_dataset_completion(
+        "Org/Data",
+        snapshot.name,
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.commit_hash == snapshot.name
+    assert manifest.metadata_derived is True
+    assert completion is not None
+    assert completion.expected_files[0].path == "data.parquet"
+
+
+def test_download_dataset_promotes_existing_disk_manifest_after_metadata_recovers(
+    monkeypatch,
+    tmp_path,
+):
+    hub_cache = tmp_path / "hub"
+    snapshot = (
+        hub_cache
+        / "datasets--Org--Data"
+        / "snapshots"
+        / "dataset-commit"
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = snapshot.name,
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    assert download_manifest.write_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        [download_manifest.ExpectedFile("data.parquet", 4)],
+        "http",
+        hub_cache = hub_cache,
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    completion = download_manifest.read_dataset_completion(
+        "Org/Data",
+        snapshot.name,
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.metadata_derived is True
+    assert manifest.commit_hash == snapshot.name
+    assert completion is not None
+
+
+def test_download_dataset_recovery_commit_mismatch_is_not_attested(
+    monkeypatch,
+    tmp_path,
+):
+    hub_cache = tmp_path / "hub"
+    snapshot = (
+        hub_cache
+        / "datasets--Org--Data"
+        / "snapshots"
+        / "downloaded-commit"
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = "different-commit",
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.commit_hash is None
+    assert manifest.metadata_derived is False
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            snapshot.name,
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "different-commit",
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
+def test_download_dataset_disk_fallback_is_not_attested(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshot = (
+        hub_cache
+        / "datasets--Org--Data"
+        / "snapshots"
+        / "dataset-commit"
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(
+        hf_download,
+        "_dataset_info_with_retry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("metadata down")),
+    )
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        hf_cache_state,
+        "has_active_incomplete_blobs",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    assert manifest is not None
+    assert manifest.commit_hash is None
+    assert manifest.metadata_derived is False
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            snapshot.name,
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
 def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
     monkeypatch, tmp_path
 ):
@@ -3942,12 +4198,14 @@ def test_download_gguf_variant_writes_manifest_for_xet(monkeypatch, tmp_path):
 def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
     written = []
     verified = []
+    snapshot_calls = []
 
     monkeypatch.setattr(
         hf_download,
         "_dataset_info_with_retry",
         lambda *_args, **_kwargs: SimpleNamespace(
-            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 30)]
+            sha = "dataset-commit",
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 30)],
         ),
     )
     monkeypatch.setattr(
@@ -3958,19 +4216,38 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
     monkeypatch.setattr(
-        download_manifest, "write_manifest", lambda *args: written.append(args) or True
+        download_manifest,
+        "write_manifest",
+        lambda *args, **kwargs: written.append((args, kwargs)) or True,
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
+        SimpleNamespace(
+            snapshot_download = (
+                lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path)
+            )
+        ),
     )
 
     hf_download._download_dataset("Org/Data", None, "xet")
 
     assert written, "XET dataset download must still record a manifest"
-    assert written[0][0:3] == ("dataset", "Org/Data", None)
-    assert written[0][3][0].path == "data.parquet"
+    assert written[0][0][0:3] == ("dataset", "Org/Data", None)
+    assert written[0][0][3][0].path == "data.parquet"
+    assert written[0][1] == {
+        "commit_hash": "dataset-commit",
+        "metadata_derived": True,
+    }
+    assert snapshot_calls == [
+        {
+            "repo_id": "Org/Data",
+            "token": False,
+            "repo_type": "dataset",
+            "max_workers": 1,
+            "revision": "dataset-commit",
+        }
+    ]
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
 
 

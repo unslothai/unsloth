@@ -19,6 +19,10 @@ TRAINING_READINESS = (
 START_TRAINING_CTA = (
     REPO / "studio/frontend/src/features/studio/wizard/start-training-cta.tsx"
 )
+STUDIO_NAVIGATION = (
+    REPO / "studio/frontend/src/features/studio/use-studio-navigation.ts"
+)
+TRAIN_SUBNAV = REPO / "studio/frontend/src/features/studio/studio-navigation.tsx"
 TRAINING_ACTIONS = (
     REPO / "studio/frontend/src/features/training/hooks/use-training-actions.ts"
 )
@@ -167,8 +171,7 @@ def test_training_start_claims_runtime_before_first_await():
     claim = runtime_store.split("tryBeginStarting: () =>", 1)[1].split(
         "setStarting:", 1
     )[0]
-    assert "state.isStarting" in claim
-    assert "state.isTrainingRunning" in claim
+    assert "isTrainingStartPending(state)" in claim
     assert "state.stopRequested" in claim
     assert "return { isStarting: true }" in claim
     assert "runtime.tryBeginStarting()" in start_runtime
@@ -183,6 +186,92 @@ def test_training_start_claims_runtime_before_first_await():
         "static begin(): ResumeTrainingStartAttempt | null", 1
     )[1].split("get hfToken(): string", 1)[0]
     assert "tryAcquireTrainingStart()" in resume_begin
+
+
+def test_accepted_training_start_stays_locked_during_preparation():
+    runtime_store = TRAINING_RUNTIME_STORE.read_text(encoding = "utf-8")
+    actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
+    cta = START_TRAINING_CTA.read_text(encoding = "utf-8")
+    navigation = STUDIO_NAVIGATION.read_text(encoding = "utf-8")
+    subnav = TRAIN_SUBNAV.read_text(encoding = "utf-8")
+    history_grid = (
+        REPO / "studio/frontend/src/features/studio/history-card-grid.tsx"
+    ).read_text(encoding = "utf-8")
+    history_view = (
+        REPO / "studio/frontend/src/features/studio/historical-training-view.tsx"
+    ).read_text(encoding = "utf-8")
+    dataset_preview = (
+        REPO
+        / "studio/frontend/src/features/studio/sections/dataset-preview-dialog.tsx"
+    ).read_text(encoding = "utf-8")
+    sidebar = (
+        REPO / "studio/frontend/src/components/app-sidebar.tsx"
+    ).read_text(encoding = "utf-8")
+    completion_watch = (
+        REPO
+        / "studio/frontend/src/features/training/hooks/use-training-completion-watch.ts"
+    ).read_text(encoding = "utf-8")
+    unload_guard = (
+        REPO
+        / "studio/frontend/src/features/training/hooks/use-training-unload-guard.ts"
+    ).read_text(encoding = "utf-8")
+
+    for phase in (
+        '"downloading_model"',
+        '"downloading_dataset"',
+        '"loading_model"',
+        '"loading_dataset"',
+        '"configuring"',
+        '"training"',
+    ):
+        assert phase in runtime_store
+    active = runtime_store.split("export function isTrainingRunActive", 1)[1]
+    active = active.split("export function isTrainingStartPending", 1)[0]
+    assert "state.isTrainingRunning" in active
+    assert "ACTIVE_TRAINING_PHASES.has(state.phase)" in active
+    pending = runtime_store.split("export function isTrainingStartPending", 1)[1]
+    pending = pending.split("const initialState", 1)[0]
+    assert "state.isStarting || isTrainingRunActive(state)" in pending
+
+    assert "useTrainingRuntimeStore(isTrainingStartPending)" in actions
+    assert "startPending," in actions
+    assert "const { startError, startPending, startTrainingRun }" in cta
+    assert "const disabled = startPending || !isReady" in cta
+    assert "startPending" in cta
+    assert "disabled={startPending || isResuming}" in history_grid
+    assert "disabled={startPending || resuming}" in history_view
+    assert "startPending={startPending}" in dataset_preview
+    assert "useTrainingRuntimeStore(isTrainingStartPending)" in sidebar
+    assert "useTrainingRuntimeStore(isTrainingStartPending)" in completion_watch
+    assert "isTrainingStartPending(useTrainingRuntimeStore.getState())" in unload_guard
+
+    assert "initialStudioTab(selectedHistoryRunId, trainingRunActive)" in navigation
+    assert "activeStudioTab(" in navigation
+    assert "trainingRunActive && requestedTab !== \"history\"" in navigation
+    assert "jobId !== previousJobId && trainingRunActive" in navigation
+    assert "previousTrainingRunActive: isTrainingRunActive(previousState)" in navigation
+    assert "disabled: trainingRunActive" in subnav
+    assert "min-w-0 flex-1" in subnav
+    assert "overflow-x-auto" in subnav
+    assert "gap-3" in subnav and "sm:gap-6" in subnav
+
+
+def test_async_training_views_scope_results_to_the_current_request():
+    history_view = (
+        REPO / "studio/frontend/src/features/studio/historical-training-view.tsx"
+    ).read_text(encoding = "utf-8")
+    dataset_preview = (
+        REPO
+        / "studio/frontend/src/features/studio/sections/dataset-preview-dialog.tsx"
+    ).read_text(encoding = "utf-8")
+
+    assert "result?.runId === runId" in history_view
+    assert "previous?.runId === runId && previous.detail" in history_view
+    assert "setDetail(null)" not in history_view
+    assert "requestKey: symbol;" in dataset_preview
+    assert "previewResult?.requestKey === requestKey" in dataset_preview
+    assert "setPreviewResult({" in dataset_preview
+    assert "setData(" not in dataset_preview
 
 
 def test_training_start_aborts_when_config_or_token_identity_changes():
@@ -317,6 +406,13 @@ def test_resume_token_identity_is_guarded_through_preflight():
     assert "this.expectedHfToken = getHfToken()" in attempt
     assert "getHfToken() !== this.expectedHfToken" in attempt
     assert "this.cancel(TRAINING_SETUP_CHANGED_ERROR)" in attempt
+    token_acceptance = attempt.split(
+        "acceptPreparedHfToken(token: string | null): boolean", 1
+    )[1].split("enterTransport(): boolean", 1)[0]
+    assert "currentToken !== this.expectedHfToken" in token_acceptance
+    assert "currentToken !== nextToken" in token_acceptance
+    assert "useHfTokenStore.getState().setToken(nextToken)" in token_acceptance
+    assert "this.expectedHfToken = getHfToken()" in token_acceptance
 
     load = source.split("async function loadResumePayload", 1)[1].split(
         "async function prepareResumeHfToken", 1

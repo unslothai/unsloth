@@ -7,10 +7,13 @@ import { resetTraining, stopTraining } from "../api/train-api";
 import { resumeTrainingRun } from "../lib/resume-training-run";
 import { startFreshTrainingRun } from "../lib/start-fresh-training-run";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
-import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import {
+  isTrainingStartPending,
+  useTrainingRuntimeStore,
+} from "../stores/training-runtime-store";
 
 export function useTrainingActions() {
-  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  const startPending = useTrainingRuntimeStore(isTrainingStartPending);
   const startError = useTrainingRuntimeStore((state) => state.startError);
 
   const startTrainingRun = useCallback(
@@ -85,7 +88,7 @@ export function useTrainingActions() {
   }, []);
 
   return {
-    isStarting,
+    startPending,
     startError,
     startTrainingRun,
     resumeTrainingRunFromHistory,

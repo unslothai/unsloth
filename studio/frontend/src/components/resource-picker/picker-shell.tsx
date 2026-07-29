@@ -22,6 +22,7 @@ import {
   type RefObject,
   useId,
   useRef,
+  useState,
 } from "react";
 import {
   PICKER_FOCUS_VISIBLE_CLASS,
@@ -29,6 +30,11 @@ import {
 } from "./picker-focus";
 import { PICKER_TAB, type PickerTab, pickerTabId } from "./picker-tab-state";
 import { PickerTabToggle } from "./picker-tab-toggle";
+
+export type PickerExactQueryCommitResult =
+  | { kind: "handled" }
+  | { kind: "ambiguous"; focusValue: string }
+  | { kind: "unhandled" };
 
 function OfflineHubState({
   noun,
@@ -159,7 +165,7 @@ export function PickerShell({
   isHubLoading: boolean;
   noun: string;
   offlineNoun?: string;
-  onExactQueryCommit?: (query: string) => boolean;
+  onExactQueryCommit?: (query: string) => PickerExactQueryCommitResult;
   onOpenChange: (open: boolean) => void;
   onQueryChange: (value: string) => void;
   onTabChange: (tab: PickerTab) => void;
@@ -179,6 +185,7 @@ export function PickerShell({
   const activeTabId = pickerTabId(idBase, tab);
   const panelRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
+  const [queryStatus, setQueryStatus] = useState("");
   const tabs = [
     { value: PICKER_TAB.device, label: t("picker.onDevice") },
     { value: PICKER_TAB.hub, label: t("picker.huggingFace") },
@@ -206,7 +213,7 @@ export function PickerShell({
   }
 
   function switchToDevice() {
-    onTabChange(PICKER_TAB.device);
+    handleTabChange(PICKER_TAB.device);
     window.requestAnimationFrame(() => {
       panelRef.current
         ?.querySelector<HTMLInputElement>('[data-picker-search="true"]')
@@ -214,8 +221,18 @@ export function PickerShell({
     });
   }
 
+  function handleOpenChange(nextOpen: boolean) {
+    setQueryStatus("");
+    onOpenChange(nextOpen);
+  }
+
+  function handleTabChange(nextTab: PickerTab) {
+    setQueryStatus("");
+    onTabChange(nextTab);
+  }
+
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild={true}>{trigger}</PopoverTrigger>
       <PopoverContent
         align="start"
@@ -231,7 +248,7 @@ export function PickerShell({
         <PickerTabToggle
           tab={tab}
           options={tabs}
-          onTabChange={onTabChange}
+          onTabChange={handleTabChange}
           idBase={idBase}
           panelId={panelId}
         />
@@ -252,7 +269,10 @@ export function PickerShell({
               data-picker-search="true"
               autoFocus={true}
               value={tab === PICKER_TAB.hub ? hubQuery : deviceQuery}
-              onChange={(e) => onQueryChange(e.target.value)}
+              onChange={(e) => {
+                setQueryStatus("");
+                onQueryChange(e.target.value);
+              }}
               onCompositionStart={() => {
                 isComposingRef.current = true;
               }}
@@ -270,11 +290,25 @@ export function PickerShell({
                   return;
                 }
                 e.preventDefault();
-                if (showUseThis) {
-                  onUseThis();
+                const commitResult = onExactQueryCommit?.(activeQuery);
+                if (commitResult?.kind === "handled") {
+                  setQueryStatus("");
                   return;
                 }
-                if (onExactQueryCommit?.(activeQuery)) {
+                if (commitResult?.kind === "ambiguous") {
+                  setQueryStatus(t("picker.multipleMatches", { noun }));
+                  const matchingOption = scrollRef.current
+                    ? pickerOptions(scrollRef.current).find((option) =>
+                        optionMatchesQuery(option, commitResult.focusValue),
+                      )
+                    : undefined;
+                  matchingOption?.focus();
+                  matchingOption?.scrollIntoView({ block: "nearest" });
+                  return;
+                }
+                setQueryStatus("");
+                if (showUseThis) {
+                  onUseThis();
                   return;
                 }
                 const exactMatch = scrollRef.current
@@ -297,6 +331,15 @@ export function PickerShell({
               <Spinner className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             )}
           </div>
+          {queryStatus && (
+            <output
+              aria-live="polite"
+              aria-atomic="true"
+              className="block px-2 text-ui-10p5 leading-snug text-muted-foreground"
+            >
+              {queryStatus}
+            </output>
+          )}
 
           <div
             ref={scrollRef}

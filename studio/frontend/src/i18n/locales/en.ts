@@ -10,6 +10,7 @@ export const en = {
     offlineBody: "Switch to Device to use cached or local {noun}.",
     offlineSwitchDevice: "Device",
     searchAriaLabel: "Search {noun}",
+    multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
     hfToken: {

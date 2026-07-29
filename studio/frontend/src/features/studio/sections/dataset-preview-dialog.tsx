@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { aiAssistMapping } from "@/features/training/api/datasets-api";
-import type { ColumnDef } from "@tanstack/react-table";
+import { Badge } from "@/components/ui/badge";
+import { DataTable } from "@/components/ui/data-table";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { DataTable } from "@/components/ui/data-table";
-import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
-import { checkDatasetFormat } from "@/features/training/api/datasets-api";
-import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
-import type { CheckFormatResponse } from "@/features/training/types/datasets";
+import {
+  type CheckFormatResponse,
+  aiAssistMapping,
+  checkDatasetFormat,
+  isRawTextDatasetFormat,
+  useTrainingActions,
+  useTrainingConfigStore,
+} from "@/features/training";
 import type { DatasetSource } from "@/types/training";
 import {
   AlertCircleIcon,
@@ -24,22 +25,54 @@ import {
   Database02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import type { ColumnDef } from "@tanstack/react-table";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
-import { collectPreviewImages, formatCell } from "./dataset-preview-dialog-utils";
 import {
   DatasetMappingCard,
   DatasetMappingFooter,
   HeaderRolePicker,
+} from "./dataset-preview-dialog-mapping";
+import {
   deriveDefaultMapping,
   getAvailableRoles,
   isMappingComplete,
   remapRolesForFormat,
-} from "./dataset-preview-dialog-mapping";
+} from "./dataset-preview-dialog-mapping-utils";
+import {
+  collectPreviewImages,
+  formatCell,
+} from "./dataset-preview-dialog-utils";
 
 /** Chatml → format-specific role remap (only for formats that differ from chatml). */
 const ROLE_REMAP: Record<string, Record<string, string>> = {
   alpaca: { user: "instruction", system: "input", assistant: "output" },
   sharegpt: { user: "human", assistant: "gpt", system: "system" },
+};
+
+const EMPTY_PREVIEW_ROWS: Record<string, unknown>[] = [];
+const EMPTY_PREVIEW_COLUMNS: string[] = [];
+
+type DatasetPreviewResult = {
+  requestKey: symbol;
+  data: CheckFormatResponse | null;
+  error: string | null;
+};
+
+type DatasetPreviewRequest = {
+  requestKey: symbol;
+  datasetName: string;
+  hfToken: string | null;
+  subset: string | null | undefined;
+  split: string | null | undefined;
+  isVlm: boolean;
 };
 
 type DatasetPreviewDialogProps = {
@@ -67,13 +100,61 @@ export function DatasetPreviewDialog({
   initialData,
   isVlm = false,
 }: DatasetPreviewDialogProps) {
-  const [data, setData] = useState<CheckFormatResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const previewRequest = useMemo<DatasetPreviewRequest | null>(() => {
+    if (!open) {
+      return null;
+    }
+    if (!datasetName) {
+      return null;
+    }
+    if (initialData) {
+      return null;
+    }
+
+    return {
+      requestKey: Symbol("dataset-preview-request"),
+      datasetName,
+      hfToken,
+      subset: datasetSubset,
+      split: datasetSplit,
+      isVlm,
+    };
+  }, [
+    open,
+    datasetName,
+    hfToken,
+    datasetSubset,
+    datasetSplit,
+    isVlm,
+    initialData,
+  ]);
+  const requestKey = previewRequest?.requestKey ?? null;
+  const [previewResult, setPreviewResult] =
+    useState<DatasetPreviewResult | null>(null);
+  const matchingResult =
+    requestKey !== null && previewResult?.requestKey === requestKey
+      ? previewResult
+      : null;
+  const data = initialData ?? matchingResult?.data ?? null;
+  const error = matchingResult?.error ?? null;
+  const loading = requestKey !== null && matchingResult === null;
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setPreviewResult(null);
+      }
+      onOpenChange(nextOpen);
+    },
+    [onOpenChange],
+  );
 
   const {
-    manualMapping, setManualMapping, datasetFormat,
-    setDatasetAdvisorFields, datasetAdvisorNotification,
+    manualMapping,
+    setManualMapping,
+    datasetFormat,
+    setDatasetAdvisorFields,
+    datasetAdvisorNotification,
     datasetSystemPrompt,
     selectedModel,
     modelType,
@@ -89,29 +170,43 @@ export function DatasetPreviewDialog({
       modelType: s.modelType,
     })),
   );
-  const { isStarting, startError, startTrainingRun } = useTrainingActions();
+  const { startError, startPending, startTrainingRun } = useTrainingActions();
 
   // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
   const effectiveIsVlm = isVlm || !!data?.is_image;
 
   const isRawFormat = isRawTextDatasetFormat(datasetFormat);
-  const hasHeuristicMapping = !data?.requires_manual_mapping && !!data?.suggested_mapping;
-  const mappingEnabled = !isRawFormat && (!!data?.requires_manual_mapping || hasHeuristicMapping);
+  const hasHeuristicMapping =
+    !data?.requires_manual_mapping && !!data?.suggested_mapping;
+  const mappingEnabled =
+    !isRawFormat && (!!data?.requires_manual_mapping || hasHeuristicMapping);
   const showMappingFooter = mode === "mapping" && mappingEnabled;
-  const mappingOk = isRawFormat || isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
-  const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
+  const mappingOk =
+    isRawFormat ||
+    isMappingComplete(
+      manualMapping,
+      effectiveIsVlm,
+      datasetFormat,
+      effectiveIsAudio,
+    );
+  const availableRoles = getAvailableRoles(
+    effectiveIsVlm,
+    datasetFormat,
+    effectiveIsAudio,
+  );
   const isHfDataset = datasetSource === "huggingface";
   const readyForTraining =
     !(isRawFormat || mappingEnabled) &&
     !data?.requires_manual_mapping &&
     !!data?.detected_format &&
     data.detected_format !== "unknown";
-  const readyDetail = data?.chat_column && data.detected_format === "chatml"
-    ? `Detected ChatML conversation column: ${data.chat_column}`
-    : data?.detected_format
-      ? `Detected ${data.detected_format} format. No manual column mapping needed.`
-      : null;
+  const readyDetail =
+    data?.chat_column && data.detected_format === "chatml"
+      ? `Detected ChatML conversation column: ${data.chat_column}`
+      : data?.detected_format
+        ? `Detected ${data.detected_format} format. No manual column mapping needed.`
+        : null;
 
   // ── AI Assist ──────────────────────────────────────────────────────
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -142,7 +237,11 @@ export function DatasetPreviewDialog({
         setManualMapping(mapped);
 
         // Store conversion advisor fields (system prompt, label mapping, notification)
-        if (result.system_prompt || result.label_mapping || result.user_notification) {
+        if (
+          result.system_prompt ||
+          result.label_mapping ||
+          result.user_notification
+        ) {
           setDatasetAdvisorFields({
             systemPrompt: result.system_prompt ?? undefined,
             labelMapping: result.label_mapping ?? undefined,
@@ -157,7 +256,16 @@ export function DatasetPreviewDialog({
     } finally {
       setIsAiLoading(false);
     }
-  }, [data, datasetFormat, datasetName, hfToken, setManualMapping, setDatasetAdvisorFields, selectedModel, modelType]);
+  }, [
+    data,
+    datasetFormat,
+    datasetName,
+    hfToken,
+    setManualMapping,
+    setDatasetAdvisorFields,
+    selectedModel,
+    modelType,
+  ]);
 
   // When format changes, remap existing mapping roles to the new format's role names
   const prevFormatRef = useRef(datasetFormat);
@@ -167,7 +275,7 @@ export function DatasetPreviewDialog({
     if (prev === datasetFormat) return;
     if (Object.keys(manualMapping).length === 0) return;
     setManualMapping(remapRolesForFormat(manualMapping, datasetFormat));
-  }, [datasetFormat]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [datasetFormat, manualMapping, setManualMapping]);
 
   const handleRoleChange = useCallback(
     (colName: string, role: string | undefined) => {
@@ -186,47 +294,43 @@ export function DatasetPreviewDialog({
   );
 
   useEffect(() => {
-    if (!open || !datasetName) {
-      setData(null);
-      setError(null);
-      return;
-    }
-
-    if (initialData) {
-      setData(initialData);
-      setError(null);
-      setLoading(false);
+    if (!previewRequest) {
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
 
     checkDatasetFormat({
-      datasetName,
-      hfToken,
-      subset: datasetSubset,
-      split: datasetSplit,
-      isVlm,
+      datasetName: previewRequest.datasetName,
+      hfToken: previewRequest.hfToken,
+      subset: previewRequest.subset,
+      split: previewRequest.split,
+      isVlm: previewRequest.isVlm,
     })
       .then((res) => {
         if (!cancelled) {
-          setData(res);
-          setError(null);
+          setPreviewResult({
+            requestKey: previewRequest.requestKey,
+            data: res,
+            error: null,
+          });
         }
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message || "Failed to load preview");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setPreviewResult({
+            requestKey: previewRequest.requestKey,
+            data: null,
+            error:
+              err instanceof Error ? err.message : "Failed to load preview",
+          });
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [open, datasetName, hfToken, datasetSubset, datasetSplit, isVlm, initialData]);
+  }, [previewRequest]);
 
   // Pre-fill mapping from suggested_mapping when data arrives
   useEffect(() => {
@@ -234,13 +338,27 @@ export function DatasetPreviewDialog({
     if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;
     // Don't overwrite if mapping already has entries
     if (Object.keys(manualMapping).length > 0) return;
-    const derived = deriveDefaultMapping(data, effectiveIsVlm, datasetFormat, effectiveIsAudio);
+    const derived = deriveDefaultMapping(
+      data,
+      effectiveIsVlm,
+      datasetFormat,
+      effectiveIsAudio,
+    );
     if (Object.keys(derived).length === 0) return;
     setManualMapping(derived);
-  }, [open, datasetName, data, effectiveIsVlm, datasetFormat, effectiveIsAudio, manualMapping, setManualMapping]);
+  }, [
+    open,
+    datasetName,
+    data,
+    effectiveIsVlm,
+    datasetFormat,
+    effectiveIsAudio,
+    manualMapping,
+    setManualMapping,
+  ]);
 
-  const rows = data?.preview_samples ?? [];
-  const columns = data?.columns ?? [];
+  const rows = data?.preview_samples ?? EMPTY_PREVIEW_ROWS;
+  const columns = data?.columns ?? EMPTY_PREVIEW_COLUMNS;
 
   const sourceLabel = useMemo(() => {
     if (!datasetName) return "";
@@ -257,73 +375,75 @@ export function DatasetPreviewDialog({
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!columns.length) return [];
 
-    const dataCols: ColumnDef<Record<string, unknown>>[] = columns.map((colName) => ({
-      accessorKey: colName,
-      header: () => (
-        <div className="flex flex-col gap-2">
-          <span className="font-heading text-ui-13 font-semibold tracking-tight text-foreground">
-            {colName}
-          </span>
-          {mappingEnabled && (
-            <HeaderRolePicker
-              currentRole={manualMapping[colName]}
-              onRoleChange={(role) => handleRoleChange(colName, role)}
-              availableRoles={availableRoles}
-            />
-          )}
-        </div>
-      ),
-      cell: ({ getValue }: { getValue: () => unknown }) => {
-        const value = getValue();
-        const images = collectPreviewImages(value);
-        if (images.length > 0) {
-          return (
-            <div className="flex flex-wrap gap-2">
-              {images.slice(0, 4).map((image, index) => {
-                const mime = image.mime || "image/jpeg";
-                const src = image.data ? `data:${mime};base64,${image.data}` : "";
-                const width = image.width ?? 128;
-                const height = image.height ?? 128;
-                return (
-                  <img
-                    key={`${colName}-img-${index}`}
-                    src={src}
-                    alt={`preview-${index}`}
-                    className="h-16 w-auto max-w-40 rounded-md border object-contain bg-muted"
-                    width={width}
-                    height={height}
-                    loading="lazy"
-                  />
-                );
-              })}
-              {images.length > 4 && (
-                <span className="text-xs text-muted-foreground self-end">
-                  +{images.length - 4} more
-                </span>
-              )}
-            </div>
-          );
-        }
-
-        const text = formatCell(value);
-        if (!text) {
-          return (
-            <span className="text-muted-foreground/40 italic text-ui-13">
-              --
+    const dataCols: ColumnDef<Record<string, unknown>>[] = columns.map(
+      (colName) => ({
+        accessorKey: colName,
+        header: () => (
+          <div className="flex flex-col gap-2">
+            <span className="font-heading text-ui-13 font-semibold tracking-tight text-foreground">
+              {colName}
             </span>
+            {mappingEnabled && (
+              <HeaderRolePicker
+                currentRole={manualMapping[colName]}
+                onRoleChange={(role) => handleRoleChange(colName, role)}
+                availableRoles={availableRoles}
+              />
+            )}
+          </div>
+        ),
+        cell: ({ getValue }: { getValue: () => unknown }) => {
+          const value = getValue();
+          const images = collectPreviewImages(value);
+          if (images.length > 0) {
+            return (
+              <div className="flex flex-wrap gap-2">
+                {images.slice(0, 4).map(({ image, sourcePath }, index) => {
+                  const mime = image.mime || "image/jpeg";
+                  const src = image.data
+                    ? `data:${mime};base64,${image.data}`
+                    : "";
+                  const width = image.width ?? 128;
+                  const height = image.height ?? 128;
+                  return (
+                    <img
+                      key={`${colName}:${sourcePath}`}
+                      src={src}
+                      alt={`preview-${index}`}
+                      className="h-16 w-auto max-w-40 rounded-md border object-contain bg-muted"
+                      width={width}
+                      height={height}
+                      loading="lazy"
+                    />
+                  );
+                })}
+                {images.length > 4 && (
+                  <span className="text-xs text-muted-foreground self-end">
+                    +{images.length - 4} more
+                  </span>
+                )}
+              </div>
+            );
+          }
+
+          const text = formatCell(value);
+          if (!text) {
+            return (
+              <span className="text-muted-foreground/40 italic text-ui-13">
+                --
+              </span>
+            );
+          }
+          const full =
+            typeof value === "string" ? value : JSON.stringify(value);
+          return (
+            <p className="text-ui-13 leading-relaxed line-clamp-6" title={full}>
+              {text}
+            </p>
           );
-        }
-        const full = typeof value === "string" ? value : JSON.stringify(value);
-        return (
-          <p
-            className="text-ui-13 leading-relaxed line-clamp-6"
-            title={full}
-          >
-            {text}
-          </p>
-        );
-      },
-    }));
+        },
+      }),
+    );
 
     // Prepend generated system prompt column when advisor is active
     if (datasetSystemPrompt) {
@@ -332,10 +452,16 @@ export function DatasetPreviewDialog({
         header: () => (
           <div className="flex flex-col gap-2">
             <span className="font-heading text-ui-13 font-semibold tracking-tight text-foreground">
-              System <span className="text-muted-foreground font-normal">(generated)</span>
+              System{" "}
+              <span className="text-muted-foreground font-normal">
+                (generated)
+              </span>
             </span>
             {mappingEnabled && (
-              <Badge variant="outline" className="h-6 w-fit text-ui-10 px-2 py-0 border-dashed text-muted-foreground">
+              <Badge
+                variant="outline"
+                className="h-6 w-fit text-ui-10 px-2 py-0 border-dashed text-muted-foreground"
+              >
                 System
               </Badge>
             )}
@@ -363,7 +489,7 @@ export function DatasetPreviewDialog({
   ]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="sm:max-w-5xl w-[90vw] max-h-[88vh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl corner-squircle"
         showCloseButton={true}
@@ -389,7 +515,9 @@ export function DatasetPreviewDialog({
                 <Spinner className="size-5 text-primary" />
               </div>
               <p className="text-sm text-muted-foreground font-medium">
-                {isHfDataset ? "Fetching dataset preview from Hugging Face..." : "Loading preview..."}
+                {isHfDataset
+                  ? "Fetching dataset preview from Hugging Face..."
+                  : "Loading preview..."}
               </p>
               {isHfDataset && (
                 <p className="text-xs text-muted-foreground/60">
@@ -425,7 +553,9 @@ export function DatasetPreviewDialog({
                 <MetaRow label="Source" value={sourceLabel} />
                 <MetaRow
                   label="Format"
-                  value={isRawFormat ? "Raw Text" : (data.detected_format || "--")}
+                  value={
+                    isRawFormat ? "Raw Text" : data.detected_format || "--"
+                  }
                 />
                 <MetaRow
                   label="Total Rows"
@@ -455,7 +585,10 @@ export function DatasetPreviewDialog({
 
               {readyForTraining && (
                 <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
-                  <HugeiconsIcon icon={CheckmarkCircle02Icon} className="mt-0.5 size-4 shrink-0" />
+                  <HugeiconsIcon
+                    icon={CheckmarkCircle02Icon}
+                    className="mt-0.5 size-4 shrink-0"
+                  />
                   <div className="space-y-0.5">
                     <p className="font-medium">Ready for training</p>
                     {readyDetail && <p>{readyDetail}</p>}
@@ -465,7 +598,10 @@ export function DatasetPreviewDialog({
 
               {data.warning && !isRawFormat && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
-                  <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0 mt-0.5" />
+                  <HugeiconsIcon
+                    icon={AlertCircleIcon}
+                    className="size-4 shrink-0 mt-0.5"
+                  />
                   <span>{data.warning}</span>
                 </div>
               )}
@@ -502,19 +638,20 @@ export function DatasetPreviewDialog({
 
                 {mode === "preview" && mappingEnabled && (
                   <p className="mt-2 text-ui-11 text-muted-foreground/70 text-center">
-                    Mapping is saved automatically. You can start training anytime.
+                    Mapping is saved automatically. You can start training
+                    anytime.
                   </p>
                 )}
 
                 {showMappingFooter && (
                   <DatasetMappingFooter
                     mappingOk={mappingOk}
-                    isStarting={isStarting}
+                    startPending={startPending}
                     startError={startError}
-                    onCancel={() => onOpenChange(false)}
+                    onCancel={() => handleOpenChange(false)}
                     onStartTraining={async () => {
                       const ok = await startTrainingRun();
-                      if (ok) onOpenChange(false);
+                      if (ok) handleOpenChange(false);
                     }}
                   />
                 )}

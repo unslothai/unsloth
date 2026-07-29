@@ -10,18 +10,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { CheckFormatResponse } from "@/features/training/types/datasets";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
+import {
+  AlertCircleIcon,
+  CheckmarkCircle02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Sparkles } from "lucide-react";
-import { Spinner } from "@/components/ui/spinner";
-
-const CHATML_ROLES = ["system", "user", "assistant"] as const;
-const ALPACA_ROLES = ["instruction", "input", "output"] as const;
-const SHAREGPT_ROLES = ["system", "human", "gpt"] as const;
-const VLM_ROLES = ["image", "text"] as const;
-const AUDIO_ROLES = ["audio", "text", "speaker_id"] as const;
 
 const ROLE_LABELS: Record<string, string> = {
   system: "System",
@@ -37,28 +33,6 @@ const ROLE_LABELS: Record<string, string> = {
   audio: "Audio",
   speaker_id: "Speaker ID",
 };
-
-export function getAvailableRoles(isVlm: boolean, format?: string, isAudio?: boolean): readonly string[] {
-  if (isAudio) return AUDIO_ROLES;
-  if (isVlm) return VLM_ROLES;
-  if (format === "alpaca") return ALPACA_ROLES;
-  if (format === "sharegpt") return SHAREGPT_ROLES;
-  return CHATML_ROLES;
-}
-
-export function isMappingComplete(
-  mapping: Record<string, string>,
-  isVlm: boolean,
-  format?: string,
-  isAudio?: boolean,
-): boolean {
-  const roles = new Set(Object.values(mapping));
-  if (isAudio) return roles.has("audio") && roles.has("text");
-  if (isVlm) return roles.has("image") && roles.has("text");
-  if (format === "alpaca") return roles.has("instruction") && roles.has("output");
-  if (format === "sharegpt") return roles.has("human") && roles.has("gpt");
-  return roles.has("user") && roles.has("assistant");
-}
 
 export function HeaderRolePicker({
   currentRole,
@@ -156,7 +130,9 @@ export function DatasetMappingCard({
         <div className="min-w-0">
           <p className="text-sm font-semibold tracking-tight">
             {mappingOk
-              ? autoDetected ? "Heuristic-detected mapping" : "Mapping ready"
+              ? autoDetected
+                ? "Heuristic-detected mapping"
+                : "Mapping ready"
               : "Map dataset columns"}
           </p>
           <p
@@ -211,12 +187,19 @@ export function DatasetMappingCard({
                   <>
                     <Sparkles className="mr-1.5 h-3.5 w-3.5" />
                     AI Assist
-                    <Badge variant="outline" className="ml-1.5 text-ui-9 px-1 py-0 h-4 font-medium">Beta</Badge>
+                    <Badge
+                      variant="outline"
+                      className="ml-1.5 text-ui-9 px-1 py-0 h-4 font-medium"
+                    >
+                      Beta
+                    </Badge>
                   </>
                 )}
               </Button>
               {aiError && (
-                <p className="text-xs text-amber-700 dark:text-amber-300">{aiError}</p>
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  {aiError}
+                </p>
               )}
             </div>
           )}
@@ -228,7 +211,9 @@ export function DatasetMappingCard({
               </div>
               {advisorSystemPrompt && (
                 <div className="pl-5.5 text-ui-11 font-mono text-indigo-600/80 dark:text-indigo-400/80">
-                  <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">System:</span>{" "}
+                  <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">
+                    System:
+                  </span>{" "}
                   <span className="break-words">{advisorSystemPrompt}</span>
                 </div>
               )}
@@ -242,13 +227,13 @@ export function DatasetMappingCard({
 
 export function DatasetMappingFooter({
   mappingOk,
-  isStarting,
+  startPending,
   startError,
   onCancel,
   onStartTraining,
 }: {
   mappingOk: boolean;
-  isStarting: boolean;
+  startPending: boolean;
   startError: string | null;
   onCancel: () => void;
   onStartTraining: () => Promise<void>;
@@ -271,10 +256,10 @@ export function DatasetMappingFooter({
           <Button
             size="sm"
             className="cursor-pointer"
-            disabled={!mappingOk || isStarting}
+            disabled={!mappingOk || startPending}
             onClick={() => void onStartTraining()}
           >
-            {isStarting ? "Starting..." : "Continue"}
+            {startPending ? "Starting..." : "Continue"}
           </Button>
         </div>
       </div>
@@ -286,61 +271,4 @@ export function DatasetMappingFooter({
       )}
     </div>
   );
-}
-
-/** Canonical chatml role for any format-specific role name. */
-const TO_CANONICAL: Record<string, string> = {
-  user: "user", assistant: "assistant", system: "system",
-  instruction: "user", input: "system", output: "assistant",
-  human: "user", gpt: "assistant",
-  image: "image", text: "text",
-  audio: "audio", speaker_id: "speaker_id",
-};
-
-/** Chatml → format-specific role names (only for formats that differ). */
-const FROM_CANONICAL: Record<string, Record<string, string>> = {
-  alpaca: { user: "instruction", system: "input", assistant: "output" },
-  sharegpt: { user: "human", assistant: "gpt", system: "system" },
-};
-
-/**
- * Remap a column→role mapping between formats: normalise to canonical chatml,
- * then map to the target format.
- */
-export function remapRolesForFormat(
-  mapping: Record<string, string>,
-  format?: string,
-): Record<string, string> {
-  const table = format ? FROM_CANONICAL[format] : undefined;
-  const out: Record<string, string> = {};
-  for (const [col, role] of Object.entries(mapping)) {
-    const canonical = TO_CANONICAL[role] ?? role;
-    out[col] = table ? (table[canonical] ?? canonical) : canonical;
-  }
-  return out;
-}
-
-export function deriveDefaultMapping(
-  data: CheckFormatResponse,
-  isVlm: boolean,
-  format?: string,
-  isAudio?: boolean,
-): Record<string, string> {
-  if (data.suggested_mapping) {
-    return remapRolesForFormat({ ...data.suggested_mapping }, format);
-  }
-  if (isAudio) {
-    const result: Record<string, string> = {};
-    if (data.detected_audio_column) result[data.detected_audio_column] = "audio";
-    if (data.detected_text_column) result[data.detected_text_column] = "text";
-    if (data.detected_speaker_column) result[data.detected_speaker_column] = "speaker_id";
-    return result;
-  }
-  if (isVlm) {
-    const result: Record<string, string> = {};
-    if (data.detected_image_column) result[data.detected_image_column] = "image";
-    if (data.detected_text_column) result[data.detected_text_column] = "text";
-    return result;
-  }
-  return {};
 }

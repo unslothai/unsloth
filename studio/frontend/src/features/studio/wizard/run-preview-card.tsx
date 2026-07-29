@@ -6,8 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { datasetDisplayName } from "@/features/dataset-picker";
-import { ownerOf, repoOf, useHfTokenStore } from "@/features/hub";
+import { ownerOf, useHfTokenStore } from "@/features/hub";
 import {
   TRAINING_METHOD_META,
   isLocalTrainingModelSelection,
@@ -22,6 +21,7 @@ import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useTrainingResourceDisplayNames } from "../hooks/use-training-resource-display-names";
 
 const LEARNING_RATE_ZERO_RE = /\.?0+e/;
 
@@ -212,26 +212,29 @@ function PreviewResource({
 function modelPreview(
   model: string | null,
   isLocal: boolean,
+  displayName: string | null,
 ): { name: string | null; owner: string | null } {
   if (!model) {
     return { name: null, owner: null };
   }
-  if (isLocal) {
-    return { name: datasetDisplayName(model), owner: null };
-  }
-  return { name: repoOf(model), owner: ownerOf(model) };
+  return {
+    name: displayName,
+    owner: isLocal ? null : ownerOf(model),
+  };
 }
 
 function datasetPreview({
   source,
   dataset,
   uploadedFile,
+  displayName,
   s3Config,
   hasDataset,
 }: {
   source: "huggingface" | "upload" | "s3";
   dataset: string | null;
   uploadedFile: string | null;
+  displayName: string | null;
   s3Config: { bucket?: string; prefix?: string } | null;
   hasDataset: boolean;
 }): { name: string | null; owner: string | null; title?: string } {
@@ -243,13 +246,13 @@ function datasetPreview({
   }
   if (source === "upload") {
     return {
-      name: uploadedFile ? datasetDisplayName(uploadedFile) : null,
+      name: uploadedFile ? displayName : null,
       owner: null,
       title: uploadedFile ?? undefined,
     };
   }
   return {
-    name: dataset ? repoOf(dataset) : null,
+    name: displayName,
     owner: hasDataset && dataset ? ownerOf(dataset) : null,
     title: dataset ?? undefined,
   };
@@ -265,6 +268,7 @@ export function RunPreviewCard({
     selectedModel,
     modelKnownCached,
     modelLocalPath,
+    modelFormat,
     trainingMethod,
     datasetSource,
     dataset,
@@ -282,6 +286,7 @@ export function RunPreviewCard({
       selectedModel: s.selectedModel,
       modelKnownCached: s.modelKnownCached,
       modelLocalPath: s.modelLocalPath,
+      modelFormat: s.modelFormat,
       trainingMethod: s.trainingMethod,
       datasetSource: s.datasetSource,
       dataset: s.dataset,
@@ -302,17 +307,31 @@ export function RunPreviewCard({
   const hasToken = !!hfToken && hfToken.trim().length > 0;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
   const resourceNotices = useTrainingResourceNotices();
+  const resourceDisplayNames = useTrainingResourceDisplayNames({
+    selectedModel,
+    modelKnownCached,
+    modelLocalPath,
+    modelFormat,
+    datasetSource,
+    dataset,
+    uploadedFile,
+  });
 
   const modelIsLocal = isLocalTrainingModelSelection({
     model: selectedModel,
     knownCached: modelKnownCached,
     localPath: modelLocalPath,
   });
-  const modelDetails = modelPreview(selectedModel, modelIsLocal);
+  const modelDetails = modelPreview(
+    selectedModel,
+    modelIsLocal,
+    resourceDisplayNames.modelName,
+  );
   const datasetDetails = datasetPreview({
     source: datasetSource,
     dataset,
     uploadedFile,
+    displayName: resourceDisplayNames.datasetName,
     s3Config,
     hasDataset,
   });

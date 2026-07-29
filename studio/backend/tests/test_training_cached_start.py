@@ -793,7 +793,99 @@ def test_apply_cache_pins_fresh_start_resolves_snapshots(tmp_path):
 
     assert config["model_snapshot_path"] == str(model_snap.resolve())
     assert config["dataset_snapshot_path"] == str(dataset_snap.resolve())
+    assert config["dataset_revision"] == "rev"
     assert config["cache_pin_warnings"] == []
+
+
+@pytest.mark.parametrize(
+    "resume_from_checkpoint",
+    [None, "/outputs/run/checkpoint-5"],
+)
+def test_apply_cache_pins_keeps_local_model_out_of_hub_cache_resolution(
+    tmp_path,
+    resume_from_checkpoint,
+):
+    from core.training.training import (
+        _apply_cache_pins,
+        resolve_training_model_load_target,
+    )
+
+    model_path = tmp_path / "models" / "custom"
+    model_path.mkdir(parents = True)
+    config = {
+        "model_name": str(model_path),
+        "model_known_cached": True,
+        "model_local_path": str(model_path),
+        "model_snapshot_path": str(model_path),
+        "actual_model_repo_id": "stale/repo-id",
+        "resume_from_checkpoint": resume_from_checkpoint,
+        "hf_dataset": "",
+    }
+
+    _apply_cache_pins(config)
+
+    assert config["model_snapshot_path"] is None
+    assert config["actual_model_repo_id"] is None
+    assert config["cache_pin_warnings"] == []
+    assert resolve_training_model_load_target(config) == str(model_path)
+
+
+def test_legacy_cached_dataset_loads_offline_without_completion_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    from core.training import worker
+    from core.training.training import _apply_cache_pins
+
+    snapshot = _dataset_repo_with_ref(
+        tmp_path,
+        "org/dataset",
+        "dataset-commit",
+    )
+    config = {
+        "model_name": "unsloth/test",
+        "hf_dataset": "org/dataset",
+        "dataset_known_cached": True,
+        "dataset_local_path": str(snapshot.parent.parent),
+        "train_split": "train",
+    }
+    _apply_cache_pins(config)
+    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
+    events: list[dict] = []
+
+    assert worker._verify_config_pins(
+        config,
+        SimpleNamespace(put = events.append),
+    ) is True
+    assert config["dataset_snapshot_path"] == str(snapshot.resolve())
+    assert config["dataset_revision"] == "dataset-commit"
+
+    dataset = SimpleNamespace(
+        info = SimpleNamespace(
+            download_checksums = {
+                str(snapshot / "train.parquet"): {
+                    "num_bytes": 1,
+                    "checksum": None,
+                }
+            }
+        )
+    )
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        return_value = dataset,
+    ):
+        loaded, evaluation = worker._load_hf_train_and_eval_datasets(
+            config,
+            None,
+            lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+            lambda _message: None,
+        )
+
+    assert loaded is dataset
+    assert evaluation is None
+    assert config["_dataset_loaded_from_exact_snapshot"] is True
+    assert events == []
 
 
 def test_training_model_load_target_uses_verified_inactive_snapshot(tmp_path):
@@ -1462,6 +1554,69 @@ def test_strict_resume_cached_dataset_failure_never_loads_remote():
                 lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
                 lambda _message: None,
             )
+
+
+def test_pinned_dataset_cache_failure_never_falls_back_offline(monkeypatch):
+    from core.training import worker
+
+    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/cache/exact",
+        "dataset_revision": "dataset-commit",
+        "train_split": "train",
+    }
+
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        side_effect = FileNotFoundError("corrupt cache"),
+    ):
+        with pytest.raises(FileNotFoundError, match = "corrupt cache"):
+            worker._load_hf_train_and_eval_datasets(
+                config,
+                None,
+                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+                lambda _message: None,
+            )
+
+
+def test_missing_pinned_dataset_fails_preflight_offline(monkeypatch):
+    from core.training import worker
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "true")
+    events: list[dict] = []
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_revision": "dataset-commit",
+        "dataset_snapshot_path": None,
+    }
+
+    assert worker._verify_config_pins(
+        config,
+        SimpleNamespace(put = events.append),
+    ) is False
+    assert len(events) == 1
+    assert "cannot be downloaded while offline" in events[0]["error"]
+
+
+def test_mlx_adapter_accepts_and_preserves_dataset_cache_pins():
+    from core.training.training import _MLXTrainerAdapter
+
+    adapter = _MLXTrainerAdapter()
+
+    result = adapter.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+        dataset_revision = "dataset-commit",
+        require_exact_resume_resources = True,
+    )
+
+    assert result is not None
+    assert adapter._dataset_config["dataset_snapshot_path"] == "/cache/snapshot"
+    assert adapter._dataset_config["dataset_revision"] == "dataset-commit"
+    assert adapter._dataset_config["require_exact_dataset_resource"] is True
 
 
 def test_strict_resume_cached_dataset_none_never_loads_remote():

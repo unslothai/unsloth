@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 
 
@@ -211,6 +212,22 @@ def test_cached_auto_eval_excludes_training_split():
     assert local_calls == []
 
 
+def test_cached_auto_eval_propagates_loader_failure_for_exact_resume():
+    def fail_load(_split):
+        raise FileNotFoundError("validation")
+
+    with pytest.raises(FileNotFoundError, match = "validation"):
+        _auto_detect_eval(
+            SimpleNamespace(),
+            "org/dataset",
+            None,
+            available_splits = ["train", "validation"],
+            split_loader = fail_load,
+            excluded_split = "train",
+            strict_split_loading = True,
+        )
+
+
 def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
     from hub.utils import dataset_cache
 
@@ -250,7 +267,7 @@ def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
     _patch_dataset_formatting(monkeypatch)
     trainer = _dataset_loader_self()
     cache_calls: list[str] = []
-    remote_calls: list[str] = []
+    remote_calls: list[tuple[str, str | None]] = []
     train = _SizedDataset(40, ("train", "validation"))
     validation = _SizedDataset(20, ("train", "validation"))
 
@@ -259,7 +276,7 @@ def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
         raise FileNotFoundError(split)
 
     def load_remote(*, path, split, **kwargs):
-        remote_calls.append(split)
+        remote_calls.append((split, kwargs.get("revision")))
         return validation if split == "validation" else train
 
     monkeypatch.setattr(dataset_cache, "load_cached_hf_dataset", load_cached)
@@ -275,13 +292,94 @@ def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
         eval_steps = 1,
         dataset_local_files_only = True,
         dataset_local_path = "/cache/snapshot",
+        dataset_revision = "dataset-commit",
     )
 
     assert result is not None
     assert result[0]["dataset"] is train
     assert result[1] is validation
     assert cache_calls == ["train"]
-    assert remote_calls == ["train", "validation"]
+    assert remote_calls == [
+        ("train", "dataset-commit"),
+        ("validation", "dataset-commit"),
+    ]
+
+
+def test_first_remote_train_load_records_exact_dataset_snapshot(monkeypatch, tmp_path):
+    from hub.utils import hf_cache_state
+
+    _patch_dataset_formatting(monkeypatch)
+    trainer = _dataset_loader_self()
+    snapshot = (
+        tmp_path
+        / "datasets--org--dataset"
+        / "snapshots"
+        / "dataset-commit"
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.parquet").write_bytes(b"dataset")
+    train = _SizedDataset(40)
+    train.info.download_checksums = {
+        "hf://datasets/org/dataset@dataset-commit/train.parquet": {
+            "num_bytes": 7,
+            "checksum": None,
+        }
+    }
+
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "core.training.trainer.load_dataset",
+        lambda **_kwargs: train,
+    )
+
+    result = trainer.load_and_format_dataset("org/dataset")
+
+    assert result is not None
+    assert trainer.dataset_snapshot_path == str(snapshot.resolve())
+    assert trainer.dataset_loaded_from_exact_snapshot is True
+
+
+def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
+    from hub.utils import hf_cache_state
+
+    _patch_dataset_formatting(monkeypatch)
+    trainer = _dataset_loader_self()
+    snapshot = (
+        tmp_path
+        / "datasets--org--dataset"
+        / "snapshots"
+        / "dataset-commit"
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.parquet").write_bytes(b"dataset")
+    stream = SimpleNamespace(
+        info = SimpleNamespace(
+            download_checksums = {
+                "hf://datasets/org/dataset@dataset-commit/train.parquet": {
+                    "num_bytes": 7,
+                    "checksum": None,
+                }
+            }
+        ),
+        take = lambda _count: [{"text": "example"}],
+    )
+
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "core.training.trainer.load_dataset",
+        lambda **kwargs: stream
+        if kwargs.get("streaming")
+        else pytest.fail("eager download should not run"),
+    )
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_slice_end = 0,
+    )
+
+    assert result is not None
+    assert trainer.dataset_snapshot_path == str(snapshot.resolve())
+    assert trainer.dataset_loaded_from_exact_snapshot is True
 
 
 def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch):

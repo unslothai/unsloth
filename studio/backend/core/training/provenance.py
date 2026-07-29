@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path, PureWindowsPath
 from typing import Any, Optional
+from urllib.parse import unquote, urlsplit
 
 
 RESOURCE_PROVENANCE_VERSION = 1
@@ -143,36 +144,80 @@ def _snapshot_declares_quantization(snapshot: Path) -> bool:
     return isinstance(parsed, dict) and bool(parsed.get("quantization_config"))
 
 
-def _snapshot_has_model_weights(snapshot: Path) -> bool:
+def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
     try:
-        for root, dirnames, filenames in os.walk(snapshot, followlinks = False):
-            dirnames[:] = [name for name in dirnames if not (Path(root) / name).is_symlink()]
-            for filename in filenames:
-                if _MODEL_WEIGHT_RE.fullmatch(filename):
-                    path = Path(root) / filename
-                    if path.is_file():
-                        return True
+        snapshot = snapshot.resolve(strict = True)
+        repo_dir = snapshot.parent.parent.resolve(strict = True)
+        if snapshot.parent != repo_dir / "snapshots":
+            return None
+        relative = path.relative_to(snapshot)
+        resolved = snapshot.joinpath(*relative.parts).resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not resolved.is_file() or not (
+        resolved.is_relative_to(snapshot)
+        or resolved.is_relative_to(repo_dir / "blobs")
+    ):
+        return None
+    try:
+        with resolved.open("rb"):
+            pass
     except OSError:
+        return None
+    return resolved
+
+
+def _raise_walk_error(error: OSError) -> None:
+    raise error
+
+
+def _snapshot_has_model_weights(snapshot: Path) -> bool:
+    found_weights = False
+    try:
+        for root, dirnames, filenames in os.walk(
+            snapshot,
+            followlinks = False,
+            onerror = _raise_walk_error,
+        ):
+            if any((Path(root) / name).is_symlink() for name in dirnames):
+                return False
+            for filename in filenames:
+                path = Path(root) / filename
+                if _resolved_model_snapshot_file(snapshot, path) is None:
+                    return False
+                if _MODEL_WEIGHT_RE.fullmatch(filename):
+                    found_weights = True
+    except (OSError, RuntimeError, ValueError):
         return False
-    return False
+    return found_weights
 
 
 def _snapshot_has_dataset_data(snapshot: Path) -> bool:
+    from hub.utils.dataset_cache import resolved_dataset_snapshot_file
+
+    found_data = False
     try:
-        for root, dirnames, filenames in os.walk(snapshot, followlinks = False):
-            dirnames[:] = [name for name in dirnames if not (Path(root) / name).is_symlink()]
+        for root, dirnames, filenames in os.walk(
+            snapshot,
+            followlinks = False,
+            onerror = _raise_walk_error,
+        ):
+            if any((Path(root) / name).is_symlink() for name in dirnames):
+                return False
             for filename in filenames:
                 lowered = filename.lower()
+                path = Path(root) / filename
+                relative = path.relative_to(snapshot).as_posix()
+                if resolved_dataset_snapshot_file(snapshot, relative) is None:
+                    return False
                 if (
                     lowered not in _DATASET_METADATA_FILENAMES
                     and lowered.endswith(_DATASET_DATA_SUFFIXES)
                 ):
-                    path = Path(root) / filename
-                    if path.is_file():
-                        return True
-    except OSError:
+                    found_data = True
+    except (OSError, RuntimeError, ValueError):
         return False
-    return False
+    return found_data
 
 
 def exact_model_snapshot_path(
@@ -256,6 +301,186 @@ def exact_dataset_snapshot_path(path_value: Any, repo_id: Any) -> Optional[str]:
     if resolved != requested or not _snapshot_has_dataset_data(resolved):
         return None
     return str(resolved)
+
+
+def exact_dataset_snapshot_for_commit(
+    repo_id: Any,
+    commit: Any,
+) -> Optional[str]:
+    repo_id = _normalized_repo_id(repo_id)
+    commit = _normalized_commit(commit)
+    if repo_id is None or commit is None:
+        return None
+
+    from hub.utils.hf_cache_state import iter_repo_cache_dirs
+
+    for repo_dir in iter_repo_cache_dirs("dataset", repo_id):
+        resolved = exact_dataset_snapshot_path(
+            str(repo_dir / "snapshots" / commit),
+            repo_id,
+        )
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _local_dataset_source_snapshot(
+    path_value: str,
+    repo_id: str,
+) -> Optional[tuple[str, str]]:
+    if len(path_value) > 4096 or "\x00" in path_value:
+        return None
+    path = Path(path_value).expanduser()
+    if PureWindowsPath(path_value).is_absolute() and not path.is_absolute():
+        return None
+    if not path.is_absolute() or ".." in path.parts or not path.is_file():
+        return None
+    for parent in path.parents:
+        if parent.parent.name != "snapshots":
+            continue
+        snapshot = exact_dataset_snapshot_path(str(parent), repo_id)
+        try:
+            source_path = path.relative_to(parent).as_posix()
+        except ValueError:
+            continue
+        if snapshot is not None and _dataset_snapshot_contains(snapshot, source_path):
+            return snapshot, source_path
+    return None
+
+
+def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
+    if path_value.startswith("hf://datasets/"):
+        remainder = path_value.removeprefix("hf://datasets/")
+        repo_id, marker, revision_path = remainder.partition("@")
+        commit, separator, source_path = revision_path.partition("/")
+        normalized_repo = _normalized_repo_id(repo_id)
+        normalized_commit = _normalized_commit(commit)
+        if (
+            marker
+            and separator
+            and source_path
+            and normalized_repo is not None
+            and normalized_commit is not None
+        ):
+            return normalized_repo, normalized_commit, unquote(source_path)
+        return None
+
+    try:
+        parsed = urlsplit(path_value)
+        endpoint = urlsplit(os.environ.get("HF_ENDPOINT", "https://huggingface.co"))
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.netloc.lower() != endpoint.netloc.lower()
+    ):
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    endpoint_parts = [part for part in endpoint.path.split("/") if part]
+    if parts[: len(endpoint_parts)] != endpoint_parts:
+        return None
+    parts = parts[len(endpoint_parts) :]
+    if not parts or parts[0] != "datasets" or "resolve" not in parts:
+        return None
+    resolve_index = parts.index("resolve")
+    if resolve_index not in {2, 3} or len(parts) <= resolve_index + 2:
+        return None
+    repo_id = _normalized_repo_id("/".join(parts[1:resolve_index]))
+    commit = _normalized_commit(parts[resolve_index + 1])
+    if repo_id is None or commit is None:
+        return None
+    return repo_id, commit, unquote("/".join(parts[resolve_index + 2 :]))
+
+
+def _dataset_snapshot_contains(snapshot: str, source_path: str) -> bool:
+    from hub.utils.dataset_cache import dataset_snapshot_contains_file
+
+    return dataset_snapshot_contains_file(snapshot, source_path)
+
+
+def _dataset_snapshot_file(snapshot: str, source_path: str) -> Optional[Path]:
+    from hub.utils.dataset_cache import resolved_dataset_snapshot_file
+
+    return resolved_dataset_snapshot_file(snapshot, source_path)
+
+
+def _loaded_dataset_objects(value: Any):
+    if value is None:
+        return
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _loaded_dataset_objects(child)
+        return
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _loaded_dataset_objects(child)
+        return
+    yield value
+
+
+def attest_loaded_dataset(
+    repo_id: Any,
+    *datasets: Any,
+) -> tuple[Optional[str], Optional[str]]:
+    repo_id = _normalized_repo_id(repo_id)
+    if repo_id is None:
+        return None, "dataset_revision_unattested"
+
+    snapshots: set[str] = set()
+    found_dataset = False
+    for value in datasets:
+        for dataset in _loaded_dataset_objects(value):
+            found_dataset = True
+            info = _object_value(dataset, "info")
+            checksums = _object_value(info, "download_checksums")
+            if not isinstance(checksums, dict) or not checksums:
+                return None, "dataset_revision_unattested"
+            for source, download_info in checksums.items():
+                if not isinstance(source, str):
+                    return None, "dataset_source_unattested"
+                expected_size = _object_value(download_info, "num_bytes")
+                if (
+                    not isinstance(expected_size, int)
+                    or isinstance(expected_size, bool)
+                    or expected_size < 0
+                ):
+                    return None, "dataset_revision_unattested"
+                local_source = _local_dataset_source_snapshot(source, repo_id)
+                if local_source is not None:
+                    snapshot, source_path = local_source
+                else:
+                    source_ref = _hf_dataset_source_ref(source)
+                    if (
+                        source_ref is None
+                        or source_ref[0].casefold() != repo_id.casefold()
+                    ):
+                        return None, "dataset_source_unattested"
+                    snapshot = exact_dataset_snapshot_for_commit(
+                        repo_id,
+                        source_ref[1],
+                    )
+                    source_path = source_ref[2]
+                resolved_source = (
+                    _dataset_snapshot_file(snapshot, source_path)
+                    if snapshot is not None
+                    else None
+                )
+                if resolved_source is None:
+                    return None, "dataset_snapshot_unavailable"
+                try:
+                    actual_size = resolved_source.stat().st_size
+                except OSError:
+                    return None, "dataset_snapshot_unavailable"
+                if actual_size != expected_size:
+                    return None, "dataset_snapshot_unavailable"
+                snapshots.add(snapshot)
+                if len(snapshots) > 1:
+                    return None, "dataset_metadata_ambiguous"
+
+    if not found_dataset or len(snapshots) != 1:
+        return None, "dataset_revision_unattested"
+    return snapshots.pop(), None
 
 
 def _object_value(value: Any, key: str) -> Any:

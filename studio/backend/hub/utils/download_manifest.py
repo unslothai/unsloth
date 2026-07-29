@@ -31,13 +31,15 @@ I/O contracts:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterator, Optional, Sequence
+from urllib.parse import unquote
 
 from loggers import get_logger
 
@@ -53,9 +55,14 @@ from hub.utils.state_dir import (
 logger = get_logger(__name__)
 
 
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
+_LEGACY_MANIFEST_VERSION = 1
+_SUPPORTED_MANIFEST_VERSIONS = frozenset(
+    {_LEGACY_MANIFEST_VERSION, _MANIFEST_VERSION}
+)
 _MARKER_VERSION = 2
 _LEGACY_MARKER_VERSION = 1
+_DATASET_COMPLETION_VARIANT_PREFIX = "_studio-dataset-complete-"
 
 # Verbatim phrase the worker emits on a degraded completion and the download
 # lifecycle escalates to a warning log. Shared so the emit and match stay coupled.
@@ -78,6 +85,9 @@ class Manifest:
     expected_files: tuple[ExpectedFile, ...]
     transport: Optional[str] = None
     hub_cache: Optional[str] = None
+    version: int = _LEGACY_MANIFEST_VERSION
+    commit_hash: Optional[str] = None
+    metadata_derived: bool = False
 
 
 @dataclass(frozen = True)
@@ -95,9 +105,10 @@ def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str
         except Exception:
             return None
     try:
-        return str(Path(hub_cache).expanduser().resolve(strict = False))
+        resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
     except (OSError, RuntimeError, ValueError):
-        return str(hub_cache)
+        resolved = str(hub_cache)
+    return os.path.normcase(resolved)
 
 
 def _read_state_payload(path: Path) -> Optional[dict]:
@@ -199,6 +210,8 @@ def write_manifest(
     transport: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    commit_hash: Optional[str] = None,
+    metadata_derived: bool = False,
 ) -> bool:
     """Write/overwrite the manifest for this triple. Best-effort.
 
@@ -215,6 +228,8 @@ def write_manifest(
     )
     if path is None:
         return False
+    normalized_commit = normalized_commit_hash(commit_hash)
+    metadata_attestation = bool(metadata_derived and normalized_commit)
     payload = {
         "version": _MANIFEST_VERSION,
         "repo_type": repo_type,
@@ -231,8 +246,25 @@ def write_manifest(
         ],
         "transport": transport,
         "hub_cache": recorded_hub_cache,
+        "commit_hash": normalized_commit if metadata_attestation else None,
+        "metadata_derived": metadata_attestation,
     }
     return _atomic_write_json(path, payload)
+
+
+def normalized_commit_hash(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 256
+        or normalized in {".", ".."}
+        or Path(normalized).name != normalized
+        or PureWindowsPath(normalized).name != normalized
+    ):
+        return None
+    return normalized
 
 
 def read_manifest(
@@ -249,11 +281,6 @@ def read_manifest(
     behavior on ``None`` so this never regresses legacy/imported repos
     that have no manifest.
 
-    Forward-compat: accepts only ``version == 1``; an unknown version is
-    treated as no manifest. A future v2 schema MUST either keep v1's
-    ``expected_files`` shape on the same filename (bump
-    ``_MANIFEST_VERSION`` and widen this check) or live under a different
-    filename, so an incompatible payload can never mis-classify rows.
     """
     path = _state_read_path(
         manifest_path,
@@ -267,13 +294,38 @@ def read_manifest(
     data = _read_state_payload(path)
     if data is None:
         return None
-    if data.get("version") != _MANIFEST_VERSION:
+    version = data.get("version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in _SUPPORTED_MANIFEST_VERSIONS
+    ):
         logger.debug(
             "Manifest %s has unknown version %r; ignoring.",
             path,
             data.get("version"),
         )
         return None
+    if version == _MANIFEST_VERSION:
+        recorded_repo_type = data.get("repo_type")
+        recorded_repo_id = data.get("repo_id")
+        recorded_variant = data.get("variant")
+        if (
+            recorded_repo_type != repo_type
+            or not isinstance(recorded_repo_id, str)
+            or recorded_repo_id.casefold() != repo_id.casefold()
+            or not (
+                recorded_variant is None
+                or isinstance(recorded_variant, str)
+            )
+            or (
+                recorded_variant.strip().casefold()
+                if isinstance(recorded_variant, str) and recorded_variant.strip()
+                else None
+            )
+            != (variant.strip().casefold() if variant and variant.strip() else None)
+        ):
+            return None
     raw_files = data.get("expected_files")
     if not isinstance(raw_files, list):
         return None
@@ -283,7 +335,12 @@ def read_manifest(
             return None
         file_path = item.get("path")
         size = item.get("size")
-        if not isinstance(file_path, str) or not isinstance(size, int):
+        if (
+            not isinstance(file_path, str)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
             return None
         sha256 = item.get("sha256")
         expected.append(
@@ -295,6 +352,16 @@ def read_manifest(
         )
     raw_variant = data.get("variant")
     transport = data.get("transport")
+    commit_hash = (
+        normalized_commit_hash(data.get("commit_hash"))
+        if version == _MANIFEST_VERSION
+        else None
+    )
+    metadata_derived = bool(
+        version == _MANIFEST_VERSION
+        and data.get("metadata_derived") is True
+        and commit_hash is not None
+    )
     return Manifest(
         repo_type = repo_type,
         repo_id = str(data.get("repo_id", repo_id)),
@@ -303,6 +370,118 @@ def read_manifest(
         expected_files = tuple(expected),
         transport = transport if transport in ("http", "xet") else None,
         hub_cache = data.get("hub_cache") if isinstance(data.get("hub_cache"), str) else None,
+        version = version,
+        commit_hash = commit_hash if metadata_derived else None,
+        metadata_derived = metadata_derived,
+    )
+
+
+def _dataset_completion_variant(commit_hash: str) -> str:
+    digest = hashlib.sha256(commit_hash.encode("utf-8")).hexdigest()[:32]
+    return f"{_DATASET_COMPLETION_VARIANT_PREFIX}{digest}"
+
+
+def write_dataset_completion(
+    repo_id: str,
+    commit_hash: str,
+    expected_files: Sequence[ExpectedFile],
+    transport: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> bool:
+    normalized_commit = normalized_commit_hash(commit_hash)
+    recorded_hub_cache = _canonical_hub_cache(hub_cache)
+    if (
+        normalized_commit is None
+        or recorded_hub_cache is None
+        or not expected_files
+        or any(
+            not expected_path_is_safe(expected.path)
+            or not isinstance(expected.size, int)
+            or isinstance(expected.size, bool)
+            or expected.size < 0
+            for expected in expected_files
+        )
+    ):
+        return False
+    return write_manifest(
+        "dataset",
+        repo_id,
+        _dataset_completion_variant(normalized_commit),
+        expected_files,
+        transport,
+        hub_cache = recorded_hub_cache,
+        commit_hash = normalized_commit,
+        metadata_derived = True,
+    )
+
+
+def read_dataset_completion(
+    repo_id: str,
+    commit_hash: str,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> Optional[Manifest]:
+    normalized_commit = normalized_commit_hash(commit_hash)
+    requested_hub_cache = _canonical_hub_cache(hub_cache)
+    if normalized_commit is None or requested_hub_cache is None:
+        return None
+    variant = _dataset_completion_variant(normalized_commit)
+    manifest = read_manifest(
+        "dataset",
+        repo_id,
+        variant,
+        hub_cache = requested_hub_cache,
+    )
+    if (
+        manifest is None
+        or manifest.version != _MANIFEST_VERSION
+        or manifest.repo_id.casefold() != repo_id.casefold()
+        or manifest.variant != variant
+        or manifest.commit_hash != normalized_commit
+        or not manifest.metadata_derived
+        or not isinstance(manifest.hub_cache, str)
+        or not manifest.hub_cache.strip()
+        or _canonical_hub_cache(manifest.hub_cache) != requested_hub_cache
+        or not manifest.expected_files
+        or any(
+            not expected_path_is_safe(expected.path)
+            or not isinstance(expected.size, int)
+            or isinstance(expected.size, bool)
+            or expected.size < 0
+            for expected in manifest.expected_files
+        )
+    ):
+        return None
+    return manifest
+
+
+def expected_path_is_safe(path_value: str) -> bool:
+    if (
+        not isinstance(path_value, str)
+        or not path_value
+        or len(path_value) > 4096
+        or "\x00" in path_value
+        or "\\" in path_value
+    ):
+        return False
+    decoded = unquote(path_value)
+    if (
+        not decoded
+        or decoded in {".", ".."}
+        or "\x00" in decoded
+        or "\\" in decoded
+    ):
+        return False
+    posix = PurePosixPath(decoded)
+    windows = PureWindowsPath(decoded)
+    return (
+        not posix.is_absolute()
+        and not windows.is_absolute()
+        and not windows.drive
+        and all(":" not in part for part in posix.parts)
+        and ".." not in posix.parts
+        and ".." not in windows.parts
     )
 
 
@@ -321,6 +500,9 @@ def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
     missing: list[str] = []
     mismatched: list[str] = []
     for expected in manifest.expected_files:
+        if not expected_path_is_safe(expected.path):
+            missing.append(expected.path)
+            continue
         target = snapshot_dir / expected.path
         try:
             actual_size = target.stat().st_size
@@ -647,7 +829,7 @@ def purge_all_state_for_repo(
             if not entry.is_file():
                 continue
             fallback = entry.stem[len(prefix) :]
-            variants.add(_variant_from_state_file(entry, fallback))
+            variants.add(fallback)
     for variant in variants:
         if purge_state(repo_type, repo_id, variant, hub_cache = hub_cache):
             removed += 1

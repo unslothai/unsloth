@@ -28,7 +28,6 @@ import {
   onTrainingRunUpdated,
   onTrainingRunsChanged,
   useTrainingActions,
-  useTrainingRuntimeStore,
 } from "@/features/training";
 import { translate, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -230,8 +229,7 @@ export function HistoryCardGrid({
   const [deleteArtifacts, setDeleteArtifacts] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
-  const { resumeTrainingRunFromHistory } = useTrainingActions();
-  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  const { resumeTrainingRunFromHistory, startPending } = useTrainingActions();
   // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel
   // registers shortly after startup, so poll (bounded) until it shows.
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
@@ -510,7 +508,7 @@ export function HistoryCardGrid({
                     size="xs"
                     variant="outline"
                     className="pointer-events-auto absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
-                    disabled={isStarting || isResuming}
+                    disabled={startPending || isResuming}
                     onClick={(e) => {
                       e.stopPropagation();
                       void handleResume(run.id);
