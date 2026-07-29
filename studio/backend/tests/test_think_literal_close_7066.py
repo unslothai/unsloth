@@ -884,7 +884,12 @@ def test_held_fence_stream_scales_linearly():
     assert held < 4.0 * clean + 0.05, f"held {held:.3f}s vs clean {clean:.3f}s"
 
 
-def _fn_tool(parameters = None, *, name = "search", description = None):
+def _fn_tool(
+    parameters = None,
+    *,
+    name = "search",
+    description = None,
+):
     """One OpenAI function tool: the shape every schema case below varies."""
     function = {"name": name}
     if description is not None:
