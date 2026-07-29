@@ -474,7 +474,7 @@ export const fr = {
       codingAgentsHint:
         "Lancez un agent de codage sur ce serveur. Il utilise le modèle chargé ; un serveur local génère automatiquement une clé API, un serveur distant l'inclut dans la commande.",
       codingAgentsSwap:
-        "Remplacez claude par codex, openclaw, opencode, hermes ou pi.",
+        "Remplacez claude par codex, openclaw, opencode ou hermes.",
       codingAgentDetected: "Installé sur cette machine",
       codingAgentsDetectedHint: "Détecté sur cette machine : {agents}.",
       relativeNever: "jamais",
