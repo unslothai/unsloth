@@ -727,7 +727,6 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         _is_transformers_bin_weight_name,
         _is_transformers_safetensors_weight_name,
     )
-
     groups: dict[tuple[str, str, int], set[int]] = {}
     has_whole_family = False
     try:
