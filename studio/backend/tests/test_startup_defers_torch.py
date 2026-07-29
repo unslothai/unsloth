@@ -313,6 +313,9 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, cap
 _OFFLOAD_REQUIRED = [
     ("main.py", "get_gpu_visibility", "get_backend_visible_gpu_info"),
     ("routes/training.py", "get_hardware_utilization", "get_gpu_utilization"),
+    # Not first-paint, but it lands in the warm window whenever a start is
+    # submitted early, and its MLX streaming guard now forces detection itself.
+    ("routes/training.py", "start_training", "ensure_hardware_detected"),
     ("routes/models.py", "list_models", "get_inference_backend"),
     ("routes/inference.py", "get_status", "get_inference_backend"),
     ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
