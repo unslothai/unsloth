@@ -1290,6 +1290,35 @@ def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
     assert "UNSLOTH_RETURN_LOGITS" in messages[0]
     assert "custom data collator" not in messages[0]
     assert "4096" not in messages[0] and "512" not in messages[0]
+    # compute_metrics is one of several setters, so the message must not name it.
+    assert "compute_metrics" not in messages[0]
+
+
+@pytest.mark.parametrize(
+    "strategy, expect_data_loss", [(None, False), ("bfd", False), ("wrapped", True)]
+)
+def test_packing_skip_warning_claims_data_loss_only_for_wrapped(
+    monkeypatch, caplog, strategy, expect_data_loss
+):
+    # trl's default "bfd" truncates each example to seq_length before packing (_pack_bfd calls
+    # pc.list_slice), so skipping packing costs no tokens there. Only "wrapped" would have
+    # split long samples instead of cutting them.
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    if strategy is not None:
+        config.packing_strategy = strategy
+
+    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
+        fake_trainer(
+            model = _warn_text_model(),
+            args = config,
+            train_dataset = Dataset.from_dict({"text": ["sample"]}),
+        )
+
+    messages = [r.message for r in caplog.records if "Sample packing skipped" in r.message]
+    assert len(messages) == 1
+    assert ("TRUNCATED" in messages[0]) is expect_data_loss
 
 
 def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):

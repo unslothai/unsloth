@@ -770,19 +770,28 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif data_collator is None:
-                # Nothing else blocks packing and no collator was passed, so the only cause
-                # left is the env var unsloth sets itself for compute_metrics.
-                reason = "UNSLOTH_RETURN_LOGITS=1, set by compute_metrics"
+                # Nothing else blocks packing and no collator was passed, so the flag is the
+                # only cause left. Don't name a setter: compute_metrics and
+                # preprocess_logits_for_metrics both set it, for_inference() sets it, and
+                # LOGITS_ERROR_STRING tells users to set it by hand.
+                reason = "UNSLOTH_RETURN_LOGITS=1"
             # No token count: this runs before max_seq_length / max_length / the model's own
             # limit are reconciled, so any value read here is pre-reconciliation and often wrong.
             message = (
                 f"Unsloth: Sample packing skipped ({reason} detected) even though "
-                f"packing=True was requested. Sequences longer than the max sequence length will "
-                f"be TRUNCATED, which can silently "
-                f"drop a large fraction of tokens from long samples. If your dataset has long "
-                f"documents (e.g. raw-text CPT), pre-split or pre-pack them before training to "
-                f"avoid data loss."
+                f"packing=True was requested."
             )
+            # Only "wrapped" would have saved these tokens. The default "bfd" strategy
+            # truncates every example to seq_length before packing, so under it the skip
+            # costs no tokens and claiming data loss would be false.
+            if getattr(config_arg, "packing_strategy", "bfd") == "wrapped":
+                message += (
+                    " Sequences longer than the max sequence length will now be TRUNCATED"
+                    " instead of split across additional sequences, which can silently drop a"
+                    " large fraction of tokens from long samples. If your dataset has long"
+                    " documents (e.g. raw-text CPT), pre-split or pre-pack them before"
+                    " training to avoid data loss."
+                )
             logger.warning(message)
 
         packing_active = False
