@@ -759,21 +759,31 @@ jobs:
               --wait
           )" || submit_status=$?
           printf '%s\n' "$submission"
-          if [ "$submit_status" -ne 0 ]; then
-            # A rejection reports only a submission ID; the reason lives in the
-            # log, and this runner is the last place that can fetch it.
-            submission_id="$(
-              printf '%s' "$submission" \
-                | python3 -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))' \
-                2>/dev/null
-            )" || submission_id=""
+          submission_id="$(
+            printf '%s' "$submission" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))' \
+              2>/dev/null
+          )" || submission_id=""
+          submission_result="$(
+            printf '%s' "$submission" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))' \
+              2>/dev/null
+          )" || submission_result=""
+          if [ "$submit_status" -ne 0 ] || [ "$submission_result" != "Accepted" ]; then
+            # The service verdict is part of the JSON contract, independently
+            # of the command's exit code. Fetch the log whenever the response
+            # identifies a failed submission.
             if [ -n "$submission_id" ]; then
               xcrun notarytool log "$submission_id" \
                 --apple-id "$APPLE_ID" \
                 --password "$APPLE_PASSWORD" \
                 --team-id "$APPLE_TEAM_ID" >&2 || true
             fi
-            exit "$submit_status"
+            if [ "$submit_status" -ne 0 ]; then
+              exit "$submit_status"
+            fi
+            echo "Notarization did not return Accepted (status=${submission_result:-missing})." >&2
+            exit 1
           fi
 
           xcrun stapler staple "$dmg_path"

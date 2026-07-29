@@ -69,6 +69,7 @@ def _run_notarization_step(
     *,
     submit_output: str | None = None,
     fail_submission: bool = False,
+    notary_status: str | None = None,
     artifact_paths: str | None = None,
 ):
     """Run the step's shell body against stubbed Apple tooling and report the calls it made."""
@@ -98,7 +99,7 @@ exit 0
     for name in ("codesign", "spctl"):
         _write_fake_command(fake_bin / name, f"""printf '{name} %s\\n' "$*" >> "$COMMAND_LOG"\n""")
 
-    status = "Invalid" if fail_submission else "Accepted"
+    status = notary_status or ("Invalid" if fail_submission else "Accepted")
     env = os.environ.copy()
     env.update(
         {
@@ -202,6 +203,25 @@ def test_rejection_fetches_the_notarization_log_and_skips_stapling(tmp_path):
     assert "secure timestamp" in result.stderr
     assert "masked-password" not in result.stdout
     assert "masked-password" not in result.stderr
+
+
+def test_nonaccepted_service_result_fails_even_when_notarytool_exits_zero(tmp_path):
+    for status in ("Invalid", "Rejected"):
+        case_dir = tmp_path / status
+        case_dir.mkdir()
+        result, commands = _run_notarization_step(
+            _workflow(),
+            case_dir,
+            notary_status = status,
+        )
+
+        assert result.returncode == 1
+        assert _command_names(commands) == [
+            "codesign",
+            "notarytool submit",
+            "notarytool log",
+        ]
+        assert f"status={status}" in result.stderr
 
 
 def test_rejection_without_a_parseable_submission_id_still_fails(tmp_path):
