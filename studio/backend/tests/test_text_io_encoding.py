@@ -598,9 +598,7 @@ def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     assert storage._load_bootstrap_password() == "correct horse battery staple"
 
 
-def test_a_damaged_checkpoint_resets_instead_of_resuming_on_a_broken_cursor(
-    tmp_path: Path,
-) -> None:
+def test_a_damaged_checkpoint_resets_instead_of_resuming_on_a_broken_cursor(tmp_path: Path) -> None:
     """A checkpoint holds only base64 cursors and booleans, so a codepage reading
     can only ever add non-ASCII, never recover any. Resuming on a mojibaked cursor
     sends GitHub one it answers with INVALID_CURSOR_ARGUMENTS, and the empty page
