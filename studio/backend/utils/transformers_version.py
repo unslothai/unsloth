@@ -103,10 +103,13 @@ def hf_endpoint_unreachable(
     # can also override a requests-compatible NO_PROXY decision.
     opener = None
     try:
-        from utils.utils import hf_proxy_for_endpoint
+        from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
 
         proxy = hf_proxy_for_endpoint(endpoint)
         scheme = urllib.parse.urlparse(endpoint).scheme or "https"
+        # urllib cannot speak socks5, so its instant failure is not proof of no egress.
+        if proxy and not hf_proxy_usable_by_urllib(proxy):
+            return False
         if proxy:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
         elif any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
@@ -138,14 +141,20 @@ def hf_endpoint_unreachable(
             elif isinstance(exc.reason, TimeoutError):
                 # Resolved below, off-thread, so the extra probe cannot outrun the join.
                 result["timed_out"] = True
+            elif isinstance(exc.reason, OSError):
+                result["online"] = False  # gaierror / network unreachable: a real answer
             else:
-                result["online"] = False
+                # A string reason ("no host given") is client-side, not an egress answer.
+                result["online"] = True
         except ssl.SSLError:
             result["online"] = True
         except TimeoutError:
             result["timed_out"] = True
-        except Exception:
+        except OSError:
             result["online"] = False
+        except Exception:
+            # Bad endpoint/proxy, or a bug here. Not a network answer, so fail open.
+            result["online"] = True
 
     t = threading.Thread(target = _probe, daemon = True)
     t.start()

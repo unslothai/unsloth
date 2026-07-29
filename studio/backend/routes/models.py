@@ -1857,7 +1857,7 @@ async def get_model_config(
     hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-    try:
+    def _resolve(model_name: str) -> ModelDetails:
         # Each probe below can reach the hub, so the guard wraps the whole handler:
         # offline they must all resolve from the HF cache instead of retrying. Local
         # paths stay on disk, so they skip the probe entirely.
@@ -1930,6 +1930,11 @@ async def get_model_config(
                 max_position_embeddings = max_position_embeddings,
                 model_size_bytes = _get_model_size_bytes(model_name, hf_token),
             )
+
+    try:
+        # Off the loop: the guard blocks on DNS + HEAD + TCP, which stalled every
+        # other request for the whole handler.
+        return await asyncio.to_thread(_resolve, model_name)
 
     except Exception as e:
         raise log_and_http_error(
@@ -2595,8 +2600,12 @@ async def check_vision_model(
         # A local path resolves from disk, so it skips the probe.
         from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-        with _hf_offline_if_unreachable_for(model_name):
-            is_vision = is_vision_model(model_name, hf_token = hf_token)
+        # Off the loop: the guard's probes are blocking and stall unrelated requests.
+        def _check():
+            with _hf_offline_if_unreachable_for(model_name):
+                return is_vision_model(model_name, hf_token = hf_token)
+
+        is_vision = await asyncio.to_thread(_check)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
@@ -2629,7 +2638,15 @@ async def check_embedding_model(
     hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         logger.info(f"Checking if embedding model: {model_name}")
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
+        # Same guard as /check-vision: is_embedding_model hits the hub with a 15s
+        # timeout, then answers False. Off the loop for the same reason.
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+        def _check():
+            with _hf_offline_if_unreachable_for(model_name):
+                return is_embedding_model(model_name, hf_token = hf_token)
+
+        is_embedding = await asyncio.to_thread(_check)
 
         logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
         return EmbeddingCheckResponse(

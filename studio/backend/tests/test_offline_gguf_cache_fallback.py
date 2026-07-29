@@ -1586,7 +1586,16 @@ class TestIpv6Endpoint:
         from utils.utils import dns_host_dead
         assert dns_host_dead("::1", timeout = 2.0) is False
 
-    def test_unresolvable_host_still_dead(self):
+    def test_unresolvable_host_still_dead(self, monkeypatch):
+        # Mock the resolver rather than trusting the runner's: an ISP or captive
+        # portal that hijacks NXDOMAIN resolves .invalid and would fail this test on
+        # a perfectly good build. Also saves a real 2s lookup per run.
+        import socket as _socket
+
+        def _nxdomain(*a, **k):
+            raise _socket.gaierror(-2, "Name or service not known")
+
+        monkeypatch.setattr(_socket, "getaddrinfo", _nxdomain)
         from utils.utils import dns_host_dead
         assert dns_host_dead("no-such-host.invalid", timeout = 2.0) is True
 
@@ -2087,7 +2096,13 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
             original_set(value)
 
         monkeypatch.setattr(_socket, "setdefaulttimeout", tracking_set)
-        monkeypatch.setattr(_socket, "gethostbyname", lambda h: "127.0.0.1")
+        # The probe resolves with getaddrinfo, not the IPv4-only gethostbyname, so
+        # patching the latter left this test doing a real lookup and never exercising
+        # the "DNS up" branch it is named for.
+        monkeypatch.setattr(
+            _socket, "getaddrinfo",
+            lambda *a, **k: [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+        )
 
         try:
             _probe_dns_dead("example.invalid", timeout = 0.5)
@@ -2104,12 +2119,14 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
         import socket as _socket
         from core.inference.llama_cpp import _probe_dns_dead
 
-        # Simulate a wedged resolver: thread blocks forever.
-        def wedged(host):
+        # Simulate a wedged resolver: thread blocks forever. Patch getaddrinfo, which
+        # is what the probe calls; patching gethostbyname made this pass vacuously off
+        # the real NXDOMAIN for .invalid, leaving the deadline itself untested.
+        def wedged(*a, **k):
             import threading
             threading.Event().wait()
 
-        monkeypatch.setattr(_socket, "gethostbyname", wedged)
+        monkeypatch.setattr(_socket, "getaddrinfo", wedged)
         assert _probe_dns_dead("example.invalid", timeout = 0.1) is True
 
 
@@ -2196,3 +2213,193 @@ class TestWaitForHealthRetriesOnReadError:
         backend._stdout_thread = None
         backend._stdout_lines = ["fatal: out of memory"]
         assert backend._wait_for_health(timeout = 5.0, interval = 0.01) is False
+
+
+class TestProxyDetectionWithoutRequests:
+    """huggingface_hub 1.x moved to httpx and dropped requests. Proxy selection must
+    not silently answer "no proxy" there: hf_dns_dead stands down for proxies, so
+    going blind forces a working proxy-only machine offline."""
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_proxy(self, clean_proxy_env):
+        pass
+
+    def _without_requests(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _fail(name, *a, **k):
+            if name == "requests.utils" or name.split(".")[0] == "requests":
+                raise ImportError("No module named 'requests'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _fail)
+
+    def test_env_proxy_still_found_without_requests(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        self._without_requests(monkeypatch)
+        from utils.utils import hf_proxy_for_endpoint
+        assert hf_proxy_for_endpoint("https://huggingface.co") == "http://proxy.internal:3128"
+
+    def test_all_proxy_still_found_without_requests(self, monkeypatch):
+        monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
+        self._without_requests(monkeypatch)
+        from utils.utils import hf_proxy_for_endpoint
+        assert hf_proxy_for_endpoint("https://huggingface.co") == "http://proxy.internal:3128"
+
+    def test_no_proxy_still_bypasses_without_requests(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("NO_PROXY", "huggingface.co")
+        self._without_requests(monkeypatch)
+        from utils.utils import hf_proxy_for_endpoint
+        assert hf_proxy_for_endpoint("https://huggingface.co") is None
+
+    def test_dns_shortcut_stands_down_without_requests(self, monkeypatch):
+        monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("HF_ENDPOINT", "https://does-not-resolve.invalid")
+        self._without_requests(monkeypatch)
+        from utils.utils import hf_dns_dead
+        assert hf_dns_dead(timeout = 1.0) is False
+
+
+class TestSocksProxyIsNotEgressEvidence:
+    """urllib cannot route through socks5://, so its instant failure is not proof the
+    hub is unreachable -- the Hub client reaches it through that proxy fine."""
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_proxy(self, clean_proxy_env):
+        pass
+
+    def test_socks_scheme_is_not_usable_by_urllib(self):
+        from utils.utils import hf_proxy_usable_by_urllib
+        assert hf_proxy_usable_by_urllib("socks5://127.0.0.1:1080") is False
+        assert hf_proxy_usable_by_urllib("socks5h://127.0.0.1:1080") is False
+        assert hf_proxy_usable_by_urllib("http://127.0.0.1:3128") is True
+        assert hf_proxy_usable_by_urllib("https://127.0.0.1:3128") is True
+        assert hf_proxy_usable_by_urllib(None) is True
+
+    def test_socks_proxy_reports_reachable(self, monkeypatch):
+        import urllib.request
+
+        monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1080")
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+
+        def _boom(*a, **k):
+            raise AssertionError("must not attempt urlopen through a socks proxy")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _boom)
+        from utils.transformers_version import hf_endpoint_unreachable
+        assert hf_endpoint_unreachable(1) is False
+
+
+class TestProbeFailsOpenOnNonNetworkErrors:
+    """A malformed endpoint or a bug in the probe is not an answer about the network.
+    Classifying it as offline silently quarantines every load."""
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_proxy(self, clean_proxy_env):
+        pass
+
+    @pytest.mark.parametrize("exc", [ValueError("bad url"), TypeError("bad port"), MemoryError()])
+    def test_non_socket_exception_is_inconclusive(self, monkeypatch, exc):
+        import urllib.request
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(exc),
+        )
+        from utils.transformers_version import hf_endpoint_unreachable
+        assert hf_endpoint_unreachable(1) is False
+
+    def test_client_side_urlerror_is_inconclusive(self, monkeypatch):
+        """urllib reports client-side problems as URLError with a plain string reason
+        ("no host given", "unknown url type"). That is not an answer about egress."""
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("no host given")),
+        )
+        from utils.transformers_version import hf_endpoint_unreachable
+        assert hf_endpoint_unreachable(1) is False
+
+    def test_socket_reason_urlerror_is_still_offline(self, monkeypatch):
+        import socket
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(
+                urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+            ),
+        )
+        from utils.transformers_version import hf_endpoint_unreachable
+        assert hf_endpoint_unreachable(1) is True
+
+    def test_socket_error_is_still_offline(self, monkeypatch):
+        import urllib.request
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("network unreachable")),
+        )
+        from utils.transformers_version import hf_endpoint_unreachable
+        assert hf_endpoint_unreachable(1) is True
+
+    def test_undeterminable_connect_target_fails_open(self, monkeypatch):
+        from utils.utils import hf_tcp_reachable
+        monkeypatch.setenv("HF_ENDPOINT", "https://")
+        assert hf_tcp_reachable(1.0, "https://") is True
+
+
+class TestExplicitBaseEnvIsAlsoScrubbed:
+    """child_env(base=...) is what the vision sidecar builds, from a raw os.environ
+    copy, so it has to lose the scoped offline flags too."""
+
+    def test_explicit_base_loses_scoped_offline(self, monkeypatch, tmp_path):
+        from utils.utils import force_hf_offline
+        from utils.hf_cache_settings import get_hf_cache_paths
+        from utils.native_path_leases import child_env_without_native_path_secret
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        paths = get_hf_cache_paths()
+        with force_hf_offline():
+            env = paths.child_env(child_env_without_native_path_secret())
+            assert env.get("HF_HUB_OFFLINE") is None
+            assert env.get("TRANSFORMERS_OFFLINE") is None
+            assert paths.child_env(dict(os.environ)).get("HF_HUB_OFFLINE") is None
+
+    def test_user_set_offline_still_reaches_the_child(self, monkeypatch):
+        from utils.utils import force_hf_offline
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        paths = get_hf_cache_paths()
+        with force_hf_offline():
+            assert paths.child_env(dict(os.environ)).get("HF_HUB_OFFLINE") == "1"
+
+
+class TestHttpsProxyDefaultPort:
+    """An https:// proxy with no explicit port listens on 443, not 80."""
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_proxy(self, clean_proxy_env):
+        pass
+
+    def test_https_proxy_defaults_to_443(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.internal")
+        from utils.utils import hf_connect_target
+        assert list(hf_connect_target("https://huggingface.co")) == ["proxy.internal", 443]
+
+    def test_http_proxy_defaults_to_80(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal")
+        from utils.utils import hf_connect_target
+        assert list(hf_connect_target("https://huggingface.co")) == ["proxy.internal", 80]

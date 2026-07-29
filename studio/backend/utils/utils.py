@@ -52,14 +52,65 @@ def hf_endpoint_host() -> str:
         return "huggingface.co"
 
 
+def _stdlib_proxy_for_url(url: str) -> Optional[str]:
+    """requests' proxy selection rebuilt on the stdlib, for installs without requests.
+
+    huggingface_hub 1.x moved to httpx and dropped requests, so importing requests.utils
+    raises there and we would report "no proxy" on a machine that has one. That disables
+    the stand-down in hf_dns_dead and forces a working proxy-only machine offline.
+    getproxies covers the same sources, incl. macOS sysconf and the Windows registry.
+    """
+    from urllib.parse import urlparse
+    from urllib.request import getproxies, proxy_bypass
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        return None
+    try:
+        if proxy_bypass(host):
+            return None
+    except Exception:
+        pass  # a bypass lookup that fails is not a bypass
+    proxies = {k.lower(): v for k, v in getproxies().items()}
+    scheme = (parsed.scheme or "https").lower()
+    # select_proxy order: scheme://host, then scheme, then the all catch-all.
+    for key in (f"{scheme}://{host}", scheme, "all"):
+        value = proxies.get(key)
+        if value:
+            return value
+    return None
+
+
 def hf_proxy_for_endpoint(endpoint: Optional[str] = None) -> Optional[str]:
     """Return the Hub client's proxy choice, including ALL_PROXY and NO_PROXY rules."""
+    url = endpoint or hf_endpoint_url()
     try:
         from requests.utils import get_environ_proxies, select_proxy
-        url = endpoint or hf_endpoint_url()
         return select_proxy(url, get_environ_proxies(url))
+    except ImportError:
+        # No requests (huggingface_hub 1.x); fall back rather than go blind.
+        pass
     except Exception:
         return None
+    try:
+        return _stdlib_proxy_for_url(url)
+    except Exception:
+        return None
+
+
+def hf_proxy_usable_by_urllib(proxy: Optional[str]) -> bool:
+    """True when urllib can route through this proxy.
+
+    urllib speaks only http/https. A socks5:// proxy (VPN or bastion egress) resolves
+    correctly above but urlopen then raises "unknown url type", which reads as no egress
+    even though the Hub client reaches the hub through it.
+    """
+    if not proxy:
+        return True
+    from urllib.parse import urlparse
+    scheme = urlparse(proxy if "://" in proxy else "http://" + proxy).scheme.lower()
+    return scheme in ("http", "https")
 
 
 def hf_proxy_configured() -> bool:
@@ -106,7 +157,8 @@ def hf_connect_target(endpoint: Optional[str] = None):
         proxy = hf_proxy_for_endpoint(url)
         if proxy:
             p = urlparse(proxy if "://" in proxy else "http://" + proxy)
-            return p.hostname, p.port or 80
+            # An https:// proxy with no explicit port listens on 443, not 80.
+            return p.hostname, p.port or (443 if p.scheme == "https" else 80)
     except Exception:
         pass
     return parsed.hostname, parsed.port or default_port
@@ -123,14 +175,16 @@ def hf_tcp_reachable(timeout: float = 3.0, endpoint: Optional[str] = None) -> bo
 
     host, port = hf_connect_target(endpoint)
     if not host:
-        return False
+        return True  # no target to test: a config problem, not a dead network
     try:
         with _socket.create_connection((host, port), timeout = timeout):
             return True
     except ConnectionRefusedError:
         return True
-    except Exception:
+    except OSError:
         return False
+    except Exception:
+        return True  # not a socket answer (bad port, None host): inconclusive, fail open
 
 
 def hf_dns_dead(timeout: float = 2.0) -> bool:
@@ -273,8 +327,19 @@ def _restore_saved_offline_env(environment) -> None:
 
 def hf_environment_for_spawn() -> dict[str, str]:
     """Copy the environment without scoped offline values."""
+    return hf_environment_scrubbed(os.environ)
+
+
+def hf_environment_scrubbed(base) -> dict[str, str]:
+    """Copy an environment mapping with our scoped offline values replaced by the
+    user's own intent.
+
+    A caller that captured os.environ itself would otherwise hand a child the
+    HF_HUB_OFFLINE=1 we set for one operation; the child reads that as user intent and
+    stays cache-only for its whole life.
+    """
     with _force_offline_lock:
-        environment = dict(os.environ)
+        environment = dict(base)
         if _force_offline_depth > 0:
             _restore_saved_offline_env(environment)
         return environment

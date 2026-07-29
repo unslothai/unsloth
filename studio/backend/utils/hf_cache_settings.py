@@ -59,11 +59,10 @@ class HuggingFaceCachePaths:
         return self.source == "studio"
 
     def child_env(self, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-        if base is None:
-            from utils.utils import hf_environment_for_spawn
-            env = hf_environment_for_spawn()
-        else:
-            env = dict(base)
+        # Scrub either way: an explicit base is usually the caller's own os.environ
+        # copy, so it carries any scoped offline flags an open guard has set.
+        from utils.utils import hf_environment_for_spawn, hf_environment_scrubbed
+        env = hf_environment_for_spawn() if base is None else hf_environment_scrubbed(base)
         # Do not rewrite HF_HOME. It also owns HF's token path, and credentials
         # must not be moved onto a removable cache volume.
         env["HF_HUB_CACHE"] = str(self.hub_cache)
