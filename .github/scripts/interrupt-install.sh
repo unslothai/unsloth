@@ -4,8 +4,8 @@
 #
 # Run install.sh and SIGTERM it partway through, reproducing a user quitting the desktop
 # app mid-install: main.rs cleanup_child_processes() -> install::stop_install() kills the
-# installer PROCESS GROUP (install.rs:798-807). Group, not leader: `uv`/`python` children
-# would otherwise finish the dep pass and the leg would prove nothing.
+# installer PROCESS GROUP (install.rs:798-807). Group, not leader: the `uv`/`python`
+# children would otherwise finish the dep pass and the leg would prove nothing.
 #
 # Usage: bash .github/scripts/interrupt-install.sh "<marker>" "<logfile>" [-- install args]
 #   <marker>  log regex to wait for before killing, e.g. "studio deps"; "" kills at deadline.
@@ -24,7 +24,7 @@ mkdir -p "$(dirname "$LOG")"
 
 # The desktop writes this before spawning the installer (install.rs); we kill the installer
 # directly, so without it #7490's marker is absent for an unrelated reason. Both roots: Rust
-# hardcodes ~/.unsloth/studio, CI overrides UNSLOTH_STUDIO_HOME. Never cleared by design.
+# hardcodes ~/.unsloth/studio, CI overrides UNSLOTH_STUDIO_HOME. Never cleared, by design.
 for _marker_dir in "${UNSLOTH_STUDIO_HOME:-}" "$HOME/.unsloth/studio"; do
   [ -n "$_marker_dir" ] || continue
   mkdir -p "$_marker_dir" 2>/dev/null || continue
@@ -39,20 +39,20 @@ PID=$!
 set +m
 echo "[interrupt] installer pid/pgid=$PID marker='${MARKER}' deadline=${KILL_AT_SECONDS}s"
 
-# A leg can be aimed at either kind of phase the installer prints, and only one of them is
-# a line. install.sh prints "[TAURI:STEP] <name>" lines, while the dependency pass rewrites
-# ONE physical line with \r (install_python_stack.py:2499), so its ten sub-steps are
-# CR-separated SEGMENTS. Splitting on \r is what makes a sub-step's END observable at all:
-# without it the "studio deps" leg of staging run 30419729244 killed at "7/10 data designer
-# deps" with backend_ok=true, having installed the structlog it exists to remove.
+# A leg can be aimed at either kind of phase, and only one of them is a line. install.sh
+# prints "[TAURI:STEP] <name>" lines, while the dependency pass rewrites ONE physical line
+# with \r (install_python_stack.py:2499), so its ten sub-steps are CR-separated SEGMENTS.
+# Splitting on \r is what makes a sub-step's END observable: without it the "studio deps"
+# leg of staging run 30419729244 killed at "7/10 data designer deps" with backend_ok=true,
+# having installed the structlog it exists to remove.
 SUB_RE='\[[=-]+\][[:space:]]*[0-9]+/[0-9]+[[:space:]]'
 phase_lines() { tr '\r' '\n' < "$LOG" 2>/dev/null || true; }
 
 # True when the phase the marker named is no longer the running one. A sub-step marker is
 # judged against the running sub-step, a step marker against the running step -- a step is
-# not "over" because the sub-steps beneath it advanced. A marker naming neither is not
-# judged. Results go through variables, never a `| grep -q`, which can report SIGPIPE
-# through pipefail on a long log.
+# not "over" because the sub-steps beneath it advanced; a marker naming neither is not
+# judged. Results go through variables, never `| grep -q`, which can report SIGPIPE through
+# pipefail on a long log.
 marked_phase_over() {
   [ -n "$MARKER" ] || return 1
   local lines steps subs last
@@ -74,20 +74,20 @@ marked_phase_over() {
 
 killed=false
 reason=""
-# Fifth-of-a-second slices: every phase label prints BEFORE its work starts, so the poll
-# delay is the whole distance between the label and the signal.
+# Fifth-of-a-second slices: every phase label prints BEFORE its work, so the poll delay is
+# the whole distance between the label and the signal.
 for i in $(seq 1 $(( KILL_AT_SECONDS * 5 ))); do
   if ! kill -0 "$PID" 2>/dev/null; then
     reason="exited-before-marker"
     break
   fi
   if [ -n "$MARKER" ] && grep -qE "$MARKER" "$LOG" 2>/dev/null; then
-    # Signal at detection, never after a delay. Every label prints BEFORE its work starts,
-    # so the kill is inside the phase the moment the line appears, and any wait at all is a
-    # bet on how long that phase runs. The bet loses: a flat 3s wait put 5 of the 12 legs
-    # of staging run 30419729244 into a LATER phase, and in 30426111484 it carried the
-    # macOS torch leg from "Installing PyTorch" into "Installing Unsloth" -- a step the
-    # workflow called minutes long finished in under three seconds.
+    # Signal at detection, never after a delay: every label prints BEFORE its work, so the
+    # kill is inside the phase the moment the line appears, and any wait is a bet on how
+    # long that phase runs. The bet lost twice -- a flat 3s wait put 5 of the 12 legs of
+    # staging run 30419729244 into a LATER phase, and in 30426111484 it carried the macOS
+    # torch leg from "Installing PyTorch" into "Installing Unsloth", a step the workflow
+    # called minutes long that finished in under three seconds.
     #
     # Between the grep and the signal the installer can still exit on its own, which would
     # record marker-hit over an install that interrupted nothing.
@@ -124,8 +124,8 @@ fi
 wait "$PID" 2>/dev/null
 rc=$?
 
-# Only after the reap: an unreaped leader is still a member of its own group, so this
-# poll would report it alive forever. No installer may still run when the probe starts.
+# Only after the reap: an unreaped leader is still a member of its own group, so this poll
+# would report it alive forever. No installer may still run when the probe starts.
 if [ "$killed" = "true" ]; then
   for _ in $(seq 1 "$KILL_GRACE"); do
     kill -0 -- -"$PID" 2>/dev/null || break
@@ -145,8 +145,8 @@ if [ -n "$MARKER" ] && ! grep -qE "$MARKER" "$LOG" 2>/dev/null; then
   echo "::warning::marker '$MARKER' never appeared -- this leg killed at the deadline, not at the intended step"
 fi
 # Where the signal actually landed. A phase that ended before the poll saw the marker sends
-# the kill into a LATER phase, and the leg then duplicates whichever leg owns that phase
-# while its own label claims otherwise.
+# the kill into a LATER phase, so the leg duplicates whichever leg owns that phase while its
+# own label claims otherwise.
 _last_phase="$(phase_lines | grep -aE "^\[TAURI:STEP\]|$SUB_RE" | tail -1)" || true
 echo "[interrupt] phase at kill: $_last_phase"
 mismatch=false
