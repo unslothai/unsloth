@@ -246,28 +246,59 @@ LOADED_MODEL = """
 """
 
 
-def test_new_chat_recounts_against_a_resident_model():
-    """The user's previous chat left usage on the bar; New Chat blanks it. With the
-    model already resident nothing recounts, so the bar stays hidden even though the
-    empty request already carries a template."""
+@pytest.mark.parametrize(
+    ("before_status", "expected_early_counts"),
+    [
+        # Arriving on New Chat with the GGUF already resident: the store knows the model
+        # from the outset, and the usage the chat the user is leaving left behind is
+        # blanked. The second render repeats identical store values (the deferred
+        # inventory refresh re-writing the same checkpoint) and must not re-price.
+        pytest.param(
+            LOADED_MODEL
+            + """
+            seed({
+              activeThreadId: "thread-a",
+              contextUsage: { promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 },
+            });
+            """,
+            1,
+            id = "model_already_resident",
+        ),
+        # A page RELOAD of /chat?new=<uuid>: neither the checkpoint nor the window is
+        # persisted, so the first render sees checkpoint "" / ggufContextLength null and
+        # nothing can be priced until /api/inference/status answers.
+        pytest.param("", 0, id = "reload_before_status_hydrates"),
+    ],
+)
+def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
+    before_status, expected_early_counts
+):
+    """#7450: the empty New Chat request already carries a template, but this view reaches
+    no other recount trigger, so the bar stays hidden until the first completion. It has to
+    land on a count in either order, and open exactly one thread doing so."""
     out = _run(
         textwrap.dedent(
             f"""
             // @ts-nocheck
             import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
-            {LOADED_MODEL}
-            // Usage left behind by the chat the user is leaving.
-            seed({{
-              activeThreadId: "thread-a",
-              contextUsage: {{ promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 }},
-            }});
+            {before_status}
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const early = {{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }};
 
+            // /api/inference/status answers; a no-op when the model was already known.
+            {LOADED_MODEL}
             renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
             await new Promise((resolve) => setTimeout(resolve, 30));
 
             const after = snapshot();
             console.log(JSON.stringify({{
+              early,
               switched: world.switchedToNewThread,
+              promptQueueStops: world.promptQueueStops,
               activeThreadId: after.activeThreadId,
               contextUsage: after.contextUsage,
               counts: world.countedMessages.length,
@@ -275,14 +306,19 @@ def test_new_chat_recounts_against_a_resident_model():
             """
         )
     )
-    assert out["switched"] == 1, "the effect must still switch to a fresh local thread"
+    assert out["early"].get("counts") == expected_early_counts
+    if expected_early_counts == 0:
+        assert out["early"].get("contextUsage") is None
     assert out["activeThreadId"] is None
-    assert out["counts"] == 1, "the empty New Chat view must ask the backend for a count"
-    assert (
-        out["contextUsage"] is not None
-    ), "the bar stays hidden on a New Chat opened against an already-loaded GGUF"
+    assert out["counts"] == 1, "the empty New Chat view must be priced exactly once"
+    assert out["contextUsage"] is not None, (
+        "without the recount the bar stays hidden on a New Chat opened against an "
+        "already-resident GGUF, until the first completion"
+    )
     assert out["contextUsage"].get("totalTokens") == 12
     assert out["contextUsage"].get("completionTokens") == 0
+    assert out["switched"] == 1, "hydration must not open a second thread"
+    assert out["promptQueueStops"] == 1, "hydration must not re-stop the prompt queue"
 
 
 NO_LOCAL_MODEL = """
@@ -328,107 +364,36 @@ def test_the_bar_stays_hidden_when_there_is_nothing_to_price(
     assert out["switched"] == expected_switched, case
 
 
-def test_reloaded_new_chat_recounts_once_status_hydrates():
-    """The reload race: the New Chat effect runs against an empty store, then the
-    status response fills in the resident model. Something must price the empty
-    prompt at that point, and it must not open a second thread doing so."""
+def test_the_hydration_retry_stays_off_a_started_chat():
+    """The user sent a message before the status response landed, so the thread is
+    persisted and a real completion owns the bar. The retry effect re-runs whenever the
+    model fields change, so it needs its own guard against overwriting that usage."""
     out = _run(
         textwrap.dedent(
             f"""
             // @ts-nocheck
             import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
-
-            // Reload of /chat?new=<uuid>: no checkpoint, no window, no thread yet.
             renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
             await new Promise((resolve) => setTimeout(resolve, 30));
-            const beforeHydration = {{
-              counts: world.countedMessages.length,
-              contextUsage: snapshot().contextUsage,
-            }};
 
-            // /api/inference/status answers: a GGUF is already resident.
+            // First turn completed against the resident model, on a persisted thread.
             {LOADED_MODEL}
-            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
-            await new Promise((resolve) => setTimeout(resolve, 30));
-
-            const after = snapshot();
-            console.log(JSON.stringify({{
-              beforeHydration,
-              switched: world.switchedToNewThread,
-              promptQueueStops: world.promptQueueStops,
-              activeThreadId: after.activeThreadId,
-              contextUsage: after.contextUsage,
-              counts: world.countedMessages.length,
-            }}));
-            """
-        )
-    )
-    assert (
-        out["beforeHydration"].get("counts") == 0
-    ), "nothing can be counted before the status response names the model"
-    assert out["beforeHydration"].get("contextUsage") is None
-    assert out["activeThreadId"] is None
-    assert out["counts"] == 1, (
-        "a reloaded New Chat view never prices its empty prompt once the "
-        "resident GGUF is known, so the bar stays hidden until a completion"
-    )
-    assert out["contextUsage"] is not None
-    assert out["contextUsage"].get("totalTokens") == 12
-    assert out["switched"] == 1, "hydration must not open a second thread"
-    assert out["promptQueueStops"] == 1, "hydration must not re-stop the prompt queue"
-
-
-@pytest.mark.parametrize(
-    ("first_render_seed", "second_render_seed", "expected_counts", "expected_total"),
-    [
-        # A later render with the same store values (e.g. the deferred inventory refresh
-        # re-writing an identical checkpoint) must not re-price an already-priced bar.
-        pytest.param(LOADED_MODEL, "", 1, 12, id = "identical_store_values"),
-        # The user sent a message before the status response landed, so the thread is
-        # persisted and a real completion owns the bar: leave it alone.
-        pytest.param(
-            "",
-            LOADED_MODEL
-            + """
-            seed({
+            seed({{
               activeThreadId: "thread-a",
-              contextUsage: { promptTokens: 640, completionTokens: 40, totalTokens: 680, cachedTokens: 0 },
-            });
-            """,
-            0,
-            680,
-            id = "completion_owns_the_bar",
-        ),
-    ],
-)
-def test_the_hydration_retry_prices_a_blank_bar_only_once(
-    first_render_seed, second_render_seed, expected_counts, expected_total
-):
-    """The second effect re-runs whenever the model fields change, so it needs its own
-    guards: one count per New Chat view, and never over a completion's usage."""
-    out = _run(
-        textwrap.dedent(
-            f"""
-            // @ts-nocheck
-            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
-            {first_render_seed}
-            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
-            await new Promise((resolve) => setTimeout(resolve, 30));
-            {second_render_seed}
+              contextUsage: {{ promptTokens: 640, completionTokens: 40, totalTokens: 680, cachedTokens: 0 }},
+            }});
             renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
             await new Promise((resolve) => setTimeout(resolve, 30));
 
             console.log(JSON.stringify({{
               counts: world.countedMessages.length,
-              switched: world.switchedToNewThread,
               contextUsage: snapshot().contextUsage,
             }}));
             """
         )
     )
-    assert out["counts"] == expected_counts
-    assert out["switched"] == 1, "a re-render must not open a second thread"
-    assert out["contextUsage"].get("totalTokens") == expected_total
+    assert out["counts"] == 0, "a real completion's usage must not be recounted away"
+    assert out["contextUsage"].get("totalTokens") == 680
 
 
 def test_a_loaded_model_reprices_the_stored_branch_of_an_open_thread():
