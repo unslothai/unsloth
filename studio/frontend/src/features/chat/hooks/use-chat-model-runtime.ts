@@ -1061,7 +1061,7 @@ export function useChatModelRuntime() {
                 const sizeRe = /(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])/;
                 const sizeMatch =
                   (midSlash.split("/").pop() || "").match(sizeRe) ?? midSlash.match(sizeRe);
-                if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
+                if (sizeMatch && parseFloat(sizeMatch[1]) <= 9) {
                   reasoningDefault = false;
                 }
               }

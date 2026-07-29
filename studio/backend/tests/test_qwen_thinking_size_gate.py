@@ -29,7 +29,7 @@ def _thinking_default_off(model_identifier: str) -> bool:
     size_re = _gate_pattern()
     mid_slash = mid.replace("\\", "/")
     size_match = re.search(size_re, mid_slash.split("/")[-1]) or re.search(size_re, mid_slash)
-    return bool(size_match) and float(size_match.group(1)) < 9
+    return bool(size_match) and float(size_match.group(1)) <= 9
 
 
 @pytest.mark.parametrize(
@@ -51,6 +51,8 @@ def test_moe_total_params_win_over_active_params(model_id):
     [
         "unsloth/Qwen3.5-4B-GGUF",
         "unsloth/Qwen3.5-0.8B-GGUF",
+        # 9B is a small-tier model: unsloth ships it with reasoning off by default.
+        "unsloth/Qwen3.5-9B-GGUF",
         # Directory identifiers: auto-switch passes a snapshot dir, scan folders a quant subdir.
         "/models/Qwen3.5-4B-GGUF/UD-Q4_K_XL",
         "/c/models--unsloth--Qwen3.5-4B-GGUF/snapshots/bfc15c3",
@@ -70,6 +72,9 @@ def test_size_like_directory_does_not_shadow_the_real_size(model_id):
     assert _thinking_default_off(model_id) is False
 
 
-@pytest.mark.parametrize("model_id", ["unsloth/Qwen3-4B-GGUF", "unsloth/gemma-4-12b-it-GGUF", ""])
+@pytest.mark.parametrize(
+    "model_id",
+    ["unsloth/Qwen3-4B-GGUF", "unsloth/gemma-4-12b-it-GGUF", "unsloth/Qwen3.5-9.5B-GGUF", ""],
+)
 def test_other_models_are_never_gated(model_id):
     assert _thinking_default_off(model_id) is False

@@ -8496,7 +8496,8 @@ class LlamaCppBackend:
                         size_match = re.search(size_re, mid_slash.split("/")[-1]) or re.search(
                             size_re, mid_slash
                         )
-                        if size_match and float(size_match.group(1)) < 9:
+                        # 9B included: unsloth ships 0.8B/2B/4B/9B with reasoning off by default.
+                        if size_match and float(size_match.group(1)) <= 9:
                             thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
