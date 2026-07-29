@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs INSIDE a Windows container, after virgin-windows-probe.ps1 has proved there is no
-# toolchain: install.ps1 the way a real user on a bare Windows box runs it, then the same
+# Runs INSIDE a Windows container once virgin-windows-probe.ps1 has proved there is no
+# toolchain: install.ps1 as a user on a bare Windows box runs it, then the same
 # assertions the hosted Windows leg makes.
 
 [CmdletBinding()]
@@ -19,17 +19,15 @@ function Section($t) { Write-Host ""; Write-Host "=== $t ===" }
 
 # ── Environment the installer needs to be non-interactive ─────────────────────
 Section 'install environment'
-# install.ps1:2885-2888 prompts `Start Unsloth Studio now? [Y/n]` when
-# [Environment]::UserInteractive is true and stdin is not redirected -- both hold under
-# `docker exec` -- so without this the installer BLOCKS FOREVER on Read-Host and the job
-# dies on timeout with no diagnosis.
+# install.ps1:2885-2888 prompts `Start Unsloth Studio now? [Y/n]` when UserInteractive is
+# true and stdin is not redirected -- both hold under `docker exec` -- so without this the
+# installer blocks forever on Read-Host and the job dies on timeout with no diagnosis.
 $env:UNSLOTH_SKIP_AUTOSTART = '1'
-# install.ps1:254/258 joins $env:USERPROFILE with no null guard. An explicit root also
-# keeps the container's state under one directory.
+# install.ps1:254/258 joins $env:USERPROFILE with no null guard; an explicit root also
+# keeps the container's state in one directory.
 $env:UNSLOTH_STUDIO_HOME = 'C:\studio-home'
 $env:UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK = '1'
-# Without this uv's output is discarded on success and the nobuild check below can only
-# ever report "built: none".
+# Without this uv's output is discarded on success and nobuild can only report "none".
 $env:UNSLOTH_VERBOSE = '1'
 if ($Overlay) {
     $env:UNSLOTH_CI_SOURCE_OVERLAY = $Overlay
@@ -42,9 +40,9 @@ foreach ($v in 'UNSLOTH_STUDIO_HOME', 'UNSLOTH_SKIP_AUTOSTART', 'UNSLOTH_VERBOSE
     Write-Host ("  {0,-32} {1}" -f $v, [System.Environment]::GetEnvironmentVariable($v))
 }
 
-# NOTE: deliberately NOT setting [Net.ServicePointManager]::SecurityProtocol here.
-# install.ps1 does not set it either, so setting it in the harness would hide a real
-# installer bug. The probe already reported whether the default negotiates TLS 1.2.
+# Deliberately NOT setting [Net.ServicePointManager]::SecurityProtocol: install.ps1 does
+# not either, so setting it here would hide a real installer bug. The probe already
+# reported whether the default negotiates TLS 1.2.
 
 # ── Run the installer exactly as the desktop launches it ──────────────────────
 Section 'install'
@@ -55,8 +53,8 @@ if (-not (Test-Path -LiteralPath $Installer)) {
 Write-Host "installer: $Installer ($((Get-Content -LiteralPath $Installer).Count) lines)"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-# A child powershell.exe, not dot-sourcing: same shape as install.rs:325-339, and it
-# gives a real process exit code instead of whatever the last statement returned.
+# A child powershell.exe, not dot-sourcing: the shape install.rs:325-339 uses, and it
+# yields a real process exit code rather than the last statement's value.
 & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
     -File $Installer *>&1 | Tee-Object -FilePath $LogPath
 $rc = $LASTEXITCODE
@@ -88,10 +86,10 @@ if ($rc -ne 0) {
 }
 
 Section 'assert: torch imports'
-# On the hosted runner this proves less than it looks: the image ships the VC++
-# 2015-2022 runtime in System32, so Test-VCRedistInstalled (setup.ps1:875)
-# short-circuits before it needs winget. THIS container is the first environment where
-# that is not true, so a failure here is a genuine finding about bare Windows.
+# On the hosted runner this proves less than it looks: the image ships the VC++ runtime
+# in System32, so Test-VCRedistInstalled (setup.ps1:875) short-circuits before it needs
+# winget. This container is the first place that is not true, so a failure here is a
+# genuine finding about bare Windows.
 if (Test-Path -LiteralPath $venvPy) {
     foreach ($dll in 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') {
         $p = Join-Path $env:WINDIR "System32\$dll"
@@ -109,9 +107,8 @@ if (Test-Path -LiteralPath $venvPy) {
 
 Section "assert: the installer took the no-winget path"
 if (Test-Path -LiteralPath $LogPath) {
-    # install.ps1:1098, the no-winget branch. A container has no Microsoft Store and so
-    # no App Installer, which puts the fallback path (python.org + astral.sh) under
-    # test -- the whole reason a container is a good harness.
+    # install.ps1:1098, the no-winget branch. A container has no Store and so no App
+    # Installer, which puts the python.org + astral.sh fallback under test.
     $noWinget = 'will require Python + uv to be already installed'
     if (Select-String -Path $LogPath -Pattern $noWinget -SimpleMatch -Quiet) {
         Write-Host "confirmed: installer reported winget as unavailable and used the fallback path"
@@ -131,7 +128,7 @@ if ($Overlay -and $rc -eq 0) {
 
 Section 'assert: no non-allowlisted source build'
 # Shared with the hosted Windows legs so the sdist allowlist lives in one place; it
-# prints its own diagnosis, so only the verdict is folded in here.
+# prints its own diagnosis, so only the verdict is folded in.
 $nobuild = Join-Path $PSScriptRoot 'assert-nobuild.ps1'
 if (-not (Test-Path -LiteralPath $nobuild)) {
     $failures += "assert-nobuild.ps1 is missing next to this script, so the no-build contract went unchecked"

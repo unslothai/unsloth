@@ -50,9 +50,9 @@ TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja
 note() { echo "[clean-machine] $*"; }
 
 # Move a path aside and record the reverse in restore.sh. PATH scrubbing only HIDES
-# these; uv, the py launcher and framework lookups find them regardless, so absence
-# has to be real. The restore line is guarded: the install may have recreated the
-# path, and an unguarded `mv` would bury the original inside it.
+# these -- uv, the py launcher and framework lookups find them anyway -- so absence has
+# to be real. The restore line is guarded: the install may have recreated the path, and
+# an unguarded `mv` would bury the original inside it.
 mask_aside() {
   local src="$1" dst="${2:-$1.masked}" as=""
   [ -e "$src" ] || return 0
@@ -97,10 +97,9 @@ if [ "$MODE" = "mask" ]; then
   } >> "$ENV_FILE"
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Darwin" ]; then
-    # Best effort, each step independent and recorded in restore.sh so an
-    # `if: always()` step can put the runner back. `xcode-select -p` reads
-    # xcode_select_link, so removing it reproduces a virgin Mac's gate;
-    # `xcode-select --reset` is NOT enough, it can reselect a full Xcode.app.
+    # Best effort, each step independent and recorded in restore.sh so an `if: always()`
+    # step can put the runner back. `xcode-select -p` reads xcode_select_link, so
+    # removing it reproduces a virgin Mac's gate; `--reset` can reselect Xcode.app.
     if [ -e /var/db/xcode_select_link ]; then
       if sudo rm -f /var/db/xcode_select_link 2>/dev/null; then
         note "removed /var/db/xcode_select_link"
@@ -109,8 +108,8 @@ if [ "$MODE" = "mask" ]; then
         note "WARN could not remove /var/db/xcode_select_link"
       fi
     fi
-    # Moving the CLT dir aside turns /usr/bin/{cc,clang,git} into dead shims, so the
-    # run also proves the install needs no compiler at all.
+    # Moving the CLT dir aside turns /usr/bin/{cc,clang,git} into dead shims, proving
+    # the install needs no compiler at all.
     if [ -d /Library/Developer/CommandLineTools ]; then
       if sudo mv /Library/Developer/CommandLineTools /Library/Developer/CommandLineTools.masked 2>/dev/null; then
         note "moved CommandLineTools aside"
@@ -119,10 +118,9 @@ if [ "$MODE" = "mask" ]; then
         note "WARN could not move CommandLineTools"
       fi
     fi
-    # Xcode.app must go too: with the link removed AND CommandLineTools moved,
-    # `xcode-select -p` still succeeds, falling through to the image's Xcode bundle
-    # (observed: /Applications/Xcode_16.4.app/Contents/Developer), which re-arms
-    # /usr/bin/{git,cc}. A rename is instant whatever the bundle size.
+    # Xcode.app too: with the link removed AND CommandLineTools moved, `xcode-select -p`
+    # still succeeds via the image's Xcode bundle (observed:
+    # /Applications/Xcode_16.4.app/Contents/Developer), which re-arms /usr/bin/{git,cc}.
     for app in /Applications/Xcode*.app; do
       [ -d "$app" ] || continue
       if sudo mv "$app" "${app}.masked" 2>/dev/null; then
@@ -132,10 +130,9 @@ if [ "$MODE" = "mask" ]; then
         note "WARN could not move $app"
       fi
     done
-    # /usr/local EXISTS on a factory-fresh Mac: a SIP-exempt firmlink, and empty. What
-    # is absent is its CONTENTS, /usr/local/bin included, so empty it rather than remove
-    # it. Before the Homebrew block below, so /usr/local/Homebrew is stashed once, with
-    # one restore line, in the right order.
+    # /usr/local EXISTS on a factory-fresh Mac (a SIP-exempt firmlink) but is empty, so
+    # empty it rather than remove it. Before the Homebrew block, so /usr/local/Homebrew
+    # is stashed once, with one restore line, in the right order.
     if [ -d /usr/local ]; then
       STASH="$WORK/usr-local"
       mkdir -p "$STASH"
@@ -155,8 +152,8 @@ if [ "$MODE" = "mask" ]; then
     # reach: uv discovers interpreters by probing well-known locations.
     mask_aside "${AGENT_TOOLSDIRECTORY:-$HOME/hostedtoolcache}"
     mask_aside /Library/Frameworks/Python.framework
-    # Developer dotdirs and caches. A virgin $HOME has none of these, and a populated
-    # uv/pip cache can satisfy a resolution that would fail on a user's machine.
+    # A virgin $HOME has none of these, and a populated uv/pip cache can satisfy a
+    # resolution that would fail on a user's machine.
     for d in .cargo .rustup .nvm .rbenv .pyenv .local .cache \
              Library/Caches/uv Library/Caches/pip Library/Caches/Homebrew; do
       mask_aside "$HOME/$d"
@@ -175,12 +172,12 @@ if [ "$MODE" = "mask" ]; then
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Linux" ]; then
     # A hosted Linux runner keeps git, gcc, cmake and make in /usr/bin, which the PATH
-    # scrub has to keep, so absence must be made real: move the resolved binaries aside
-    # (recorded in restore.sh). Versioned siblings like gcc-11 survive, but a consumer
-    # install invokes the unsuffixed names, which is what `absent` checks.
+    # scrub must keep, so move the resolved binaries aside (recorded in restore.sh).
+    # Versioned siblings like gcc-11 survive; a consumer install invokes the unsuffixed
+    # names, which is what `absent` checks.
     for tool in $TOOLS; do
-      # Repeat per tool: a runner can carry the same name in /usr/bin and
-      # /usr/local/bin, and moving only the first leaves the second on PATH.
+      # Repeated: the same name can sit in /usr/bin and /usr/local/bin, and moving only
+      # the first leaves the second on PATH.
       for _ in 1 2 3 4; do
         real="$(command -v "$tool" 2>/dev/null || true)"
         [ -n "$real" ] && [ -e "$real" ] || break
@@ -201,8 +198,8 @@ if [ "$MODE" = "trace" ]; then
   for tool in $TOOLS; do
     real="$(command -v "$tool" 2>/dev/null || true)"
     [ -n "$real" ] || continue
-    # Logs the call then execs the REAL binary: behaviour unchanged, so the trace
-    # answers "did the installer reach for this?" honestly.
+    # Logs then execs the REAL binary, so behaviour is unchanged and the trace answers
+    # "did the installer reach for this?" honestly.
     cat > "$BIN/$tool" <<WRAP
 #!/bin/sh
 printf '%s\t%s\n' "$tool" "\$*" >> "$TRACE"

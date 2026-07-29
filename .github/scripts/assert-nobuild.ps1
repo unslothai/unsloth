@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The `nobuild` contract from clean-machine-assert.sh, for Windows. A port and not
-# `shell: bash`: the scrub drops every `*\Git\*` PATH entry and the bash version needs
-# sed/grep/tr/sort out of Git's usr/bin, and it also runs inside the servercore
-# container, which has no bash. Both Windows lanes call this one file so the sdist
-# allowlist cannot drift.
+# The `nobuild` contract from clean-machine-assert.sh, for Windows. A port, not
+# `shell: bash`: the scrub drops every `*\Git\*` PATH entry the bash version needs
+# sed/grep/tr/sort from, and it also runs inside the servercore container, which has no
+# bash. Both Windows lanes call this one file so the sdist allowlist cannot drift.
 #
 # Usage: assert-nobuild.ps1 -LogPath logs/install.log   (exit 1 = a source build)
 [CmdletBinding()]
@@ -16,30 +15,29 @@ if (-not (Test-Path -LiteralPath $LogPath)) {
     exit 1
 }
 
-# "Built an sdist" is NOT "needed a compiler": every name here was verified against its
-# own sdist -- setuptools.build_meta backend, no ext_modules, no .c/.cpp/.pyx/.rs file
-# -- so its PEP 517 build is a pure-Python copy step. Identical to
-# clean-machine-assert.sh, which carries the per-name rationale.
+# "Built an sdist" is NOT "needed a compiler": each name was verified against its own
+# sdist (setuptools.build_meta, no ext_modules, no .c/.cpp/.pyx/.rs), so its PEP 517
+# build is a pure-Python copy step. clean-machine-assert.sh carries the per-name detail.
 $allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'triton-kernels')
 if ($env:UNSLOTH_ALLOW_SDIST) {
     $allow += ($env:UNSLOTH_ALLOW_SDIST -split '\s+' | Where-Object { $_ })
 }
-# Lowercased and underscore-folded on both sides: a distribution name and the name uv
-# prints can disagree on the separator (triton_kernels vs triton-kernels).
+# Lowercased and underscore-folded on both sides: the distribution name and the name uv
+# prints can differ on the separator (triton_kernels vs triton-kernels).
 $allow = @($allow | ForEach-Object { $_.ToLowerInvariant() -replace '_', '-' })
 
-# [char]27, not "`e": that escape is PowerShell 6+, and under Windows PowerShell 5.1
-# it degrades to a literal "e" and the strip eats real text instead of ANSI codes.
+# [char]27, not "`e": that escape is PowerShell 6+ and degrades to a literal "e" under
+# 5.1, so the strip would eat real text instead of ANSI codes.
 $esc = [char]27
 $text = (Get-Content -LiteralPath $LogPath -Raw) -replace "$esc\[[0-9;]*[A-Za-z]", ''
 $built = @()
 foreach ($line in ($text -split "`r?`n")) {
-    # A local-path build is one the caller pointed at (the CI source overlay), never
-    # one resolution chose; index dependencies always print `==<version>`.
+    # A local-path build is one the caller pointed at (the overlay), never one
+    # resolution chose; index deps always print `==<version>`.
     if ($line -imatch 'building [a-z0-9._-]+ @ file://') { continue }
-    # pip prints `Building wheel for <pkg>`, uv prints `Building <pkg>==<ver>`
-    # (astral-sh/uv#11165); the `==` or ` @ ` requirement keeps this off the
-    # installer's own lowercase "building frontend..." text.
+    # pip prints `Building wheel for <pkg>`, uv `Building <pkg>==<ver>`
+    # (astral-sh/uv#11165); the `==` / ` @ ` keeps this off the installer's own
+    # "building frontend..." text.
     foreach ($m in [regex]::Matches($line, '(?i)building wheel for ([a-z0-9._-]+)|building ([a-z0-9._-]+)(==| @ )')) {
         $name = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
         $built += ($name.ToLowerInvariant() -replace '_', '-')

@@ -167,8 +167,8 @@ jobs:
             echo "brew            : $(command -v brew || echo none)"
             echo "cmake           : $(command -v cmake || echo none)"
             echo "python3         : $(command -v python3 || echo none)"
-            # Neither is documented for these images and both change what a binary is
-            # allowed to do. One line settles it for anyone reading the artifact.
+            # Neither is documented for these images and both change what a binary may
+            # do; one line settles it for anyone reading the artifact.
             echo "spctl --status  : $(spctl --status 2>&1 || true)"
             echo "csrutil status  : $(csrutil status 2>&1 || true)"
           } | tee runner-baseline.txt
@@ -192,11 +192,10 @@ jobs:
       - name: Verify the trace actually records
         if: matrix.mode == 'trace'
         run: |
-          # `notools` reads an absence, so a shim dir that never reached PATH looks
-          # exactly like an installer that touched nothing and the one leg carrying that
-          # assertion would pass whatever the installer did. Prove the wrapper records
-          # before trusting an empty file. macOS never probes git off the --local path,
-          # so the call has to be explicit.
+          # `notools` reads an absence, so a shim dir that never reached PATH looks exactly
+          # like an installer that touched nothing: prove the wrapper records before
+          # trusting an empty file. macOS never probes git off the --local path, so the
+          # call has to be explicit.
           set -a; . ./clean-machine.env; set +a
           [ -n "$UNSLOTH_TOOL_TRACE" ] || { echo "::error::trace mode set no UNSLOTH_TOOL_TRACE"; exit 1; }
           git --version >/dev/null 2>&1 || true
@@ -214,28 +213,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-          # Empty, and so ignored by install.sh, on the non-overlay legs. Empty for
-          # `installer_source: published` too: the script under test is then
-          # production's, which has no such hook, and overlaying this ref's Python onto
-          # it would report on neither honestly.
+          # Empty (and so ignored) on the non-overlay legs, and on
+          # `installer_source: published` too: the script under test is then production's,
+          # which has no such hook, so overlaying this ref reports on neither honestly.
           UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           set -a; . ./clean-machine.env; set +a
           set -o pipefail
           rc=0
           FLAGS="${{ matrix.flags }}"
-          # A consumer has no CI=true, no GITHUB_*, no RUNNER_*: branching on any of them
+          # A consumer has no CI=true, no GITHUB_*, no RUNNER_*, so branching on any of them
           # is a hidden dependency nobody outside CI exercises. Scoped to the installer's
-          # own process, so $GITHUB_OUTPUT below still resolves. `case` rather than
-          # `sed`, whose BRE has no \| alternation on macOS.
+          # process so $GITHUB_OUTPUT still resolves; `case`, not `sed`, whose BRE has no
+          # \| alternation on macOS.
           CLEAN_ENV=""
           for v in $(env | cut -d= -f1); do
             case "$v" in CI|GITHUB_*|RUNNER_*) CLEAN_ENV="$CLEAN_ENV -u $v" ;; esac
           done
           echo "unset for the installer:$CLEAN_ENV"
-          # A `published` dispatch asks whether unsloth.ai's script works, and only
-          # `pipe` honoured it, so six of eight macOS rows ran the checked-out script
-          # under the published label. Resolved once here for every delivery. Empty on
+          # A `published` dispatch asks whether unsloth.ai's script works, and only `pipe`
+          # honoured it, so six of eight macOS rows ran the checked-out script under the
+          # published label. Resolved once here for every delivery; empty on
           # pull_request/push, so automatic runs stay on this ref.
           SCRIPT=install.sh
           if [ "${{ inputs.installer_source }}" = "published" ]; then
@@ -251,12 +249,11 @@ jobs:
               env $CLEAN_ENV bash "$SCRIPT" $FLAGS 2>&1 | tee logs/install.log || rc=$?
               ;;
             pipe)
-              # The shape users actually run. install.sh is ~150KB of top-level
-              # statements, so an early `exit` leaves the writer with a closed pipe ->
-              # `curl: (56)`; piping a local file reproduces that faithfully without
-              # depending on unsloth.ai being current. The published case re-fetches
-              # rather than piping $SCRIPT: the live transport is half of what this
-              # delivery tests.
+              # The shape users actually run. install.sh is ~150KB of top-level statements,
+              # so an early `exit` leaves the writer with a closed pipe -> `curl: (56)`;
+              # piping a local file reproduces that without depending on unsloth.ai being
+              # current. The published case re-fetches rather than piping $SCRIPT, because
+              # the live transport is half of what this delivery tests.
               if [ "${{ inputs.installer_source }}" = "published" ]; then
                 curl -fsSL https://unsloth.ai/install.sh | env $CLEAN_ENV sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
               else
@@ -271,18 +268,17 @@ jobs:
               ;;
             tauri)
               # Exactly how the desktop app invokes it: no tty, stdin closed. --tauri
-              # rejects a custom UNSLOTH_STUDIO_HOME outright (it still uses the legacy
-              # ~/.unsloth/studio root), so the workspace-scoped value every other leg
-              # relies on must be dropped or the installer exits before doing any work.
-              # The runner is ephemeral, so the real home is as disposable.
+              # rejects a custom UNSLOTH_STUDIO_HOME (it still uses the legacy
+              # ~/.unsloth/studio root), so the workspace-scoped value every other leg uses
+              # must be dropped or the installer exits before doing any work. The runner is
+              # ephemeral, so the real home is just as disposable.
               env -u UNSLOTH_STUDIO_HOME $CLEAN_ENV \
                 bash "$SCRIPT" --tauri $FLAGS < /dev/null 2>&1 | tee logs/install.log || rc=$?
               ;;
           esac
           echo "install_rc=$rc" >> "$GITHUB_OUTPUT"
           echo "installer exit code: $rc"
-          # The pipe legs expose curl:(56); surface it rather than leaving it buried in
-          # a 4000-line log.
+          # The pipe legs expose curl:(56); surface it, not bury it in a 4000-line log.
           if grep -qE "curl: \(5[36]\)|Failure writing output to destination" logs/install.log; then
             echo "::warning::curl reported a broken pipe -- an early exit killed the reader"
           fi
@@ -304,8 +300,8 @@ jobs:
         run: |
           set -a; . ./clean-machine.env; set +a
           checks="nobuild"
-          # `absent` ran only BEFORE the install, so an installer that quietly selected
-          # the CLT or installed a compiler left the leg green. Re-run it after.
+          # `absent` ran only BEFORE the install, so an installer that quietly selected the
+          # CLT or installed a compiler left the leg green. Re-run it after.
           [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent"
           [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools"
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
@@ -315,9 +311,9 @@ jobs:
         if: steps.install.outcome == 'success'
         run: |
           set -a; . ./clean-machine.env; set +a
-          # The tauri leg cannot honour UNSLOTH_STUDIO_HOME (see Install) and went to the
+          # The tauri leg cannot honour UNSLOTH_STUDIO_HOME (see Install) and uses the
           # legacy root, where llama.cpp sits at <root>/llama.cpp and the venv at
-          # <root>/studio: so ~/.unsloth, not ~/.unsloth/studio.
+          # <root>/studio: hence ~/.unsloth, not ~/.unsloth/studio.
           if [ "${{ matrix.delivery }}" = "tauri" ]; then
             HOME_DIR="$HOME/.unsloth"
           else
@@ -325,15 +321,15 @@ jobs:
           fi
           STUDIO_HOME="$HOME_DIR" bash .github/scripts/assert-llama-loads.sh
           # Rosetta 2 is on this runner and not on a fresh Mac, so llama-server launching
-          # above does not prove it would launch for a user. Assert the arch of every
-          # payload (llama.cpp, whisper.cpp, the Node prebuilt, uv) instead.
+          # above does not prove it would for a user. Assert the arch of every payload
+          # (llama.cpp, whisper.cpp, the Node prebuilt, uv) instead.
           MACHO_ROOT="$HOME_DIR" bash .github/scripts/clean-machine-assert.sh macho
 
       - name: Restore the runner
         if: always()
         # `|| true` swallowed everything, a genuinely broken restore included. The file
-        # only exists once the strip step ran and an earlier step can fail before that,
-        # so skip explicitly when it is absent and let a real failure surface.
+        # exists only once the strip ran and an earlier step can fail first, so skip
+        # explicitly when it is absent and let a real failure surface.
         run: |
           if [ -f .clean-machine/restore.sh ]; then
             bash .clean-machine/restore.sh
@@ -448,18 +444,15 @@ jobs:
             printf '%-8s %s\n' "$t" "$(command -v $t 2>/dev/null || echo ABSENT)"
           done | tee /tmp/container-baseline.txt
 
-      # The advertised `curl | sh` cannot start on an image without curl, so the
-      # transport is provisioned apart from the installer's own dependencies.
-      # Everything else stays absent.
+      # The advertised `curl | sh` cannot start on an image without curl, so the transport
+      # is provisioned apart from the installer's own dependencies; all else stays absent.
       - name: Provision only the bootstrap transport
         run: |
-          # tar and gzip ride along on the overlay legs: with no actions/checkout here
-          # (it needs git) the only way in for this ref's source is an archive over the
-          # same transport. Neither is a compiler, git or cmake, so the premise holds;
-          # both are usually in the base image already, naming them makes it certain.
-          #
+          # tar and gzip ride along on the overlay legs: with no actions/checkout (it needs
+          # git), an archive over the same transport is the only way this ref's source gets
+          # in. Neither is a compiler, git or cmake, so the premise holds.
           # One transport, never both: the wget-only row tests install.sh's wget branch,
-          # which is unreachable while curl is on the box.
+          # unreachable while curl is on the box.
           if [ "${{ matrix.wget_only }}" = "true" ]; then
             pkgs="ca-certificates wget"
           else
@@ -472,17 +465,16 @@ jobs:
             dnf install -y -q $pkgs
           fi
 
-      # No actions/checkout on purpose: it needs git, and a container with git
-      # preinstalled is not the clean machine under test. Fetch over the transport
-      # above, INSTALLER included, so these legs validate a fix and not just the
-      # published script.
+      # No actions/checkout on purpose: it needs git, and a container with git preinstalled
+      # is not the clean machine under test. Fetch over the transport above, INSTALLER
+      # included, so these legs validate a fix and not just the published script.
       - name: Fetch installer + assert script for this ref
         run: |
           mkdir -p logs .github/scripts
           raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}"
-          # Whichever transport this row provisioned: the wget-only leg has no curl, on
-          # purpose, and this is the one download in the job that cannot go through
-          # install.sh's own helper. Same preference order as it uses.
+          # Whichever transport this row provisioned: the wget-only leg has no curl, and
+          # this is the one download that cannot go through install.sh's own helper. Same
+          # preference order it uses.
           dl() {
             if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"
             else wget -q -O "$2" "$1"; fi
@@ -498,9 +490,9 @@ jobs:
           fi
           wc -l install.sh
 
-      # The overlay needs a source tree and these legs deliberately have no
-      # actions/checkout. codeload serves the same commit as a tarball over plain HTTPS,
-      # so this ref's Python gets in without a git client.
+      # The overlay needs a source tree and these legs have no actions/checkout. codeload
+      # serves the same commit as a tarball over plain HTTPS, so this ref's Python gets in
+      # without a git client.
       - name: Fetch this ref's source tree for the overlay
         if: matrix.overlay && inputs.installer_source != 'published'
         run: |
@@ -516,9 +508,9 @@ jobs:
           [ -f ci-source/pyproject.toml ] || { echo "::error::source tarball for ${GITHUB_SHA} unpacked without a pyproject.toml"; ls -la ci-source; exit 1; }
           echo "overlay source: $(pwd)/ci-source"
 
-      # curl is what fetched install.sh above, so the no-transport leg cannot simply
-      # never install it. Take it away again afterwards: from the installer's point of
-      # view the machine can download nothing, which is the case under test.
+      # curl fetched install.sh above, so the no-transport leg cannot simply never install
+      # it. Take it away afterwards: from the installer's view the machine can download
+      # nothing, which is the case under test.
       - name: Take the transport away again
         if: matrix.no_transport
         run: |
@@ -539,17 +531,16 @@ jobs:
           # workflow-wide UNSLOTH_STUDIO_HOME follows tester in, and install.sh validates
           # that override in _resolve_studio_destinations (536-591), long before the
           # elevation gate (829-905). Without a writable target these legs die on "cannot
-          # be created" rather than on anything they are asking about.
+          # be created" rather than on what they ask about.
           mkdir -p "$UNSLOTH_STUDIO_HOME"
           chown -R tester logs install.sh "$UNSLOTH_STUDIO_HOME"
-          # The editable overlay writes .egg-info next to the pyproject.toml, so the
-          # source tree has to belong to tester too or the overlay fails on permissions
-          # rather than on anything this leg asks about.
+          # The editable overlay writes .egg-info next to the pyproject.toml, so the source
+          # tree must belong to tester too or the overlay fails on permissions instead.
           if [ -d ci-source ]; then chown -R tester ci-source; fi
 
-      # Not calling sudo is not the same as not having it: a leg that merely avoided the
-      # call would pass on an image where elevation was available all along, and the
-      # whole claim of these two rows is that there is none to be had.
+      # Not calling it is not the same as not having it: a leg that merely avoided the call
+      # would pass on an image where elevation was available all along, and these two rows
+      # claim there is none to be had.
       - name: Prove the unprivileged user genuinely cannot elevate
         if: matrix.nonroot
         run: |
@@ -560,8 +551,7 @@ jobs:
             exit 1
           fi
           # Absent from disk, not merely off PATH: install.sh probes with `command -v`
-          # (830), so a binary tester could not reach would still be a lie about the
-          # image.
+          # (830), so an unreachable binary would still be a lie about the image.
           for p in /usr/bin/sudo /bin/sudo /usr/local/bin/sudo /usr/sbin/sudo /sbin/sudo; do
             if [ -e "$p" ]; then
               echo "::error::$p exists, so this image is not sudo-free"
@@ -573,25 +563,21 @@ jobs:
             exit 1
           fi
           # The capability, not just the tool: the escalation install.sh would attempt
-          # writes the dpkg database, so an unwritable one is what makes `apt-get
-          # install` impossible for tester.
+          # writes the dpkg database, so an unwritable one is what blocks `apt-get install`.
           if su tester -c 'test -w /var/lib/dpkg/status'; then
             echo "::error::tester can write the dpkg database, so it is effectively root"
             exit 1
           fi
           echo "tester is unprivileged, has no sudo on disk, and cannot write dpkg state"
 
-      # The mirror of the sudo proof above, for the other premise this row makes. Not
-      # calling curl is not the same as not having it: every transport site in install.sh
-      # probes with `command -v curl` and prefers it (731, 1022, 2078, 3064), so a leg
-      # that merely avoided the call would go on testing the curl branch and report the
+      # The mirror of the check above, for this row's other premise: every transport site
+      # in install.sh probes `command -v curl` and prefers it (731, 1022, 2078, 3064), so a
+      # leg that merely avoided the call would keep testing the curl branch and report the
       # wget one green.
       - name: Prove wget is the only transport
         if: matrix.wget_only
         run: |
-          # On disk, not merely off PATH, for the same reason the sudo check is:
-          # `command -v` is what install.sh asks, and a binary tester could not reach
-          # would still be a lie about the image.
+          # On disk, not merely off PATH, for the same reason the elevation check is.
           for p in /usr/bin/curl /bin/curl /usr/local/bin/curl /usr/sbin/curl /sbin/curl /snap/bin/curl; do
             if [ -e "$p" ]; then
               echo "::error::$p exists, so this leg is not wget-only"
@@ -604,14 +590,13 @@ jobs:
               exit 1
             fi
           done
-          # The package too, so a dependency that quietly pulled the binary back in is
-          # caught rather than silently reinstating the curl branch.
+          # The package too, so a dependency that pulled the binary back in is caught
+          # rather than silently reinstating the curl branch.
           if dpkg-query -W -f='${Status}' curl 2>/dev/null | grep -q 'install ok installed'; then
             echo "::error::the curl package is installed; the wget-only premise does not hold"
             exit 1
           fi
-          # And tester really has the other one, or the row is the no-transport case
-          # wearing a different label.
+          # And tester really has the other one, or this is the no-transport case relabelled.
           su tester -c 'command -v wget' >/dev/null 2>&1 || {
             echo "::error::tester cannot reach wget, so this leg has no transport at all"
             exit 1
@@ -628,8 +613,7 @@ jobs:
         run: |
           set -o pipefail
           # Resolved here, not in `env:`, so it tracks the step's real working directory:
-          # a container job remaps the workspace, and this need not depend on
-          # github.workspace.
+          # a container job remaps the workspace, so this must not use github.workspace.
           if [ -d ci-source ]; then
             export UNSLOTH_CI_SOURCE_OVERLAY="$PWD/ci-source"
             echo "overlaying this ref's source from $UNSLOTH_CI_SOURCE_OVERLAY"
@@ -642,8 +626,8 @@ jobs:
           exit "$rc"
 
       # The no-elevation case the workflow was missing: everything absent AND no way to
-      # become root, but the transport the documented one-liner needs is there. Gating,
-      # and asserted end to end by the same steps the root legs use.
+      # become root, but with the transport the documented one-liner needs. Gating, and
+      # asserted end to end by the same steps the root legs use.
       - name: Install (unprivileged, no sudo)
         id: install_nonroot
         if: ${{ matrix.nonroot && !matrix.no_transport }}
@@ -672,9 +656,9 @@ jobs:
           echo "installer exit code: $rc"
           exit "$rc"
 
-      # KNOWN OUTCOME PIN. This row is required, and continue-on-error on the step above
-      # would otherwise tolerate a bootstrap outage or an unrelated early exit exactly
-      # like the intended diagnostic, so every branch here but the pinned outcome exits 1.
+      # KNOWN OUTCOME PIN. The row is required and the step above is continue-on-error, so
+      # without this a bootstrap outage or an unrelated early exit would be tolerated like
+      # the intended diagnostic: every branch but the pinned outcome exits 1.
       - name: Assert the no-transport outcome is the elevation gate
         if: always() && matrix.no_transport && steps.install_notransport.outcome != 'skipped'
         run: |
@@ -684,9 +668,9 @@ jobs:
           fi
           [ -f logs/install.log ] || { echo "::error::the no-transport leg produced no install log"; exit 1; }
           tail -40 logs/install.log
-          # Both, so a failure anywhere else is still red: it must be the transport that
-          # was missing, and the no-sudo branch of _smart_apt_install (install.sh:899-903)
-          # that stopped it, not a prompt, a dpkg lock or a network error.
+          # Both, so a failure anywhere else is still red: the transport must be what was
+          # missing and the no-sudo branch of _smart_apt_install (install.sh:899-903) what
+          # stopped it, not a prompt, a dpkg lock or a network error.
           if ! grep -q "missing: curl" logs/install.log; then
             echo "::error::the installer never reported the transport as missing; it did not reach the elevation gate"
             exit 1
@@ -716,28 +700,24 @@ jobs:
           # install.sh comes from this ref, so which of the two accepted outcomes applies
           # depends on which dependency gate this ref carries.
           if grep -q "using prebuilt llama.cpp (missing:" logs/install.log; then
-            # The gate no longer hard-stops on a non-apt distro: it warns that the
-            # optional build tools are absent and carries on, and reaching that warning
-            # is what proves the Linux gate did not stop the install. Past it, the
-            # accepted failure used to be release lag: install.sh came from this ref but
-            # unsloth from PyPI, and the released install_python_stack.py has no "skip
-            # the triton kernels when git is missing" guard, so it fetched the git+https
-            # triton_kernels requirement with no git. The overlay makes that guard this
-            # ref's own code, so the triton failure must NOT come back: accepting it
-            # would be accepting a regression in the guard as release lag.
+            # The gate no longer hard-stops on a non-apt distro: it warns that the optional
+            # build tools are absent and carries on, and reaching that warning proves the
+            # Linux gate did not stop the install. Past it, the accepted failure used to be
+            # release lag -- the released install_python_stack.py has no "skip the triton
+            # kernels when git is missing" guard, so it fetched the git+https requirement
+            # with no git. The overlay makes that guard this ref's own code, so the triton
+            # failure must NOT come back: accepting it would accept a regression as lag.
             if grep -q "Installing triton kernels (pip) failed" logs/install.log; then
               echo "::error::triton kernels still failed with this ref's install_python_stack.py overlaid, so its no-git skip did not hold"
               exit 1
             fi
-            # Nothing past the dependency warning is acceptable any more: the one
-            # tolerated failure was the released package lagging this ref, and the
-            # overlay removes that difference.
+            # Nothing past the dependency warning is acceptable any more: the one tolerated
+            # failure was release lag, and the overlay removes that difference.
             echo "::error::fedora got past the dependency warning and still failed, with this ref's Python overlaid; there is no known-good outcome left to accept"
             exit 1
           fi
-          # This ref still hard-exits on a non-apt package manager. Pin that message so a
-          # bootstrap outage or an unrelated early exit is not tolerated as the intended
-          # diagnostic.
+          # This ref still hard-exits on a non-apt package manager. Pin that message so an
+          # outage or unrelated early exit is not tolerated as the intended diagnostic.
           if ! grep -qiE "Automatic system package installation is supported on apt-based|Fedora/RHEL: sudo dnf install" logs/install.log; then
             echo "::error::fedora leg failed neither at the unsupported-package-manager gate nor past the dependency warning"
             exit 1
@@ -754,8 +734,8 @@ jobs:
           echo "overlay applied; this leg exercised this ref's Python"
 
       # nobuild only reads the log, so an installer that exits 0 having done nothing
-      # satisfies it. Unlike WSL and Windows, these required Linux rows had no check that
-      # the install produced anything runnable.
+      # satisfies it. Unlike WSL and Windows, these required rows had no check that the
+      # install produced anything runnable.
       - name: Assert the install is actually usable
         if: steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success'
         run: |
@@ -774,21 +754,19 @@ jobs:
         if: steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success'
         run: |
           # HONESTY NOTE: the ROOT legs START toolchain-free but do not stay that way. As
-          # root, _smart_apt_install's first `apt-get install` (install.sh:797-799)
-          # succeeds before the _SMART_APT_OPTIONAL guard (814-821) can suppress
-          # anything, so `cmake git build-essential libcurl4-openssl-dev` really are
-          # installed mid-run: product behaviour on any root Linux install, not a CI
-          # artefact. What must still hold is that nothing USED them. `nobuild` reads
-          # Python builds only, and llama.cpp is the one thing that silently falls back
-          # to a source compile once a compiler is around. The unprivileged leg never
-          # gets that far -- the optional set cannot escalate -- so there the same marker
-          # proves the prebuilt path won with no compiler on the machine at all.
+          # root, _smart_apt_install's first `apt-get install` (install.sh:797-799) succeeds
+          # before the _SMART_APT_OPTIONAL guard (814-821) can suppress anything, so `cmake
+          # git build-essential libcurl4-openssl-dev` really are installed mid-run: product
+          # behaviour on any root Linux install, not a CI artefact. What must still hold is
+          # that nothing USED them. `nobuild` reads Python builds only, and llama.cpp is the
+          # one thing that silently falls back to a source compile once a compiler exists.
+          # The unprivileged leg never gets that far, so there the same marker proves the
+          # prebuilt path won with no compiler on the machine at all.
           for t in cmake git gcc; do
             printf '%-6s %s\n' "$t" "$(command -v "$t" 2>/dev/null || echo ABSENT)"
           done
-          # install_llama_prebuilt.py:5629 writes this marker and a source-built tree has
-          # no such metadata (studio/setup.sh:1517), so its presence is the one
-          # unambiguous "the prebuilt path won" signal.
+          # install_llama_prebuilt.py:5629 writes this marker and a source-built tree has no
+          # such metadata (studio/setup.sh:1517), so it is the one unambiguous signal.
           META="$UNSLOTH_STUDIO_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json"
           if [ ! -f "$META" ]; then
             echo "::error::llama.cpp carries no prebuilt metadata at $META, so it did not come from the prebuilt bundle; with the compiler installed above, that is the silent source build this workflow exists to rule out"
@@ -821,17 +799,16 @@ jobs:
             grep -n "deps" logs/install.log | tail -20 || true
             exit 1
           fi
-          # #7547 made the optional set stop escalating. If either prompt comes back, an
-          # unprivileged user is blocked on tools nothing here uses.
+          # #7547 stopped the optional set escalating; either prompt coming back blocks an
+          # unprivileged user on tools nothing here uses.
           if grep -qE "We require sudo elevated permissions|No terminal to confirm on" logs/install.log; then
             echo "::error::the installer tried to elevate for the optional build tools; #7547's no-escalation guard has regressed"
             exit 1
           fi
 
-      # Absent at the start is not absent throughout, and only the whole-run claim makes
-      # the leg mean anything: every download the installer just did, the uv bootstrap
-      # included (install.sh:2232), had to go through wget, and it did only if curl was
-      # never there to be preferred.
+      # Absent at the start is not absent throughout, and only the whole-run claim makes the
+      # leg mean anything: every download, the uv bootstrap included (install.sh:2232), went
+      # through wget only if curl was never there to be preferred.
       - name: Re-prove curl never appeared, and that wget carried the install
         if: matrix.wget_only && steps.install_nonroot.outcome == 'success'
         run: |
@@ -846,9 +823,8 @@ jobs:
             exit 1
           fi
           # _check_linux_deps (install.sh:2077-2079) calls the transport missing only when
-          # curl AND wget are both gone, and the elevation gate below it is what the
-          # notransport row pins. Reaching it here would mean wget was not recognised as a
-          # transport at all.
+          # curl AND wget are both gone, so reaching it here would mean wget was not
+          # recognised as a transport at all.
           if grep -q "missing: curl" logs/install.log; then
             echo "::error::install.sh reported the transport as missing on a box that has wget, so it does not accept wget as one"
             exit 1
@@ -876,16 +852,15 @@ jobs:
           if-no-files-found: warn
 
   # ── WSL ───────────────────────────────────────────────────────────────────
-  # install.sh carries ~126 lines of WSL-specific logic (the `linux|wsl` dependency
-  # branch, UNSLOTH_WSL_REROUTED, the Strix Halo reroute to 24.04) that had never run in
-  # CI: tests/sh/test_strixhalo_wsl_reroute.sh mocks the environment, which cannot catch
-  # anything about a real WSL. No third-party action either -- the official Ubuntu rootfs
-  # plus `wsl --import` is deterministic and checksum-verifiable.
+  # install.sh carries ~126 lines of WSL-specific logic (the `linux|wsl` dependency branch,
+  # UNSLOTH_WSL_REROUTED, the Strix Halo reroute to 24.04) that had never run in CI:
+  # tests/sh/test_strixhalo_wsl_reroute.sh mocks the environment, which catches nothing
+  # about a real WSL. No third-party action either -- the official Ubuntu rootfs plus
+  # `wsl --import` is deterministic and checksum-verifiable.
   #
-  # Gating, deliberately: it is the only job that runs the real WSL branch and the only
-  # one that can catch a piped install being truncated (WSL shells out to Windows interop
-  # mid-script, and interop relays the stdin it inherited). No flake to absorb, and #7548
-  # is in main, so this gates unconditionally.
+  # Gating, deliberately: the only job that runs the real WSL branch, and the only one that
+  # can catch a piped install being truncated (WSL shells out to Windows interop mid-script
+  # and interop relays the stdin it inherited). #7548 is in main, so nothing to absorb.
   wsl:
     name: wsl ubuntu-24.04
     runs-on: windows-latest
@@ -912,19 +887,17 @@ jobs:
           }
           wsl --import unsloth-ci "$PWD/wsl-dist/instance" "$PWD/wsl-dist/rootfs.tar.gz" --version 2
           wsl -d unsloth-ci -- uname -a
-          # A freshly imported rootfs is genuinely bare: no curl, git or compiler. The
-          # clean machine, not a simulation.
+          # A freshly imported rootfs is genuinely bare: the clean machine, not a simulation.
           wsl -d unsloth-ci -- sh -c 'for t in curl wget git gcc cmake python3 sudo; do printf "%-8s %s\n" "$t" "$(command -v $t || echo ABSENT)"; done'
 
       - name: Install inside WSL, piped exactly as documented
         shell: pwsh
         run: |
-          # Only ca-certificates + curl: the advertised one-liner cannot start without a
-          # transport. Everything else must come from the installer.
+          # Only ca-certificates + curl: the one-liner cannot start without a transport.
           wsl -d unsloth-ci -u root -- sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl' 2>&1 | Tee-Object -FilePath logs/wsl-bootstrap.log
-          # A dispatch selecting `published` asks whether unsloth.ai's script works, and
-          # running the checked-out one answered a different question under the same
-          # name. Empty on pull_request/push, so automatic runs stay on this ref.
+          # A `published` dispatch asks whether unsloth.ai's script works, and running the
+          # checked-out one answered a different question under the same name. Empty on
+          # pull_request/push, so automatic runs stay on this ref.
           if ('${{ inputs.installer_source }}' -eq 'published') {
             Write-Host 'installer: published (unsloth.ai)'
             wsl -d unsloth-ci -u root -- sh -c 'curl -fsSL https://unsloth.ai/install.sh -o /root/install.sh'
@@ -933,14 +906,13 @@ jobs:
               exit 1
             }
           } else {
-            # Copy the script in rather than reach across /mnt/c: a DrvFs path brings
-            # Windows permissions and CRLF risk, neither of which a real WSL user has.
+            # Copy the script in rather than read across /mnt/c: a DrvFs path brings Windows
+            # permissions and CRLF risk, neither of which a real WSL user has.
             $wslPath = (wsl -d unsloth-ci -- wslpath -a "$($env:GITHUB_WORKSPACE -replace '\\','/')/install.sh").Trim()
             Write-Host "installer source in WSL: $wslPath"
             wsl -d unsloth-ci -u root -- cp "$wslPath" /root/install.sh
           }
-          # Piped, same shape as `curl ... | sh`, so an early exit still exposes the
-          # broken pipe, but on the script this dispatch selected.
+          # Piped, the `curl ... | sh` shape, so an early exit still exposes the broken pipe.
           wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
           $installRc = $LASTEXITCODE
           Write-Host "installer exit: $installRc"
@@ -950,19 +922,18 @@ jobs:
             exit 1
           }
           # The pipe-integrity check. Interop (_maybe_reroute_strixhalo_to_2404 ->
-          # powershell.exe, wsl.exe) relays the stdin it inherited, so before #7548 it
-          # drank the rest of the piped script and sh died on a half-read line. #7548's
-          # _unsloth_main wrapper forces sh to parse the file in full first; a truncation
-          # here means that regressed.
+          # powershell.exe, wsl.exe) relays the stdin it inherited, so before #7548 it drank
+          # the rest of the piped script and sh died on a half-read line. #7548's
+          # _unsloth_main wrapper makes sh parse the file in full first; a truncation here
+          # means that regressed.
           if (Select-String -Path logs/wsl-install.log `
                 -Pattern 'Syntax error: Unterminated quoted string' -Quiet) {
             Write-Host '::error::the piped install was truncated again; install.sh is no longer parsed in full before it runs'
             exit 1
           }
-          # Printing the code discarded it, and the next step's CLI check cannot
-          # compensate: install.sh links the `unsloth` shim (4174-4182) BEFORE it reports
-          # a failing studio/setup.sh (4219-4230), so a late setup failure leaves a shim
-          # whose --version succeeds.
+          # Printing the code discarded it, and the next step's CLI check cannot compensate:
+          # install.sh links the `unsloth` shim (4174-4182) BEFORE it reports a failing
+          # studio/setup.sh (4219-4230), so a late failure leaves a working --version.
           if ($installRc -ne 0) {
             Write-Host "::error::WSL installer exited $installRc"
             exit $installRc
@@ -975,9 +946,9 @@ jobs:
           # The platform line proves the wsl branch was taken rather than plain linux.
           Select-String -Path logs/wsl-install.log -Pattern 'platform|\[TAURI:DIAG\]|wsl' -ErrorAction SilentlyContinue |
             Select-Object -First 10
-          # Printing could not fail, and that alternation also matches `platform linux`,
-          # so a detection regression would pass as a plain-Linux install. `step` writes
-          # the label in reverse video, so strip ANSI or an anchored match never hits.
+          # Printing could not fail, and that alternation also matches `platform linux`, so a
+          # detection regression would pass as a plain-Linux install. `step` writes the label
+          # in reverse video, so strip ANSI or an anchored match never hits.
           $esc = [char]27
           $platformLines = @(
             Get-Content logs/wsl-install.log -ErrorAction SilentlyContinue |
@@ -989,8 +960,8 @@ jobs:
             Write-Host '::error::installer never reported ''platform wsl''; the WSL branch was not exercised'
             exit 1
           }
-          # No `|| echo`: substituting a message for the missing CLI made the inner shell,
-          # this step and the job all succeed on an install that produced nothing.
+          # No `|| echo`: substituting a message for a missing CLI made the inner shell, this
+          # step and the job all succeed on an install that produced nothing.
           $verify = wsl -d unsloth-ci -u root -- sh -c 'set -e; test -x "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth"; "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth" --version' 2>&1
           $verifyRc = $LASTEXITCODE
           $verify | Tee-Object -FilePath logs/wsl-verify.log
@@ -1030,26 +1001,23 @@ jobs:
           # The no-winget path (LTSC / Server / managed corporate machines) falls back to
           # python.org + astral.sh and is untested today. It is also where Ensure-VCRedist
           # silently does not run, leaving torch unable to load, hence the explicit
-          # `import torch` assert below.
-          #
-          # It used to stop at studio/setup.ps1's unconditional "Git is required but could
-          # not be installed automatically" gate -- no winget meant no way to fetch git --
-          # and was a pinned known failure until #7549 relaxed that gate to the --local
-          # and llama.cpp source paths that actually use git (setup.ps1:1750-1759). The
-          # row now installs end to end and gates like any other; the assert below proves
-          # it took the relaxed branch rather than passing on git leaking back onto PATH.
+          # `import torch` assert below. It used to stop at setup.ps1's unconditional "Git
+          # is required but could not be installed automatically" gate -- no winget, no way
+          # to fetch git -- and was a pinned known failure until #7549 relaxed that gate to
+          # the --local and llama.cpp source paths that really use git (setup.ps1:1750-1759).
+          # The row now gates like any other; the assert below proves it took the relaxed
+          # branch rather than passing on git leaking back onto PATH.
           - os: windows-latest
             winget: 'masked'
             experimental: false
             overlay: true
-          # Windows on ARM gets a native ARM64 CPython, and torchaudio has never published
-          # a win_arm64 wheel at any version (nor have pyarrow and hf-transfer, which
-          # datasets pulls in), so the PyTorch step could not resolve and install.ps1
-          # stopped at "Failed to install PyTorch". Pinned until #7549, which makes the
-          # installer prefer an x64 interpreter on an ARM64 host and bootstrap one when
-          # only ARM64 is installed (install.ps1:1160-1253, 1335-1353); x64 wheels run
-          # fine emulated. The row now gates, and the assert below checks the outcome that
-          # fix has to produce rather than the log line announcing it.
+          # Windows on ARM gets a native ARM64 CPython, and torchaudio has never published a
+          # win_arm64 wheel (nor have pyarrow and hf-transfer, which datasets pulls in), so
+          # the PyTorch step could not resolve and install.ps1 stopped at "Failed to install
+          # PyTorch". Pinned until #7549 made the installer prefer an x64 interpreter on an
+          # ARM64 host and bootstrap one when only ARM64 exists (install.ps1:1160-1253,
+          # 1335-1353); x64 wheels run fine emulated. The row now gates, and the assert
+          # below checks the outcome that fix must produce, not the log line announcing it.
           - os: windows-11-arm
             winget: 'visible'
             experimental: false
@@ -1067,18 +1035,17 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # Drop preinstalled Python, git, CMake, VS/LLVM and the WindowsApps aliases from
-          # PATH. A full Visual Studio uninstall is not realistic in CI (registry +
-          # vswhere discovery, slow, may need a reboot), so PATH and env scrubbing is the
-          # honest approximation, recorded as such.
+          # PATH. A full Visual Studio uninstall is not realistic in CI (registry + vswhere
+          # discovery, slow, may need a reboot), so PATH and env scrubbing is the honest
+          # approximation, recorded as such.
           $drop = @('hostedtoolcache\windows\Python', 'WindowsApps', '\Git\',
                     'CMake', 'Microsoft Visual Studio', 'BuildTools', 'LLVM',
                     'MSYS', 'mingw', 'Strawberry')
           # winget is an app-execution alias in ...\Local\Microsoft\WindowsApps, so the
           # blanket drop removed it on EVERY leg and winget=visible silently ran the same
-          # fallback as winget=masked. Resolve it before the scrub and hand it back via a
-          # shim, so the visible leg gets winget without the Store's python.exe alias.
-          # windows-11-arm has no winget on the hosted image
-          # (actions/runner-images#14083), so only windows-latest can carry it.
+          # fallback as winget=masked. Resolve it before the scrub and shim it back, so the
+          # visible leg gets winget without the Store's python.exe alias. windows-11-arm has
+          # no winget on the hosted image (actions/runner-images#14083).
           $wantWinget = ('${{ matrix.winget }}' -ne 'masked') -and ('${{ matrix.os }}' -eq 'windows-latest')
           $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
           $scrub = {
@@ -1103,10 +1070,9 @@ jobs:
               -Value "@`"$($wingetCmd.Source)`" %*"
             $kept = @($shim) + $kept
           }
-          # Take the toolcache Python off disk, not just off PATH: py.exe lives in
-          # C:\Windows (which must stay) and uv does its own interpreter discovery, so
-          # both reach the toolcache whatever PATH says. That is how a leg printing
-          # `python ABSENT` still installed the runner's 3.13.14.
+          # Off disk, not just off PATH: py.exe lives in C:\Windows (which must stay) and uv
+          # does its own discovery, so both reach the toolcache whatever PATH says. That is
+          # how a leg printing `python ABSENT` still installed the runner's 3.13.14.
           foreach ($tc in @("$env:AGENT_TOOLSDIRECTORY\Python", 'C:\hostedtoolcache\windows\Python')) {
             if ($tc -and (Test-Path $tc)) {
               try { Rename-Item -LiteralPath $tc -NewName 'Python.masked' -ErrorAction Stop
@@ -1116,13 +1082,13 @@ jobs:
           }
           $newPath = ($kept -join ';')
           "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          # install.ps1's Refresh-SessionPath (318-337, called at 1246/1278/1295/1360/
-          # 1369/2797) merges the Machine and User registry PATHs back into $env:Path, so
-          # a process-only scrub lasts until the first bootstrap refresh, after which
-          # Git/CMake/VS/LLVM are back and the rest of the install is not clean. The
-          # runner is ephemeral, so rewrite the registry copies too. A merge, not a
-          # replace, so the shim above keeps resolving. Expand first: SetEnvironmentVariable
-          # rewrites REG_EXPAND_SZ as REG_SZ (dotnet/runtime#1442).
+          # install.ps1's Refresh-SessionPath (318-337, called at 1246/1278/1295/1360/1369/
+          # 2797) MERGES the Machine and User registry PATHs back into $env:Path, so a
+          # process-only scrub lasts until the first bootstrap refresh, after which
+          # Git/CMake/VS/LLVM are back and the rest of the install is not clean. The runner
+          # is ephemeral, so rewrite the registry copies too; the merge is why the shim
+          # keeps resolving. Expand first: SetEnvironmentVariable rewrites REG_EXPAND_SZ as
+          # REG_SZ (dotnet/runtime#1442).
           foreach ($scope in 'Machine','User') {
             $raw = [System.Environment]::GetEnvironmentVariable('Path', $scope)
             if ([string]::IsNullOrWhiteSpace($raw)) { continue }
@@ -1143,21 +1109,20 @@ jobs:
         shell: pwsh
         run: |
           $leaked = @()
-          # `py` too: the launcher lives in C:\Windows, which the scrub keeps, and finds
-          # the toolcache Python the scrub only removed from PATH.
+          # `py` too: the launcher lives in C:\Windows, which the scrub keeps, and finds the
+          # toolcache Python the scrub only removed from PATH.
           foreach ($t in 'python','py','git','cmake','cl') {
             $f = Get-Command $t -ErrorAction SilentlyContinue
             Write-Host ("{0,-8} {1}" -f $t, $(if ($f) { $f.Source } else { 'ABSENT' }))
             if ($f -and $t -ne 'py') { $leaked += "$t -> $($f.Source)" }
           }
-          # The launcher binary may stay, but an interpreter it can still START is a leak:
+          # The launcher may stay, but an interpreter it can still START is a leak:
           # Find-CompatiblePython (install.ps1:1130-1153) probes `py` first, so a version
-          # registered outside the renamed toolcache dirs gets reused and the Python
-          # bootstrap never runs.
+          # registered outside the renamed dirs gets reused and the bootstrap never runs.
           if (Get-Command py -ErrorAction SilentlyContinue) {
-            # -0p is the launcher's REGISTRY view, and the mask renames directories
-            # without rewriting it, so -0p keeps naming paths that no longer exist:
-            # context for a failure, never evidence. Only a probe that STARTS counts.
+            # -0p is the launcher's REGISTRY view and the mask renames directories without
+            # rewriting it, so -0p names paths that no longer exist: context for a failure,
+            # never evidence. Only a probe that STARTS counts.
             Write-Host "py -0p (stale registry entries; masked paths no longer exist on disk):"
             & py -0p 2>&1 | ForEach-Object { Write-Host "  $_" }
             foreach ($v in '-3.11', '-3.12', '-3.13') {
@@ -1167,10 +1132,9 @@ jobs:
               Write-Host ("py {0} -> exit {1}: {2}" -f $v, $rc, (($out | Out-String).Trim() -replace '\r?\n', ' / '))
               if ($rc -eq 0) { $leaked += "py $v -> $out" }
             }
-            # A FAILING probe is the outcome we want, but it leaves $LASTEXITCODE
-            # non-zero, cmdlets never reset it, and the runner appends `exit
-            # $LASTEXITCODE` to every pwsh step (actions/runner#351) -- so all three legs
-            # exited 1, silently, on machines that were in fact clean.
+            # A FAILING probe is the outcome we want, but cmdlets never reset $LASTEXITCODE
+            # and the runner appends `exit $LASTEXITCODE` to every pwsh step
+            # (actions/runner#351) -- so all three legs exited 1 on clean machines.
             $global:LASTEXITCODE = 0
           }
           # Printing alone could not fail: run 30365014702 logged `python ABSENT` then
@@ -1194,7 +1158,7 @@ jobs:
           foreach ($scope in 'Machine','User') {
             Write-Host ("{0} PATH after scrub: {1}" -f $scope, [System.Environment]::GetEnvironmentVariable('Path', $scope))
           }
-          # Every failure above exits 1 explicitly, so reaching here means clean. Say so
+          # Every failure above exits 1 explicitly, so reaching here means clean; say so
           # rather than let the runner's appended `exit $LASTEXITCODE` decide.
           exit 0
 
@@ -1202,14 +1166,13 @@ jobs:
         id: install
         shell: pwsh
         env:
-          # Empty, and therefore ignored by install.ps1, on the non-overlay legs.
+          # Empty, and so ignored by install.ps1, on the non-overlay legs.
           UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           $ErrorActionPreference = 'Continue'
           # Windows ships its own published script (install.ps1:3), so `published` means
-          # something here too: running the checked-out one regardless made a dispatch
-          # asking about unsloth.ai report on this ref. Empty on pull_request/push, so
-          # automatic runs stay on this ref.
+          # something here too: running the checked-out one regardless made a dispatch about
+          # unsloth.ai report on this ref. Empty on pull_request/push.
           $script = './install.ps1'
           if ('${{ inputs.installer_source }}' -eq 'published') {
             Invoke-WebRequest -Uri https://unsloth.ai/install.ps1 `
@@ -1220,10 +1183,9 @@ jobs:
             Write-Host "installer: this ref ($env:GITHUB_SHA)"
           }
           # No -SkipTorch: install.ps1's parser matches `--no-torch` only (112-142), so the
-          # token was silently dropped and every leg installed torch anyway. The assert
-          # below needs torch, so get it on purpose. Under powershell.exe, not this pwsh 7
-          # step: a clean Windows box ships Windows PowerShell 5.1 only, and the desktop
-          # launches it the same way (install.rs:325-339).
+          # token was dropped and every leg installed torch anyway; the assert below needs
+          # it, so ask for it. Under powershell.exe, not this pwsh 7 step: a clean Windows
+          # box ships 5.1 only, and the desktop launches it the same way (install.rs:325-339).
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
               -File $script *>&1 | Tee-Object -FilePath logs/install.log
           $rc = $LASTEXITCODE
@@ -1232,8 +1194,7 @@ jobs:
 
       # Windows asserted nothing about the install ITSELF: nobuild and the toolchain check
       # only read the log, so an installer that exited 0 having produced nothing satisfied
-      # both. The Linux legs have had this since they stopped being pinned; these rows
-      # needed it more, two of them being only just off a pin.
+      # both -- and two of these rows are only just off a pin.
       - name: Assert the install is actually usable
         shell: pwsh
         run: |
@@ -1251,9 +1212,8 @@ jobs:
             Write-Host "::error::installer exited 0 but left no unsloth CLI at $cli"
             exit 1
           }
-          # Present is not runnable: the console script imports the whole command tree, so
-          # a missing dependency or an unimportable extension surfaces here and nowhere
-          # else. --version is the one subcommand-free path.
+          # Present is not runnable: the console script imports the whole command tree, so a
+          # missing dependency or unimportable extension surfaces here and nowhere else.
           & $cli --version
           if ($LASTEXITCODE -ne 0) {
             Write-Host '::error::the unsloth CLI is on disk but does not run'
@@ -1261,11 +1221,10 @@ jobs:
           }
 
       # What #7549 has to produce on this host, checked as an outcome rather than the log
-      # line announcing it. torchaudio, pyarrow and hf-transfer publish no win_arm64 wheel
-      # at any version, so a native ARM64 interpreter cannot resolve the stack; the
-      # installer's answer is to prefer, and if necessary bootstrap, an x64 CPython and
-      # let it run emulated. Asked of the interpreter through sysconfig, not inferred from
-      # PROCESSOR_ARCHITECTURE, which describes the shell rather than the venv.
+      # line announcing it. torchaudio, pyarrow and hf-transfer publish no win_arm64 wheel,
+      # so a native ARM64 interpreter cannot resolve the stack; the installer's answer is to
+      # prefer, and if necessary bootstrap, an x64 CPython and run it emulated. Asked of the
+      # interpreter via sysconfig, not PROCESSOR_ARCHITECTURE, which describes the shell.
       - name: Assert the ARM64 host installed against an x64 interpreter
         if: matrix.os == 'windows-11-arm'
         shell: pwsh
@@ -1278,20 +1237,19 @@ jobs:
             Write-Host "::error::the venv was built from a '$tag' interpreter, so the x64 preference on ARM64 hosts has regressed and the missing win_arm64 wheels are back"
             exit 1
           }
-          # The package that has never shipped a win_arm64 wheel, so its presence proves
-          # the emulated x64 stack really resolved rather than being skipped. Metadata,
-          # not an import: this asserts resolution, the torch assert below does the import.
+          # The package that has never shipped a win_arm64 wheel, so its presence proves the
+          # emulated x64 stack really resolved. Metadata, not an import: this asserts
+          # resolution, the torch assert below does the import.
           & $venvPy -c "from importlib.metadata import version; print('torchaudio', version('torchaudio'))"
           if ($LASTEXITCODE -ne 0) {
             Write-Host '::error::torchaudio is not installed, so the x64 interpreter did not buy the wheels it was chosen for'
             exit 1
           }
 
-      # The other half of what #7549 has to produce. This row is the only place the relaxed
-      # git gate matters: winget is masked, so there is no way to fetch git at all, and
-      # setup.ps1 used to refuse to continue without it. Assert the relaxed branch was
-      # taken, so the row cannot go green on git leaking back onto PATH with the gate
-      # never reached.
+      # The other half of what #7549 has to produce, and the only row where the relaxed git
+      # gate matters: winget is masked, so there is no way to fetch git and setup.ps1 used
+      # to refuse to continue. Assert the relaxed branch was taken, so the row cannot go
+      # green on git leaking back onto PATH with the gate never reached.
       - name: Assert the no-winget path installed without git
         if: matrix.winget == 'masked'
         shell: pwsh
@@ -1328,30 +1286,28 @@ jobs:
         if: always() && steps.install.outcome != 'skipped'
         shell: pwsh
         run: |
-          # Windows checked nothing after the install, so setup.ps1 committing to a
-          # llama.cpp SOURCE build would winget-install CMake (setup.ps1:816-822) and VS
-          # Build Tools (845-857) and the leg still went green. Git is out of scope on
-          # purpose: bootstrapping it through winget (1658-1661) is the consumer path the
-          # visible leg exercises. The VC++ runtime is a runtime, not a toolchain.
+          # Windows checked nothing after the install, so setup.ps1 committing to a llama.cpp
+          # SOURCE build would winget-install CMake (setup.ps1:816-822) and VS Build Tools
+          # (845-857) and the leg still went green. Git is out of scope on purpose:
+          # bootstrapping it through winget (1658-1661) is the consumer path the visible leg
+          # exercises, and the VC++ runtime is a runtime, not a toolchain.
           $bad = @()
           if (-not (Test-Path logs/install.log)) {
             Write-Host '::error::no install log, so nothing proves the install stayed toolchain-free'
             exit 1
           }
-          # The announcements inside Ensure-BuildToolsForLlamaSourceBuild, which runs only
-          # for a committed source build. Matched instead of the package ids because
-          # setup.ps1 PRINTS `winget install ...BuildTools` as manual advice when winget is
-          # missing, and advice is not an install.
+          # The announcements inside Ensure-BuildToolsForLlamaSourceBuild, which runs only for
+          # a committed source build. Matched instead of the package ids because setup.ps1
+          # PRINTS `winget install ...BuildTools` as advice when winget is missing.
           foreach ($m in 'CMake not found -- installing via winget',
                          'Visual Studio Build Tools not found -- installing via winget') {
             if (Select-String -Path logs/install.log -Pattern $m -SimpleMatch -Quiet) {
               $bad += "install log reports: $m"
             }
           }
-          # winget puts what it installs on the MACHINE PATH, which this step's own process
-          # PATH (scrubbed, from GITHUB_ENV) never sees, so read the registry copies back
-          # rather than ask Get-Command. The scrub removed every entry matching these, so
-          # a match here means the install put one back.
+          # winget puts what it installs on the MACHINE PATH, which this step's scrubbed
+          # process PATH never sees, so read the registry copies rather than ask
+          # Get-Command. The scrub removed every matching entry, so a hit means it came back.
           foreach ($scope in 'Machine','User') {
             $raw = [System.Environment]::GetEnvironmentVariable('Path', $scope)
             if ([string]::IsNullOrWhiteSpace($raw)) { continue }
@@ -1372,13 +1328,12 @@ jobs:
         shell: pwsh
         run: |
           # The step above only catches a NEW CMake or VS Build Tools install. The image's
-          # Visual Studio survives a PATH scrub: setup.ps1's Find-VsBuildTools (763-800)
-          # reaches it through vswhere and a Program Files scan, and the visible leg logs
+          # Visual Studio survives a PATH scrub: Find-VsBuildTools (setup.ps1:763-800)
+          # reaches it via vswhere and a Program Files scan, and the visible leg logs
           # `vs  Visual Studio 18 2026 (vswhere)` on the same machine whose pre-flight
           # printed `cl ABSENT`. So a dependency that lost its Windows wheel would compile
-          # against that MSVC and the leg would stay green while macOS and Linux caught
-          # it. uv really does build sdists here (openai-whisper, antlr4-python3-runtime,
-          # randomname, argbind), so this is the live path.
+          # against that MSVC and stay green while macOS and Linux caught it. uv really does
+          # build sdists here, so this is the live path.
           & "$env:GITHUB_WORKSPACE/.github/scripts/assert-nobuild.ps1" -LogPath logs/install.log
 
       - name: Assert torch loads, and record what that does and does not prove
@@ -1386,15 +1341,15 @@ jobs:
         shell: pwsh
         run: |
           # HONESTY NOTE: the image ships the VC++ 2015-2022 runtime in System32 and cannot
-          # lose it without breaking the runner, so `import torch` succeeding does NOT
-          # prove a clean no-winget machine has it -- Test-VCRedistInstalled (setup.ps1:875)
-          # finds the preinstalled DLL and Ensure-VCRedist (891) short-circuits. Record
-          # that, then assert what CAN fail.
+          # lose it without breaking the runner, so `import torch` succeeding does NOT prove
+          # a clean no-winget machine has it -- Test-VCRedistInstalled (setup.ps1:875) finds
+          # the preinstalled DLL and Ensure-VCRedist (891) short-circuits. Record that, then
+          # assert what CAN fail.
           $sys32 = Join-Path $env:WINDIR 'System32\vcruntime140_1.dll'
           Write-Host "preinstalled System32 vcruntime140_1.dll: $(Test-Path $sys32)"
           # The managed interpreter, with no fallback to whatever `python` resolves to: the
-          # usability assert above already hard-fails when it is missing, and a fallback
-          # would answer this with an interpreter the install did not create.
+          # usability assert above hard-fails when it is missing, and a fallback would answer
+          # this with an interpreter the install did not create.
           $py = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\python.exe'
           & $py -c "import ctypes.util, sys; print('VCRUNTIME140:', ctypes.util.find_library('vcruntime140'))"
           & $py -c "import torch; print('torch', torch.__version__)"
@@ -1418,11 +1373,10 @@ jobs:
           if-no-files-found: warn
 
   # ── Windows, genuinely virgin: the same install inside a Windows container ────
-  # The `win` legs above only SIMULATE absence, and two things they structurally cannot
-  # test are the VC++ 2015-2022 runtime (it ships in the runner image's System32 and
-  # cannot be removed without breaking the runner) and a Windows with no Microsoft Store
-  # at all rather than a winget hidden from PATH. A servercore container answers both, so
-  # this lane lives here: same premise, same path filters, masked next to real.
+  # The `win` legs above only SIMULATE absence, and two things they structurally cannot test
+  # are the VC++ 2015-2022 runtime (it ships in the image's System32 and cannot be removed
+  # without breaking the runner) and a Windows with no Microsoft Store at all rather than a
+  # winget hidden from PATH. A servercore container answers both, so this lane lives here.
   #
   # Constraints, all load-bearing:
   #   * `container:` is Linux-only on the Actions runner (actions/runner#1402), so docker
@@ -1430,9 +1384,9 @@ jobs:
   #     actions/checkout inside the container would need git.
   #   * servercore, not nanoserver: install.ps1 needs Windows PowerShell 5.1, which
   #     nanoserver does not ship at all.
-  #   * windows-2022, not windows-latest: process isolation needs the host and container
-  #     builds to match, and only the 2022 image pre-caches ltsc2022. windows-latest is
-  #     Server 2025 and caches no Windows images.
+  #   * windows-2022, not windows-latest: process isolation needs host and container builds
+  #     to match, and only the 2022 image pre-caches ltsc2022 (windows-latest is Server 2025
+  #     and caches no Windows images).
   windows_container_probe:
     name: virgin win container / probe
     runs-on: windows-2022
@@ -1445,9 +1399,9 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # Docker is on every windows-2022 image but is not always already running: one spike
-      # leg died in 21s on npipe:////./pipe/docker_engine, which misreads as "Windows
-      # containers are unavailable".
+      # Docker is on every windows-2022 image but is not always already running: a spike leg
+      # died in 21s on npipe:////./pipe/docker_engine, which misreads as "Windows containers
+      # are unavailable".
       - name: Ensure the Docker daemon is running
         shell: pwsh
         run: ./.github/scripts/ensure-docker-daemon.ps1
@@ -1468,8 +1422,8 @@ jobs:
       - name: Start the container
         shell: pwsh
         run: |
-          # Never refresh a cached image: process isolation needs the container build <=
-          # the host build, and MCR has shipped a patched image ahead of the host before
+          # Never refresh a cached image: process isolation needs the container build <= the
+          # host build, and MCR has shipped a patched image ahead of the host before
           # (actions/runner-images#11582 broke Windows containers for ~2 weeks).
           if ((docker images --format '{{.Repository}}:{{.Tag}}') -contains $env:IMAGE) {
             Write-Host "using the runner's pre-cached $env:IMAGE (no pull)"
@@ -1478,8 +1432,8 @@ jobs:
             docker pull $env:IMAGE
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not pull $env:IMAGE"; exit 1 }
           }
-          # A keepalive entrypoint so each assertion can be its own `docker exec`, and so
-          # its own step with its own exit code.
+          # A keepalive entrypoint so each assertion is its own `docker exec`, and so its own
+          # step with its own exit code.
           docker run -d --name virgin $env:IMAGE cmd /c "ping -t localhost >nul"
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not start a container from $env:IMAGE"; exit 1 }
           Write-Host "isolation: $(docker inspect virgin --format '{{.HostConfig.Isolation}}')"
@@ -1521,10 +1475,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The consumer path: install.ps1 from this ref, unsloth from PyPI. So
-          # studio/setup.ps1 comes out of the RELEASED wheel, which is why this row and the
-          # overlay one below do not currently reach the same place: see the pin on the
-          # Install step.
+          # The consumer path: install.ps1 from this ref, unsloth from PyPI, so
+          # studio/setup.ps1 comes out of the RELEASED wheel -- which is why this row and the
+          # overlay one below do not reach the same place. See the pin on the Install step.
           - overlay: false
           # This ref's studio/setup.ps1 and install_python_stack.py, via
           # UNSLOTH_CI_SOURCE_OVERLAY (install.ps1:2643). Without it a branch changing
@@ -1566,20 +1519,18 @@ jobs:
             *>&1 | Tee-Object -FilePath logs/virginity.log
           exit $LASTEXITCODE
 
-      # AFTER the virginity assertion, so that assertion still proves what it says. A fresh
-      # container ships an almost empty trusted-root store while a real desktop fills it
-      # via automatic root update, so seeding makes this MORE representative. Needed
-      # because studio/install_node_prebuilt.py downloads Node with bare
-      # urllib.request.urlopen, reads the empty Windows ROOT store and gets
-      # CERTIFICATE_VERIFY_FAILED; uv and pip bundle certifi. Reported separately.
+      # AFTER the virginity assertion, so that still proves what it says. A fresh container
+      # ships an almost empty trusted-root store while a real desktop fills it via automatic
+      # root update, so seeding makes this MORE representative. Needed because
+      # studio/install_node_prebuilt.py downloads Node with bare urllib.request.urlopen and
+      # gets CERTIFICATE_VERIFY_FAILED off the empty ROOT store; uv and pip bundle certifi.
       - name: Seed the container's trusted root CA store
         shell: pwsh
         run: |
-          # -generateSSTFromWU pulls each root from ctldl.windowsupdate.com, which times
-          # out often enough to be the leg's main flake (staging run 30423072537 died on
-          # WinHttp 12002 while the sibling row seeded fine). Retry, but never tolerate a
-          # total failure: without the roots Node's urllib download later fails with
-          # CERTIFICATE_VERIFY_FAILED.
+          # -generateSSTFromWU pulls each root from ctldl.windowsupdate.com, which times out
+          # often enough to be this leg's main flake (staging run 30423072537 died on WinHttp
+          # 12002 while the sibling row seeded fine). Retry, but never tolerate total
+          # failure: without the roots Node's urllib download fails on cert verification.
           for ($i = 1; $i -le 3; $i++) {
             docker exec virgin cmd /c "certutil -generateSSTFromWU C:\roots.sst && certutil -addstore -f Root C:\roots.sst" `
               *>&1 | Select-Object -Last 15
@@ -1595,17 +1546,15 @@ jobs:
       - name: Install into the virgin container
         id: install
         shell: pwsh
-        # RELEASE-LAG PIN, overlay=false only. A Server Core container has no Microsoft
-        # Store and so no winget, ever, and studio/setup.ps1 used to hard-stop on a
-        # winget-only git gate and reach for winget again for the VC++ runtime. #7549
-        # relaxed both and this branch has it, but the released wheel does not: unpacking
-        # unsloth 2026.7.5 (uploaded 2026-07-23, #7549 landed on the 28th) shows its
-        # setup.ps1 still carrying the old gate, so the row that deliberately installs
-        # from PyPI cannot get past it. Release lag, not a product gap; nothing in this
-        # branch can change it, only the next RELEASE, not a merge. The overlay row runs
-        # the same install against this ref's setup.ps1 and gates unconditionally, and
-        # the step below accepts only that exact signature, hard-erroring the moment the
-        # released wheel catches up.
+        # RELEASE-LAG PIN, overlay=false only. A Server Core container has no Microsoft Store
+        # and so no winget, ever, and studio/setup.ps1 used to hard-stop on a winget-only git
+        # gate and reach for winget again for the VC++ runtime. #7549 relaxed both and this
+        # branch has it, the released wheel does not: unpacking unsloth 2026.7.5 (uploaded
+        # 2026-07-23, #7549 landed on the 28th) shows its setup.ps1 still carrying the old
+        # gate, so the row that installs from PyPI on purpose cannot get past it. Release
+        # lag, not a product gap: only the next RELEASE clears it, not a merge. The overlay
+        # row runs the same install against this ref's setup.ps1 and gates unconditionally,
+        # and the step below accepts only that signature, erroring the moment it catches up.
         continue-on-error: ${{ !matrix.overlay }}
         run: |
           $overlayArg = if ('${{ matrix.overlay }}' -eq 'true') { 'C:\ci' } else { '' }
@@ -1614,11 +1563,11 @@ jobs:
             -Overlay "$overlayArg" *>&1 | Tee-Object -FilePath logs/install-outer.log
           exit $LASTEXITCODE
 
-      # The overlay row runs this ref's studio/setup.ps1, so it carries #7549 and has to
+      # The overlay row runs this ref's studio/setup.ps1, so it carries #7549 and must
       # install end to end. The in-container harness already asserts the venv interpreter,
-      # the unsloth CLI, `import torch`, the no-winget path, the overlay marker and
-      # nobuild, and exits 1 listing every failure -- so the Install step gating is most
-      # of the assertion. Added here is the part this lane alone can prove.
+      # the CLI, `import torch`, the no-winget path, the overlay marker and nobuild, exiting
+      # 1 with every failure listed, so the Install step gating is most of the assertion.
+      # What follows is the part this lane alone can prove.
       - name: Assert the virgin container install proved what this lane exists for
         if: matrix.overlay
         shell: pwsh
@@ -1646,11 +1595,10 @@ jobs:
             Write-Host '::error::setup.ps1 never reported git as absent-but-not-required, so this container was not gitless and the relaxed gate went untested'
             exit 1
           }
-          # VC++: this container is the ONLY environment in the workflow whose System32 does
-          # not already ship the 2015-2022 runtime (the hosted legs cannot remove it
-          # without breaking the runner), so it is the only place the direct aka.ms
-          # download can be proved to run rather than be short-circuited by
-          # Test-VCRedistInstalled. Both halves: the fallback was taken, and it worked.
+          # VC++: the ONLY environment here whose System32 does not already ship the
+          # 2015-2022 runtime (the hosted legs cannot remove it without breaking the runner),
+          # so the only place the direct aka.ms download can be shown to run rather than be
+          # short-circuited by Test-VCRedistInstalled. Both halves: taken, and it worked.
           if (-not ($log -match 'downloading the runtime directly')) {
             Write-Host '::error::Ensure-VCRedist never took the direct-download fallback, so a container with no VC++ runtime and no winget did not exercise it'
             exit 1
@@ -1659,16 +1607,14 @@ jobs:
             Write-Host '::error::the direct VC++ runtime download ran but left the runtime uninstalled'
             exit 1
           }
-          # The harness already ran `import torch` against the managed interpreter, which is
-          # what needs VCRUNTIME140_1.dll; this announces that the DLL got there rather
-          # than having been there all along.
+          # The harness already ran `import torch` against the managed interpreter, which
+          # needs VCRUNTIME140_1.dll; this says the DLL got there rather than always being.
           Write-Host '::notice::no Store, no winget, no git and no preinstalled VC++ runtime, and the install completed anyway'
 
-      # RELEASE-LAG PIN (overlay=false). See the Install step: this row installs unsloth
-      # from PyPI on purpose and the released setup.ps1 predates #7549. continue-on-error
-      # would otherwise tolerate a bootstrap outage or an unrelated early exit exactly like
-      # the intended diagnostic, so every branch here but the pinned failure exits 1 and
-      # fails the (required) job.
+      # RELEASE-LAG PIN (overlay=false). See the Install step: this row installs from PyPI on
+      # purpose and the released setup.ps1 predates #7549. continue-on-error would otherwise
+      # tolerate a bootstrap outage or an unrelated early exit like the intended diagnostic,
+      # so every branch but the pinned failure exits 1 and fails the (required) job.
       - name: Assert the released-wheel row failed only on release lag
         if: always() && !matrix.overlay && steps.install.outcome != 'skipped'
         shell: pwsh
@@ -1682,24 +1628,21 @@ jobs:
             exit 1
           }
           $log = Get-Content logs/install-outer.log -Raw
-          # The pinned signature is the OLD gate wording, which #7549 deleted. Its
-          # disappearance from a released wheel is the flip condition; until then a failure
-          # anywhere else has to be red.
+          # The pinned signature is the OLD gate wording #7549 deleted; its disappearance
+          # from a released wheel is the flip condition, and anything else stays red.
           $gitGate = $log -match 'Git is required but could not be installed automatically'
           $vcGate  = $log -match 'torch failed to import'
           if (-not ($gitGate -or $vcGate)) {
             Write-Host '::error::the container install failed at neither the released winget-only git gate nor the missing VC++ runtime; this is a new failure'
             exit 1
           }
-          # `-or` on its own is too generous. virgin-windows-install.ps1:97 runs the torch
-          # assertion whenever the venv interpreter exists, whatever the installer did, and
-          # this image has no VC++ runtime, so ANY failure after venv creation -- a Node
-          # download, a setup step, a bad prebuilt -- arrives here carrying the $vcGate
-          # text and was accepted as the pinned outcome. Enumerate what the harness
-          # actually recorded instead: it prints one `::error::<reason>` per entry of its
-          # $failures list (that script:151), and every one has to be a pinned gate.
-          # Anchored, because it also dumps the install log tail indented two spaces and
-          # those copies must not count.
+          # `-or` alone is too generous: virgin-windows-install.ps1:97 runs the torch
+          # assertion whenever the venv interpreter exists, and this image has no VC++
+          # runtime, so ANY post-venv failure -- a Node download, a setup step, a bad
+          # prebuilt -- arrives carrying the $vcGate text and was accepted as the pin.
+          # Enumerate what the harness recorded instead: one `::error::<reason>` per entry of
+          # its $failures list (that script:151), each of which must be a pinned gate.
+          # Anchored, because it also dumps the log tail indented two spaces.
           $recorded = @(Get-Content logs/install-outer.log |
             ForEach-Object { if ($_ -match '^::error::(.+)$') { $Matches[1].Trim() } })
           Write-Host "recorded failures: $($recorded.Count)"
@@ -1716,8 +1659,8 @@ jobs:
             Write-Host "::error::the container install recorded a failure outside the pinned gates: $($unexpected -join '; '); this is a new failure"
             exit 1
           }
-          # And a non-zero exit has to BE the git gate: without this a post-venv failure
-          # that also exits 1 is indistinguishable from the pinned one.
+          # And a non-zero exit has to BE the git gate, or a post-venv failure that also
+          # exits 1 is indistinguishable from the pinned one.
           if (($recorded | Where-Object { $_ -like 'installer exited*' }) -and
               -not ($gitGate -and ($log -match 'unsloth studio setup failed \(exit code 1\)'))) {
             Write-Host '::error::the installer exited non-zero somewhere other than the winget-only git gate in the released studio/setup.ps1; this is a new failure'
