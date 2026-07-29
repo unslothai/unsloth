@@ -957,7 +957,9 @@ def test_run_reexec_forwards_resolved_frontend_on_public_launch(monkeypatch, tmp
 
     exec_argv = [argv for kind, argv in events if kind == "exec"][0]
     assert "--frontend" in exec_argv, exec_argv
-    assert exec_argv[exec_argv.index("--frontend") + 1] == "/fake/studio/frontend/dist", exec_argv
+    # str(Path(...)), not the literal: Windows renders it with backslashes.
+    expected_dist = str(Path("/fake/studio/frontend/dist"))
+    assert exec_argv[exec_argv.index("--frontend") + 1] == expected_dist, exec_argv
 
 
 def test_run_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):

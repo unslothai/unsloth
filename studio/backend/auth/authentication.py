@@ -16,7 +16,6 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
-    validate_api_key,
     validate_api_key_with_credential,
     verify_refresh_token,
 )
