@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import sys
+import time
 import urllib.error
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -268,6 +269,35 @@ def test_npm_executable_uses_studio_managed_node(monkeypatch, tmp_path):
     monkeypatch.setattr(node_runtime, "resolve_node_executable", lambda: str(node))
 
     assert start._npm_executable() == str(npm)
+
+
+def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
+    # WSL inherits the Windows PATH, so a shim can precede a usable native npm.
+    native = "/usr/bin/npm"
+    shim = "/mnt/c/Program Files/nodejs/npm"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs:/usr/bin")
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
+
+    def fake_which(name, path = None):
+        if os.path.isabs(name):
+            return name
+        return {"/mnt/c/Program Files/nodejs": shim, "/usr/bin": native}.get(path)
+
+    monkeypatch.setattr(start.shutil, "which", fake_which)
+
+    assert start._npm_executable() == native
+
+
+def test_npm_install_hint_without_resolvable_home(monkeypatch):
+    # A bare container UID has no home; the hint must still build so an already
+    # installed agent can launch.
+    def no_home():
+        raise RuntimeError("no home directory")
+
+    monkeypatch.setattr(start.Path, "home", staticmethod(no_home))
+
+    assert start._npm_install_hint("@openai/codex") == "npm install -g @openai/codex"
 
 
 def test_managed_node_probe_tolerates_unsupported_path_flavour(monkeypatch):
@@ -1893,7 +1923,8 @@ def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     assert result.exit_code == 0, result.output
     home = Path(captured["home"])
     assert captured["config_present"]  # config existed while codex ran
-    assert "unsloth-codex-" in home.name  # an ephemeral temp dir, not ~/.codex
+    parent = start._ephemeral_session_parent("codex")
+    assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
     assert not home.exists()  # cleaned up after the agent exits
 
 
@@ -2336,6 +2367,8 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
+    assert "--reasoning" not in cmd
+    assert env["LLAMA_ARG_REASONING"] == "off"
     assert "--gpu-memory-mode" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
@@ -2345,10 +2378,17 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
         "http://127.0.0.1:8888",
         "unsloth/M-GGUF",
         start.LoadOptions(),
-        start.ServerOptions(enable_tools = True, tool_call_healing = False, tool_call_nudging = False),
+        start.ServerOptions(
+            enable_tools = True,
+            tool_call_healing = False,
+            tool_call_nudging = False,
+            reasoning = "auto",
+        ),
     )
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--enable-tools" in cmd and "--disable-tools" not in cmd
+    assert "--reasoning" not in cmd
+    assert env["LLAMA_ARG_REASONING"] == "auto"
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
 
@@ -2461,7 +2501,25 @@ def test_require_studio_no_sampling_warning_without_pins(monkeypatch, capsys):
         server_options = start.ServerOptions(enable_tools = True),
     )
     assert base == BASE and server is None
-    assert "sampling" not in capsys.readouterr().err.lower()
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("reasoning", ["on", "off", "auto"])
+def test_require_studio_warns_on_explicit_reasoning_when_reusing_server(
+    monkeypatch, capsys, reasoning
+):
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        server_options = start.ServerOptions(reasoning = reasoning),
+    )
+    assert base == BASE and server is None
+    err = capsys.readouterr().err
+    assert "already running" in err
+    assert f"--reasoning {reasoning}" in err
+    assert "unsloth studio stop" in err
 
 
 def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
@@ -2496,11 +2554,14 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
             "0.3",
             "--top-k",
             "40",
+            "--reasoning",
+            "on",
         ],
     )
     assert result.exit_code == 0, result.output
     so = captured["server_options"]
     assert so.temperature == 0.3 and so.top_k == 40 and so.top_p is None
+    assert so.reasoning == "on"
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
@@ -3024,6 +3085,8 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     cmd = captured["command"]
     assert cmd[1] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
+    assert "--reasoning" not in cmd
+    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "off"
     assert cmd[cmd.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
@@ -5046,8 +5109,98 @@ def test_session_config_default_launch_is_ephemeral(monkeypatch, tmp_path):
     monkeypatch.setattr(start, "_agents_config_root", lambda: agents_root)
     with start._session_config("codex", launch = True) as home:
         assert home.exists()
-        assert "unsloth-codex-" in home.name
-        assert home.parent == agents_root / ".tmp"
+        parent = start._ephemeral_session_parent("codex")
+        assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
+        if parent is None:
+            assert home.parent == agents_root / ".tmp"
+    assert not home.exists()
+
+
+def test_session_config_codex_uses_short_ephemeral_parent(monkeypatch, tmp_path):
+    # Windows Codex checks out its curated plugins under CODEX_HOME/.tmp/plugins.
+    # Put its throwaway home outside the longer system temp path so that checkout
+    # stays below legacy MAX_PATH and Codex does not reject temp-dir PATH helpers.
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    monkeypatch.setattr(
+        start,
+        "_ephemeral_session_parent",
+        lambda agent: short_parent if agent == "codex" else None,
+    )
+
+    with start._session_config("codex", launch = True) as home:
+        assert home.parent == short_parent
+        assert home.name.startswith("u-codex-")
+        assert home.exists()
+    assert not home.exists()
+
+
+def test_locked_file_windows_blocking_retries_until_acquired(monkeypatch, tmp_path):
+    attempts = []
+    sleeps = []
+
+    def locking(_fd, mode, _length):
+        if mode == 1:
+            attempts.append(mode)
+            if len(attempts) < 3:
+                raise PermissionError(start.errno.EACCES, "busy")
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK = 1, LK_UNLCK = 2, locking = locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start.time, "sleep", sleeps.append)
+
+    with start._locked_file(tmp_path / "lock") as acquired:
+        assert acquired
+    assert len(attempts) == 3
+    assert sleeps == [0.05, 0.05]
+
+
+def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monkeypatch, tmp_path):
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    stale = short_parent / "u-codex-abandoned"
+    stale.mkdir()
+    (stale / ".active.lock").write_bytes(b"\0")
+    (stale / "plugin-checkout").write_text("left behind")
+    old = time.time() - start._CODEX_EPHEMERAL_STALE_SECONDS - 1
+    os.utime(stale / ".active.lock", (old, old))
+    recent = short_parent / "u-codex-surviving-child"
+    recent.mkdir()
+    (recent / ".active.lock").write_bytes(b"\0")
+    monkeypatch.setattr(
+        start,
+        "_ephemeral_session_parent",
+        lambda agent: short_parent if agent == "codex" else None,
+    )
+
+    with start._session_config("codex", launch = True) as first:
+        assert not stale.exists()
+        assert recent.exists()
+        with start._session_config("codex", launch = True) as second:
+            assert first.exists()
+            assert second.exists()
+            assert first != second
+        assert first.exists()
+        assert not second.exists()
+    assert not first.exists()
+
+
+def test_session_config_serializes_normal_short_home_deletion(monkeypatch, tmp_path):
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    monkeypatch.setattr(start, "_ephemeral_session_parent", lambda _agent: short_parent)
+    original_rmtree = start.shutil.rmtree
+
+    def checked_rmtree(path, *args, **kwargs):
+        if path.parent == short_parent and path.name.startswith("u-codex-"):
+            with start._locked_file(short_parent / ".cleanup.lock", blocking = False) as unlocked:
+                assert not unlocked
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(start.shutil, "rmtree", checked_rmtree)
+    with start._session_config("codex", launch = True) as home:
+        assert home.exists()
     assert not home.exists()
 
 
@@ -5095,8 +5248,10 @@ def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypa
     monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
     captured = _capture_launch(monkeypatch, [agent])
     home = captured["env"][_RESUME_ENV_VAR[agent]]
-    assert f"unsloth-{agent}-" in home
-    assert Path(home).parent == tmp_path / "agents" / ".tmp"
+    parent = start._ephemeral_session_parent(agent)
+    assert start._ephemeral_session_prefix(agent, parent) in home
+    if parent is None:
+        assert Path(home).parent == tmp_path / "agents" / ".tmp"
 
 
 def test_resume_opencode_config_in_stable_dir(fake_studio, tmp_path, monkeypatch):

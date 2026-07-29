@@ -305,7 +305,9 @@ def _find_setup_script() -> Optional[Path]:
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded for `unsloth studio run`
-_PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective for plain `unsloth studio`
+# New Chat leaves the previous conversation generating and the admission queue caps decodes at
+# the slot count, so at 1 every extra chat queues. _slots_that_fit_on_gpu() may cut it back.
+_PARALLEL_DEFAULT_PLAIN = 4
 
 
 def _resolve_secure(secure: bool, not_secure: bool) -> bool:
@@ -1261,8 +1263,8 @@ def studio_default(
         max = _PARALLEL_MAX,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` "
-            f"defaults to {_PARALLEL_DEFAULT_RUN}."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            "(Parallel Slots) override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -1879,7 +1881,8 @@ def run(
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
+            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Studio "
+            "run settings (Parallel Slots) can override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(

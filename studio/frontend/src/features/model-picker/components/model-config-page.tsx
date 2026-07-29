@@ -46,6 +46,8 @@ import {
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
   MTP_SPECULATIVE_TYPES,
+  N_PARALLEL_MAX,
+  N_PARALLEL_MIN,
   type PerModelConfig,
   SPECULATIVE_TYPES,
   deletePerModelConfig,
@@ -87,6 +89,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.kvCacheDtype != null ||
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
+    config.nParallel != null ||
     config.tensorParallel ||
     config.chatTemplateOverride != null ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
@@ -540,6 +543,44 @@ function GgufAdvancedSettings({
           />
         </div>
       )}
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Parallel Slots</span>
+          <InfoHint>
+            llama-server decode slots (--parallel) for concurrent requests.
+            Leave blank for the server default. More slots share the context
+            pool and use more VRAM; if they don't fit on GPU, fewer slots are
+            launched.
+          </InfoHint>
+        </div>
+        <input
+          type="number"
+          min={N_PARALLEL_MIN}
+          max={N_PARALLEL_MAX}
+          step={1}
+          value={config.nParallel ?? ""}
+          placeholder="auto"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ nParallel: null });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({
+                nParallel: Math.max(
+                  N_PARALLEL_MIN,
+                  Math.min(N_PARALLEL_MAX, parsed),
+                ),
+              });
+            }
+          }}
+          aria-label="Parallel decode slots"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
 
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">

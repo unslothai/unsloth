@@ -24,6 +24,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
@@ -2229,6 +2230,24 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
     assert "search_knowledge_base" in reprompt["content"]
     assert "web_search" not in reprompt["content"]
     assert "python" not in reprompt["content"]
+
+
+def test_reprompt_is_announced_on_the_status_channel():
+    # The re-prompted turn is hidden, so the badge is the only sign of life.
+    # Blank still comes first: the route resets its text cursor only on that.
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = True)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
+    # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
+    assert index > 0 and statuses[index - 1] == ""
+    assert statuses[-1] == ""
+
+
+def test_reprompt_status_absent_without_a_nudge():
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = False)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS not in statuses
 
 
 def test_reprompt_suppressed_when_auto_heal_disabled():
@@ -5051,3 +5070,27 @@ class TestFalseAlarmMarkerProse:
         assert [c[0] for c in exec_fn.calls] == ["web_search", "python"]
         assistant = next(m for m in convs[1] if m["role"] == "assistant")
         assert '"python"' not in (assistant.get("content") or "")
+
+
+def test_both_tool_loops_say_they_are_waiting_for_approval():
+    """A gated call must not report "Running" in either loop.
+
+    The GGUF loop was fixed first and the safetensors one was missed, so the
+    badge counted up "Running ..." against a prompt nobody had answered yet.
+    Asserted on the source so the two paths cannot drift apart again.
+    """
+    import ast
+    import os
+
+    backend = os.path.join(os.path.dirname(__file__), "..")
+    for name in ("core/inference/safetensors_agentic.py", "core/inference/llama_cpp.py"):
+        with open(os.path.join(backend, name), encoding = "utf-8") as f:
+            tree = ast.parse(f.read())
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "awaiting_approval_status"
+        ]
+        assert calls, f"{name} still announces a gated tool call as running"
