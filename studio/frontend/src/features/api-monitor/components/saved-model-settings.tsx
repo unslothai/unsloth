@@ -32,6 +32,9 @@ function describeOverride(override: ApiModelOverride): string[] {
         : `spec ${override.speculative_type}`,
     );
   }
+  if (override.n_parallel) {
+    parts.push(`${override.n_parallel} parallel slots`);
+  }
   if (override.tensor_parallel) {
     parts.push("tensor parallel");
   }

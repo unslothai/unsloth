@@ -34,6 +34,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  n_parallel?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
   tensor_parallel?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   chat_template_override?: string;
@@ -102,6 +104,10 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.specDraftNMax && config.specDraftNMax > 0) {
     payload.spec_draft_n_max = config.specDraftNMax;
   }
+  // Blank follows the server-wide --parallel default, which is the app default here.
+  if (config.nParallel && config.nParallel > 0) {
+    payload.n_parallel = config.nParallel;
+  }
   if (config.tensorParallel) {
     payload.tensor_parallel = true;
   }
@@ -143,6 +149,15 @@ export interface PutModelOverrideOptions {
    * without the server losing anything it holds.
    */
   fillAbsentFields?: boolean;
+  /**
+   * Clear the fields this UI mirrors but leave the server's own launch flags alone.
+   *
+   * Dropping a local entry to stay inside the storage budget is not the user asking
+   * to forget that model, so it must not take `llama_extra_args` the settings API
+   * set and the settings page can neither show nor restore. The route still drops
+   * the row outright once nothing is left in it.
+   */
+  keepLaunchFlags?: boolean;
 }
 
 export async function putModelOverride(
@@ -195,11 +210,13 @@ async function sendModelOverride(
       // Say which operation this is: an all-default save carries no fields, which is
       // shape-identical to "forget this model", and guessing wrong wipes launch flags
       // the UI cannot show or restore.
-      remove: config === null,
+      remove: config === null && !options?.keepLaunchFlags,
       // Launch flags have no UI control, so the backend preserves them when omitted.
       // Forgetting means forgetting all of it, so that path sends an explicit [].
-      // biome-ignore lint/style/useNamingConvention: API schema
-      ...(config === null ? { llama_extra_args: [] } : {}),
+      ...(config === null && !options?.keepLaunchFlags
+        ? // biome-ignore lint/style/useNamingConvention: API schema
+          { llama_extra_args: [] }
+        : {}),
       ...toApiOverride(config),
     }),
   });
@@ -222,8 +239,9 @@ export function syncModelOverride(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
+  options?: PutModelOverrideOptions,
 ): void {
-  void putModelOverride(modelId, ggufVariant, config).catch(
+  void putModelOverride(modelId, ggufVariant, config, options).catch(
     (error: unknown) => {
       console.warn(
         "Failed to mirror model settings to the server; an API load of this model will use defaults.",

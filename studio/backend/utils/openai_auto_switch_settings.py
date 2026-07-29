@@ -285,6 +285,12 @@ VALID_SPECULATIVE_TYPES = frozenset(
 MTP_SPECULATIVE_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp"})
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 
+# Mirrors PARALLEL_MIN/MAX in core/inference/llama_server_args.py (the LoadRequest
+# n_parallel bounds). Mirrored rather than imported: that module owns the extra-args
+# allow-list this one must stay out of. test_parallel_slots_per_load.py pins them together.
+PARALLEL_SLOTS_MIN = 1
+PARALLEL_SLOTS_MAX = 64
+
 MAX_SEQ_LENGTH_CEILING = 1048576
 MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
 # Highest device index a stored gpu_ids entry may name. Also bounds how many
@@ -349,6 +355,14 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
+
+    # Blank means "follow the server-wide --parallel default", which is also what an
+    # out-of-range value falls back to.
+    n_parallel = _bounded_int(
+        payload.get("n_parallel"), minimum = PARALLEL_SLOTS_MIN, maximum = PARALLEL_SLOTS_MAX
+    )
+    if n_parallel:
+        entry["n_parallel"] = n_parallel
 
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
@@ -446,6 +460,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs[target] = override[source]
 
     if is_gguf:
+        # Slots are a llama-server flag, and the picker sends them for GGUF only.
+        if override.get("n_parallel") is not None:
+            kwargs["n_parallel"] = override["n_parallel"]
         if override.get("gpu_memory_mode") is not None:
             kwargs["gpu_memory_mode"] = override["gpu_memory_mode"]
         if override.get("gpu_layers") is not None:

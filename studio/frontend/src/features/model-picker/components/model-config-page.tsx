@@ -949,8 +949,12 @@ export function ModelConfigPage({
     }
     // Saving can push the local map over budget and drop other models, whose server
     // entries would keep being applied with nothing in the UI able to forget them.
+    // Not a Forget though: the user never asked to drop these, so only the mirrored
+    // fields go and launch flags set through the API stay.
     for (const dropped of evicted) {
-      syncModelOverride(dropped.modelId, dropped.ggufVariant, null);
+      syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+        keepLaunchFlags: true,
+      });
     }
     if (effectivePersistenceOnly) {
       if (saveFailed) {

@@ -41,6 +41,8 @@ from utils.openai_auto_switch_settings import (
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
     MAX_GPU_ID,
+    PARALLEL_SLOTS_MAX,
+    PARALLEL_SLOTS_MIN,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
     get_model_overrides,
@@ -170,6 +172,11 @@ class ModelOverridePayload(BaseModel):
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
+    # Parallel decode slots (llama-server --parallel), GGUF-only like the picker.
+    # None follows the server-wide default set at launch.
+    n_parallel: Optional[int] = Field(
+        default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX
+    )
     tensor_parallel: bool = False
     # Validated in bytes below, not by max_length: pydantic counts characters, so a
     # multi-byte template would pass here and be dropped by the UTF-8 normalizer.
@@ -435,6 +442,7 @@ def update_openai_auto_switch_override(
                 kv_cache_dtype = payload.kv_cache_dtype,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
+                n_parallel = payload.n_parallel,
                 tensor_parallel = payload.tensor_parallel,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

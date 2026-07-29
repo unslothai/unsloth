@@ -4258,6 +4258,82 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
 
 
+def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
+    # Parallel decode slots are a per-model setting the picker sends on every GGUF
+    # load. Without them here an API auto-switch of the same model silently falls
+    # back to the server-wide --parallel default, and llama_extra_args cannot stand
+    # in for it: --parallel is on the managed denylist.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"n_parallel": 8})
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].n_parallel == 8
+
+
+def test_parallel_slots_are_stored_and_gated_on_gguf():
+    override = settings.normalize_model_override({"n_parallel": 8})
+    assert override == {"n_parallel": 8}
+    # Blank, out of range and non-integer all mean "follow the server-wide default".
+    for bad in (None, 0, -1, settings.PARALLEL_SLOTS_MAX + 1, "many", True):
+        assert "n_parallel" not in settings.normalize_model_override({"n_parallel": bad})
+
+    gguf = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert gguf["n_parallel"] == 8
+    # A safetensors load has no llama-server slots, exactly as the picker gates it.
+    assert "n_parallel" not in settings.model_override_load_kwargs(override, is_gguf = False)
+    LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+
+
+def test_override_route_persists_parallel_slots(monkeypatch):
+    # The mirror the picker writes has to carry the field, or a config whose only
+    # change is the slot count saves as an empty entry.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF:Q4_K_M", n_parallel = 8),
+        "tester",
+    )
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"] == {"n_parallel": 8}
+
+
+def test_eviction_cleanup_clears_mirrored_fields_but_keeps_launch_flags(monkeypatch):
+    # Dropping a local entry to stay inside the browser's storage budget is not the
+    # user forgetting the model, so the cleanup sends remove=false with no fields.
+    # That must stop the mirrored settings applying without taking launch flags the
+    # settings API set and the settings page can neither show nor restore.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        custom_context_length = 32768,
+        kv_cache_dtype = "q8_0",
+    )
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF:Q4_K_M", remove = False),
+        "tester",
+    )
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"] == {"llama_extra_args": ["--flash-attn"]}
+
+    # Nothing server-owned left, so the row goes rather than lingering empty.
+    settings.set_model_override("unsloth/C-GGUF:Q4_K_M", custom_context_length = 32768)
+    gone = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/C-GGUF:Q4_K_M", remove = False),
+        "tester",
+    )
+    assert "unsloth/C-GGUF:Q4_K_M" not in gone.overrides
+
+
 def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
     # Settings are per quant, so Q4_K_M and Q8_0 of one repo are separate entries
     # and the bare repo id is only the fallback.

@@ -693,6 +693,37 @@ def test_parallel_slots_setting_wired_end_to_end():
     assert "key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}" in sidebar
 
 
+def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
+    """The server mirror is the hop an OpenAI-compatible auto-switch load reads,
+    and it is the browser's only way to express a per-model setting to a load no
+    browser makes. A slot count missing from it silently reverts that load to the
+    server-wide --parallel default, and llama_extra_args cannot stand in because
+    --parallel is denylisted. A config whose only change is the slot count also
+    serializes to an empty payload, so the one-time backfill sends nothing and
+    still marks itself done."""
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "n_parallel?: number;" in api
+    assert (
+        "if (config.nParallel && config.nParallel > 0) { payload.n_parallel = config.nParallel; }"
+        in api
+    )
+    # The monitor lists what a remote load applies, so an entry holding only slots
+    # must not read as "App defaults".
+    monitor = " ".join(_read("features/api-monitor/components/saved-model-settings.tsx").split())
+    assert "if (override.n_parallel) {" in monitor
+
+    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
+    assert "n_parallel: Optional[int] = Field(" in route
+    assert "n_parallel = payload.n_parallel," in route
+    store = (
+        WORKDIR / "studio" / "backend" / "utils" / "openai_auto_switch_settings.py"
+    ).read_text(encoding = "utf-8")
+    assert 'entry["n_parallel"] = n_parallel' in store
+    # GGUF-only, like the picker: a safetensors load has no llama-server slots.
+    gguf_block = store.split("    if is_gguf:", 1)[1]
+    assert 'kwargs["n_parallel"] = override["n_parallel"]' in gguf_block
+
+
 def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     """`nParallel` is the editable control ("blank = follow the server default")
     and `loadedNParallel` the rollback baseline. A success path that sends no
@@ -931,13 +962,28 @@ def test_evicted_local_configs_drop_their_server_overrides():
     """savePerModelConfig evicts older models when the map exceeds its budget.
     Those models keep a server override that API loads still apply, with nothing
     left in the UI showing it or able to forget it, so eviction has to propagate.
+
+    It propagates as a clear, not a Forget: saving one model silently drops the
+    oldest OTHER model, and sending the full remove would also take llama_extra_args
+    that only the settings API writes and no UI can show or restore.
     """
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "const evicted: { modelId: string; ggufVariant: string | null }[] = [];" in src
     assert (
-        "for (const dropped of evicted) { syncModelOverride(dropped.modelId, dropped.ggufVariant, null); }"
-        in src
+        "for (const dropped of evicted) { syncModelOverride(dropped.modelId, "
+        "dropped.ggufVariant, null, { keepLaunchFlags: true, }); }" in src
     )
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "keepLaunchFlags?: boolean;" in api
+    # remove=false with no fields: the route re-supplies the stored flags and drops
+    # the row outright once nothing server-owned is left in it.
+    assert "remove: config === null && !options?.keepLaunchFlags," in api
+    assert (
+        "...(config === null && !options?.keepLaunchFlags ? { llama_extra_args: [] } : {}),"
+        in api.replace("// biome-ignore lint/style/useNamingConvention: API schema ", "")
+    )
+    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
+    assert 'requested_extra_args = stored.get("llama_extra_args")' in route, "the rule this mirrors"
 
     # The eviction path must report what it dropped, decoded back into a model id
     # and variant rather than the normalized storage key.
