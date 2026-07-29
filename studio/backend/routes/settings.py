@@ -487,7 +487,9 @@ def update_openai_auto_switch_override(
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
             if legacy_id and legacy_id != target_id:
                 set_model_override(
-                    legacy_id, llama_extra_args = [], max_seq_length = None,
+                    legacy_id,
+                    llama_extra_args = [],
+                    max_seq_length = None,
                 )
         else:
             # Save under the key a load resolves to, as the removal branch does.

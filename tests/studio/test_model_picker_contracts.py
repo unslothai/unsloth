@@ -1567,9 +1567,7 @@ def test_cached_repo_settings_key_follows_the_row_not_the_view():
     handle: Run from Discover looked up the snapshot path, found nothing, and
     loaded with default context, GPU and template."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert (
-        'if (kind !== "cache" && resource.source !== "hub_cache") {' in page
-    )
+    assert 'if (kind !== "cache" && resource.source !== "hub_cache") {' in page
 
 
 def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():

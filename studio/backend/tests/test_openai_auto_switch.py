@@ -5027,11 +5027,13 @@ def test_forget_clears_the_filename_derived_key_a_load_still_reads(monkeypatch):
 
     _mock_override_store(monkeypatch)
     settings.set_model_override(
-        "/models/Qwen3-8B-Q4_K_M.gguf:q4_k_m", max_seq_length = 8192,
+        "/models/Qwen3-8B-Q4_K_M.gguf:q4_k_m",
+        max_seq_length = 8192,
     )
     settings_route.update_openai_auto_switch_override(
         settings_route.ModelOverridePayload(
-            model_id = "/models/Qwen3-8B-Q4_K_M.gguf", remove = True,
+            model_id = "/models/Qwen3-8B-Q4_K_M.gguf",
+            remove = True,
         ),
         "tester",
     )
@@ -5048,13 +5050,12 @@ def test_forget_leaves_another_file_own_derived_key_alone(monkeypatch):
     settings.set_model_override("/models/Other-Q4_K_M.gguf:q4_k_m", max_seq_length = 4096)
     settings_route.update_openai_auto_switch_override(
         settings_route.ModelOverridePayload(
-            model_id = "/models/Qwen3-8B-Q4_K_M.gguf", remove = True,
+            model_id = "/models/Qwen3-8B-Q4_K_M.gguf",
+            remove = True,
         ),
         "tester",
     )
-    assert settings.get_model_override("/models/Other-Q4_K_M.gguf:Q4_K_M")[
-        "max_seq_length"
-    ] == 4096
+    assert settings.get_model_override("/models/Other-Q4_K_M.gguf:Q4_K_M")["max_seq_length"] == 4096
 
 
 def test_forget_of_a_repo_quant_key_derives_nothing(monkeypatch):
