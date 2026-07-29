@@ -8,32 +8,26 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
-THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding="utf-8")
-APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding="utf-8")
-CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(
-    encoding="utf-8"
+THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = "utf-8")
+APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
+CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
+MODEL_RUNTIME = (FRONTEND / "features/chat/hooks/use-chat-model-runtime.ts").read_text(
+    encoding = "utf-8"
 )
-MODEL_RUNTIME = (
-    FRONTEND / "features/chat/hooks/use-chat-model-runtime.ts"
-).read_text(encoding="utf-8")
-CONFIRM_MODEL_SWAP = (
-    FRONTEND / "features/chat/utils/confirm-stop-running-chats.ts"
-).read_text(encoding="utf-8")
-RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(
-    encoding="utf-8"
+CONFIRM_MODEL_SWAP = (FRONTEND / "features/chat/utils/confirm-stop-running-chats.ts").read_text(
+    encoding = "utf-8"
 )
-QUEUE_BOUNDARY = (
-    FRONTEND / "features/chat/utils/prompt-queue-boundary.ts"
-).read_text(encoding="utf-8")
-QUEUED_SETTINGS = (
-    FRONTEND / "features/chat/utils/queued-chat-run-settings.ts"
-).read_text(encoding="utf-8")
-SIDEBAR_ITEMS = (
-    FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts"
-).read_text(encoding="utf-8")
-CLEAR_ALL_CHATS = (
-    FRONTEND / "features/chat/utils/clear-all-chats.ts"
-).read_text(encoding="utf-8")
+RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(encoding = "utf-8")
+QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
+    encoding = "utf-8"
+)
+QUEUED_SETTINGS = (FRONTEND / "features/chat/utils/queued-chat-run-settings.ts").read_text(
+    encoding = "utf-8"
+)
+SIDEBAR_ITEMS = (FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
+    encoding = "utf-8"
+)
+CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_text(encoding = "utf-8")
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -125,8 +119,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
 def test_stop_delete_archive_and_clear_are_thread_scoped():
     stop_listener = _between(
         THREAD,
-        'window.addEventListener(PROMPT_QUEUE_STOP_EVENT',
-        'window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT',
+        "window.addEventListener(PROMPT_QUEUE_STOP_EVENT",
+        "window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT",
     )
     assert "stopPromptQueueRunForThreadIds(threadIds)" in stop_listener
     assert "requestPromptQueueStop(toArchive.map((thread) => thread.id));" in SIDEBAR_ITEMS
