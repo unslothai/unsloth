@@ -19,6 +19,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
+# ── Why the installer lives in a function ──
+# Under `curl ... | sh`, sh is the pipe READER. This file is ~150KB, so a top-level
+# `exit` left most of it unread, the write end failed, and curl tacked
+# "(56) Failure writing output to destination" onto our own error message. Wrapping
+# the body forces sh to parse to the closing brace first, so the pipe always drains
+# (install.ps1 has always had this shape).
+#
+# Body is deliberately NOT reindented: reflowing 4000+ lines would bury the change,
+# and `exit` still exits the shell from inside a function. Do not add
+# `exec < /dev/null`: for a piped shell that closes the script's own source.
+_unsloth_main() {
 
 # ── Output style (aligned with studio/setup.sh) ──
 RULE=""
@@ -4447,3 +4458,8 @@ else
     substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""
 fi
+
+}
+
+# Every byte above is parsed before this line runs, which is the point.
+_unsloth_main "$@"
