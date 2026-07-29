@@ -1037,22 +1037,57 @@ def _write_pid_file(port: int, host: str = ""):
         pass
 
 
+def _legacy_heir() -> "int | None":
+    """Another live server's PID, to hand the legacy studio.pid over to.
+
+    Only one server owns studio.pid at a time, so its exit would otherwise drop
+    the single record an older CLI can read, stranding any sibling that is still
+    serving.
+    """
+    try:
+        paths = sorted(_studio_root().glob(PID_FILE_GLOB))
+    except OSError:
+        return None
+    for path in paths:
+        if _OWN_PID_FILE is not None and path == _OWN_PID_FILE:
+            continue
+        record = _read_pid_record(path)
+        if record is None or record[0] == os.getpid():
+            continue
+        if _pid_alive(record[0]) and _pid_is_studio_backend(record[0], [record[1]]):
+            return record[0]
+    return None
+
+
 def _remove_pid_file():
     """Remove the PID files that belong to this process.
 
     _PID_FILE is checked even when the per-port record was never written, since
     _write_pid_file writes the two independently.
     """
-    for path in ([_OWN_PID_FILE] if _OWN_PID_FILE is not None else []) + [_PID_FILE]:
-        # Nothing here may raise: _graceful_shutdown calls this at the end, and an
-        # unreadable or undeletable record must not abandon the rest of the exit
-        # path. _read_pid_record already swallows OSError/UnicodeDecodeError.
+    # Nothing here may raise: _graceful_shutdown calls this at the end, and an
+    # unreadable or undeletable record must not abandon the rest of the exit
+    # path. _read_pid_record already swallows OSError/UnicodeDecodeError.
+    if _OWN_PID_FILE is not None:
         try:
-            record = _read_pid_record(path) if path.is_file() else None
+            record = _read_pid_record(_OWN_PID_FILE) if _OWN_PID_FILE.is_file() else None
             if record is not None and record[0] == os.getpid():
-                path.unlink(missing_ok = True)
+                _OWN_PID_FILE.unlink(missing_ok = True)
         except OSError:
             pass
+    try:
+        record = _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
+        if record is not None and record[0] == os.getpid():
+            # Hand the pointer to a live sibling rather than deleting it. An
+            # older CLI reads only this file, so dropping it while another
+            # server is still up leaves that server unstoppable.
+            heir = _legacy_heir()
+            if heir is None:
+                _PID_FILE.unlink(missing_ok = True)
+            else:
+                _PID_FILE.write_text(str(heir), encoding = "utf-8")
+    except OSError:
+        pass
 
 
 def _graceful_shutdown(server = None):

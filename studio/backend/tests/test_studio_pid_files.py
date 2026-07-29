@@ -86,13 +86,36 @@ def test_same_port_on_two_binds_does_not_clobber(tmp_path):
     assert len(_files(tmp_path)) == 2
 
 
-def test_remove_pid_file_only_removes_our_own(tmp_path):
+def test_remove_pid_file_only_removes_our_own(tmp_path, monkeypatch):
+    run._write_pid_file(8901)
+    (tmp_path / "studio-8902-8600.pid").write_text("8600", encoding = "utf-8")
+    # Nothing to hand the legacy pointer to, so it goes away with us.
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: pid == os.getpid())
+
+    run._remove_pid_file()
+
+    assert _files(tmp_path) == ["studio-8902-8600.pid"]
+    assert not (tmp_path / "studio.pid").exists()
+
+
+def test_the_legacy_pointer_moves_to_a_live_sibling(tmp_path):
+    # Only one server owns studio.pid. Deleting it on our way out would leave an
+    # older CLI, which reads nothing else, unable to stop the sibling still up.
     run._write_pid_file(8901)
     (tmp_path / "studio-8902-8600.pid").write_text("8600", encoding = "utf-8")
 
     run._remove_pid_file()
 
-    assert _files(tmp_path) == ["studio-8902-8600.pid"]
+    assert (tmp_path / "studio.pid").read_text(encoding = "utf-8").strip() == "8600"
+
+
+def test_the_legacy_pointer_is_not_handed_to_a_dead_sibling(tmp_path, monkeypatch):
+    run._write_pid_file(8901)
+    (tmp_path / "studio-8902-8600.pid").write_text("8600", encoding = "utf-8")
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): False)
+
+    run._remove_pid_file()
+
     assert not (tmp_path / "studio.pid").exists()
 
 

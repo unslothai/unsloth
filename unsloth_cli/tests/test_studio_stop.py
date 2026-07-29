@@ -450,6 +450,52 @@ def test_stop_keeps_a_record_it_cannot_read(monkeypatch, tmp_path):
     assert "cannot read" in (result.output + (result.stderr or "")).lower()
 
 
+def test_stop_does_not_claim_success_when_the_only_record_is_unreadable(monkeypatch, tmp_path):
+    # A server started under sudo leaves a record we cannot read. Printing "no
+    # running server" and exiting 0 tells the user the opposite of the truth.
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
+    path = tmp_path / "studio-8901-8550.pid"
+    path.write_text("8550", encoding = "utf-8")
+    real_read_text = Path.read_text
+
+    def deny(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny)
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 1, "an unreachable server is not a successful stop"
+    output = result.output + (result.stderr or "")
+    assert "no running unsloth server" not in output.lower()
+    assert killed == []
+
+
+def test_stop_reports_failure_when_one_record_is_unreadable_but_another_stops(monkeypatch, tmp_path):
+    # Stopping the servers we can see is still a partial result, and exiting 0
+    # would hide the one we could not.
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550, 8600})
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+    hidden = tmp_path / "studio-8902-8600.pid"
+    hidden.write_text("8600", encoding = "utf-8")
+    real_read_text = Path.read_text
+
+    def deny(self, *args, **kwargs):
+        if self == hidden:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny)
+
+    result = _run_stop(studio_mod)
+
+    assert killed == [8550], "the readable server must still be stopped"
+    assert result.exit_code == 1
+    assert hidden.exists()
+
+
 def test_stop_reaches_every_server_when_one_record_cannot_be_removed(monkeypatch, tmp_path):
     # One undeletable stale record must not end the loop before the live servers.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8600})

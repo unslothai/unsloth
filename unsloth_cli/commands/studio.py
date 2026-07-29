@@ -2472,8 +2472,25 @@ def _unlink_quietly(path: Path) -> None:
         typer.echo(f"Could not remove PID file {path.name}: {e}", err = True)
 
 
-def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
+def _report_unreadable(paths: "list[Path]") -> None:
+    """Say which servers we could not reach, since `stop` is about to exit 1."""
+    names = ", ".join(sorted(p.name for p in paths))
+    typer.echo(
+        f"Could not read {len(paths)} PID file(s): {names}. A server recorded "
+        f"there may still be running; re-run with permission to read "
+        f"{STUDIO_HOME} to stop it.",
+        err = True,
+    )
+
+
+def _pid_file_entries(
+    unreadable: "list[Path] | None" = None,
+) -> "list[tuple[int, list[float | None], list[Path]]]":
     """(pid, create_times, files) per recorded server, including the legacy studio.pid.
+
+    Paths that could not be read are appended to `unreadable` when given, so the
+    caller can tell "nothing is running" apart from "something is running and we
+    could not see it".
 
     Grouped by PID: a server writes both its per-port file and studio.pid, and
     signalling twice would hit the SIG_DFL the first SIGTERM installs, hard-killing
@@ -2497,6 +2514,8 @@ def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
             # caught mid-write, still belongs to a live server, and deleting it
             # strands that server -- the bug this command exists to fix.
             typer.echo(f"Cannot read PID file {path.name}: {e}", err = True)
+            if unreadable is not None:
+                unreadable.append(path)
             continue
         record = _parse_pid_record(text)
         if record is None:
@@ -2561,8 +2580,14 @@ def stop():
 
     The port fallback can leave more than one running, so stop them all.
     """
-    entries = _pid_file_entries()
+    unreadable: "list[Path]" = []
+    entries = _pid_file_entries(unreadable)
     if not entries:
+        if unreadable:
+            # Reporting success here would be a lie: the records we could not
+            # read are kept, and the servers behind them are still serving.
+            _report_unreadable(unreadable)
+            raise typer.Exit(1)
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
@@ -2581,6 +2606,9 @@ def stop():
         signalled.append((pid, paths))
 
     if not signalled and not failed:
+        if unreadable:
+            _report_unreadable(unreadable)
+            raise typer.Exit(1)
         typer.echo("No running Unsloth server found (cleaned up stale PID files).")
         raise typer.Exit(0)
 
@@ -2601,7 +2629,9 @@ def stop():
         typer.echo(f"Unsloth server{'s' if stopped > 1 else ''} stopped ({stopped}).")
     for pid, _paths in pending:
         typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
-    if failed:
+    if unreadable:
+        _report_unreadable(unreadable)
+    if failed or unreadable:
         raise typer.Exit(1)
 
 
