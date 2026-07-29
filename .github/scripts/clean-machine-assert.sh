@@ -172,11 +172,30 @@ for check in "$@"; do
       if [ ! -d "$root" ]; then
         fail "macho requested but $root does not exist"
       else
-        n=0 nexe=0 bad_arch="" unsigned="" broken=""
+        # SCOPE, part 2: the two payloads the install RUNS ON live outside $root.
+        # `uv venv` links <venv>/bin/python at its base interpreter rather than
+        # copying it, and the find below has no -L, so the interpreter that executed
+        # every install step is invisible to it; the uv that fetched it lands in
+        # $HOME/.local/bin. Both are exactly what Rosetta 2 hides -- an x86_64 uv or
+        # managed CPython runs green here and dies on the factory-fresh Mac this job
+        # stands in for.
+        _macho_targets() {
+          find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null
+          # -L follows the interpreter symlink; -maxdepth keeps this a bin/ lookup and
+          # not a second walk of site-packages through the venv's lib64 link. Depth 4
+          # covers <root>/unsloth_studio, the .venv_t5_* sidecars and the tauri
+          # layout's <root>/studio/unsloth_studio.
+          find -L "$root" -maxdepth 4 -type f -path '*/bin/python' 2>/dev/null
+          for _uv in "$HOME/.local/bin/uv" "$(command -v uv 2>/dev/null || true)"; do
+            [ -n "$_uv" ] && [ -f "$_uv" ] && printf '%s\n' "$_uv"
+          done
+        }
+        n=0 nexe=0 nout=0 bad_arch="" unsigned="" broken=""
         while IFS= read -r f; do
           desc="$(file -b "$f" 2>/dev/null || true)"
           case "$desc" in *Mach-O*) ;; *) continue ;; esac
           n=$((n + 1))
+          case "$f" in "$root"/*) ;; *) nout=$((nout + 1)) ;; esac
           # Substring, not equality: a universal binary lists every slice it carries,
           # and one that includes the host arch is fine.
           case "$desc" in
@@ -227,11 +246,16 @@ for check in "$@"; do
               esac
             fi
           fi
-        done < <(find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null)
+        done < <(_macho_targets | sort -u)
         if [ "$n" = "0" ]; then
           # An empty scan reads exactly like a clean one, so the check would pass on a
           # wrong root and prove nothing.
           fail "no Mach-O found under $root; the arch/signature assertion proved nothing"
+        elif [ "$nout" = "0" ]; then
+          # Same rule for the roots added above: install.sh always bootstraps uv into
+          # $HOME/.local/bin, so zero hits outside $root means the extra scan matched
+          # nothing and uv's architecture went unproven.
+          fail "no Mach-O outside $root was scanned, so uv and the venv's base interpreter escaped the check"
         elif [ -n "$bad_arch" ]; then
           fail "Mach-O is not $want, so it runs here only under Rosetta 2, which a fresh Mac does not have:$bad_arch"
         elif [ -n "$unsigned" ]; then
@@ -239,7 +263,7 @@ for check in "$@"; do
         elif [ -n "$broken" ]; then
           fail "Mach-O main executable carries a signature that does not verify:$broken"
         else
-          ok "$n Mach-O files under $root are $want$([ "$want" = arm64 ] && echo "; all $nexe main executable(s) signed")"
+          ok "$n Mach-O files under $root, plus uv and the venv's base interpreter, are $want$([ "$want" = arm64 ] && echo "; all $nexe main executable(s) signed")"
         fi
       fi
       ;;

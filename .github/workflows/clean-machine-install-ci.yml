@@ -1588,6 +1588,38 @@ jobs:
             Write-Host '::error::the container install failed at neither the winget-only git gate nor the missing VC++ runtime; this is a new failure'
             exit 1
           }
+          # `-or` on its own is too generous. virgin-windows-install.ps1:97 runs the
+          # torch assertion whenever the venv interpreter exists, whatever the installer
+          # did, and this image has no VC++ runtime, so ANY failure after venv creation
+          # -- a Node download, a setup step, a bad prebuilt -- arrives here carrying the
+          # $vcGate text and was accepted as the pinned outcome. Enumerate what the
+          # harness actually recorded instead: it prints one `::error::<reason>` per
+          # entry of its $failures list (that script:151), and every one has to be a
+          # pinned gate. Anchored, because it also dumps the install log tail indented
+          # two spaces and those copies must not count.
+          $recorded = @(Get-Content logs/install-outer.log |
+            ForEach-Object { if ($_ -match '^::error::(.+)$') { $Matches[1].Trim() } })
+          Write-Host "recorded failures: $($recorded.Count)"
+          $recorded | ForEach-Object { Write-Host "  $_" }
+          if ($recorded.Count -eq 0) {
+            Write-Host '::error::the container install failed but recorded no ::error:: line, so nothing identifies which gate stopped it'
+            exit 1
+          }
+          # The git gate makes install.ps1 exit non-zero; the missing runtime makes the
+          # torch assert fail. Nothing else is pinned.
+          $pinned = @('^installer exited \d+$', '^torch failed to import from the managed Python')
+          $unexpected = @($recorded | Where-Object { $r = $_; -not ($pinned | Where-Object { $r -match $_ }) })
+          if ($unexpected.Count -gt 0) {
+            Write-Host "::error::the container install recorded a failure outside the pinned gates: $($unexpected -join '; '); this is a new failure"
+            exit 1
+          }
+          # And a non-zero exit has to BE the git gate: without this a post-venv failure
+          # that also exits 1 is indistinguishable from the pinned one.
+          if (($recorded | Where-Object { $_ -like 'installer exited*' }) -and
+              -not ($gitGate -and ($log -match 'unsloth studio setup failed \(exit code 1\)'))) {
+            Write-Host '::error::the installer exited non-zero somewhere other than the winget-only git gate in studio/setup.ps1; this is a new failure'
+            exit 1
+          }
           if ($gitGate) { Write-Host '::notice::known outcome: winget-only git gate (studio/setup.ps1), fixed by #7549' }
           if ($vcGate)  { Write-Host '::notice::known outcome: no VC++ runtime and Ensure-VCRedist is winget-only, fixed by #7549' }
 
