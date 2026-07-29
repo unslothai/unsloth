@@ -102,3 +102,46 @@ def test_post_warm_thread_is_started_by_the_lifespan():
         "nothing starts the post-warm thread, so the MLX autorepair and the RAG "
         "warm would never run"
     )
+
+
+def test_post_warm_actually_runs_both_pieces_of_work(monkeypatch):
+    """Deferring must not become dropping.
+
+    The lexical tests above prove the lifespan no longer does this work. They
+    would still pass if the deferred work never ran at all, which would silently
+    end MLX self-healing and leave the RAG embedder cold on every launch.
+    """
+    import main as main_mod
+    import utils.mlx_repair as mlx_mod
+
+    order: list[str] = []
+    monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: order.append("join"))
+    monkeypatch.setattr(
+        mlx_mod, "start_mlx_autorepair_if_needed", lambda: order.append("mlx") or False
+    )
+    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: order.append("rag"))
+
+    main_mod._post_warm_background_work()
+
+    assert order == ["join", "mlx", "rag"], (
+        f"post-warm work did not run in the intended order, got {order}"
+    )
+
+
+def test_a_failing_mlx_probe_does_not_strand_the_rag_warm(monkeypatch):
+    """One deferred stage failing must not take the other down with it."""
+    import main as main_mod
+    import utils.mlx_repair as mlx_mod
+
+    ran: list[str] = []
+    monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: None)
+
+    def _boom():
+        raise RuntimeError("mlx probe exploded")
+
+    monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", _boom)
+    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+
+    main_mod._post_warm_background_work()
+
+    assert ran == ["rag"], "a failing MLX probe must not skip the RAG warm"
