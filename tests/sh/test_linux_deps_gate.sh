@@ -163,6 +163,47 @@ _mk git 'exit 0'
 _out="$(_run_gate true)"
 assert_contains "install proceeds"                       "$_out" "RC=0"
 
+echo "=== optional apt packages never ask for elevation, in any mode ==="
+# Regression: the optional bypass sat inside the TAURI_MODE branch, so a plain
+# `curl | sh` on a non-root Debian box still hit the sudo prompt (default yes) and
+# installed cmake, GCC and dev headers that nothing on the consumer path uses.
+_APT_FN=$(mktemp)
+{
+    sed -n '/^_is_pkg_installed()/,/^}$/p'       "$INSTALL_SH"
+    sed -n '/^_apt_distro_description()/,/^}$/p' "$INSTALL_SH"
+    sed -n '/^_can_read_tty()/,/^}$/p'           "$INSTALL_SH"
+    sed -n '/^_smart_apt_install()/,/^}$/p'      "$INSTALL_SH"
+} > "$_APT_FN"
+
+_run_apt() {
+    # $1 = TAURI_MODE, $2 = _SMART_APT_OPTIONAL. apt-get always fails, as it does
+    # for a non-root user, so the function reaches its escalation decision.
+    rm -f "$_BIN"/*
+    _mk apt-get 'exit 100'
+    _mk sudo 'echo "ELEVATION_ATTEMPTED: $*"; exit 1'
+    ln -sf "$(command -v sed)" "$_BIN/sed"   # the function trims its list with sed
+    # _APT_FN after _HARNESS so the real function replaces the recording stub.
+    ( PATH="$_BIN"; export PATH
+      "$_SH" -c ". '$_HARNESS'; . '$_APT_FN'; TAURI_MODE=$1; _SMART_APT_OPTIONAL=$2
+                ( _smart_apt_install unsloth_absent_pkg ); echo \"RC=\$?\"" 2>&1 )
+}
+
+_out="$(_run_apt false true)"
+assert_contains "optional: returns 2 so the caller can continue" "$_out" "RC=2"
+assert_not_contains "optional: no sudo prompt"                   "$_out" "elevated permissions"
+assert_not_contains "optional: sudo never invoked"               "$_out" "ELEVATION_ATTEMPTED"
+
+_out="$(_run_apt true true)"
+assert_contains "optional in Tauri: returns 2"                   "$_out" "RC=2"
+assert_not_contains "optional in Tauri: no NEED_SUDO dialog"     "$_out" "NEED_SUDO"
+
+_out="$(_run_apt false false)"
+assert_contains "required: still escalates"                      "$_out" "ELEVATION_ATTEMPTED"
+
+_out="$(_run_apt true false)"
+assert_contains "required in Tauri: still asks Rust to elevate"  "$_out" "NEED_SUDO"
+
+rm -f "$_APT_FN"
 rm -rf "$_BIN" "$_FN_FILE" "$_HARNESS"
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="

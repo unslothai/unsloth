@@ -778,14 +778,17 @@ _smart_apt_install() {
         return 0
     fi
 
+    # Optional callers never elevate, in any mode: nothing on the consumer path
+    # builds anything, so neither the terminal sudo prompt below nor the Tauri
+    # NEED_SUDO dialog (whose Cancel leaves the user not installed) may gate the
+    # run over unused tools. The caller falls through to prebuilt llama.cpp.
+    # Required packages such as curl still escalate.
+    if [ "${_SMART_APT_OPTIONAL:-false}" = true ]; then
+        return 2
+    fi
+
     if [ "$TAURI_MODE" = true ]; then
-        # Optional callers never elevate: NEED_SUDO raises a mandatory desktop
-        # permission dialog whose Cancel leaves the user not installed, over tools
-        # nothing needs. The caller falls through to prebuilt llama.cpp.
-        if [ "${_SMART_APT_OPTIONAL:-false}" = true ]; then
-            return 2
-        fi
-        # Otherwise report needed packages and exit — Rust handles elevation.
+        # Report needed packages and exit — Rust handles elevation.
         tauri_log "NEED_SUDO" "$_STILL_MISSING"
         exit 2
     fi
@@ -2089,8 +2092,8 @@ _check_linux_deps() {
     if [ -n "$_optional_missing" ] && command -v apt-get >/dev/null 2>&1; then
         step "deps" "installing optional build tools: $_optional_missing" "$C_DIM"
         # Subshell because _smart_apt_install exits rather than returns, so `|| true`
-        # alone would not catch it. _SMART_APT_OPTIONAL suppresses the NEED_SUDO
-        # handshake, so no install hinges on a prompt for tools nothing here needs.
+        # alone would not catch it. _SMART_APT_OPTIONAL suppresses every escalation
+        # path, so no install hinges on a prompt for tools nothing here needs.
         ( _SMART_APT_OPTIONAL=true; _smart_apt_install $_optional_missing ) || true
         _optional_missing=""
         command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
