@@ -269,12 +269,14 @@ def _cache_inventory_fields(
     active_hub_cache: Optional[Path] = None,
     partial: bool = False,
     requires_variant: bool = False,
-    payload_snapshots: frozenset[str] = frozenset(),
+    payload_snapshots: Optional[frozenset[str]] = None,
 ) -> dict:
     # *snapshot_path* becomes the load identity whenever the repo id will not
     # resolve, so callers must pass a snapshot that holds the payload this row
     # advertises, not merely the newest one. *payload_snapshots* are every
-    # snapshot that does hold it, used to judge where the repo id would land.
+    # snapshot that does hold it, used to judge where the repo id would land;
+    # None means the caller does not track payloads and *snapshot_path* is
+    # taken on trust.
     load_id = repo_id
     active_cache = True
     if repo_path is not None:
@@ -290,7 +292,16 @@ def _cache_inventory_fields(
         except (OSError, RuntimeError, ValueError):
             active_cache = False
             load_id = str(snapshot_path or repo_path)
-    if load_id == repo_id and snapshot_path is not None and repo_path is not None:
+    # Only pin a snapshot that is known to hold the payload. When none does the
+    # caller falls back to the newest snapshot, and handing that out names a
+    # directory the load cannot use; the repo id at least still completes the
+    # missing files from the hub.
+    if (
+        load_id == repo_id
+        and snapshot_path is not None
+        and repo_path is not None
+        and (payload_snapshots is None or str(snapshot_path) in payload_snapshots)
+    ):
         default_snapshot = hf_cache_scan.default_ref_snapshot(repo_path)
         # No usable refs/main: from_pretrained(repo_id) would fail offline and
         # would fetch the current upstream HEAD online, ignoring the snapshot
@@ -660,8 +671,13 @@ def _read_model_card_frontmatter(path: Path) -> dict:
         return {}
 
 
-def _cached_model_local_metadata(repo_path: Path) -> dict:
-    snapshot = _cached_model_snapshot_path(repo_path)
+def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = None) -> dict:
+    # Describe the directory the row hands out, not merely the newest one: the
+    # metadata probe that strands the payload in an older snapshot carries
+    # neither the quantization config nor the model card. Fall back to the
+    # newest snapshot when no revision holds the payload on its own.
+    if snapshot is None:
+        snapshot = _cached_model_snapshot_path(repo_path)
     if snapshot is None:
         return {}
 
@@ -731,7 +747,10 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                local_metadata = _cached_model_local_metadata(repo_path)
+                local_metadata = _cached_model_local_metadata(
+                    repo_path,
+                    payload.payload_snapshot,
+                )
                 if local_metadata.pop("_hidden_stt", False):
                     skipped_stt += 1
                     continue

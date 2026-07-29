@@ -703,3 +703,83 @@ def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkey
         f"load_id {Path(load_id).name[:8]} holds no config.json, so a local "
         "from_pretrained on it cannot resolve the architecture"
     )
+
+
+def test_no_snapshot_holds_the_payload_so_a_dangling_ref_pins_nothing(tmp_path, monkeypatch):
+    """Same repo, but with the dangling ``refs/main`` this branch exists for.
+
+    The rule above is enforced by leaving the row on the repo id, and the
+    dangling-ref arm used to overrule it and pin the fallback newest snapshot
+    anyway, which is the one already known not to hold the payload. Pinning a
+    directory the load cannot use is worse than the repo id, which can still
+    complete the config from the hub."""
+    _two_snapshot_repo(
+        tmp_path,
+        older_files = {"model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}"},
+        ref = UPSTREAM_HEAD,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    load_id = rows[0]["load_id"]
+    if load_id != "Org/Model":
+        # Behavioural: a pinned directory is only useful if from_pretrained can
+        # read an architecture and weights out of it.
+        pinned = Path(load_id)
+        held = sorted(entry.name for entry in pinned.iterdir())
+        assert (pinned / "config.json").is_file() and any(
+            entry.endswith(".safetensors") for entry in held
+        ), f"load_id pins {pinned.name[:8]}, which holds only {held}"
+    assert load_id == "Org/Model"
+
+
+
+
+# --- the metadata must describe the snapshot the row hands out ---------------
+
+QUANTIZED_CONFIG = b'{"quantization_config": {"quant_method": "bitsandbytes"}}'
+MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n---\n"
+
+
+def test_metadata_describes_the_snapshot_the_row_hands_out(tmp_path, monkeypatch):
+    """``quant_method`` and the model-card fields were read from the newest
+    snapshot while the load id names the payload one, so the row described a
+    directory it does not hand out. The metadata probe that strands the payload
+    carries neither the quantization config nor the model card, so the quant
+    chip and the On Device type filter judged the model on absent data."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {
+            "config.json": QUANTIZED_CONFIG,
+            "model.safetensors": b"\0" * 11,
+            "README.md": MODEL_CARD,
+        },
+        newer_files = {"config.json": b"{}"},
+        ref = NEWER,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("quant_method") == "bitsandbytes"
+    assert rows[0].get("pipeline_tag") == "text-generation"
+    assert rows[0].get("library_name") == "transformers"
+
+
+def test_metadata_still_falls_back_to_the_newest_snapshot(tmp_path, monkeypatch):
+    """The rule stays narrow: with no self-contained payload snapshot there is
+    nothing to scope to, so the newest snapshot still supplies the row."""
+    _two_snapshot_repo(
+        tmp_path,
+        older_files = {"model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": QUANTIZED_CONFIG, "README.md": MODEL_CARD},
+        ref = NEWER,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["load_id"] == "Org/Model"
+    assert rows[0].get("quant_method") == "bitsandbytes"
+    assert rows[0].get("pipeline_tag") == "text-generation"
