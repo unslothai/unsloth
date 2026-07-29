@@ -2719,7 +2719,7 @@ def _harmony_template() -> str:
     )
     opener = 'gptoss_template = \\\n"""'
     start = src.index(opener) + len(opener)
-    closer = "{%- endif -%}\"\"\""
+    closer = '{%- endif -%}"""'
     return src[start : src.index(closer, start) + len(closer) - 3]
 
 
@@ -2773,8 +2773,14 @@ def test_harmony_sentinels_are_neutralized_by_role():
     ``<|channel|>`` / ``<|message|>`` header pair is that assistant turn's own
     structural markup, like the Gemma channel pair (#7334).
     """
-    for marker in ("<|start|>", "<|message|>", "<|channel|>", "<|constrain|>",
-                   "<|call|>", "<|return|>"):
+    for marker in (
+        "<|start|>",
+        "<|message|>",
+        "<|channel|>",
+        "<|constrain|>",
+        "<|call|>",
+        "<|return|>",
+    ):
         out = neutralize_non_assistant_control_markup(f"before {marker} after")
         assert marker not in out, marker
         assert "before" in out and "after" in out
@@ -2806,7 +2812,13 @@ def _count_tokens_client(monkeypatch, seen):
         is_vision = False
         supports_tools = True
 
-        def count_chat_tokens(self, messages, system, tools, strict = False):
+        def count_chat_tokens(
+            self,
+            messages,
+            system,
+            tools,
+            strict = False,
+        ):
             seen.append(tools)
             return 42
 
