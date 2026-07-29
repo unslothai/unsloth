@@ -103,6 +103,8 @@ def test_recipe_editor_refetches_after_a_partial_legacy_import():
     assert "let legacyImportError: unknown = null;" in EDIT_RECIPE_PAGE
     assert "legacyImportError = error;" in EDIT_RECIPE_PAGE
     assert "if (!record && legacyImportError)" in EDIT_RECIPE_PAGE
+    assert "if (record && legacyImportError)" in EDIT_RECIPE_PAGE
+    assert '"Some local recipes could not be imported"' in EDIT_RECIPE_PAGE
 
 
 def test_equal_event_snapshots_preserve_current_nonterminal_scalars():
@@ -115,7 +117,7 @@ def test_equal_event_snapshots_preserve_current_nonterminal_scalars():
 
 def test_same_event_terminal_snapshots_accept_later_enrichment():
     assert "incomingEvent === currentEvent && incoming.status !== current.status" in EXECUTIONS_DB
-    assert "mergeTerminalSnapshots(incoming, current, true)" in EXECUTIONS_DB
+    assert "shouldPreferIncomingTerminalScalars(incomingEvent, currentEvent)" in EXECUTIONS_DB
 
 
 def test_user_asset_reads_capture_the_starting_auth_subject():

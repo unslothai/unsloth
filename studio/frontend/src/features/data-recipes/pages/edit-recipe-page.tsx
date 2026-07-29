@@ -9,6 +9,7 @@ import {
   readLegacyRecipeExecutions,
 } from "@/features/recipe-studio";
 import { importLegacyUserAssetsFromIndexedDb } from "@/features/user-assets";
+import { toastError } from "@/shared/toast";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
@@ -90,8 +91,8 @@ export function EditRecipePage({
         let record = await getRecipe(recipeId, {
           signal: controller.signal,
         });
+        let legacyImportError: unknown = null;
         if (!record) {
-          let legacyImportError: unknown = null;
           try {
             await importLegacyUserAssetsFromIndexedDb({
               readRecipes: readLegacyRecipes,
@@ -116,6 +117,12 @@ export function EditRecipePage({
           }
         }
         if (!active || controller.signal.aborted) return;
+        if (record && legacyImportError) {
+          toastError(
+            "Some local recipes could not be imported",
+            "This recipe loaded, but other browser recipes may still need to be imported.",
+          );
+        }
         if (!record) {
           setLoadState({ status: "missing", subject, recipeId, reloadVersion });
           return;

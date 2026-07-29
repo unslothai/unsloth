@@ -17,6 +17,10 @@ import type {
   RecipeExecutionRecord,
   RecipeExecutionStatus,
 } from "../execution-types";
+import {
+  mergeOptionalObject,
+  shouldPreferIncomingTerminalScalars,
+} from "./execution-reconciliation";
 
 const revisions = new Map<string, number>();
 const persistedExecutions = new Map<string, PersistedRecipeExecution>();
@@ -244,41 +248,6 @@ function mergeStringLists(current: string[], incoming: string[]): string[] {
   return merged;
 }
 
-function mergeJsonValue(
-  current: unknown,
-  incoming: unknown,
-  preferIncomingScalars: boolean,
-): unknown {
-  if (incoming === null || incoming === undefined) return current;
-  if (current === null || current === undefined) return incoming;
-  if (Array.isArray(current) && Array.isArray(incoming)) {
-    return incoming.length > current.length ? incoming : current;
-  }
-  if (
-    typeof current === "object" &&
-    !Array.isArray(current) &&
-    typeof incoming === "object" &&
-    !Array.isArray(incoming)
-  ) {
-    const merged = { ...(current as Record<string, unknown>) };
-    for (const [key, value] of Object.entries(
-      incoming as Record<string, unknown>,
-    )) {
-      merged[key] = mergeJsonValue(merged[key], value, preferIncomingScalars);
-    }
-    return merged;
-  }
-  return preferIncomingScalars ? incoming : current;
-}
-
-function mergeOptionalObject<T extends object>(
-  current: T | null,
-  incoming: T | null,
-  preferIncomingScalars: boolean,
-): T | null {
-  return mergeJsonValue(current, incoming, preferIncomingScalars) as T | null;
-}
-
 function persistedMetadata(
   current: PersistedRecipeExecution,
 ): RecipeExecutionMetadata {
@@ -372,7 +341,11 @@ function reconcileIncoming(
     if (incomingEvent < currentEvent) return null;
     if (incomingEvent === currentEvent && incoming.status !== current.status)
       return null;
-    return mergeTerminalSnapshots(incoming, current, true);
+    return mergeTerminalSnapshots(
+      incoming,
+      current,
+      shouldPreferIncomingTerminalScalars(incomingEvent, currentEvent),
+    );
   }
   if (incomingEvent < currentEvent) return null;
   const forwardPolledTransition =
