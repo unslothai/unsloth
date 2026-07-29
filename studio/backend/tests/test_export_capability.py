@@ -138,9 +138,9 @@ def test_main_endpoints_expose_export_capability():
 
 def test_routes_guard_mutating_endpoints():
     r = _src("routes/export.py")
-    assert "def _ensure_export_supported()" in r
+    assert "async def _ensure_export_supported()" in r
     # load + all four export endpoints call the guard.
-    assert r.count("_ensure_export_supported()") >= 6
+    assert r.count("await _ensure_export_supported()") >= 5
 
 
 def test_export_methods_check_runtime():

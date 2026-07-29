@@ -322,6 +322,7 @@ _OFFLOAD_REQUIRED = [
     # Not first-paint, but it lands in the warm window whenever a start is
     # submitted early, and its MLX streaming guard now forces detection itself.
     ("routes/training.py", "start_training", "ensure_hardware_detected"),
+    ("routes/export.py", "_ensure_export_supported", "export_capability"),
     ("routes/models.py", "list_models", "get_inference_backend"),
     ("routes/inference.py", "get_status", "get_inference_backend"),
     ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
