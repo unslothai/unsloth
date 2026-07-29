@@ -8480,9 +8480,11 @@ class LlamaCppBackend:
                     cmd.extend(["--chat-template-file", self._chat_template_file.name])
                     logger.info(f"Using custom chat template file: {self._chat_template_file.name}")
 
-                # Default thinking mode for reasoning models. Qwen3.5/3.6 below
-                # 9B disable thinking by default; 9B+ enable it. Always-on
-                # templates ignore the kwarg, so skip.
+                # Default thinking mode for reasoning models. The Qwen3.5 Small tier
+                # (0.8B, 2B, 4B, 9B) ships with reasoning off by default and the rest of
+                # the family has it on; the templates are byte-identical across sizes, so
+                # this tier split only exists as a launch flag. Always-on templates ignore
+                # the kwarg, so skip.
                 if self._supports_reasoning and not self._reasoning_always_on:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
@@ -8497,7 +8499,7 @@ class LlamaCppBackend:
                             size_match = re.search(size_re, seg)
                             if size_match:
                                 break
-                        # 9B included: unsloth ships 0.8B/2B/4B/9B with reasoning off by default.
+                        # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
                         if size_match and float(size_match.group(1)) <= 9:
                             thinking_default = False
                     self._reasoning_default = thinking_default
