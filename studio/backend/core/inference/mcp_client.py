@@ -887,7 +887,10 @@ def _flatten_result(result: Any) -> str:
 
 
 async def _race_tool_call(
-    call_coro, timeout: Optional[float], cancel_event, unwind_timeout: float = 0.0
+    call_coro,
+    timeout: Optional[float],
+    cancel_event,
+    unwind_timeout: float = 0.0,
 ) -> Any:
     """Await ``call_coro`` under ``timeout``, polling ``cancel_event`` so a
     /cancel POST interrupts even mid-network-read. ``unwind_timeout`` waits that

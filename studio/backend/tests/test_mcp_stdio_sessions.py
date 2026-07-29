@@ -253,7 +253,12 @@ def test_unwind_wait_is_stdio_only(fake_clients, monkeypatch):
     seen = []
     real = mcp_client._race_tool_call
 
-    async def spy(coro, timeout, cancel_event, unwind_timeout = 0.0):
+    async def spy(
+        coro,
+        timeout,
+        cancel_event,
+        unwind_timeout = 0.0,
+    ):
         seen.append(unwind_timeout)
         return await real(coro, timeout, cancel_event, unwind_timeout)
 
