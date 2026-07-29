@@ -34,6 +34,10 @@ TRAINING_RUNTIME_STORE = (
     REPO
     / "studio/frontend/src/features/training/stores/training-runtime-store.ts"
 )
+TRAINING_RUNTIME_LIFECYCLE = (
+    REPO
+    / "studio/frontend/src/features/training/hooks/use-training-runtime-lifecycle.ts"
+)
 TRAINING_START_RUNTIME = (
     REPO
     / "studio/frontend/src/features/training/lib/training-start-runtime.ts"
@@ -209,6 +213,15 @@ def test_anonymous_token_decision_does_not_erase_a_replacement_token():
     assert "const tokenStore = useHfTokenStore.getState()" in anonymous
     assert "if (tokenStore.token === normalized)" in anonymous
     assert "tokenStore.clearToken()" in anonymous
+
+
+def test_token_changes_clear_stale_training_start_errors():
+    source = TRAINING_RUNTIME_LIFECYCLE.read_text(encoding = "utf-8")
+
+    assert "useTrainingConfigStore.subscribe(clearStartError)" in source
+    assert "useHfTokenStore.subscribe(clearStartError)" in source
+    assert "unsubscribeConfig()" in source
+    assert "unsubscribeToken()" in source
 
 
 def test_accepted_training_start_survives_runtime_resync_failure():

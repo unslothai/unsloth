@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { hasAuthToken } from "@/features/auth";
+import { useHfTokenStore } from "@/features/hub";
 import {
   notifyNative,
   safeNotificationLabel,
@@ -95,16 +96,20 @@ function maybeNotifyTrainingTerminalTransition(
 }
 
 export function useTrainingRuntimeLifecycle(): void {
-  useEffect(
-    () =>
-      useTrainingConfigStore.subscribe(() => {
-        const runtime = useTrainingRuntimeStore.getState();
-        if (runtime.startError !== null) {
-          runtime.setStartError(null);
-        }
-      }),
-    [],
-  );
+  useEffect(() => {
+    const clearStartError = () => {
+      const runtime = useTrainingRuntimeStore.getState();
+      if (runtime.startError !== null) {
+        runtime.setStartError(null);
+      }
+    };
+    const unsubscribeConfig = useTrainingConfigStore.subscribe(clearStartError);
+    const unsubscribeToken = useHfTokenStore.subscribe(clearStartError);
+    return () => {
+      unsubscribeConfig();
+      unsubscribeToken();
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
