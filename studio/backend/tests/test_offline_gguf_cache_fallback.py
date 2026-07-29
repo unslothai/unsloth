@@ -1179,7 +1179,10 @@ class TestConcurrentGuardsHoldTheirOwnReference:
                 seen["env_after_a_exit"] = os.environ.get("HF_HUB_OFFLINE")
 
         ta, tb = threading.Thread(target = worker_a), threading.Thread(target = worker_b)
-        ta.start(); tb.start(); ta.join(20); tb.join(20)
+        ta.start()
+        tb.start()
+        ta.join(20)
+        tb.join(20)
 
         assert seen.get("engaged") is True, "second guard no-opped instead of taking a reference"
         assert seen.get("offline_after_a_exit") is True
