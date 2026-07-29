@@ -32,20 +32,18 @@ _bootstrap_password: Optional[str] = None
 
 
 def _bootstrap_file_bytes(password: str) -> bytes:
-    """The exact on-disk form: the secret plus one LF.
+    """Exact on-disk form: the secret plus one LF.
 
-    Encoded rather than written as text because text mode translates "\\n" to
-    CRLF on Windows, and `$(cat ...)` strips the LF but leaves the CR attached
-    to the credential.
+    Bytes, not text: text mode writes CRLF on Windows, and `$(cat ...)` strips
+    the LF but leaves the CR attached to the credential.
     """
     return (password + "\n").encode("utf-8")
 
 
 def _persist_bootstrap_password(password: str) -> None:
-    """Write the bootstrap password 0600, with a trailing LF on every OS.
+    """Atomically write the bootstrap password 0600, LF terminated on every OS.
 
-    Atomic: this can rewrite a live file, and a partial write would destroy the
-    only plaintext copy of the recovery credential.
+    A partial write would destroy the only plaintext recovery credential.
     """
     fd, tmp_name = tempfile.mkstemp(
         prefix = f".{_BOOTSTRAP_PW_PATH.name}.", dir = _BOOTSTRAP_PW_PATH.parent
@@ -69,22 +67,20 @@ def _persist_bootstrap_password(password: str) -> None:
 def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
     """Append the LF a pre-newline release left off.
 
-    Append-only, and only to a file that is exactly the credential. Rewriting
-    could restore revoked plaintext, because clear_bootstrap_password() may
-    unlink or (when unlink fails, notably on Windows while this descriptor is
-    open) truncate the file through another descriptor at any point after we
-    read it. Appending cannot: the worst case is a lone "\\n" over a cleared
-    file, which strips to empty and reads back as no bootstrap password.
-
-    Releases before the newline wrote the password with no terminator at all,
-    so that is the only shape in the wild. Anything else is left alone and
-    keeps working, since every reader strips.
+    Append-only, and only when the file is exactly the credential:
+    clear_bootstrap_password() may unlink or (when unlink fails, notably on
+    Windows while this descriptor is open) truncate through another descriptor
+    after we read, so a rewrite could restore revoked plaintext. An append
+    cannot: worst case is a lone "\\n" over a cleared file, which strips back to
+    no bootstrap password. Pre-newline releases wrote no terminator at all, so
+    that is the only shape in the wild; anything else reads fine, since every
+    reader strips, and is left alone.
     """
     if raw != password.encode("utf-8"):
         return
 
-    # O_BINARY or Windows opens the descriptor in text mode and turns the LF
-    # straight back into CRLF, which is the bug this exists to fix.
+    # O_BINARY: without it Windows opens in text mode and turns the LF straight
+    # back into CRLF, the bug being fixed.
     fd = os.open(
         _BOOTSTRAP_PW_PATH,
         os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0),
@@ -106,8 +102,8 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
         return None
 
     # No caller handles a raise, so an unreadable file has to mean "no bootstrap
-    # password", not a dead backend. We write UTF-8, so bytes that will not
-    # decode are damage whose plaintext is worthless anyway.
+    # password", not a dead backend. We write UTF-8, so undecodable bytes are
+    # damage whose plaintext is worthless anyway.
     try:
         raw = _BOOTSTRAP_PW_PATH.read_bytes()
         password = raw.decode("utf-8").strip()
@@ -116,8 +112,8 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
     if not password:
         return None
 
-    # Older releases wrote no terminator, so upgrades kept the `cat` problem.
-    # Best-effort: a read-only auth dir must not fail startup.
+    # Older releases wrote no terminator; best-effort, a read-only auth dir must
+    # not fail startup.
     if raw != _bootstrap_file_bytes(password):
         try:
             _normalise_bootstrap_file(raw, password)
@@ -166,9 +162,9 @@ def get_bootstrap_password() -> Optional[str]:
 def _load_bootstrap_password() -> Optional[str]:
     """Load an existing bootstrap password without creating one.
 
-    This, not generate_bootstrap_password(), is the path an upgraded install
-    takes (ensure_default_admin short-circuits once the admin row exists), so
-    the normalisation has to happen here too.
+    Upgrades take this path, not generate_bootstrap_password()
+    (ensure_default_admin short-circuits once the admin row exists), so it has
+    to normalise too.
     """
     global _bootstrap_password
     _bootstrap_password = _read_persisted_bootstrap_password()

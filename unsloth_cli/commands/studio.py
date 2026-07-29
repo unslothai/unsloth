@@ -483,7 +483,7 @@ def _write_auth_secret(path: Path, secret: str) -> None:
             os.chmod(tmp_path, 0o600)
         except OSError:
             pass
-        # newline pins LF: text mode would write CRLF on Windows, and `$(cat ...)`
+        # newline pins LF: text mode writes CRLF on Windows, and `$(cat ...)`
         # strips the LF but leaves the CR glued to the credential.
         with os.fdopen(fd, "w", encoding = "utf-8", newline = "\n") as f:
             fd = -1

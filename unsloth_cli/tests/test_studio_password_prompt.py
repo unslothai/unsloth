@@ -1211,7 +1211,7 @@ def test_write_auth_secret_terminates_the_file_with_a_newline(monkeypatch, tmp_p
 
     studio_mod._write_auth_secret(path, "desktop-abc123")
 
-    # Bytes, not read_text: that decodes CRLF back to "\n" and hides a CR.
+    # Bytes: read_text would decode CRLF back to "\n" and hide a CR.
     assert path.read_bytes() == b"desktop-abc123\n"
 
 

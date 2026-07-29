@@ -135,10 +135,10 @@ def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch
 
 
 def test_bootstrap_password_file_ends_with_a_newline():
-    # Otherwise `cat` welds the passphrase to the shell prompt and both get copied.
+    # Otherwise `cat` welds the passphrase onto the shell prompt.
     storage.ensure_default_admin()
 
-    # Bytes, not read_text: that decodes CRLF back to "\n" and hides a CR.
+    # Bytes: read_text would decode CRLF back to "\n" and hide a CR.
     raw = storage._BOOTSTRAP_PW_PATH.read_bytes()
 
     assert raw == storage.get_bootstrap_password().encode("utf-8") + b"\n"
@@ -154,8 +154,7 @@ def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
 
 
 def test_upgrade_normalises_the_bootstrap_file():
-    # The upgrade path is ensure_default_admin() on an install that already has
-    # the admin row, which never reaches generate_bootstrap_password().
+    # Upgrade path: the admin row exists, so generate_bootstrap_password() never runs.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -174,8 +173,7 @@ def test_upgrade_normalises_the_bootstrap_file():
     ],
 )
 def test_only_an_exactly_unterminated_bootstrap_file_is_touched(other):
-    # Appending is safe precisely because it is restricted to the one shape
-    # released code produced. Everything else reads fine and is left alone.
+    # Appending is safe only because it is restricted to the one released shape.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(other)
 
@@ -222,8 +220,7 @@ def test_migration_failure_does_not_break_startup(monkeypatch):
 
 
 def test_normalising_never_recreates_a_cleared_bootstrap_file(monkeypatch):
-    # A rename would resurrect the file if the password changed after the read,
-    # leaving revoked plaintext for a later auth.db reset to re-seed.
+    # A rename would resurrect revoked plaintext if the password changed after the read.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
@@ -263,8 +260,7 @@ def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
 
 
 def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
-    # Only trailing whitespace is rewritten in place: without a rename there is
-    # no atomicity, and a partial rewrite here could mis-strip.
+    # An in-place rewrite is not atomic, so only the exact unterminated shape is touched.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"  legacy-bootstrap-secret  ")
 
@@ -275,8 +271,7 @@ def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
 
 
 def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
-    # Without O_BINARY, Windows opens the descriptor in text mode and os.write
-    # turns the LF back into CRLF, reintroducing the bug being fixed.
+    # Without O_BINARY, Windows text mode turns the written LF back into CRLF.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
     monkeypatch.setattr(storage.os, "O_BINARY", 0x8000, raising = False)
@@ -296,9 +291,8 @@ def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
 
 
 def test_clearing_by_truncation_mid_normalisation_is_not_undone(monkeypatch):
-    # clear_bootstrap_password() truncates through its own descriptor when the
-    # unlink fails, which is what happens on Windows while ours is open. The
-    # append must not put the revoked plaintext back.
+    # clear_bootstrap_password() truncates through its own descriptor when the unlink
+    # fails (Windows, while ours is open); the append must not restore the plaintext.
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
