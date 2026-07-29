@@ -153,10 +153,13 @@ def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
     assert storage.generate_bootstrap_password() == original
 
 
-@pytest.mark.parametrize("legacy", [
-    b"legacy-bootstrap-secret",         # written before the newline existed
-    b"legacy-bootstrap-secret\r\n",     # written by text mode on Windows
-])
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        b"legacy-bootstrap-secret",  # written before the newline existed
+        b"legacy-bootstrap-secret\r\n",  # written by text mode on Windows
+    ],
+)
 def test_upgrade_normalises_the_bootstrap_file(legacy):
     # The upgrade path is ensure_default_admin() on an install that already has
     # the admin row, which never reaches generate_bootstrap_password().
@@ -213,8 +216,11 @@ def test_persisting_the_bootstrap_password_is_atomic(monkeypatch, tmp_path):
         storage._persist_bootstrap_password("new-secret")
 
     assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"original-secret\n"
-    leftovers = [p.name for p in storage._BOOTSTRAP_PW_PATH.parent.iterdir()
-                 if "bootstrap_password." in p.name]
+    leftovers = [
+        p.name
+        for p in storage._BOOTSTRAP_PW_PATH.parent.iterdir()
+        if "bootstrap_password." in p.name
+    ]
     assert leftovers == []
 
 
