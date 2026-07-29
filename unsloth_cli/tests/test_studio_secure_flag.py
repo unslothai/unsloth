@@ -244,9 +244,7 @@ class _RunServerCaptured(SystemExit):
         self.kwargs = dict(kwargs)
 
 
-def test_run_in_venv_passes_secure_and_forces_host(
-    monkeypatch, tmp_path, stub_tool_policy_state
-):
+def test_run_in_venv_passes_secure_and_forces_host(monkeypatch, tmp_path, stub_tool_policy_state):
     import types
 
     studio_mod = _studio()
