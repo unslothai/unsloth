@@ -146,7 +146,8 @@ jobs:
 
       - name: Reset auth + boot Unsloth
         run: |
-          unsloth studio reset-password
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
@@ -190,7 +191,7 @@ jobs:
         # runner's kernel briefly runs out of socket buffers, and (3) a
         # goto 'interrupted by another navigation' when the SPA auth
         # guard redirects mid-navigation. The retry FULLY resets Unsloth
-        # (kill, reset-password, reboot, wait /api/health, re-export
+        # (kill, wipe auth, reboot, wait /api/health, re-export
         # bootstrap pw) before re-running the script. A real test failure
         # (assertion / timeout) does NOT match any pattern so it bypasses
         # retry and surfaces immediately.
@@ -213,7 +214,7 @@ jobs:
               echo "::warning::Playwright flake on attempt ${attempt}; resetting Unsloth and retrying..."
               kill "${STUDIO_PID}" 2>/dev/null || true
               sleep 2
-              unsloth studio reset-password
+              rm -rf ~/.unsloth/studio/auth
               UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
                 > "logs/studio_retry_${attempt}.log" 2>&1 &
               STUDIO_PID=$!
@@ -251,7 +252,7 @@ jobs:
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
             > logs/studio_extra.log 2>&1 &
@@ -308,7 +309,7 @@ jobs:
               echo "::warning::Playwright flake on attempt ${attempt}; resetting Unsloth and retrying..."
               kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
               sleep 2
-              unsloth studio reset-password
+              rm -rf ~/.unsloth/studio/auth
               UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
                 > "logs/studio_extra_retry_${attempt}.log" 2>&1 &
               STUDIO_EXTRA_PID=$!

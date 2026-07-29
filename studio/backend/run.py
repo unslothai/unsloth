@@ -1328,7 +1328,8 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
     if not _auth_storage.requires_password_change(_admin):
         print(
             "Error: an Unsloth admin password is already set; --password only sets "
-            "the initial password. Run `unsloth studio reset-password` first.",
+            "the initial password. Change it in the UI, or run `unsloth studio "
+            "reset-password` for a new one.",
             file = sys.stderr,
             flush = True,
         )
