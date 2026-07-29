@@ -221,8 +221,9 @@ export function PanelResizeHandle({
     // The collapse/expand the label advertises, for keyboard users. Pointer-up
     // handles it for the mouse; a synthesized click never reaches it.
     if (event.key === "Enter" || event.key === " ") {
+      // preventDefault cancels the native click, so nothing follows to guard
+      // against; arming here would swallow the next assistive-tech click.
       event.preventDefault()
-      handledRef.current = true
       onToggle()
       return
     }
