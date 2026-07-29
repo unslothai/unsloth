@@ -142,13 +142,12 @@ def _windows_allocated_size(path: Path) -> Optional[int]:
 def snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
     """The one ordering every snapshot selector uses: mtime, then resolved path.
 
-    mtime alone is not an order. Coarse-timestamp filesystems and restored caches
-    hand out ties, and each selector then kept whichever candidate its own
-    iteration reached first -- a ``frozenset`` of recovered revisions on the
-    inventory side, an ``iterdir()`` walk on the variant side -- so the row pinned
-    one directory while the picker offered quants from the other, and which was
-    which moved with the interpreter's hash seed. The resolved path breaks the tie
-    identically everywhere, so "newest snapshot" has a single answer.
+    mtime alone is not a total order: coarse-timestamp filesystems and restored
+    caches hand out ties, and each selector then kept whatever its own iteration
+    reached first -- a ``frozenset`` on the inventory side, ``iterdir()`` on the
+    variant side -- so the row pinned one directory while the picker offered
+    quants from another, and which won moved with ``PYTHONHASHSEED``. The
+    resolved path breaks the tie identically everywhere.
     """
     try:
         mtime = snapshot.stat().st_mtime

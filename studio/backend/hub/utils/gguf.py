@@ -275,8 +275,7 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
         except OSError:
             continue
 
-    # Same key the inventory row selects with, so the snapshot this walk reports
-    # variants from is the snapshot the row describes even when mtimes tie.
+    # Same key the inventory row selects with, so both name one snapshot.
     snapshots.sort(key = snapshot_selection_key, reverse = True)
     yield from snapshots
 
@@ -324,19 +323,12 @@ def list_gguf_variants_from_hf_cache(
         if root is not None
         else iter_hf_cache_snapshots(repo_id)
     )
-    # The row hands out one snapshot as its load id and a local load reads only
-    # that directory, so this walk must land on the same one. A plain newest-first
-    # walk reports a half-downloaded split quant as downloaded while /load points
-    # elsewhere, so the newest snapshot holding a whole quant wins, exactly as
+    # A local load reads only the load-id directory, so this walk must land on
+    # the same one: the newest snapshot holding a whole quant wins, exactly as
     # _repo_gguf_payload_snapshots picks it, and only its completed subset is
-    # offered. Requiring the whole directory to be complete would instead hide a
-    # finished quant behind an older revision's larger one.
-    #
-    # The vision flag travels with the winning snapshot and is never OR-ed across
-    # the walk: a projector fetched on its own into another snapshot is not
-    # reachable from the pinned one (the loader looks for companions no higher
-    # than it), so carrying the flag over advertised a model that loads blind.
-    # When no snapshot has a whole quant the first one with anything wins.
+    # offered. The vision flag travels with that snapshot and is never OR-ed
+    # across the walk, since the loader looks for companions no higher than the
+    # pinned one. When nothing holds a whole quant, the first with anything wins.
     fallback: Optional[tuple[list[GgufVariantInfo], bool]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))

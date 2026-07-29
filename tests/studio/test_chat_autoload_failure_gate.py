@@ -4,10 +4,9 @@
 """A failed auto-load of a cached model must not become a Hub download.
 
 Runs the real ``autoLoadSmallestModel`` from chat-adapter.ts under node with the
-module boundary stubbed, so these assert behaviour (which /api/inference/load
-calls happen, what the user is told) rather than source text. The sweep's
-catches are parameterless, so a cached repo whose load rejected fell through to
-fetching an unrelated default model and reported success for it.
+module boundary stubbed, so these assert behaviour rather than source text: the
+sweep's catches are parameterless, so a cached repo whose load rejected fell
+through to fetching an unrelated default model and reported success for it.
 """
 
 import json
@@ -392,8 +391,7 @@ def test_a_later_cached_model_can_still_load_after_an_earlier_failure():
 
 def test_reported_failure_is_flagged_so_callers_drop_the_generic_advice():
     """Both send paths show a generic "No model loaded" toast whenever the sweep
-    returns loaded: false, which without a flag lands after the detailed toast
-    and buries it."""
+    returns loaded: false, which without a flag buries the detailed one."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " load: () => new Error(OOM) })"
@@ -411,10 +409,9 @@ def test_empty_device_does_not_flag_a_reported_failure():
 
 
 def test_a_resume_only_cached_row_is_skipped_so_the_default_still_downloads():
-    """An interrupted download leaves a row the backend marks
-    partial/can_chat=false for the resume and delete affordances. The sweep
-    attempted it anyway, and with the failure gate above that rejection
-    suppressed the default download."""
+    """An interrupted download leaves a row the backend marks partial/can_chat
+    =false for the resume and delete affordances. Sweeping it anyway means that
+    rejection suppresses the default download."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/half', load_id: 'org/half',"
         " size_bytes: 1, partial: true, capabilities: { can_chat: false } }],"
@@ -456,9 +453,8 @@ def test_the_last_used_model_is_skipped_when_its_row_went_partial():
 
 
 def test_a_complete_cached_row_is_still_attempted():
-    """Guard on the filter itself: a row with the fields present and healthy
-    must still be swept, and a backend that omits them entirely (older Studio)
-    keeps its current behaviour."""
+    """Guard on the filter itself: a healthy row must still be swept, and a
+    backend omitting the fields (older Studio) keeps its behaviour."""
     out = _run(
         "scenario({ ggufRepos: [{ ...GEMMA, partial: false, capabilities: { can_chat: true } }],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"

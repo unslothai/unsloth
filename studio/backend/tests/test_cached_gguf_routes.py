@@ -203,14 +203,12 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
     reverse, monkeypatch, tmp_path
 ):
     """Equal snapshot mtimes must not leave the load id to iteration order.
-
-    ``repo_info.revisions`` is a ``frozenset`` both in huggingface_hub's scan and
-    in the dangling-ref recovery, so on a coarse-timestamp filesystem or a
-    restored cache this route published whichever snapshot the hash seed reached
-    first, while ``/api/models/gguf-variants`` kept naming the one
-    ``snapshot_selection_key`` picks. Selecting a quant only that snapshot holds
-    then sent an absolute path with no such file to the loader. Both revision
-    orders are driven here because that is what the seed varies.
+    
+    ``repo_info.revisions`` is a ``frozenset``, so on a coarse-timestamp
+    filesystem or a restored cache this route published whichever snapshot the
+    hash seed reached first while ``/api/models/gguf-variants`` kept naming the
+    one ``snapshot_selection_key`` picks. Both revision orders are driven here
+    because that is what the seed varies.
     """
     import os
 
@@ -225,7 +223,7 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
         path.mkdir(parents = True)
     (low / "Model-Q4_K_M.gguf").write_bytes(b"\0")
     (high / "Model-Q5_K_M.gguf").write_bytes(b"\0")
-    # One timestamp for both, which is the whole point of the case.
+    # One timestamp for both: the tie is the case.
     for path in (low, high):
         os.utime(path, (1_700_000_000, 1_700_000_000))
 
@@ -316,12 +314,8 @@ def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch
 
 
 def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monkeypatch, tmp_path):
-    """One whole quant beside a half-downloaded one is still a safe load target.
-
-    The lister behind /gguf-variants trims its offer to the completed subset, so
-    demanding a wholly complete directory pinned the older revision while that
-    offer advertised a quant only the newer one holds.
-    """
+    """One whole quant beside a half-downloaded one is still a safe load target:
+    the lister behind /gguf-variants trims its offer to the completed subset."""
     import os
 
     active = tmp_path / "active"

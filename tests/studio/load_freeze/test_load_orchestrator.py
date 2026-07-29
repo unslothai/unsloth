@@ -51,13 +51,11 @@ _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 # structlog is a hard studio.txt requirement imported only lazily, so a bare
-# setdefault here parked an empty placeholder before anything imported the real
-# package and shadowed it for the rest of the session: any later studio module
-# calling structlog.get_logger at import time blew up with AttributeError.
-# Stub only a genuinely absent package. Whatever is already in sys.modules stays
-# -- another test module parks its own bare stub and find_spec() would raise
-# ValueError on it -- but gets get_logger backfilled, since leaving that stub
-# unrepaired is what breaks the import-time callers.
+# setdefault here parks an empty placeholder that shadows the real package for
+# the session and breaks any studio module calling get_logger at import time.
+# Stub only a genuinely absent package; whatever is already in sys.modules stays
+# (find_spec() raises ValueError on another module's bare stub) but gets
+# get_logger backfilled, since an unrepaired stub is what breaks those callers.
 _structlog = sys.modules.get("structlog")
 if _structlog is None and importlib.util.find_spec("structlog") is None:
     _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))
