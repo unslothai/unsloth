@@ -63,7 +63,9 @@ def test_sub_9b_turns_thinking_off(model_id):
     assert _thinking_default_off(model_id) is True
 
 
-@pytest.mark.parametrize("model_id", ["/models/8bit/qwen3.6-27b.gguf", "/models/8b/qwen3.6-27b.gguf"])
+@pytest.mark.parametrize(
+    "model_id", ["/models/8bit/qwen3.6-27b.gguf", "/models/8b/qwen3.6-27b.gguf"]
+)
 def test_size_like_directory_does_not_shadow_the_real_size(model_id):
     assert _thinking_default_off(model_id) is False
 
