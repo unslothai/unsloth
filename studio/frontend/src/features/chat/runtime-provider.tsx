@@ -39,6 +39,11 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { getResearchThreadState } from "./api/research-api";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "./stores/research-run-store";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -85,7 +90,11 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
-const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
+// Resolves to the thread id assigned when this message's chat was first persisted.
+const pendingRunStartReadyByMessageId = new Map<
+  string,
+  Promise<string | undefined>
+>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -699,6 +708,10 @@ function createStudioDbAdapter(
 
     async initialize(threadId: string) {
       await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+      // A run already streaming on this thread filed its handles under "__default" because
+      // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
+      // id nothing is registered against.
+      useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -835,8 +848,8 @@ function trackHistoryAppend(
 
 function trackRunStartReady(
   messageId: string,
-  ready: Promise<void>,
-): Promise<void> {
+  ready: Promise<string | undefined>,
+): Promise<string | undefined> {
   pendingRunStartReadyByMessageId.set(messageId, ready);
   const cleanup = () => {
     setTimeout(() => {
@@ -851,29 +864,38 @@ function trackRunStartReady(
 
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
-): Promise<void> {
-  const lastMessage = messages.at(-1);
-  if (!lastMessage || lastMessage.role !== "user") {
+): Promise<string | undefined> {
+  // Deep Research reserves an assistant placeholder before invoking the model
+  // adapter, so the user message is not necessarily the final entry here.
+  const userMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!userMessage) {
     return;
   }
-  const ready =
-    pendingRunStartReadyByMessageId.get(lastMessage.id) ??
-    pendingHistoryAppendByMessageId.get(lastMessage.id);
-  if (!ready) {
-    return;
+  const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  if (runStartReady === undefined && historyAppendReady === undefined) {
+    return undefined;
   }
   let didBecomeReady = false;
+  let adoptedThreadId: string | undefined;
   try {
-    await ready;
+    [adoptedThreadId] = await Promise.all([
+      runStartReady ?? Promise.resolve(undefined),
+      historyAppendReady?.then(() => undefined),
+    ]);
     didBecomeReady = true;
   } finally {
     if (
       didBecomeReady &&
-      pendingRunStartReadyByMessageId.get(lastMessage.id) === ready
+      runStartReady &&
+      pendingRunStartReadyByMessageId.get(userMessage.id) === runStartReady
     ) {
-      pendingRunStartReadyByMessageId.delete(lastMessage.id);
+      pendingRunStartReadyByMessageId.delete(userMessage.id);
     }
   }
+  return adoptedThreadId;
 }
 
 function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
@@ -881,15 +903,25 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
     ...adapter,
     async *run(options) {
       registerPreStreamRun(options.unstable_threadId ?? null);
-      try {
-        await waitForRunStartHistoryAppend(options.messages);
-      } catch (error) {
+      const adoptedThreadId = await waitForRunStartHistoryAppend(
+        options.messages,
+      ).catch((error) => {
         // The adapter has not started yet, so it cannot release the capacity
         // reserved by the composer/prompt queue for this run.
         notifyPreStreamRunFailed(options.unstable_threadId ?? null);
         throw error;
+      });
+      if (!options.unstable_threadId && adoptedThreadId) {
+        registerPreStreamRun(adoptedThreadId);
       }
-      const result = adapter.run(options);
+      // The thread has an id by the time that resolves, but assistant-ui bound unstable_threadId
+      // before the await. Hand the run its real id so a first turn never files its handles
+      // under the unresolved key that concurrent runs share.
+      const result = adapter.run(
+        !options.unstable_threadId && adoptedThreadId
+          ? { ...options, unstable_threadId: adoptedThreadId }
+          : options,
+      );
       if (!result) {
         return;
       }
@@ -1129,6 +1161,32 @@ function useStudioRuntimeAdapters(
           }
           msgs = [];
         }
+        // Durable research can outlive this runtime. Reattach its server-owned
+        // assistant message to the inline card after navigation or refresh.
+        const researchThreadState = await getResearchThreadState(remoteId).catch(
+          () => null,
+        );
+        if (researchThreadState) {
+          useResearchRunStore
+            .getState()
+            .setThreadClaimed(remoteId, researchThreadState.hasRun);
+        }
+        const activeResearchRun = researchThreadState?.activeRun ?? null;
+        if (activeResearchRun) ingestResearchUpdate(activeResearchRun);
+        if (activeResearchRun?.assistantMessageId) {
+          const assistant = msgs.find(
+            (message) => message.id === activeResearchRun.assistantMessageId,
+          );
+          if (assistant) {
+            assistant.metadata = {
+              ...(assistant.metadata ?? {}),
+              researchRunId: activeResearchRun.id,
+              researchRun: activeResearchRun,
+              serverManaged: true,
+              serverRevision: activeResearchRun.lastEventSeq,
+            };
+          }
+        }
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
           const aOrder = roleOrder[a.role] ?? 99;
@@ -1166,7 +1224,13 @@ function useStudioRuntimeAdapters(
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
         if (savedUsage && withinLocalLimit && modelMatches) {
-          store.setContextUsage(savedUsage);
+          // Key by the thread this loader read, not whichever is active when the await resolves:
+          // a switch inside it would file this thread's usage under the incoming one. Same rule
+          // the adapter's end-of-run write follows.
+          store.setThreadContextUsage(remoteId, savedUsage);
+          if (store.activeThreadId === remoteId) {
+            store.setContextUsage(savedUsage);
+          }
         }
 
         // If any message has a stored parentId, reconstruct the tree so
@@ -1193,7 +1257,10 @@ function useStudioRuntimeAdapters(
       append({ parentId, message }: ExportedMessageRepositoryItem) {
         const localThreadId = aui.threadListItem().getState().id;
         const initializeThread = aui.threadListItem().initialize();
-        trackRunStartReady(message.id, initializeThread.then(() => undefined));
+        trackRunStartReady(
+          message.id,
+          initializeThread.then(({ remoteId }) => remoteId),
+        );
         const write = (async () => {
           const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
@@ -1238,16 +1305,38 @@ function useStudioRuntimeAdapters(
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-            Date.now();
+              Date.now();
+          const existingMetadata = existingMessage?.metadata;
+          const incomingRevision = Number(
+            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+          );
+          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const incomingMetadata = custom as
+            | Record<string, unknown>
+            | undefined;
+          const sameResearchRun =
+            typeof existingMetadata?.researchRunId === "string" &&
+            existingMetadata.researchRunId === incomingMetadata?.researchRunId;
+          const preserveServerManaged =
+            existingMetadata?.serverManaged === true &&
+            (sameResearchRun ||
+              !incomingMetadata?.serverManaged ||
+              existingRevision > incomingRevision);
+          // Echo the backend's stored metadata verbatim on autosave: merging
+          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
+          // server never persisted, so _research_message_would_change sees a diff and
+          // rejects every streamed/snapshot update with 409.
+          const metadata = preserveServerManaged
+            ? existingMetadata
+            : incomingMetadata;
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content,
+            content: preserveServerManaged ? existingMessage!.content : content,
             ...(attachments.length > 0 && { attachments }),
-            ...(custom &&
-              Object.keys(custom).length > 0 && { metadata: custom }),
+            ...(metadata && { metadata }),
             createdAt,
           });
         })();
@@ -1354,7 +1443,6 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
-
   useEffect(() => {
     if (isLoading) {
       return;

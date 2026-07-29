@@ -46,10 +46,16 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("jsonl") | Some("ndjson") => ("JSON Lines", vec!["jsonl", "ndjson"]),
         Some("csv") => ("CSV", vec!["csv"]),
         Some("md") | Some("markdown") => ("Markdown", vec!["md", "markdown"]),
+        Some("html") | Some("htm") => ("HTML", vec!["html", "htm"]),
+        Some("py") => ("Python", vec!["py"]),
+        Some("sh") => ("Shell script", vec!["sh"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
         _ => (
             "Export files",
-            vec!["json", "jsonl", "ndjson", "csv", "md", "markdown", "zip"],
+            vec![
+                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "py", "sh",
+                "zip",
+            ],
         ),
     }
 }
@@ -253,6 +259,34 @@ mod tests {
     }
 
     #[test]
+    fn html_canvas_exports_use_an_html_save_filter() {
+        assert_eq!(save_filter("canvas.html"), ("HTML", vec!["html", "htm"]));
+        assert_eq!(save_filter("canvas.HTM"), ("HTML", vec!["html", "htm"]));
+    }
+
+    #[test]
+    fn python_scripts_use_a_python_save_filter() {
+        assert_eq!(save_filter("script.py"), ("Python", vec!["py"]));
+        assert_eq!(save_filter("script.PY"), ("Python", vec!["py"]));
+    }
+
+    #[test]
+    fn shell_commands_use_a_shell_save_filter() {
+        // The terminal card downloads command.sh through the same cell.
+        assert_eq!(save_filter("command.sh"), ("Shell script", vec!["sh"]));
+        assert_eq!(save_filter("command.SH"), ("Shell script", vec!["sh"]));
+    }
+
+    #[test]
+    fn generic_fallback_covers_every_tool_download_name() {
+        let (name, extensions) = save_filter("no-extension");
+        assert_eq!(name, "Export files");
+        for wanted in ["py", "sh", "json", "jsonl", "csv", "md", "html", "zip"] {
+            assert!(extensions.contains(&wanted), "fallback lost {wanted}");
+        }
+    }
+
+    #[test]
     fn reads_supported_import_and_rejects_other_extensions() {
         let jsonl_path = temp_path("allowed").with_extension("JSONL");
         fs::write(&jsonl_path, "{\"messages\":[]}").unwrap();
@@ -301,7 +335,13 @@ mod tests {
         let path = std::env::temp_dir().join(OsString::from_vec(vec![
             b'u', b'n', b's', b'l', b'o', b't', b'h', 0xff, b'.', b'c', b's', b'v',
         ]));
-        fs::write(&path, "role,content\nuser,hello\n").unwrap();
+        // Linux happily stores arbitrary bytes in a filename, but macOS enforces
+        // UTF-8 on APFS/HFS+ and rejects this name outright. The name-recovery
+        // path being asserted here is only reachable where such a file can
+        // exist, so skip rather than fail on filesystems that forbid it.
+        if fs::write(&path, "role,content\nuser,hello\n").is_err() {
+            return;
+        }
         let imported = read_selected_import(Some(path.clone())).unwrap().unwrap();
         assert_eq!(imported.name, "chat-import.csv");
         let _ = fs::remove_file(path);

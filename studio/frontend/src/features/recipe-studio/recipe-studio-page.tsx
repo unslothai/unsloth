@@ -237,6 +237,7 @@ export function RecipeStudioPage({
   }, [setActiveView]);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
+  const [maximized, setMaximized] = useState(false);
   const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
   const [recentCompletedExecution, setRecentCompletedExecution] =
     useState<RecipeExecutionRecord | null>(null);
@@ -569,6 +570,16 @@ export function RecipeStudioPage({
     [reactFlowInstance],
   );
 
+  const toggleMaximize = useCallback(() => {
+    // The maximized surface is a fixed z-50 overlay that already covers the
+    // app sidebar (z-10/z-20), so we don't touch the sidebar's own state — that
+    // state is persisted in pin mode and mutating it here would leak the
+    // temporary collapse into the next page/session.
+    setMaximized((prev) => !prev);
+    // Container size changes; refit once the layout settles.
+    scheduleFitView({ delayMs: TAB_SWITCH_FIT_DELAY_MS });
+  }, [scheduleFitView]);
+
   useEffect(() => {
     if (
       previousActiveViewRef.current !== activeView &&
@@ -586,6 +597,15 @@ export function RecipeStudioPage({
       setReactFlowInstance(null);
     }
   }, [activeView, reactFlowInstance]);
+
+  // The "Exit full view" control lives inside the editor canvas, which unmounts
+  // on other tabs. Drop full-view mode when leaving the editor so Easy/Runs
+  // aren't left under the fixed overlay.
+  useEffect(() => {
+    if (activeView !== "editor" && maximized) {
+      setMaximized(false);
+    }
+  }, [activeView, maximized]);
 
   useEffect(() => {
     if (
@@ -732,6 +752,8 @@ export function RecipeStudioPage({
           interactive={canvasInteractive}
           lockDisabled={executionLocked}
           onToggleInteractive={toggleInteractive}
+          maximized={maximized}
+          onToggleMaximize={toggleMaximize}
         />
         {islandExecution &&
           (isExecutionInProgress(islandExecution.status) ||
@@ -773,10 +795,25 @@ export function RecipeStudioPage({
   }
 
   return (
-    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="w-full px-6 py-8">
+    <div
+      className={
+        maximized
+          ? "fixed inset-x-0 bottom-0 z-50 flex flex-col bg-background"
+          : "flex h-full min-h-0 flex-1 flex-col bg-background"
+      }
+      style={
+        maximized
+          ? {
+              // Start below the custom/mac window titlebar so the header and
+              // its controls aren't hidden under (or click-blocked by) it.
+              top: "var(--studio-non-chat-content-top-inset, var(--studio-content-top-inset, 0px))",
+            }
+          : undefined
+      }
+    >
+      <main className="flex min-h-0 w-full flex-1 flex-col">
         <div
-          className="relative w-full overflow-hidden rounded-2xl corner-squircle border"
+          className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden border"
           ref={setSheetContainer}
         >
           <RecipeStudioHeader
@@ -794,7 +831,7 @@ export function RecipeStudioPage({
             }}
           />
           <div
-            className="h-[75vh] w-full rounded-t-none"
+            className="flex min-h-0 w-full flex-1 rounded-t-none"
             ref={flowContainerRef}
           >
             {activeView === "easy" ? (

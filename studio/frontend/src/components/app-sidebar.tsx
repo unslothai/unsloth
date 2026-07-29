@@ -105,7 +105,6 @@ import {
   archiveChatItem,
   ChatSearchDialog,
   clearNewChatDraft,
-  createChatProject,
   deleteChatProject,
   deleteChatItem,
   listStoredChatThreads,
@@ -124,6 +123,7 @@ import {
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
+import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
@@ -526,11 +526,46 @@ export function AppSidebar() {
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
-  const anyChatRunning = Object.values(runningByThreadId).some(Boolean);
-  // The thread currently generating (if any), so "Return to Chat" lands on the
-  // live chat rather than an empty new-chat draft left active after New Chat.
-  const runningThreadId =
-    Object.entries(runningByThreadId).find(([, on]) => on)?.[0] ?? null;
+  // Keep one snapshot for queue/unread state and current-main row aggregation.
+  const runningThreadIds = runningByThreadId;
+  // Rows, not raw thread ids: a compare conversation runs two pane threads but is one chat
+  // in the sidebar, so counting the map said "2 Chats" for a single compare row.
+  const runningChatCount = useMemo(() => {
+    const running = new Set(
+      Object.entries(runningThreadIds)
+        .filter(([, on]) => on)
+        .map(([id]) => id),
+    );
+    if (running.size === 0) return 0;
+    let rows = 0;
+    for (const item of allChatItems) {
+      const ids = item.type === "compare" ? (item.threadIds ?? []) : [item.id];
+      let claimed = false;
+      for (const id of ids) {
+        if (running.delete(id)) claimed = true;
+      }
+      if (claimed) rows += 1;
+    }
+    // Anything left belongs to no known row (a first turn mid-persist); count it as one.
+    return rows + running.size;
+  }, [runningThreadIds, allChatItems]);
+  const anyChatRunning = runningChatCount > 0;
+  // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat left
+  // active (map insertion order is start order). A compare row runs pane threads that /chat
+  // cannot address, so resolve those back to the pair id the route expects.
+  const runningTarget = useMemo(() => {
+    const ids = Object.entries(runningThreadIds)
+      .filter(([, on]) => on)
+      .map(([id]) => id);
+    const id = ids.length > 0 ? ids[ids.length - 1] : null;
+    if (!id) return null;
+    const pair = allChatItems.find(
+      (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
+    );
+    return pair
+      ? { id: pair.id, compare: true as const }
+      : { id, compare: false as const };
+  }, [runningThreadIds, allChatItems]);
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -758,7 +793,6 @@ export function AppSidebar() {
     });
   }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
     useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
@@ -911,28 +945,26 @@ export function AppSidebar() {
     }
   }
 
-  async function commitCreateProject() {
-    const name = projectNameDraft.trim();
-    if (!name) return;
+  // "New project" from a chat's menu moves that chat in and stays put;
+  // otherwise open the project, unless a slow upload outlasted the route the
+  // user was on when they hit create.
+  async function afterCreateProject(
+    project: ProjectRecord,
+    { stayedOnRoute }: { stayedOnRoute: boolean },
+  ) {
     const moveTarget = projectCreateMoveTarget;
+    setProjectCreateMoveTarget(null);
+    if (!moveTarget) {
+      if (stayedOnRoute) openProject(project.id);
+      return;
+    }
     try {
-      const project = await createChatProject(name);
-      if (moveTarget) {
-        await moveChatItemToProject(moveTarget, project.id);
-        if (activeThreadId === moveTarget.id) {
-          useChatRuntimeStore.getState().setActiveProjectId(project.id);
-        }
-      }
-      setCreatingProject(false);
-      setProjectNameDraft("");
-      setProjectCreateMoveTarget(null);
-      if (moveTarget) {
-        return;
-      } else {
-        openProject(project.id);
+      await moveChatItemToProject(moveTarget, project.id);
+      if (activeThreadId === moveTarget.id) {
+        useChatRuntimeStore.getState().setActiveProjectId(project.id);
       }
     } catch (err) {
-      toast.error(moveTarget ? "Failed to create and move chat" : "Failed to create project", {
+      toast.error("Failed to move chat to the new project", {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -979,6 +1011,12 @@ export function AppSidebar() {
       threadIds.some((threadId) => unreadThreadIds.has(threadId));
     const hasActivityIndicator = hasQueueActivity || hasUnreadActivity;
     const isPinned = pinnedIdSet.has(item.id);
+    // A compare row's id is the pair id while runningByThreadId is keyed per pane thread,
+    // so aggregate its member threads instead.
+    const isGenerating =
+      item.type === "compare"
+        ? (item.threadIds ?? []).some((id) => Boolean(runningThreadIds[id]))
+        : Boolean(runningThreadIds[item.id]);
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
@@ -1039,6 +1077,8 @@ export function AppSidebar() {
           data-testid="recent-thread"
           data-thread-type={item.type}
           data-thread-id={item.id}
+          data-generating={isGenerating ? "true" : undefined}
+          aria-busy={isGenerating || undefined}
           isActive={activeThreadId === item.id}
           className={buttonClass}
           onClick={() => {
@@ -1065,6 +1105,14 @@ export function AppSidebar() {
           <span className="truncate">
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
+          {isGenerating && (
+            <Spinner
+              data-testid="chat-row-spinner"
+              // role="status" + label: announced, not motion-only.
+              label={translate("shell.navigation.chatGenerating")}
+              className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+            />
+          )}
         </SidebarMenuButton>
         {hasActivityIndicator ? (
           <span
@@ -1153,7 +1201,6 @@ export function AppSidebar() {
                 <DropdownMenuItem
                   onSelect={() => {
                     setProjectCreateMoveTarget(item);
-                    setProjectNameDraft("");
                     setCreatingProject(true);
                   }}
                 >
@@ -1243,7 +1290,11 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       variant="sidebar"
-      className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+      className={cn(
+        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background",
+        usesNativeMacTitlebar &&
+          "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+      )}
     >
       <SidebarHeader
         className={cn(
@@ -1265,6 +1316,7 @@ export function AppSidebar() {
               />
             )}
             <div
+              data-tauri-drag-region={usesNativeMacTitlebar || undefined}
               className={cn(
                 "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 showCompactMacBrand &&
@@ -1281,7 +1333,9 @@ export function AppSidebar() {
                     openNewChat(null);
                   }}
                   className={cn(
-                    "flex items-center gap-[6px] select-none transition-opacity",
+                    // min-w-0 so a narrow sidebar truncates the wordmark
+                    // instead of pushing the search icon over the logo.
+                    "flex min-w-0 items-center gap-[6px] select-none transition-opacity",
                     chatDisabled && "pointer-events-none opacity-50",
                   )}
                   aria-label={t("shell.aria.home")}
@@ -1293,17 +1347,17 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="h-[calc(26px+0.5rem*var(--ui-font-scale,1))] w-[calc(26px+0.5rem*var(--ui-font-scale,1))] rounded-full object-cover"
+                    className="h-[calc(26px+0.5rem*var(--ui-font-scale,1))] w-[calc(26px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
-                  <span className="font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                  <span className="truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-white dark:tracking-[0.02em]">
                     unsloth
                   </span>
-                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                  <span className="nav-badge ml-0.5 inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
                     {t("shell.beta")}
                   </span>
                 </Link>
               )}
-              <div className="flex items-center gap-0.5">
+              <div className="flex shrink-0 items-center gap-0.25">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
@@ -1312,7 +1366,7 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
                       <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
@@ -1336,7 +1390,7 @@ export function AppSidebar() {
                       <button
                         type="button"
                         onClick={togglePinned}
-                        className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
                         <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -1380,10 +1434,10 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
+      {/* Uniform pl-1.5 pr-1.75 keeps every hover pill the same width, inset from the edge. */}
       <SidebarGroup
         className={cn(
-          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 shrink-0 transition-[padding]",
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 transition-[padding]",
           showCompactMacBrand ? "pt-0" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
@@ -1395,9 +1449,16 @@ export function AppSidebar() {
               icon={PencilEdit02Icon}
               label={
                 showReturnToChat
-                  ? t("shell.navigation.returnToChat")
+                  ? runningChatCount > 1
+                    // Name the count rather than imply a single live chat.
+                    ? t("shell.navigation.returnToChats", {
+                        count: runningChatCount,
+                      })
+                    : t("shell.navigation.returnToChat")
                   : t("shell.navigation.newChat")
               }
+              // Off-route this row is the only sign chats are still running.
+              spinner={anyChatRunning && !isChatRoute}
               active={
                 isChatRoute &&
                 !search.thread &&
@@ -1408,8 +1469,13 @@ export function AppSidebar() {
                 if (showReturnToChat) {
                   // Prefer the running thread so we return to the live generation,
                   // not the empty new chat that became active after New Chat.
-                  if (runningThreadId && runningThreadId !== storeThreadId) {
-                    navigate({ to: "/chat", search: { thread: runningThreadId } });
+                  if (runningTarget && runningTarget.id !== storeThreadId) {
+                    navigate({
+                      to: "/chat",
+                      search: runningTarget.compare
+                        ? { compare: runningTarget.id }
+                        : { thread: runningTarget.id },
+                    });
                   } else {
                     navigate({ to: "/chat" });
                   }
@@ -1460,7 +1526,7 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
+        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
@@ -1496,7 +1562,6 @@ export function AppSidebar() {
                   onClick={(e) => {
                     e.stopPropagation();
                     setProjectCreateMoveTarget(null);
-                    setProjectNameDraft("");
                     setCreatingProject(true);
                   }}
                   className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
@@ -1543,7 +1608,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="pl-1.5 pr-2">
+              <SidebarGroupContent className="pl-1.5 pr-1.75">
                 <SidebarMenu>
                   <NavItem
                     icon={TestTubeOutlineIcon}
@@ -1618,7 +1683,7 @@ export function AppSidebar() {
                   </CollapsibleTrigger>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className="pl-1.5 pr-2">
+                  <SidebarGroupContent className="pl-1.5 pr-1.75">
                     <SidebarMenu>
                       {pinnedProjectRecords.map((project) => {
                         const projectChats =
@@ -1765,7 +1830,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1.5 pr-2">
+                <SidebarGroupContent className="pl-1.5 pr-1.75">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -1797,7 +1862,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="pl-1.5 pr-2">
+              <SidebarGroupContent className="pl-1.5 pr-1.75">
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active
@@ -1958,6 +2023,18 @@ export function AppSidebar() {
               </button>
             </SidebarMenuItem>
           )}
+          {/* Collapsed rail has no room for the cog on the profile row, so it
+              sits above the avatar instead. */}
+          <NavItem
+            className="hidden group-data-[collapsible=icon]:block"
+            icon={Settings02Icon}
+            label={t("shell.navigation.settings")}
+            active={false}
+            onClick={() => {
+              useSettingsDialogStore.getState().openDialog();
+              closeMobileIfOpen();
+            }}
+          />
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -2263,58 +2340,18 @@ export function AppSidebar() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    <Dialog
+    <NewProjectDialog
       open={creatingProject}
       onOpenChange={(open) => {
         setCreatingProject(open);
-        if (!open) {
-          setProjectNameDraft("");
-          setProjectCreateMoveTarget(null);
-        }
+        if (!open) setProjectCreateMoveTarget(null);
       }}
-    >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>
-            {projectCreateMoveTarget ? "Move to new project" : "New project"}
-          </DialogTitle>
-        </DialogHeader>
-        <Input
-          value={projectNameDraft}
-          onChange={(event) => setProjectNameDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void commitCreateProject();
-            }
-          }}
-          autoFocus
-          maxLength={120}
-          placeholder="Project name"
-          aria-label="Project name"
-          className="focus-visible:border-input focus-visible:ring-0"
-        />
-        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              setCreatingProject(false);
-              setProjectCreateMoveTarget(null);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            onClick={() => void commitCreateProject()}
-            disabled={!projectNameDraft.trim()}
-          >
-            Create
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      title={
+        projectCreateMoveTarget ? "Move to new project" : "Create project"
+      }
+      submitLabel={projectCreateMoveTarget ? "Create and move" : "Create project"}
+      onCreated={afterCreateProject}
+    />
     </>
   );
 }

@@ -156,7 +156,7 @@ def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
     assert "preStreamRunReservations" in QUEUE_BOUNDARY
     assert "registerPreStreamRun(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
     assert "releasePreStreamRunForThread(threadKey);" in CHAT_ADAPTER
-    assert "runtime.setThreadRunning(threadKey, true);" in CHAT_ADAPTER
+    assert "runtime.setThreadRunning(threadKey, true, {" in CHAT_ADAPTER
     assert "sendReservedComposer()" in submit
     assert "notifyPreStreamRunFailed(referenceThreadId);" in THREAD
     assert "class PreStreamAwareAttachmentAdapter" in RUNTIME_PROVIDER
@@ -233,7 +233,7 @@ def test_bulk_archive_and_clear_stop_prompt_queues_first():
 def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
     stop = _between(
         THREAD,
-        "function stopPromptQueueRun(threadIds?: string[])",
+        "function stopPromptQueueRun(",
         "function stopPromptQueueRunForThreadIds(",
     )
     failed = _between(
@@ -250,11 +250,11 @@ def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
     assert "notifyPreStreamRunFailed(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
     set_running = _between(
         RUNTIME_STORE,
-        "setThreadRunning: (threadId, running) =>",
+        "setThreadRunning: (threadId, running, options) =>",
         "registerThreadCancel: (threadId, cancel) =>",
     )
     assert "delete nextCancel[threadId]" not in set_running
-    assert "registrar cleanup removes it" in set_running
+    assert "ownerless clear predates per-run tracking" in set_running
 
 
 def test_persisted_new_chat_accepts_its_promoted_remote_id():

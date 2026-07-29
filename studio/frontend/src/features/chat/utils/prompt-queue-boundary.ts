@@ -5,21 +5,29 @@ export const PRE_STREAM_RUN_FAILED_EVENT = "unsloth:pre-stream-run-failed";
 let preStreamRunReservations = 0;
 const preStreamRunThreadIds = new Set<string>();
 
-export type PromptQueueStopEventDetail = {
+export interface PromptQueueStopOptions {
   threadIds?: string[];
-};
+  /** Also cancel prompts the selected queues already dispatched. Navigation
+   * leaves independent background queues alone; explicit stop defaults true. */
+  cancelActiveRun?: boolean;
+}
 
 export type PromptQueueRunFailedEventDetail = {
   threadId?: string | null;
 };
 
-export function requestPromptQueueStop(threadIds?: string[]) {
+export function requestPromptQueueStop(
+  options: PromptQueueStopOptions | string[] = {},
+) {
   if (typeof window === "undefined") {
     return;
   }
+  const detail = Array.isArray(options)
+    ? { threadIds: options, cancelActiveRun: true }
+    : { cancelActiveRun: true, ...options };
   window.dispatchEvent(
-    new CustomEvent<PromptQueueStopEventDetail>(PROMPT_QUEUE_STOP_EVENT, {
-      detail: threadIds && threadIds.length > 0 ? { threadIds } : undefined,
+    new CustomEvent<PromptQueueStopOptions>(PROMPT_QUEUE_STOP_EVENT, {
+      detail,
     }),
   );
 }

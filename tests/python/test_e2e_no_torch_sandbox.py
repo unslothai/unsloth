@@ -193,7 +193,7 @@ class TestBeforeAfterImportChain:
             mm = types.ModuleType('model_mappings')
             mm.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = mm
-            source = open({str(before_file)!r}).read()
+            source = open({str(before_file)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             exec(source)
@@ -215,7 +215,7 @@ class TestBeforeAfterImportChain:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(before_file)!r}).read())
+            exec(open({str(before_file)!r}, encoding = "utf-8").read())
         """)
         result = _run_in_sandbox(no_torch_venv, code)
         assert result.returncode != 0, "BEFORE data_collators.py should crash without torch"
@@ -284,7 +284,7 @@ class TestBeforeAfterImportChain:
             it = types.ModuleType('iterable')
             it.is_streaming_dataset = lambda *a, **k: False
             sys.modules['iterable'] = it
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
@@ -304,7 +304,7 @@ class TestBeforeAfterImportChain:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             print("OK")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
@@ -382,7 +382,7 @@ class TestDataclassInstantiation:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DataCollatorSpeechSeq2SeqWithPadding(processor=None)
             assert obj.processor is None
             print("OK")
@@ -397,7 +397,7 @@ class TestDataclassInstantiation:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DeepSeekOCRDataCollator(processor=None)
             assert obj.processor is None
             assert obj.max_length == 2048
@@ -414,7 +414,7 @@ class TestDataclassInstantiation:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = VLMDataCollator(processor=None)
             assert obj.processor is None
             assert obj.max_length == 2048
@@ -441,7 +441,7 @@ class TestDataclassInstantiation:
             it.is_streaming_dataset = lambda *a, **k: False
             sys.modules['iterable'] = it
             ns = {{}}
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
@@ -473,7 +473,7 @@ class TestEdgeCasesBrokenTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            exec(open({str(sandbox_dir / 'data_collators.py')!r}).read())
+            exec(open({str(sandbox_dir / 'data_collators.py')!r}, encoding = "utf-8").read())
             obj = DataCollatorSpeechSeq2SeqWithPadding(processor=None)
             print("OK: data_collators works despite broken torch on sys.path")
         """)
@@ -495,7 +495,7 @@ class TestEdgeCasesBrokenTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             result = ns['detect_hardware']()
@@ -530,7 +530,7 @@ class TestEdgeCasesBrokenTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             result = ns['detect_hardware']()
@@ -559,7 +559,7 @@ class TestEdgeCasesBrokenTorch:
             sys.modules['iterable'] = it
 
             ns = {{}}
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
@@ -604,7 +604,7 @@ class TestHardwareDetectionNoTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             device = ns['detect_hardware']()
@@ -624,7 +624,7 @@ class TestHardwareDetectionNoTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             versions = ns['get_package_versions']()
@@ -651,7 +651,7 @@ class TestHardwareDetectionNoTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(hw_sandbox / 'hardware.py')!r}).read()
+            source = open({str(hw_sandbox / 'hardware.py')!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             assert callable(ns['detect_hardware'])
@@ -910,11 +910,14 @@ class TestInstallPythonStackFiltering:
         ):
             assert ips._infer_no_torch() is False
 
-        # Unset on Intel Mac -> True (platform fallback)
+        # Unset on Intel Mac -> True (platform fallback). Pin the manifest tier to
+        # "unknown" first, or this reads the manifest of whatever venv pytest runs
+        # in and the result depends on the developer's machine.
         env = os.environ.copy()
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
             mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.install_manifest, "recorded_no_torch", lambda *a, **k: None),
             mock.patch.object(ips, "IS_MAC_INTEL", True),
         ):
             assert ips._infer_no_torch() is True

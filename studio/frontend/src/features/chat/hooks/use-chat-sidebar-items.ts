@@ -16,11 +16,12 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearComposerDraft } from "../utils/composer-draft";
+import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
-import { clearComposerDraft } from "../utils/composer-draft";
 import {
   isPreStreamRunActive,
   requestPromptQueueStop,
@@ -29,6 +30,7 @@ import {
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
+  /** The pane threads behind this row id; queue and run maps are keyed per pane. */
   threadIds: string[];
   title: string;
   createdAt: number;
@@ -169,16 +171,15 @@ export function useChatSidebarItems(options?: {
 }
 
 function cancelIfRunning(threadId: string): void {
-  const { runningByThreadId, cancelByThreadId } =
-    useChatRuntimeStore.getState();
-  if (
-    !runningByThreadId[threadId] &&
-    !isPreStreamRunActive(threadId) &&
-    !(threadId in cancelByThreadId)
-  ) {
+  if (stopChatThread(threadId)) {
     return;
   }
-  cancelByThreadId[threadId]?.();
+  // A pre-stream reservation is not marked running yet, so the background-run
+  // helper cannot see it. Cancel its mounted assistant-ui run directly.
+  const { cancelByThreadId } = useChatRuntimeStore.getState();
+  if (isPreStreamRunActive(threadId) || threadId in cancelByThreadId) {
+    cancelByThreadId[threadId]?.();
+  }
 }
 
 export async function renameChatItem(
