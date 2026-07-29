@@ -105,9 +105,14 @@ def test_a_lib_that_never_loaded_is_not_ready():
     assert probe.native_kernels_ready(_fake_bnb(None), "cuda") is False
 
 
-def test_a_missing_symbol_is_not_ready():
-    """A partially loaded or backend-mismatched wheel resolves most names; ctypes
-    raises AttributeError on the first one it does not export."""
+def test_a_partially_exporting_library_stays_ready():
+    """One missing symbol does not mean a dead library.
+
+    ``ALLOW_BITSANDBYTES`` gates 8bit as well as 4bit - loader.py clears both - so
+    writing the wheel off here would silently downgrade a working LLM.int8 request.
+    The missing symbol raises where kernels/utils.py binds it, which is a crash no
+    flag can rescue, not something to trade 8bit for.
+    """
 
     class _MissingOne(_RealHandleLib):
         def __getattr__(self, name):
@@ -116,7 +121,7 @@ def test_a_missing_symbol_is_not_ready():
             return super().__getattr__(name)
 
     probe = _load_probe()
-    assert probe.native_kernels_ready(_fake_bnb(_MissingOne()), "cuda") is False
+    assert probe.native_kernels_ready(_fake_bnb(_MissingOne()), "cuda") is True
 
 
 def test_absent_bitsandbytes_is_not_ready():

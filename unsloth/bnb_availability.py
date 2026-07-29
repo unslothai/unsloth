@@ -56,7 +56,13 @@ def bitsandbytes_symbols(device_type):
 
 
 def check_native_kernels(bnb, device_type):
-    """Raise unless every 4bit handle on `bnb` is a real native kernel.
+    """Raise when `bnb`'s native library is dead: no handle it offers is a real kernel.
+
+    Not "every handle resolves". A library that exports some of these and not others is
+    alive, and `ALLOW_BITSANDBYTES` gates 8bit as well as 4bit (loader.py clears both),
+    so writing it off there would silently downgrade a working LLM.int8 request. A
+    missing symbol is a different failure anyway - it raises where kernels/utils.py
+    binds it, which no flag can rescue.
 
     Safe to repeat: ctypes caches the function object on the first lookup and
     bitsandbytes memoizes its wrapper, so these are the handles bound later.
@@ -70,17 +76,25 @@ def check_native_kernels(bnb, device_type):
         # reads sys.modules directly where plain attribute access does not.
         import bitsandbytes.functional as functional
 
-    lib = functional.lib  # None on a 0.45.5 native-load failure
+    lib = functional.lib
+    if lib is None:
+        # 0.45.5, the floor in pyproject.toml, on a native-load failure.
+        raise AttributeError("Unsloth: `bitsandbytes.functional.lib` is None.")
     for symbol in bitsandbytes_symbols(device_type):
-        if not hasattr(getattr(lib, symbol), "restype"):
-            raise AttributeError(
-                f"Unsloth: `bitsandbytes.functional.lib.{symbol}` is not a native "
-                "handle - the bitsandbytes native library did not load."
-            )
+        try:
+            handle = getattr(lib, symbol)
+        except Exception:
+            continue  # not exported: a partial library, not a dead one
+        if hasattr(handle, "restype"):
+            return  # a ctypes function pointer, so the library really loaded
+    raise AttributeError(
+        "Unsloth: no `bitsandbytes.functional.lib` 4bit handle is a native function "
+        "pointer - the bitsandbytes native library did not load."
+    )
 
 
 def native_kernels_ready(bnb, device_type):
-    """Can 4bit actually run here? Gates the capability flags, never the import."""
+    """Is the bitsandbytes native library alive? Gates the flags, never the import."""
     try:
         check_native_kernels(bnb, device_type)
     except Exception:
