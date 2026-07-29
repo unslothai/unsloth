@@ -340,9 +340,9 @@ def _rendered_effects(effects: list[tuple[list[str], str]]) -> str:
 
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
-    render = HARNESS_RENDER.replace(
-        "__EFFECTS__", _rendered_effects(_new_chat_effects())
-    ).replace("__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects()))
+    render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects(_new_chat_effects())).replace(
+        "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
+    )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
     return prelude + _refresh_module_body() + render + resident
 

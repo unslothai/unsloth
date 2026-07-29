@@ -3166,8 +3166,8 @@ def _count_tokens_backend(
     backend._reasoning_effort_levels = ["high", "max"]
     backend._supports_preserve_thinking = True
     backend._architecture = None
-    backend._request_reasoning_kwargs = (
-        LlamaCppBackend._request_reasoning_kwargs.__get__(backend, type(backend))
+    backend._request_reasoning_kwargs = LlamaCppBackend._request_reasoning_kwargs.__get__(
+        backend, type(backend)
     )
     switched: list = []
     counted: dict = {}
@@ -3385,7 +3385,11 @@ def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
         def __exit__(self, *_exc):
             return False
 
-        def post(self, url, json = None):
+        def post(
+            self,
+            url,
+            json = None,
+        ):
             body = json or {}
             if not url.endswith("/apply-template"):
                 return _FakeResponse({"tokens": str(body.get("content", "")).split()})
@@ -3403,11 +3407,14 @@ def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
             pass
 
     monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
-    assert _CountBackend().count_chat_tokens(
-        [{"role": "user", "content": "hi"}],
-        strict = True,
-        chat_template_kwargs = template_kwargs,
-    ) == expected_tokens
+    assert (
+        _CountBackend().count_chat_tokens(
+            [{"role": "user", "content": "hi"}],
+            strict = True,
+            chat_template_kwargs = template_kwargs,
+        )
+        == expected_tokens
+    )
 
 
 def test_audio_generate_is_reload_only(monkeypatch):
