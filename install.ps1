@@ -1211,14 +1211,23 @@ exit 0
                 } catch {}
             }
         }
-        # ARM64 host only: rank candidates x64 first. Probing costs a subprocess each,
-        # so non-ARM hosts already returned above.
+        # ARM64 host only: prefer x64, but only within one minor. $minors is the
+        # caller's version preference, so ranking on architecture alone would answer
+        # UNSLOTH_PYTHON=3.12 with an x64 3.13 and never bootstrap x64 3.12. Walk the
+        # versions in order and take the x64 build of the best one available; if that
+        # minor is ARM64-only the caller obtains its x64 build via Install-X64Python.
+        # Probing costs a subprocess each, so non-ARM hosts already returned above.
         foreach ($c in $candidates) {
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
         }
-        $x64 = $candidates | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
-        if ($x64) { return $x64 }
+        foreach ($minor in $minors) {
+            $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
+            if ($sameMinor.Count -eq 0) { continue }
+            $x64 = $sameMinor | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
+            if ($x64) { return $x64 }
+            return $sameMinor[0]
+        }
         if ($candidates.Count -gt 0) { return $candidates[0] }
         return $null
     }
