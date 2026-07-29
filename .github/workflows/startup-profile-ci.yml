@@ -35,6 +35,13 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'pyproject.toml'
+      # --local runs the checkout's own setup scripts (install.sh line 4182 picks
+      # $_REPO_ROOT/studio/setup.sh; the editable install makes `unsloth studio
+      # setup` resolve setup.ps1 to the repo), and both call install_python_stack.py,
+      # which is where the dependency set that gets imported is decided.
+      - 'studio/setup.sh'
+      - 'studio/setup.ps1'
+      - 'studio/install_python_stack.py'
   workflow_dispatch:
     inputs:
       repeats:

@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression coverage for the startup profiler's budget gate and process teardown."""
+"""Regression coverage for the startup profiler's budget gate, teardown and triggers."""
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import subprocess
 import sys
@@ -12,9 +13,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "profile_startup.py"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "startup-profile-ci.yml"
+
+# Checkout files that build the venv the workflow profiles, so an edit to any of
+# them can move startup time without the job ever running.
+INSTALLER_INPUTS = (
+    "studio/setup.sh",
+    "studio/setup.ps1",
+    "studio/install_python_stack.py",
+)
 
 
 def _load():
@@ -137,6 +148,31 @@ def test_terminate_tree_skips_an_exited_process(monkeypatch):
     proc.poll = lambda: 0
     mod._terminate_tree(proc)
     assert calls == [] and not proc.terminated
+
+
+def _trigger_paths():
+    wf = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    # YAML 1.1 turns the bare `on:` key into True.
+    on = wf.get("on") or wf[True]
+    return [p for p in on["pull_request"]["paths"] if not p.startswith("!")]
+
+
+@pytest.mark.parametrize("rel", INSTALLER_INPUTS)
+def test_workflow_triggers_on_studio_installer_inputs(rel):
+    """A setup script that changes the profiled venv must schedule a measurement."""
+    assert (REPO_ROOT / rel).is_file(), f"{rel} moved; revisit the trigger list"
+    paths = _trigger_paths()
+    assert any(fnmatch.fnmatch(rel, p) for p in paths), f"{rel} not covered by {paths}"
+
+
+def test_studio_installer_inputs_are_on_the_local_install_path():
+    """Anchor the list above: these files are what --local actually executes."""
+    # install.sh picks the checkout's setup.sh; install.ps1 gets there through the
+    # editable install instead, so only the setup -> stack call is greppable there.
+    assert "studio/setup.sh" in (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
+    for setup in ("studio/setup.sh", "studio/setup.ps1"):
+        text = (REPO_ROOT / setup).read_text(encoding = "utf-8", errors = "replace")
+        assert "install_python_stack.py" in text
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix branch")
