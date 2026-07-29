@@ -125,6 +125,21 @@ def purge_partial_import(package: str) -> list:
     return stale
 
 
+# Stage name -> the package it imports, for the failure purge below. Only the
+# unsloth_zoo stage used to purge, so a datasets, transformers or torch import
+# that died partway left its submodules in sys.modules with the parent evicted:
+# the retry re-runs __init__ against cache hits and yields a package that
+# imports but is missing attributes, broken until restart. Every stage that
+# imports a package needs the same cleanup, not just the one that had it.
+# inference_backend is absent on purpose: it builds an object, it imports nothing.
+_STAGE_PACKAGE = {
+    "hardware": "torch",
+    "transformers": "transformers",
+    "datasets": "datasets",
+    "unsloth_zoo": "unsloth_zoo",
+}
+
+
 def _run_stage(name: str, fn) -> None:
     started = time.perf_counter()
     try:
@@ -134,6 +149,11 @@ def _run_stage(name: str, fn) -> None:
         # warning, not debug: the stage stays cold and the first request pays
         # for it, so it must be greppable on a "slow first inference" report.
         logger.warning("torch warm stage %r failed: %r", name, exc)
+        package = _STAGE_PACKAGE.get(name)
+        if package:
+            # Declines by itself when a loaded C extension is among the
+            # leftovers, so this stays safe for torch.
+            purge_partial_import(package)
     else:
         _status["stages"][name] = {
             "ok": True,

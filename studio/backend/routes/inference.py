@@ -4661,7 +4661,10 @@ async def _resolve_gguf_gpu_ids_for_request(
     from utils.hardware.hardware import resolve_requested_gpu_ids
 
     is_vulkan = LlamaCppBackend._is_vulkan_backend()
-    if get_device() == DeviceType.XPU and not is_vulkan:
+    # Off-loop: get_device() waits on the detection lock, so a GGUF load or
+    # validate carrying gpu_ids in the warm window would hold the event-loop
+    # thread for the cold torch import -- the stall the deferred startup removes.
+    if await asyncio.to_thread(get_device) == DeviceType.XPU and not is_vulkan:
         raise HTTPException(
             status_code = 400,
             detail = (

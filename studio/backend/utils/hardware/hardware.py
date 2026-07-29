@@ -442,9 +442,19 @@ def export_capability() -> dict:
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
         }
-    # No accelerator: name the blocker. Apple Silicon first -- its path is MLX, so "install PyTorch"
-    # would be wrong advice on a Mac even when torch is also absent.
-    if is_apple_silicon():
+    # No accelerator: name the blocker. Detection having failed outright comes
+    # first, because the branches below all describe a host that was measured.
+    # ensure_hardware_detected() records CPU + "detection_failed" when the probe
+    # raises, so an accelerator host with a broken CUDA/XPU probe would otherwise
+    # be told to install PyTorch or that it has no GPU -- both send the user to
+    # fix something that is not wrong.
+    if CHAT_ONLY_REASON == "detection_failed":
+        reason = "detection_failed"
+        message = (
+            "Hardware detection failed on this host, so export is disabled. The server log records "
+            "the underlying error; restart Unsloth Studio to retry detection."
+        )
+    elif is_apple_silicon():
         reason = "mlx_unavailable"
         message = (
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "

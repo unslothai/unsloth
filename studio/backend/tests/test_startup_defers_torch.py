@@ -327,6 +327,9 @@ _OFFLOAD_REQUIRED = [
     ("routes/inference.py", "get_status", "get_inference_backend"),
     ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
     ("routes/inference.py", "get_api_monitor", "_monitor_context_length"),
+    # Not first-paint either, but a GGUF load or validate carrying gpu_ids lands
+    # in the warm window and this probes the device before any teardown.
+    ("routes/inference.py", "_resolve_gguf_gpu_ids_for_request", "get_device"),
 ]
 
 
@@ -590,3 +593,51 @@ def test_one_detection_pass_probes_torch_once(monkeypatch):
             sys.modules.pop(name, None)
         sys.modules.update(saved)
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = saved_device, saved_chat, saved_reason
+
+
+def test_every_importing_warm_stage_purges_on_failure():
+    """A failed stage must not leave a half-imported package behind.
+
+    Only the unsloth_zoo stage used to purge. A datasets, transformers or torch
+    import that dies partway leaves its submodules in sys.modules with the
+    parent evicted, so the retry re-runs __init__ against cache hits and returns
+    a package that imports but is missing attributes -- broken until restart,
+    while warm_status() reports nothing worse than a cold stage.
+    """
+    from utils import torch_warmup
+
+    importing = {name for name, _ in torch_warmup._STAGES} - {"inference_backend"}
+    assert importing <= set(torch_warmup._STAGE_PACKAGE), (
+        "a warm stage imports a package with no purge mapping: "
+        f"{sorted(importing - set(torch_warmup._STAGE_PACKAGE))}"
+    )
+
+
+def test_a_failed_stage_actually_purges(monkeypatch):
+    purged = []
+    from utils import torch_warmup
+
+    monkeypatch.setattr(torch_warmup, "purge_partial_import", lambda pkg: purged.append(pkg))
+
+    def _boom():
+        raise RuntimeError("datasets exploded partway")
+
+    torch_warmup._run_stage("datasets", _boom)
+
+    assert purged == ["datasets"], f"expected the datasets purge, got {purged}"
+    assert torch_warmup._status["stages"]["datasets"]["ok"] is False
+
+
+def test_a_stage_that_imports_nothing_is_not_purged(monkeypatch):
+    """inference_backend builds an object; there is no package to clean up."""
+    purged = []
+    from utils import torch_warmup
+
+    monkeypatch.setattr(torch_warmup, "purge_partial_import", lambda pkg: purged.append(pkg))
+
+    def _boom():
+        raise RuntimeError("constructor exploded")
+
+    torch_warmup._run_stage("inference_backend", _boom)
+
+    assert purged == [], f"nothing to purge for a non-importing stage, got {purged}"
