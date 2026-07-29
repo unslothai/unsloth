@@ -1215,9 +1215,7 @@ class TestDownloadMmprojOfflineCacheFallback:
         assert out is not None, "mmproj must resolve from cache when offline"
         assert "mmproj-vision-F16.gguf" in out
 
-    def test_offline_lookup_rejects_projector_from_unrelated_snapshot(
-        self, hf_cache, monkeypatch
-    ):
+    def test_offline_lookup_rejects_projector_from_unrelated_snapshot(self, hf_cache, monkeypatch):
         weights = _build_cache(
             hf_cache,
             "unsloth/audio-GGUF",

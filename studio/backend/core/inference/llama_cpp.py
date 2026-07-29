@@ -6188,6 +6188,7 @@ class LlamaCppBackend:
                 logger.info("Reusing cached mmproj: %s", cached)
                 return cached
             from utils.models.model_config import _compatible_cached_mmproj
+
             return _compatible_cached_mmproj(hf_repo, near_path)
 
         return self._download_companion_gguf(
