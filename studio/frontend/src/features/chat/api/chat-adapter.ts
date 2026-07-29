@@ -1499,6 +1499,22 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
+/** Whether a cache row is a model the user can actually chat with.
+ *
+ *  The cache endpoints also return rows that exist only for the resume/delete
+ *  affordances (an interrupted or cancelled download), and those carry
+ *  partial: true with can_chat: false. Auto-load used to attempt them anyway
+ *  and fall through on the rejection; now that a rejection suppresses the
+ *  default download, attempting one would leave chat with no model at all.
+ *  Both fields are optional so an older backend that omits them keeps its
+ *  current behaviour of trying the row. */
+function isChattableCachedRepo(repo: {
+  partial?: boolean;
+  capabilities?: { can_chat?: boolean } | null;
+}): boolean {
+  return repo.partial !== true && repo.capabilities?.can_chat !== false;
+}
+
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -1836,10 +1852,14 @@ async function autoLoadSmallestModel(): Promise<{
     return true;
   }
   try {
-    const [ggufRepos, modelRepos] = await Promise.all([
+    const [allGgufRepos, allModelRepos] = await Promise.all([
       listCachedGguf().catch(() => []),
       listCachedModels().catch(() => []),
     ]);
+    // Filtered once, so the last-used lookup below sees the same set as the
+    // sweeps and neither can spend a load attempt on a resume-only row.
+    const ggufRepos = allGgufRepos.filter(isChattableCachedRepo);
+    const modelRepos = allModelRepos.filter(isChattableCachedRepo);
 
     if (lastLoaded) {
       if (lastLoaded.kind === "gguf") {

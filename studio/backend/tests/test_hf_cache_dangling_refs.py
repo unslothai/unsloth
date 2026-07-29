@@ -914,3 +914,82 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
     assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
     assert rows[0].get("partial") is True
     assert rows[0]["capabilities"].get("can_chat") is False
+
+
+def test_a_gguf_variant_marker_from_a_newer_attempt_does_not_disable_the_pinned_quant(
+    tmp_path, monkeypatch
+):
+    """The GGUF twin of the repo-wide marker rule. A cancel marker is keyed by
+    (repo, variant) with no revision, so re-downloading the quant the row
+    already holds and cancelling it marked the complete copy in the older,
+    advertised snapshot broken and On Device hid a loadable GGUF."""
+    from hub.utils import download_manifest
+    from hub.utils.gguf import list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"config.json": b"{}"},
+        ref = NEWER,
+    )
+    download_manifest.write_cancel_marker(
+        "model", "Org/Model", "Q4_K_M", "http", hub_cache = tmp_path
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    load_dir = Path(rows[0]["load_id"])
+    assert load_dir == repo_dir / "snapshots" / OLDER
+    # The quant the marker names does resolve under the load id, so the row has
+    # something to chat with.
+    assert [v.quant for v in list_local_gguf_variants(str(load_dir))[0]] == ["Q4_K_M"]
+    assert rows[0].get("partial") is False
+    assert rows[0]["capabilities"].get("can_chat") is True
+
+
+def test_a_gguf_variant_marker_against_the_advertised_snapshot_is_still_partial(
+    tmp_path, monkeypatch
+):
+    """Negative side of the same rule: when the row advertises the newest
+    snapshot the marker does describe the attempt that wrote it, so the only
+    quant stays broken and the row keeps its resume affordance."""
+    from hub.utils import download_manifest
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}"},
+        newer_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+    )
+    download_manifest.write_cancel_marker(
+        "model", "Org/Model", "Q4_K_M", "http", hub_cache = tmp_path
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+    assert rows[0].get("partial") is True
+    assert rows[0]["capabilities"].get("can_chat") is False
+
+
+def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(
+    tmp_path, monkeypatch
+):
+    """The Q8+Q4 mixed-state rule still holds across snapshots: a cancelled
+    quant that is not the one the load id resolves must not veto the clean one."""
+    from hub.utils import download_manifest
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"config.json": b"{}"},
+        ref = NEWER,
+    )
+    download_manifest.write_cancel_marker(
+        "model", "Org/Model", "Q8_0", "http", hub_cache = tmp_path
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("partial") is False
+    assert rows[0]["capabilities"].get("can_chat") is True

@@ -267,6 +267,15 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
+}
+
+/** The subset of the row's capabilities auto-load acts on. The backend sends
+ *  the whole block on both cache endpoints; the rest is only read by the Hub
+ *  view models, which have their own wider type. */
+export interface CachedRepoCapabilities {
+  can_chat?: boolean;
 }
 
 export async function getGgufDownloadProgress(
@@ -386,6 +395,8 @@ export interface CachedModelRepo {
   /** Owning cache dir; sent so a delete targets this copy, not the active
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
 }
 
 export async function listCachedModels(

@@ -34,6 +34,7 @@ def _source_path(relative_path: str) -> Path:
 ADAPTER = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 TEMP = WORKDIR / "temp" / "chat_autoload_failure_gate"
 DEFAULT_MODEL = "unsloth/Qwen3.5-4B-MTP-GGUF"
+GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 
 # Stubs for everything autoLoadSmallestModel imports. Each scenario supplies the
 # cache inventory and how /validate and /load answer for a given model_path.
@@ -408,3 +409,62 @@ def test_empty_device_does_not_flag_a_reported_failure():
     out = _run("scenario({ ggufRepos: [], models: [] })")
 
     assert out["result"].get("loadFailureReported") is not True
+
+
+def test_a_resume_only_cached_row_is_skipped_so_the_default_still_downloads():
+    """An interrupted download leaves a row the backend already marks
+    partial/can_chat=false, kept for the resume and delete affordances. The
+    sweep attempted it anyway, and with the failure gate above that rejection
+    suppressed the default download, so a half-finished cache left chat with no
+    model at all."""
+    out = _run(
+        "scenario({ modelRepos: [{ repo_id: 'org/half', load_id: 'org/half',"
+        " size_bytes: 1, partial: true, capabilities: { can_chat: false } }],"
+        " load: (p) => p.model_path === 'org/half'"
+        " ? new Error('config.json not found') : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+    assert out["result"]["loaded"] is True
+    assert _toasts(out, "toast.error") == []
+
+
+def test_a_can_chat_false_cached_row_is_skipped_on_its_own():
+    """The two fields are set independently on the row, so can_chat alone (a
+    weightless config-only repo) has to be enough to skip it."""
+    out = _run(
+        "scenario({ ggufRepos: [{ ...GEMMA, capabilities: { can_chat: false } }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " load: (p) => p.model_path === GEMMA.repo_id ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+    assert out["result"]["loaded"] is True
+
+
+def test_the_last_used_model_is_skipped_when_its_row_went_partial():
+    """The last-used shortcut reads the same rows, so an update that was
+    cancelled over the model the user last chatted with must not spend the
+    attempt either."""
+    out = _run(
+        "scenario({ ggufRepos: [{ ...GEMMA, partial: true }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " lastLoaded: { id: GEMMA.repo_id, kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' },"
+        " load: (p) => p.model_path === GEMMA.repo_id ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+    assert out["result"]["loaded"] is True
+
+
+def test_a_complete_cached_row_is_still_attempted():
+    """Guard on the filter itself: a row with the fields present and healthy
+    must still be swept, and a backend that omits them entirely (older Studio)
+    keeps its current behaviour."""
+    out = _run(
+        "scenario({ ggufRepos: [{ ...GEMMA, partial: false, capabilities: { can_chat: true } }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True

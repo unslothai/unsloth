@@ -816,6 +816,7 @@ def is_variant_partial(
     incomplete_blob_hashes: Optional[set[str]] = None,
     variant_blob_hashes: Optional[frozenset[str]] = None,
     repo_cache_dir: Optional[Path] = None,
+    cancel_marker_applies: bool = True,
 ) -> bool:
     """Per-variant partial detection. Owns its manifest, owns its marker.
     Used by the GGUF variants endpoint to flag a specific quant as broken
@@ -823,10 +824,18 @@ def is_variant_partial(
 
     snapshot_dir is an optional hint to avoid re-walking the cache when a
     caller is checking many variants of the same repo (see
-    is_gguf_repo_partial for that usage)."""
+    is_gguf_repo_partial for that usage).
+
+    ``cancel_marker_applies`` is the same attribution the repo-wide signals get:
+    the marker is keyed by (repo, variant) with no revision, so a caller that
+    pinned *snapshot_dir* to an older revision than the cancelled attempt was
+    writing passes False rather than call the quant it verifies there broken.
+    Defaults True so the per-variant endpoint keeps reporting a cancelled quant
+    as cancelled."""
     from hub.utils import download_manifest
     return _compose_partial(
-        lambda: download_manifest.has_cancel_marker(
+        lambda: cancel_marker_applies
+        and download_manifest.has_cancel_marker(
             "model",
             repo_id,
             variant,
@@ -872,10 +881,11 @@ def is_gguf_repo_partial(
       1. Cheap legacy fast-path (.incomplete blobs / broken symlinks).
       2. Per-variant manifest + marker enumeration, gated on "all broken".
 
-    *snapshot_dir* pins both to the snapshot the row hands out as its load id.
-    Without it the newest snapshot supplies the completed quants while the
-    legacy walk stays repo-wide, so an interrupted re-download flips can_chat
-    off for the older complete quant the row actually advertises.
+    *snapshot_dir* pins all three to the snapshot the row hands out as its load
+    id. Without it the newest snapshot supplies the completed quants while the
+    legacy walk and the per-variant cancel markers stay repo-wide, so an
+    interrupted re-download flips can_chat off for the older complete quant the
+    row actually advertises.
     """
     from hub.utils import download_manifest
 
@@ -887,9 +897,11 @@ def is_gguf_repo_partial(
         )
     # Same attribution as is_snapshot_partial: an .incomplete blob or a broken
     # symlink belongs to the revision a download is writing, which is the newest.
-    has_legacy_partial = _repo_signal_applies_to_snapshot(
-        repo_cache_dir, snapshot_dir
-    ) and _legacy_partial("model", repo_id, repo_cache_dir)
+    # Variant cancel markers carry no revision either, so they get it too.
+    repo_signal_applies = _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
+    has_legacy_partial = repo_signal_applies and _legacy_partial(
+        "model", repo_id, repo_cache_dir
+    )
     variants: set[str] = set(_completed_gguf_variants(snapshot_dir))
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
     for variant, _path in download_manifest.iter_variant_manifests(
@@ -929,6 +941,7 @@ def is_gguf_repo_partial(
             variant,
             snapshot_dir,
             repo_cache_dir = repo_cache_dir,
+            cancel_marker_applies = repo_signal_applies,
         ):
             has_broken = True
         else:
