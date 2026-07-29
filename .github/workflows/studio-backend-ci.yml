@@ -231,8 +231,6 @@ jobs:
         # Own step, not folded into the tests/ discovery above: pyproject's
         # testpaths is tests/, and this suite needs no PYTHONPATH or CUDA spoof
         # (it self-bootstraps sys.path and imports neither unsloth nor torch).
-        # Run the whole directory in one invocation; some files in it are
-        # order-dependent and only pass in a full-directory run.
         run: python -m pytest unsloth_cli/tests -q --tb=short
 
       - name: Shell installer tests
