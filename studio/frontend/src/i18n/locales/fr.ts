@@ -27,10 +27,18 @@ export const fr = {
     product: "Unsloth Studio",
     accountMenu: "Menu du compte de {name}",
     updateAvailable: "Mise à jour disponible",
+    resize: {
+      collapse: "Cliquez pour réduire",
+      expand: "Cliquez pour développer",
+      drag: "Faites glisser pour redimensionner",
+    },
     aria: {
       home: "Accueil Unsloth",
       closeSidebar: "Fermer la barre latérale",
       openSidebar: "Ouvrir la barre latérale",
+      resizeSidebar: "Redimensionner ou réduire la barre latérale",
+      resizeRunSettings: "Redimensionner ou fermer les paramètres d'exécution",
+      openRunSettings: "Ouvrir les paramètres d'exécution",
       chatOptions: "Options de discussion",
       runOptions: "Options d'exécution",
     },

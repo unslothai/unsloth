@@ -27,10 +27,18 @@ export const ko = {
     product: "Unsloth Studio",
     accountMenu: "{name} 계정 메뉴",
     updateAvailable: "업데이트 사용 가능",
+    resize: {
+      collapse: "클릭하여 접기",
+      expand: "클릭하여 펼치기",
+      drag: "드래그하여 크기 조절",
+    },
     aria: {
       home: "Unsloth 홈",
       closeSidebar: "사이드바 닫기",
       openSidebar: "사이드바 열기",
+      resizeSidebar: "사이드바 크기 조절 또는 접기",
+      resizeRunSettings: "실행 설정 크기 조절 또는 닫기",
+      openRunSettings: "실행 설정 열기",
       chatOptions: "채팅 옵션",
       runOptions: "학습 옵션",
     },

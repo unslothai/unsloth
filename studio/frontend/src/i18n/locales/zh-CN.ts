@@ -27,10 +27,18 @@ export const zhCN = {
     product: "Unsloth Studio",
     accountMenu: "{name} 账号菜单",
     updateAvailable: "有可用更新",
+    resize: {
+      collapse: "点击折叠",
+      expand: "点击展开",
+      drag: "拖动调整大小",
+    },
     aria: {
       home: "Unsloth 首页",
       closeSidebar: "关闭侧边栏",
       openSidebar: "打开侧边栏",
+      resizeSidebar: "调整或折叠侧边栏",
+      resizeRunSettings: "调整或关闭运行设置",
+      openRunSettings: "打开运行设置",
       chatOptions: "聊天选项",
       runOptions: "训练选项",
     },

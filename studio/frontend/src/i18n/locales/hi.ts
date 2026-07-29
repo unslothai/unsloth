@@ -27,10 +27,18 @@ export const hi = {
     product: "Unsloth Studio",
     accountMenu: "{name} खाता मेनू",
     updateAvailable: "अपडेट उपलब्ध है",
+    resize: {
+      collapse: "छोटा करने के लिए क्लिक करें",
+      expand: "विस्तार के लिए क्लिक करें",
+      drag: "आकार बदलने के लिए खींचें",
+    },
     aria: {
       home: "Unsloth होम",
       closeSidebar: "साइडबार बंद करें",
       openSidebar: "साइडबार खोलें",
+      resizeSidebar: "साइडबार का आकार बदलें या छोटा करें",
+      resizeRunSettings: "रन सेटिंग्स का आकार बदलें या बंद करें",
+      openRunSettings: "रन सेटिंग्स खोलें",
       chatOptions: "चैट विकल्प",
       runOptions: "रन विकल्प",
     },

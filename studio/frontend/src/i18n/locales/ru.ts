@@ -27,10 +27,18 @@ export const ru = {
     product: "Unsloth Studio",
     accountMenu: "Меню аккаунта {name}",
     updateAvailable: "Доступно обновление",
+    resize: {
+      collapse: "Нажмите, чтобы свернуть",
+      expand: "Нажмите, чтобы развернуть",
+      drag: "Потяните, чтобы изменить размер",
+    },
     aria: {
       home: "Главная Unsloth",
       closeSidebar: "Закрыть боковую панель",
       openSidebar: "Открыть боковую панель",
+      resizeSidebar: "Изменить размер или свернуть боковую панель",
+      resizeRunSettings: "Изменить размер или закрыть настройки запуска",
+      openRunSettings: "Открыть настройки запуска",
       chatOptions: "Параметры чата",
       runOptions: "Параметры запуска",
     },
