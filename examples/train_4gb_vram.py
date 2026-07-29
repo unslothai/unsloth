@@ -75,9 +75,7 @@ def main():
 
     def format_alpaca(examples):
         texts = []
-        for inst, inp, out in zip(
-            examples["instruction"], examples["input"], examples["output"]
-        ):
+        for inst, inp, out in zip(examples["instruction"], examples["input"], examples["output"]):
             if inp.strip():
                 text = prompt_with_input.format(inst, inp, out)
             else:
