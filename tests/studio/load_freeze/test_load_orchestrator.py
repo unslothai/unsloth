@@ -58,7 +58,11 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # blew up with AttributeError, but only when this file was collected first, so the
 # same test passed alone and failed under `pytest tests/studio`. Only stub when the
 # package is genuinely missing, and give the stub the attribute those callers use.
-if importlib.util.find_spec("structlog") is None:
+# Guard on sys.modules FIRST: another test module may have parked its own bare
+# stub, and find_spec() raises ValueError on a module whose __spec__ is None.
+# Anything already there (real or stub) is left alone; only a genuinely absent
+# package gets stubbed.
+if "structlog" not in sys.modules and importlib.util.find_spec("structlog") is None:
     _structlog_stub = types.ModuleType("structlog")
     _structlog_stub.get_logger = lambda *args, **kwargs: _logging.getLogger(
         args[0] if args else "structlog"
