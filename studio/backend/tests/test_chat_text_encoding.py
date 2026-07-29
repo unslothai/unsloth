@@ -85,7 +85,10 @@ def test_remote_code_scan_reads_non_ascii_sources(tmp_path: Path) -> None:
     # ends, so the read back would differ by \r for a reason unrelated to encoding.
     # open() rather than Path.write_text(), which only grew newline in 3.10.
     with open(
-        tmp_path / "modeling_custom.py", "w", encoding = "utf-8", newline = "",
+        tmp_path / "modeling_custom.py",
+        "w",
+        encoding = "utf-8",
+        newline = "",
     ) as handle:
         handle.write(source)
 
