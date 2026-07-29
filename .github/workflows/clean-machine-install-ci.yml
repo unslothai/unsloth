@@ -564,6 +564,33 @@ jobs:
           "$VENV/bin/python" -V
           [ -x "$VENV/bin/unsloth" ] || { echo "::error::installer exited 0 but left no unsloth CLI at $VENV/bin/unsloth"; exit 1; }
 
+      - name: Assert the apt-installed toolchain did not compile llama.cpp
+        if: steps.install_root.outcome == 'success'
+        run: |
+          # HONESTY NOTE: these legs START toolchain-free but do not stay that way.
+          # As root, _smart_apt_install's first `apt-get install` (install.sh:786-788)
+          # succeeds before the _SMART_APT_OPTIONAL guard (805-809) can suppress
+          # anything, so `cmake git build-essential libcurl4-openssl-dev` really are
+          # installed mid-run. That is product behaviour on any root Linux install, not
+          # a CI artefact. What must still hold is that nothing USED them: `nobuild`
+          # reads Python builds only, and llama.cpp is the one thing that silently falls
+          # back to a source compile once a compiler is around.
+          for t in cmake git gcc; do
+            printf '%-6s %s\n' "$t" "$(command -v "$t" 2>/dev/null || echo ABSENT)"
+          done
+          # install_llama_prebuilt.py:5629 writes this marker; a source-built tree has
+          # no such metadata (studio/setup.sh:1517), so its presence is the one
+          # unambiguous "the prebuilt path won" signal.
+          META="$UNSLOTH_STUDIO_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json"
+          if [ ! -f "$META" ]; then
+            echo "::error::llama.cpp carries no prebuilt metadata at $META, so it did not come from the prebuilt bundle; with the compiler installed above, that is the silent source build this workflow exists to rule out"
+            ls -la "$UNSLOTH_STUDIO_HOME/llama.cpp" 2>/dev/null || true
+            grep -nE "llama\.cpp|prebuilt" logs/install.log | tail -30 || true
+            exit 1
+          fi
+          echo "llama.cpp came from the prebuilt bundle:"
+          head -c 800 "$META"; echo
+
       - name: Assert no source build
         if: always()
         run: |
