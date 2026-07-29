@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import re
@@ -284,6 +285,10 @@ def main(argv: list[str]) -> int:
     # Same reason: --import-only never launches anything.
     if a.import_only and a.max_healthz_seconds is not None:
         ap.error("--max-healthz-seconds cannot be combined with --import-only")
+    # nan and inf parse fine as floats but `med > budget` is then always False,
+    # so the gate would report success without ever bounding anything.
+    if a.max_healthz_seconds is not None and not math.isfinite(a.max_healthz_seconds):
+        ap.error("--max-healthz-seconds must be a finite number")
 
     report: dict = {
         "platform": platform.system().lower(),

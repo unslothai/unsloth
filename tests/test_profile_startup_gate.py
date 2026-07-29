@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +20,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "profile_startup.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "startup-profile-ci.yml"
+PROCESS_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs"
 
 # Checkout files that build the venv the workflow profiles.
 INSTALLER_INPUTS = (
@@ -25,6 +28,8 @@ INSTALLER_INPUTS = (
     "studio/setup.ps1",
     "studio/install_python_stack.py",
 )
+# Checkout file that defines the argv the profiler reproduces.
+LAUNCH_INPUTS = ("studio/src-tauri/src/process.rs",)
 
 
 def _load():
@@ -79,24 +84,42 @@ def test_budget_fails_when_no_launch_was_measured(capsys, monkeypatch):
     assert "no unsloth CLI found" in out
 
 
-def test_budget_still_passes_when_a_launch_was_measured(monkeypatch):
-    """The fail-closed branch must not swallow a genuinely healthy run."""
-    mod = _load()
-    _no_subprocesses(mod, monkeypatch)
+def _healthy_launch(mod, monkeypatch, healthz = 1.5):
     monkeypatch.setattr(mod, "find_bin", lambda: "unsloth")
     monkeypatch.setattr(
         mod,
         "profile_launch",
         lambda bin_path, port, **kw: {
             "spawn_seconds": 0.1,
-            "healthz_seconds": 1.5,
+            "healthz_seconds": healthz,
             "lifespan_ms": 100.0,
             "reached_healthz": True,
             "log_tail": [],
         },
     )
+
+
+def test_budget_still_passes_when_a_launch_was_measured(monkeypatch):
+    """The fail-closed branch must not swallow a genuinely healthy run."""
+    mod = _load()
+    _no_subprocesses(mod, monkeypatch)
+    _healthy_launch(mod, monkeypatch)
     assert mod.main(["--max-healthz-seconds", "30"]) == 0
     assert mod.main(["--max-healthz-seconds", "1"]) == 1
+
+
+# "=" form for -inf: a bare "-inf" is an option token to argparse, not a value.
+@pytest.mark.parametrize("bad", ["--max-healthz-seconds=nan", "--max-healthz-seconds=inf",
+                                "--max-healthz-seconds=-inf"])
+def test_budget_rejects_non_finite_values(bad, capsys, monkeypatch):
+    """`med > nan` and `med > inf` are always False, so the gate would never bind."""
+    mod = _load()
+    _no_subprocesses(mod, monkeypatch)
+    _healthy_launch(mod, monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        mod.main([bad])
+    assert exc.value.code == 2
+    assert "finite" in capsys.readouterr().err
 
 
 def test_budget_rejects_import_only(capsys):
@@ -171,6 +194,42 @@ def test_studio_installer_inputs_are_on_the_local_install_path():
     for setup in ("studio/setup.sh", "studio/setup.ps1"):
         text = (REPO_ROOT / setup).read_text(encoding = "utf-8", errors = "replace")
         assert "install_python_stack.py" in text
+
+
+@pytest.mark.parametrize("rel", LAUNCH_INPUTS)
+def test_workflow_triggers_on_the_desktop_launch_command(rel):
+    """The profiler copies process.rs's argv, so a change there must be measured."""
+    assert (REPO_ROOT / rel).is_file(), f"{rel} moved; revisit the trigger list"
+    paths = _trigger_paths()
+    assert any(fnmatch.fnmatch(rel, p) for p in paths), f"{rel} not covered by {paths}"
+
+
+def _desktop_backend_argv():
+    body = re.search(
+        r"fn backend_args\(port: u16\) -> Vec<String> \{(.*?)\n\}",
+        PROCESS_RS.read_text(encoding = "utf-8"),
+        re.S,
+    )
+    assert body, "backend_args moved; revisit the trigger list"
+    return re.findall(r'"([^"]+)"', body.group(1))
+
+
+def _profiler_argv():
+    tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "profile_launch"
+    )
+    call = next(
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("Popen")
+    )
+    return [e.value for e in call.args[0].elts if isinstance(e, ast.Constant)]
+
+
+def test_profiler_spawns_the_desktop_backend_argv():
+    """Anchor the trigger above: these two argv lists must stay identical."""
+    assert _profiler_argv() == _desktop_backend_argv()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "posix branch")

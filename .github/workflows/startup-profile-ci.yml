@@ -24,6 +24,9 @@ on:
       # The launch phase spawns `unsloth studio --api-only`, so the CLI counts too.
       - 'unsloth_cli/**'
       - 'studio/src-tauri/src/preflight**'
+      # The profiler hardcodes the desktop argv that process.rs::backend_args builds,
+      # so a change there must schedule a run or the two silently diverge.
+      - 'studio/src-tauri/src/process.rs'
       - 'scripts/profile_startup.py'
       - '.github/workflows/startup-profile-ci.yml'
       # The job profiles whatever `install.sh --local` built: the installers pick the
