@@ -2128,7 +2128,7 @@ def try_begin_sidecar_swap(kind: str = "install") -> bool:
                 break
         if fd is not None:
             try:
-                with os.fdopen(fd, "w") as f:
+                with os.fdopen(fd, "w", encoding = "utf-8") as f:
                     f.write(
                         json.dumps(
                             {"pid": os.getpid(), "at": time.time(), "token": token, "kind": kind}

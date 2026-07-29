@@ -254,7 +254,7 @@ def _transformers_constraint_args() -> tuple[list[str], str | None]:
     except Exception:
         return [], None
     fd, path = tempfile.mkstemp(prefix = "mlx_repair_", suffix = ".txt")
-    with os.fdopen(fd, "w") as fh:
+    with os.fdopen(fd, "w", encoding = "utf-8") as fh:
         fh.write(f"transformers=={transformers_version}\n")
     return ["--constraint", path], path
 

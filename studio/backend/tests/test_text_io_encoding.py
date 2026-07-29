@@ -36,6 +36,10 @@ _PATH_OPEN_ENCODING_ARG = _PATH_OPEN_ARGS.index("encoding")
 
 _SUBPROCESS_CALLS = {"run", "Popen", "check_output", "check_call", "call"}
 
+# open(file, mode, buffering, encoding, ...), and os.fdopen forwards the same
+# signature with a descriptor in place of the path.
+_OPEN_ENCODING_ARG = 3
+
 
 def _studio_sources() -> list[Path]:
     return [
@@ -60,6 +64,11 @@ def _mode_is_binary(node: ast.Call) -> bool:
             if isinstance(value, str):
                 mode = value
     return bool(mode and "b" in mode)
+
+
+def _open_has_encoding(node: ast.Call) -> bool:
+    """open()/os.fdopen() also take encoding positionally: open(p, "w", 1, "utf-8")."""
+    return _has_keyword(node, "encoding") or len(node.args) > _OPEN_ENCODING_ARG
 
 
 def _path_open_mode(node: ast.Call) -> str | None:
@@ -226,9 +235,17 @@ def _offenders(path: Path) -> list[str]:
             continue
 
         if name == "open" and isinstance(node.func, ast.Name):
-            if _mode_is_binary(node) or _has_keyword(node, "encoding"):
+            if _mode_is_binary(node) or _open_has_encoding(node):
                 continue
             found.append(f"{path.name}:{node.lineno}: open() without encoding")
+            continue
+
+        # os.fdopen(fd, "w") is open() on a descriptor, so text mode takes the
+        # same locale default. Its mode defaults to "r", i.e. text, like open's.
+        if name == "fdopen":
+            if _mode_is_binary(node) or _open_has_encoding(node):
+                continue
+            found.append(f"{path.name}:{node.lineno}: os.fdopen() without encoding")
             continue
 
         if name == "open" and isinstance(node.func, ast.Attribute):
@@ -575,6 +592,26 @@ def test_the_kwargs_guard_only_judges_dicts_that_reach_a_call(tmp_path: Path) ->
     assert flagged == {"offender.py", "annotated.py", "inline.py"}, flagged
 
 
+def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
+    """os.fdopen(fd, mode) is open() on a descriptor and takes the same locale
+    default in text mode, so leaving it out let the swap lock file keep the
+    codepage on the write side while its reader was pinned to UTF-8."""
+    cases = {
+        "text.py": 'import os\nos.fdopen(fd, "w")\n',
+        "default_mode.py": 'import os\nos.fdopen(fd)\n',  # defaults to "r", still text
+        "binary.py": 'import os\nos.fdopen(fd, "wb")\n',
+        "keyword.py": 'import os\nos.fdopen(fd, "w", encoding = "utf-8")\n',
+        "positional.py": 'import os\nos.fdopen(fd, "w", 1, "utf-8")\n',
+    }
+    flagged = set()
+    for name, source in cases.items():
+        path = tmp_path / name
+        path.write_text(source, encoding = "utf-8")
+        if any("fdopen" in line for line in _offenders(path)):
+            flagged.add(name)
+    assert flagged == {"text.py", "default_mode.py"}, flagged
+
+
 def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -657,3 +694,49 @@ def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
         assert calls == ["utf-8", "cp1252"], calls
     finally:
         module._parse = real_parse
+
+
+def _too_deeply_nested_json() -> str:
+    """A JSON document nested past what this interpreter will descend into.
+
+    Probed rather than hardcoded: the depth json.loads gives up at is bounded by
+    sys.getrecursionlimit() up to 3.11 and by the C recursion limit from 3.12,
+    which sys.setrecursionlimit no longer moves and which varies by micro
+    version. That is ~995 on 3.9 and ~9999 on 3.13.
+    """
+    depth = 1
+    while depth <= 1 << 17:
+        document = "[" * depth + "]" * depth
+        try:
+            json.loads(document)
+        except RecursionError:
+            return document
+        depth *= 2
+    pytest.skip("this interpreter parses arbitrarily nested JSON")
+
+
+def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) -> None:
+    """json.loads answers nesting it cannot descend with RecursionError, which is
+    a RuntimeError and so is neither a ValueError nor a UnicodeDecodeError.
+    _parse is called outside any other handler in both StateStore.__init__ and
+    JsonlWriter._scan_existing, so letting it escape aborts the scraper at
+    startup on a file the catch-all it replaced simply discarded."""
+    module = _load_state_store("cp1252")
+    nested = _too_deeply_nested_json()
+
+    checkpoint = tmp_path / "octocat__Hello-World.json"
+    checkpoint.write_text(nested, encoding = "utf-8")
+    assert module.StateStore(checkpoint).all() == {}  # reset, not raised
+
+    shard = tmp_path / "out.jsonl"
+    shard.write_text(
+        nested + "\n" + json.dumps({"id": 1}) + "\n" + json.dumps({"id": 2}) + "\n",
+        encoding = "utf-8",
+    )
+    writer = module.JsonlWriter(shard)
+    try:
+        # Skipped like any other unreadable line, so the records around it still
+        # yield their dedup keys and the resume does not re-fetch them.
+        assert writer.has("id:1") and writer.has("id:2")
+    finally:
+        writer.close()

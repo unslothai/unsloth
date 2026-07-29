@@ -32,10 +32,16 @@ _DOUBLE_BYTE_ENCODINGS = ("cp932", "cp936", "cp949", "cp950")
 
 
 def _parse(raw: bytes, encoding: str) -> Any:
-    """Parse one JSON document under *encoding*, or None if it does not."""
+    """Parse one JSON document under *encoding*, or None if it does not.
+
+    RecursionError is a RuntimeError, so nesting json.loads will not descend is
+    the one parse failure the other three miss. Both callers run this outside
+    any further handler, so it has to answer None here or a single damaged
+    record aborts the scraper at startup instead of being skipped.
+    """
     try:
         return json.loads(raw.decode(encoding))
-    except (UnicodeDecodeError, LookupError, ValueError):
+    except (UnicodeDecodeError, LookupError, ValueError, RecursionError):
         return None
 
 
