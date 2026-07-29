@@ -482,8 +482,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 if (get().selectedModel !== modelName) return;
                 if (get().trainingMethod === "cpt") return;
                 if (
-                  _trainingMethodEditGeneration !==
-                  trainingMethodEditGeneration
+                  _trainingMethodEditGeneration !== trainingMethodEditGeneration
                 ) {
                   return;
                 }

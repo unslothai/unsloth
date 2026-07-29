@@ -1952,10 +1952,9 @@ def test_manual_training_method_wins_over_delayed_auto_selection():
         "const trainingMethodEditGeneration = _trainingMethodEditGeneration;"
         in loader
     )
-    assert (
-        "_trainingMethodEditGeneration !==\n"
-        "                  trainingMethodEditGeneration"
-        in loader
+    assert re.search(
+        r"_trainingMethodEditGeneration\s*!==\s*trainingMethodEditGeneration",
+        loader,
     )
     setter = source.split(
         "setTrainingMethod: (trainingMethod) =>", 1
