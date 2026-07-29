@@ -4,6 +4,8 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { code as codePlugin } from "@streamdown/code";
 import { CopyIcon, DownloadIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -61,24 +63,15 @@ export function CopyBtn({ text }: { text: string }) {
 }
 
 function DownloadBtn({ code, name }: { code: string; name: string }) {
+  // Route through the shared boundary: browsers keep the normal download,
+  // Tauri gets the native save chooser. A bare blob anchor is silently
+  // dropped by the desktop WebView2.
   const download = useCallback(() => {
-    if (typeof document === "undefined") {
-      return;
-    }
-    try {
-      const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = name;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      // Revoke next tick, after the click consumes the URL.
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-    } catch {
-      // Never break the transcript over a download.
-    }
+    void downloadFile(code, name, "text/plain;charset=utf-8").catch((error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save file.");
+      }
+    });
   }, [code, name]);
 
   return (
