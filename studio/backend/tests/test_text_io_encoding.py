@@ -121,8 +121,46 @@ def _subprocess_names(tree: ast.AST) -> set[str]:
     return names
 
 
-def _is_subprocess_call(node: ast.Call, names: set[str]) -> bool:
+def _subprocess_aliases(tree: ast.AST, names: set[str]) -> set[str]:
+    """Plain names bound to a subprocess callable, called without the module.
+
+    ``install_wheel(run = subprocess.run)`` calls its injected ``run`` as a bare
+    name, so matching only the attribute form leaves those installer calls
+    unguarded. Imports, assignments and parameter defaults all bind one.
+    """
+
+    def _is_bound(value: ast.expr | None) -> bool:
+        return (
+            isinstance(value, ast.Attribute)
+            and value.attr in _SUBPROCESS_CALLS
+            and isinstance(value.value, ast.Name)
+            and value.value.id in names
+        )
+
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            aliases.update(a.asname or a.name for a in node.names if a.name in _SUBPROCESS_CALLS)
+        elif isinstance(node, ast.Assign) and _is_bound(node.value):
+            aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and _is_bound(node.value):
+            if isinstance(node.target, ast.Name):
+                aliases.add(node.target.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            positional = args.posonlyargs + args.args
+            # Defaults cover the tail of the positional parameters; kw_defaults
+            # is aligned with kwonlyargs already, holding None where absent.
+            padded = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+            pairs = list(zip(positional, padded)) + list(zip(args.kwonlyargs, args.kw_defaults))
+            aliases.update(arg.arg for arg, default in pairs if _is_bound(default))
+    return aliases
+
+
+def _is_subprocess_call(node: ast.Call, names: set[str], aliases: set[str]) -> bool:
     func = node.func
+    if isinstance(func, ast.Name):
+        return func.id in aliases
     if not isinstance(func, ast.Attribute) or func.attr not in _SUBPROCESS_CALLS:
         return False
     value = func.value
@@ -219,6 +257,7 @@ def _offenders(path: Path) -> list[str]:
     source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(path))
     subprocess_names = _subprocess_names(tree)
+    subprocess_aliases = _subprocess_aliases(tree, subprocess_names)
     found: list[str] = []
     for node in _splatted_kwargs_offenders(tree):
         found.append(
@@ -229,7 +268,7 @@ def _offenders(path: Path) -> list[str]:
             continue
         name = _call_name(node)
 
-        if _is_subprocess_call(node, subprocess_names):
+        if _is_subprocess_call(node, subprocess_names, subprocess_aliases):
             if _text_mode_subprocess(node) and not _has_keyword(node, "encoding"):
                 found.append(f"{path.name}:{node.lineno}: subprocess(text = True) without encoding")
             continue
@@ -590,6 +629,35 @@ def test_the_kwargs_guard_only_judges_dicts_that_reach_a_call(tmp_path: Path) ->
         if any("subprocess kwargs" in line for line in _offenders(path)):
             flagged.add(name)
     assert flagged == {"offender.py", "annotated.py", "inline.py"}, flagged
+
+
+def test_the_guard_follows_subprocess_through_an_alias(tmp_path: Path) -> None:
+    """install_wheel() takes ``run = subprocess.run`` and calls it as a bare
+    name, so an attribute-only match let both of its installer calls drop their
+    encoding unnoticed. A name bound to something else is still not subprocess."""
+    cases = {
+        "param_default.py": (
+            "import subprocess\n"
+            "def install(*, run = subprocess.run):\n"
+            "    run(cmd, text = True)\n"
+        ),
+        "assigned.py": "import subprocess\n_run = subprocess.run\n_run(cmd, text = True)\n",
+        "imported.py": "from subprocess import check_output\ncheck_output(cmd, text = True)\n",
+        "renamed.py": "from subprocess import run as _r\n_r(cmd, universal_newlines = True)\n",
+        "encoded.py": (
+            "import subprocess\n"
+            "def install(*, run = subprocess.run):\n"
+            '    run(cmd, text = True, encoding = "utf-8")\n'
+        ),
+        "unrelated.py": "def run(cmd, text = False):\n    pass\nrun(cmd, text = True)\n",
+    }
+    flagged = set()
+    for name, source in cases.items():
+        path = tmp_path / name
+        path.write_text(source, encoding = "utf-8")
+        if any("subprocess(text = True)" in line for line in _offenders(path)):
+            flagged.add(name)
+    assert flagged == {"param_default.py", "assigned.py", "imported.py", "renamed.py"}, flagged
 
 
 def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
