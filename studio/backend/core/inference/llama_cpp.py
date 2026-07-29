@@ -4446,7 +4446,19 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers_kv * total_cells * n_kv_mla * key_len * bpe_k)
+            # Hybrid MLA (Kimi-K3): head_count_kv is a per-layer array whose KDA
+            # linear-attention layers are 0 and hold a constant-size state instead
+            # of a growing cache. Only the non-zero layers allocate KV, so counting
+            # every block overstates it by the hybrid ratio (93 blocks vs 24 real
+            # ones is 3.9x, or 78 GiB of phantom cache at 1M context) and shrinks
+            # the auto-fit context for no reason. Uniform MLA keeps n_layers_kv.
+            n_mla_layers = n_layers_kv
+            if self._n_kv_heads_by_layer:
+                attn = sum(
+                    1 for i in range(n_layers_kv) if self._kv_heads_for_layer(i, n_kv_mla) > 0
+                )
+                n_mla_layers = max(1, attn)
+            return int(n_mla_layers * total_cells * n_kv_mla * key_len * bpe_k)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length

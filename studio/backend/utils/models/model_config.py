@@ -461,6 +461,13 @@ MODEL_NAME_MAPPING = {
         "unsloth/whisper-large-v3",
         "openai/whisper-large-v3",
     ],
+    # GGUF repo listed too: Kimi-K3 ships GGUF-only, so the -GGUF id is what
+    # reaches the lookup.
+    "unsloth_Kimi-K3.yaml": [
+        "unsloth/kimi-k3",
+        "unsloth/kimi-k3-gguf",
+        "moonshotai/kimi-k3",
+    ],
 }
 
 # Reverse lookup: model_name -> canonical_filename

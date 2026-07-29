@@ -840,6 +840,22 @@ class TestMLAEstimation:
         expected = 61 * _runtime_kv_cells(1000) * 1 * (512 + 64) * 2  # 576
         assert result == expected
 
+    def test_mla_hybrid_counts_only_attention_layers(self):
+        """Kimi-K3: KDA layers are 0 in head_count_kv and hold no growing cache."""
+        pattern = [1 if (i % 4) == 3 else 0 for i in range(93)]
+        pattern[92] = 1
+        b = self._mla_backend(_n_layers = 93, _n_kv_heads_by_layer = pattern)
+        n_attn = sum(1 for v in pattern if v)
+        assert n_attn == 24
+        expected = n_attn * _runtime_kv_cells(1000) * 1 * 576 * 2
+        assert b._estimate_kv_cache_bytes(1000, "f16") == expected
+
+    def test_mla_uniform_unaffected_by_hybrid_path(self):
+        """An all-attention per-layer array must match the plain layer count."""
+        b = self._mla_backend(_n_kv_heads_by_layer = [1] * 61)
+        expected = 61 * _runtime_kv_cells(1000) * 1 * 576 * 2
+        assert b._estimate_kv_cache_bytes(1000, "f16") == expected
+
     def test_mla_defaults_n_kv_to_1_when_heads_absent(self):
         """MLA uses n_kv=1 even if n_kv_heads is None (not n_heads)."""
         b = self._mla_backend(_n_kv_heads = None)  # n_heads=128 still set
