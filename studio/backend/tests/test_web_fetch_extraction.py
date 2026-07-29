@@ -1904,8 +1904,7 @@ def test_header_size_is_independent_of_the_buffer_it_renders_through():
     # Text was counted entering a nested buffer AND when that buffer flushed, so
     # the same links stripped once quoted but survived bare.
     links = "".join(
-        '<a href="/very/long/section/path/number/%03d/index">L%03d</a>' % (i, i)
-        for i in range(14)
+        '<a href="/very/long/section/path/number/%03d/index">L%03d</a>' % (i, i) for i in range(14)
     )
     wrapped = {
         "bare": links,
