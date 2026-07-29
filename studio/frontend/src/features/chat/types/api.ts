@@ -35,6 +35,11 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /**
+     * Stop any chats still generating instead of getting a 409: a load replaces the single
+     * llama-server they all decode on. Set only after the user confirms.
+     */
+  force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
@@ -61,6 +66,11 @@ export interface LoadModelRequest {
    */
   spec_draft_n_max?: number | null;
   /**
+   * Parallel decode slots for llama-server (--parallel), 1..64. Omit/null =
+   * the launch default. The VRAM fitter may launch fewer to stay on GPU.
+   */
+  n_parallel?: number | null;
+  /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
@@ -75,7 +85,7 @@ export interface LoadModelRequest {
   n_cpu_moe?: number;
   /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
   tensor_split?: number[] | null;
-  /** Picked physical GPU indices (omit/empty = automatic). */
+  /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
 }
 
@@ -85,6 +95,7 @@ export interface ValidateModelResponse {
   identifier?: string | null;
   display_name?: string | null;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
@@ -197,10 +208,19 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Slots the load was invoked with (else the --parallel default). Null for
+   * non-GGUF loads. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null for
+   * non-GGUF loads. */
+  parallel_slots?: number | null;
 }
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Stop any chats still generating instead of getting a 409: the unload takes down the
+   * llama-server they all decode on. */
+  force_cancel_active?: boolean;
 }
 
 export interface InferenceStatusResponse {
@@ -255,6 +275,12 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Slots the active load was invoked with (else the --parallel default).
+   * Null when no GGUF model is loaded. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null when
+   * no GGUF model is loaded. */
+  parallel_slots?: number | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -304,6 +330,8 @@ export interface ApiMonitorResponse {
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Absent on older backends -- treat only an explicit `false` as disabled. */
+  logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
 }
 

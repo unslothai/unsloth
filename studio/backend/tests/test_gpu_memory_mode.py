@@ -183,11 +183,12 @@ def test_already_in_target_state_reloads_on_mode_change(loaded, requested):
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
-def test_already_in_target_state_ignores_mode_for_diffusion():
+def test_already_in_target_state_ignores_mode_for_diffusion(monkeypatch):
     # The diffusion runner is mode-agnostic (always "auto"), so a standing manual
     # preference must not force a needless reload.
     backend = _loaded_backend("auto")
     backend._is_diffusion = True
+    monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
     assert _target_state(backend, "manual") is True
 
 
@@ -618,11 +619,15 @@ def test_gguf_load_and_status_responses_include_requested_gpu_pool():
 def test_gpu_ids_property_default_and_reset():
     backend = LlamaCppBackend()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
     backend._gpu_ids = [0, 1]
+    backend._requested_gpu_ids = [0, 1, 2]
     assert backend.gpu_ids == [0, 1]
+    assert backend.requested_gpu_ids == [0, 1, 2]
     backend._process = _FakeProcess()
     backend.unload_model()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
 
 
 def _target_state_gpu_ids(backend, gpu_ids):
