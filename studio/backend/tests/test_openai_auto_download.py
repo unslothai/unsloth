@@ -790,6 +790,43 @@ def test_an_api_key_download_keeps_the_attribution_and_names_its_caller(hub):
     assert all(row["via_api_key"] is False for row in others)
 
 
+def test_an_api_key_caller_waiting_on_someone_elses_download_gets_a_row(hub):
+    """A download started by Studio's own chat is attributed to the session, so an
+    API-key client that asks for the same repo while it runs is refused before the
+    handler's own api_monitor.start. Without a row of its own that call is invisible:
+    the only row is the session's via_api_key=False download, so the overlay stays
+    shut and the monitor presents API traffic as Studio's own."""
+    from fastapi import HTTPException
+    from auth.authentication import API_KEY_PREFIX
+    from core.inference.api_monitor import api_monitor
+
+    api_monitor.clear()
+    with pytest.raises(HTTPException):
+        # Studio's chat (session JWT) starts the download and takes the slot.
+        _hook("unsloth/x-GGUF", _Req(), enabled = True, current_subject = "unsloth")
+    seeded = {row["id"] for row in api_monitor.snapshot(subject = "unsloth")}
+
+    with pytest.raises(HTTPException) as excinfo:
+        # The adopted-download branch: same repo, an sk-unsloth key this time.
+        _hook(
+            "unsloth/x-GGUF",
+            _Req(headers = {"authorization": f"Bearer {API_KEY_PREFIX}abc123"}),
+            enabled = True,
+            current_subject = "unsloth",
+        )
+    assert excinfo.value.status_code == 503
+
+    fresh = [e for e in api_monitor.snapshot(subject = "unsloth") if e["id"] not in seeded]
+    # New (so the overlay counts it as unseen traffic) and attributed to this caller.
+    assert [e for e in fresh if e["via_api_key"]], "the refused API-key call left no row"
+    row = next(e for e in fresh if e["via_api_key"])
+    assert row["endpoint"] == "/v1/chat/completions"
+    assert row["status"] == "error"
+    # Shared rows aside, another subject must not inherit the attribution.
+    others = [e for e in api_monitor.snapshot(subject = "someone-else") if e["id"] == row["id"]]
+    assert others == []
+
+
 def test_hook_prefers_the_hub_header_token(hub):
     from fastapi import HTTPException
     from hub.dependencies import HUB_HF_TOKEN_HEADER

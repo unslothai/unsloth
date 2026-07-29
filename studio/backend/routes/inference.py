@@ -3927,11 +3927,41 @@ async def _maybe_auto_download_model(
         if isinstance(path, str)
         else refusal.message
     )
+    _record_refused_request(fastapi_request, requested_model, refusal, current_subject)
     raise HTTPException(
         status_code = refusal.status,
         detail = detail,
         headers = ({"Retry-After": str(refusal.retry_after)} if refusal.retry_after else None),
     )
+
+
+def _record_refused_request(
+    fastapi_request: Optional[Request],
+    requested_model: str,
+    refusal: Any,
+    current_subject: Optional[str],
+) -> None:
+    """Log the refused call itself, not just the download it is waiting on.
+
+    The refusal replaces the request, so the handler's own ``api_monitor.start``
+    never runs. Only the caller that dispatched a download gets a row from
+    ``record_lifecycle``; anyone refused while it runs left no trace at all, and a
+    download some other caller started carries their attribution, so an API-key
+    client waiting on it never opened the overlay and read as Studio's own traffic.
+    """
+    state = getattr(fastapi_request, "state", None)
+    if getattr(state, "skip_api_monitor", False):
+        return
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    entry_id = api_monitor.start(
+        endpoint = path if isinstance(path, str) else "/v1",
+        method = str(getattr(fastapi_request, "method", "") or "POST"),
+        model = requested_model,
+        prompt = "",
+        subject = current_subject,
+        via_api_key = _request_used_api_key(fastapi_request),
+    )
+    api_monitor.fail(entry_id, refusal.message)
 
 
 def _loaded_satisfies(requested: str) -> bool:
