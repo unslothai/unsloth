@@ -80,9 +80,10 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
-            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
-            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
-            "physical IDs are unsupported when the parent visibility mask uses "
+            "automatic selection. CUDA/ROCm values are physical GPU indices; "
+            "Vulkan values are ggml device ordinals. Explicit selection is not "
+            "supported on XPU, and physical IDs are unsupported when the parent "
+            "visibility mask uses "
             "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
             "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
             "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
@@ -334,6 +335,9 @@ class ValidateModelResponse(BaseModel):
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether this is a block-diffusion model (DiffusionGemma)"
+    )
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
     requires_trust_remote_code: bool = Field(
@@ -441,6 +445,9 @@ class LoadResponse(BaseModel):
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_local_model: bool = Field(
+        False, description = "Whether the loaded model came from a local filesystem path"
+    )
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
@@ -622,6 +629,9 @@ class InferenceStatusResponse(BaseModel):
     )
     is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
+    is_local_model: bool = Field(
+        False, description = "Whether the active model came from a local filesystem path"
+    )
     is_diffusion: bool = Field(
         False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
     )

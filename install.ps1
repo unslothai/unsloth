@@ -2494,7 +2494,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2508,7 +2508,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2595,7 +2595,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2607,7 +2607,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2635,7 +2635,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.6" "unsloth>=2026.7.5" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.7" "unsloth>=2026.7.6" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2758,6 +2758,34 @@ exit 0
                     Write-Host "[WARN] Could not overlay $($rel): $($_.Exception.Message); studio setup may use stale bundled file" -ForegroundColor Yellow
                 }
             }
+        }
+    }
+
+    # ── CI only: overlay a source checkout over the package just installed ──
+    # Mirrors install.sh. Not a consumer knob: no switch, absent from the usage text,
+    # ignored unless UNSLOTH_CI_SOURCE_OVERLAY names a directory with a pyproject.toml.
+    #
+    # The clean-machine legs run THIS script from a branch but install unsloth from
+    # PyPI, the consumer path, so everything Python-side (studio/setup.ps1,
+    # install_python_stack.py and every requirements/constraints file they reach via
+    # Path(__file__)) would be the released wheel's and a branch could not be
+    # validated. `& $UnslothExe studio setup` below goes through the CLI, and an
+    # editable overlay makes _PACKAGE_ROOT in unsloth_cli/commands/studio.py resolve to
+    # the working tree by PEP 660 __file__, so setup.ps1 comes from this ref. NOT
+    # --local: that also installs `unsloth-zoo @ git+https://...`, which genuinely needs
+    # the git these legs remove; editable + --no-deps resolves and clones nothing, so it
+    # survives git, cmake and MSVC all missing.
+    if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
+        $CiOverlayRoot = $env:UNSLOTH_CI_SOURCE_OVERLAY
+        if (-not (Test-Path -LiteralPath (Join-Path $CiOverlayRoot "pyproject.toml"))) {
+            Write-Host "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$CiOverlayRoot' but there is no pyproject.toml there." -ForegroundColor Red
+            return (Exit-InstallFailure "UNSLOTH_CI_SOURCE_OVERLAY has no pyproject.toml: $CiOverlayRoot")
+        }
+        substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
+        # Retry: the editable build fetches its backend from PyPI, same network risk.
+        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { uv pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
+        if ($CiOverlayExit -ne 0) {
+            return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)
         }
     }
 

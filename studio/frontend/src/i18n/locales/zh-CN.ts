@@ -549,7 +549,7 @@ export const zhCN = {
       codingAgents: "编程智能体",
       codingAgentsHint:
         "针对此服务器启动编程智能体。它会使用已加载的模型；本地服务器会自动生成 API 密钥，远程服务器则会将其包含在命令中。",
-      codingAgentsSwap: "可将 claude 替换为 codex、openclaw、opencode、hermes 或 pi。",
+      codingAgentsSwap: "可将 claude 替换为 codex、openclaw、opencode 或 hermes。",
       codingAgentDetected: "已安装在本机",
       codingAgentsDetectedHint: "本机检测到：{agents}。",
       relativeNever: "从未",
