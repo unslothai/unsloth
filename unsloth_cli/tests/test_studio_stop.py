@@ -473,7 +473,9 @@ def test_stop_does_not_claim_success_when_the_only_record_is_unreadable(monkeypa
     assert killed == []
 
 
-def test_stop_reports_failure_when_one_record_is_unreadable_but_another_stops(monkeypatch, tmp_path):
+def test_stop_reports_failure_when_one_record_is_unreadable_but_another_stops(
+    monkeypatch, tmp_path
+):
     # Stopping the servers we can see is still a partial result, and exiting 0
     # would hide the one we could not.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550, 8600})
