@@ -335,7 +335,13 @@ mod tests {
         let path = std::env::temp_dir().join(OsString::from_vec(vec![
             b'u', b'n', b's', b'l', b'o', b't', b'h', 0xff, b'.', b'c', b's', b'v',
         ]));
-        fs::write(&path, "role,content\nuser,hello\n").unwrap();
+        // Linux happily stores arbitrary bytes in a filename, but macOS enforces
+        // UTF-8 on APFS/HFS+ and rejects this name outright. The name-recovery
+        // path being asserted here is only reachable where such a file can
+        // exist, so skip rather than fail on filesystems that forbid it.
+        if fs::write(&path, "role,content\nuser,hello\n").is_err() {
+            return;
+        }
         let imported = read_selected_import(Some(path.clone())).unwrap().unwrap();
         assert_eq!(imported.name, "chat-import.csv");
         let _ = fs::remove_file(path);

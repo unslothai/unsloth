@@ -24,10 +24,18 @@ export const en = {
     product: "Unsloth Studio",
     accountMenu: "{name} account menu",
     updateAvailable: "Update available",
+    resize: {
+      collapse: "Click to collapse",
+      expand: "Click to expand",
+      drag: "Drag to resize",
+    },
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",
       openSidebar: "Open sidebar",
+      resizeSidebar: "Resize or collapse sidebar",
+      resizeRunSettings: "Resize or close run settings",
+      openRunSettings: "Open run settings",
       chatOptions: "Chat options",
       runOptions: "Run options",
     },
@@ -556,8 +564,12 @@ export const en = {
         systemDisk: "System disk",
         diskUsage: "{used} used / {total}",
         diskFree: "{free} free",
-        modelsFolder: "Model downloads",
-        modelsFolderDescription: "Hugging Face cache used for model downloads.",
+        modelsFolder: "Models folder",
+        modelsFolderDescription:
+          "Where downloaded models are stored. Change it to keep models off your system drive.",
+        // Not rendered: extra terms the settings search matches this row on.
+        modelsFolderKeywords:
+          "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         futureDownloads: "New downloads only",
         environmentManaged: "Managed by the {variable} environment variable.",
         locationFree: "{free} free",

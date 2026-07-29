@@ -28,10 +28,18 @@ export const ja = {
     product: "Unsloth Studio",
     accountMenu: "{name} のアカウントメニュー",
     updateAvailable: "アップデートが利用可能です",
+    resize: {
+      collapse: "クリックで折りたたむ",
+      expand: "クリックで展開",
+      drag: "ドラッグでサイズ変更",
+    },
     aria: {
       home: "Unsloth ホーム",
       closeSidebar: "サイドバーを閉じる",
       openSidebar: "サイドバーを開く",
+      resizeSidebar: "サイドバーのサイズ変更または折りたたみ",
+      resizeRunSettings: "実行設定のサイズ変更または閉じる",
+      openRunSettings: "実行設定を開く",
       chatOptions: "チャットオプション",
       runOptions: "実行オプション",
     },
@@ -393,6 +401,8 @@ export const ja = {
         diskUsage: "{used} 使用中 / {total}",
         diskFree: "{free} 空き",
         modelsFolder: "モデルフォルダ",
+        modelsFolderKeywords:
+          "モデル フォルダ ディレクトリ パス 保存先 場所 ダウンロード キャッシュ ストレージ ディスク ドライブ 移動 変更 models folder path hugging face",
         modelsFolderDescription: "ダウンロードしたモデルの保存先。",
         openAction: "開く",
         copyAction: "パスをコピー",
