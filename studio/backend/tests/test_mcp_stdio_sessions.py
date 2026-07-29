@@ -183,8 +183,8 @@ def test_timeout_keeps_a_responsive_stdio_session(fake_clients):
 
 
 def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
-    # If the server never answers the probe it is still stuck on the abandoned
-    # call, so it is replaced rather than reused.
+    # A server that never answers the probe is wedged, so it is replaced rather
+    # than reused.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     key = mcp_client._session_key(STDIO_URL, None, "chat")
     fake_clients[0].call_delay = 0.5

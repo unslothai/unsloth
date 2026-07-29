@@ -315,10 +315,17 @@ def _session_responsive(
     budget: Optional[float] = None,
     cancel_event = None,
 ) -> bool:
-    """Whether a session left dirty by an abandoned call can be reused. Only a
-    completed round-trip proves the server is no longer working on that call, so
-    anything short of one -- an error, a wedge, or no budget left to ask --
-    rejects the session instead of guessing from local state.
+    """Whether a session left dirty by an abandoned call can be reused. The
+    round-trip proves the server is alive and still answering, so a wedged one
+    is replaced while a healthy one keeps its state; anything short of a reply
+    -- an error, a wedge, or no budget left to ask -- rejects the session rather
+    than guessing from local state.
+
+    It does NOT prove the abandoned call itself has finished: MCP requests are
+    concurrent, and a cancellation the client cannot signal (the SDK sends no
+    notifications/cancelled) may still be running server-side. Nothing in the
+    protocol exposes that, and every other MCP client dispatches the next call
+    with no probe at all, so this is the strongest available guarantee.
 
     list_tools is the probe rather than ping: on a modern-era connection (the
     default mode="auto" against a fastmcp 4 server) ping answers "Method not
