@@ -12,15 +12,22 @@
 import type { PerModelConfig } from "./per-model-config";
 
 // Serialize the GPU knobs with the store's "absent == default" coalescing: mode auto,
-// gpuLayers Auto (< 0), nCpuMoe 0, and a null GPU pick meaning all GPUs.
+// gpuLayers Auto (< 0), nCpuMoe 0, and null / absent GPU picks as automatic.
 export function gpuFieldsSignature(config: PerModelConfig): string {
+  const gpuSelection =
+    config.selectedGpuIds == null
+      ? "automatic"
+      : [
+          [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+          config.selectedGpuIndexKind === undefined
+            ? "physical"
+            : (config.selectedGpuIndexKind ?? "deferred"),
+        ].join("@");
   return [
     config.gpuMemoryMode ?? "auto",
     config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
     config.nCpuMoe ?? 0,
-    config.selectedGpuIds == null
-      ? "all"
-      : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+    gpuSelection,
   ].join("|");
 }
 

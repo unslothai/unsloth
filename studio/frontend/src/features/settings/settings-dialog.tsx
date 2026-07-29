@@ -35,7 +35,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { SETTINGS_SEARCH_INDEX } from "./settings-search";
+import {
+  SETTINGS_SEARCH_INDEX,
+  SETTINGS_SEARCH_KEYWORDS,
+} from "./settings-search";
 import {
   type SettingsTab,
   useSettingsDialogStore,
@@ -157,8 +160,12 @@ export function SettingsDialog() {
     return TABS.map((tab) => {
       const tabLabel = t(tab.labelKey);
       const entries = SETTINGS_SEARCH_INDEX[tab.id]
-        .map((key) => t(key))
-        .filter((label) => label.toLowerCase().includes(q));
+        .filter((key) => {
+          if (t(key).toLowerCase().includes(q)) return true;
+          const keywordsKey = SETTINGS_SEARCH_KEYWORDS[key];
+          return keywordsKey ? t(keywordsKey).toLowerCase().includes(q) : false;
+        })
+        .map((key) => t(key));
       const deduped = [...new Set(entries)];
       return {
         tab,

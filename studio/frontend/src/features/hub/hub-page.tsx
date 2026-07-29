@@ -391,15 +391,25 @@ export function ModelsPage() {
 
   // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
-  // Read once and kept: /status cannot say whether an empty answer is an idle
-  // eviction that will reload or a real unload, and only this endpoint knows.
-  // Unread it stays false, which is the setting's own default.
-  const idleUnloadArmed = useRef(false);
+  // /status cannot say whether an empty answer is an idle eviction that will reload
+  // or a real unload, and only this endpoint knows. Read once per mount and held as
+  // the promise, not the answer: the very first status read is the one most likely to
+  // land on an evicted model, and racing it against this read would let an unresolved
+  // "false" clear a checkpoint the idle loop is about to bring back. A failed read
+  // resolves false, which is the setting's own default (idle unload is off unless an
+  // idle timeout is configured).
+  const idleUnloadRead = useRef<Promise<boolean> | null>(null);
+  const readIdleUnloadArmed = useCallback((): Promise<boolean> => {
+    idleUnloadRead.current ??= loadOpenAIAutoSwitchSettings()
+      .then((settings) => settings.idleUnloadActive)
+      .catch(() => false);
+    return idleUnloadRead.current;
+  }, []);
   // Returns the read so a caller that needs the answer first can wait for it.
   const refreshResidentModelStatus = useCallback((): Promise<void> => {
     const seq = ++residentStatusSeq.current;
-    return getInferenceStatus()
-      .then((status) => {
+    return Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+      .then(([status, idleUnloadArmed]) => {
         if (seq !== residentStatusSeq.current) return;
         const store = useChatRuntimeStore.getState();
         adoptResidentModelStatus(
@@ -415,7 +425,7 @@ export function ModelsPage() {
             checkpointIsExternal: isExternalModelId(store.params.checkpoint),
             activeGgufVariant: store.activeGgufVariant,
             modelLoading: store.modelLoading,
-            idleUnloadArmed: idleUnloadArmed.current,
+            idleUnloadArmed,
           },
           {
             setCheckpoint: (checkpointId, ggufVariant) => {
@@ -436,17 +446,12 @@ export function ModelsPage() {
         );
       })
       .catch(() => undefined);
-  }, []);
+  }, [readIdleUnloadArmed]);
 
   // Mount, then again whenever this tab could have missed an API-driven switch.
   // adoptResidentModelStatus makes re-reading safe: it stands down for an external
   // selection and for a load this tab started.
   useEffect(() => {
-    loadOpenAIAutoSwitchSettings()
-      .then((settings) => {
-        idleUnloadArmed.current = settings.idleUnloadActive;
-      })
-      .catch(() => undefined);
     void refreshResidentModelStatus();
     const unsubscribe = subscribeResidentStatusRefresh(
       refreshResidentModelStatus,
@@ -1356,6 +1361,11 @@ export function ModelsPage() {
             const downloaded = res.variants.filter((v) => v.downloaded);
             // Re-read after this await too: the lookup hits the network, and a switch
             // during it would leave the branch below picking the displaced model's quant.
+            // Re-read against the server, not just the store: nothing pushes an
+            // API-driven switch into this tab, so the store alone is as old as the read
+            // above and the second look would agree with the first by construction.
+            await refreshResidentModelStatus();
+            if (settingsOpenSeq.current !== openSeq) return;
             const settled = useChatRuntimeStore.getState();
             const settledCheckpoint =
               settled.params.checkpoint &&

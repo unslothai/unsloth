@@ -188,7 +188,13 @@ def test_active_model_config_round_trips_gpu_fields():
     sidebar/hub-gear reload cannot silently reset manual GPU settings, and "Remember
     settings" cannot persist a GPU-less config over a saved one."""
     src = _read("features/model-picker/hooks/use-active-model-config.ts")
-    for field in ("gpuMemoryMode", "gpuLayers", "nCpuMoe", "selectedGpuIds"):
+    for field in (
+        "gpuMemoryMode",
+        "gpuLayers",
+        "nCpuMoe",
+        "selectedGpuIds",
+        "selectedGpuIndexKind",
+    ):
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     for rel in (
@@ -211,6 +217,27 @@ def test_active_model_config_round_trips_gpu_fields():
     assert "export { gpuFieldsSignature };" in reexport
 
 
+def test_deferred_gpu_pick_keeps_its_index_namespace():
+    """A remembered pick restored before GPU discovery must keep its namespace
+    until load-time reconciliation, or Vulkan IDs can be reused as physical IDs."""
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "selectedGpuIndexKind: GpuIndexKind | null;" in store
+
+    apply = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    assert "selectedGpuIndexKind: s.selectedGpuIndexKind" in apply
+    # gpuFieldsSignature moved to config-signature.ts so the editor's instance key can
+    # read it without importing the runtime applier; the namespace rule moved with it.
+    signature = _read("features/model-picker/model-config/config-signature.ts")
+    assert "config.selectedGpuIndexKind === undefined" in signature
+    assert 'config.selectedGpuIndexKind ?? "physical"' not in signature
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "stateBeforeUnload.selectedGpuIndexKind," in runtime
+
+    compare = _read("features/chat/shared-composer.tsx")
+    assert "store.selectedGpuIndexKind," in compare
+
+
 def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
     """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep [0, 1] as
     the editable pool so a later reload can grow back onto GPU 1."""
@@ -218,10 +245,20 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
     assert types.count("requested_gpu_ids?: number[] | null") >= 2
 
     store = _read("features/chat/stores/chat-runtime-store.ts")
-    assert "resp.requested_gpu_ids ?? resp.gpu_ids ?? null" in store
+    assert 'hasOwnProperty.call(resp, "requested_gpu_ids")' in store
+    assert "const reportedGpuIds = requestedGpuIdsFromResponse(resp)" in store
+    assert "loadedGpuIndexKind: GpuIndexKind | null;" in store
+    assert "loadedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null)" in store
+    # A cold discovery cache reports gpuIndexKind === undefined (deferred, not
+    # rejected); only a warm cache's definitive null should drop the pin.
+    assert "reportedGpuIds != null && gpuIndexKind !== null" in store
 
     status = _read("features/chat/lib/apply-inference-status-to-store.ts")
-    assert "status.requested_gpu_ids ?? status.gpu_ids ?? null" in status
+    assert "const incomingGpuFields = loadedGpuMemoryFields(status)" in status
+    assert "const incomingGpuIds = incomingGpuFields.loadedGpuIds" in status
+    assert "const incomingGpuIndexKind = incomingGpuFields.loadedGpuIndexKind" in status
+    assert status.count("prevState.loadedGpuIndexKind") >= 2
+    assert status.count("sameGpuSelection(") >= 2
 
 
 def test_compare_load_uses_each_models_gpu_config():
@@ -230,7 +267,9 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
-    assert "reconcilePersistedGpuIds(ownConfig.selectedGpuIds)" in src
+    assert "ownConfig.selectedGpuIndexKind," in src
+    assert "compareLoadKnobs.selectedGpuIndexKind," in src
+    assert src.count("resolvedIsDiffusion === true") >= 2
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -238,6 +277,57 @@ def test_compare_load_uses_each_models_gpu_config():
         "gpu_ids: effectiveSelectedGpuIds ?? undefined",
     ):
         assert field in src
+
+    page = _read("features/chat/chat-page.tsx")
+    assert page.count("isDiffusion: meta.isDiffusion") >= 2
+    assert "isDiffusion: globalIsDiffusion" in page
+
+
+def test_diffusion_load_paths_disable_tensor_parallel():
+    """Every frontend path that classifies DiffusionGemma must send tensor
+    parallelism as false so the ignored setting cannot force repeat reloads."""
+    compare = _read("features/chat/shared-composer.tsx")
+    compact_compare = " ".join(compare.split())
+    assert "const effectiveTensorParallel = resolvedIsDiffusion ? false :" in compact_compare
+    assert compare.count("tensor_parallel: effectiveTensorParallel") == 2
+
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
+    assert "const loadTensorParallel = targetIsDiffusion ? false :" in runtime
+
+    apply = " ".join(_read("features/model-picker/model-config/apply-per-model-config.ts").split())
+    assert "tensorParallel: options.isDiffusion ? false :" in apply
+
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    compact_autoload = " ".join(autoload.split())
+    assert "config.selectedGpuIds != null || config.tensorParallel === true" in compact_autoload
+    assert "const effectiveTensorParallel = isDiffusion ? false :" in compact_autoload
+    assert autoload.count("tensor_parallel: effectiveTensorParallel") == 2
+
+
+def test_diffusion_load_keeps_the_standing_gpu_memory_mode():
+    """A diffusion config is sanitized to gpuMemoryMode "auto" because the mode does
+    not apply to it, not because the user picked Auto. Applying that sanitized value
+    to the runtime store would strand the session on Auto: persistGpuMemoryModeOnLoad
+    deliberately skips diffusion responses, so nothing writes the standing preference
+    back, and the next ordinary GGUF loaded without its own config sends the stale
+    "auto" and persists it over the user's Manual."""
+    apply = " ".join(_read("features/model-picker/model-config/apply-per-model-config.ts").split())
+    assert (
+        "gpuMemoryMode: options.isDiffusion ? readPersistedGpuMemoryMode() : "
+        "(config.gpuMemoryMode ?? readPersistedGpuMemoryMode())," in apply
+    )
+    # The unconditional form is what leaked the sanitized mode into the store.
+    assert "gpuMemoryMode: config.gpuMemoryMode ?? readPersistedGpuMemoryMode()," not in apply
+
+    # The other half of the contract: the diffusion load itself must not persist.
+    store = " ".join(_read("features/chat/stores/chat-runtime-store.ts").split())
+    assert "if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);" in store
+
+    # And the sanitizer that produces the "auto" this guards against still runs.
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)" in page
 
 
 def test_active_native_gguf_metadata_uses_path_token():
@@ -389,7 +479,7 @@ def test_fixed_layer_gguf_pins_displayed_context():
     native/0 and recreating the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const pinFixedLayerContext =" in src
-    assert 'config.gpuMemoryMode === "manual"' in src
+    assert 'loadableConfig.gpuMemoryMode === "manual"' in src
     assert "customContextLength: activeLoadedContext" in src
 
 
@@ -458,7 +548,7 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
-    assert "onRun(effectiveLoadConfig)" in src
+    assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in src
     assert "savePerModelConfig(" in src
 
 
@@ -565,7 +655,7 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     assert (
         "const effectiveMaxSeqLength = ownConfig.customContextLength ?? "
         "normalizeMaxSeqLength(ownConfig.maxSeqLength) ?? "
-        "(isGgufLoad ? 0 : DEFAULT_MAX_SEQ_LENGTH);" in src
+        "(targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);" in src
     )
     # The buggy fallback to the active model's shared runtime value must not return.
     assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
@@ -581,6 +671,140 @@ def test_default_gpu_mode_clears_manual_knobs():
     assert "gpuLayers: undefined," in src
     assert "nCpuMoe: undefined," in src
     assert "selectedGpuIds: undefined," in src
+    assert "selectedGpuIndexKind: undefined," in src
+
+
+def test_requested_gpu_pick_survives_fit_narrowing_and_namespace_changes():
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "requestedGpuIdsFromResponse(resp)" in store
+    gpu_selection = _read("hooks/gpu-selection.ts")
+    assert 'savedIndexKind === undefined ? "physical" : savedIndexKind' in gpu_selection
+    assert "currentIndexKind !== undefined" in gpu_selection
+    assert "expectedIndexKind !== currentIndexKind" in gpu_selection
+    assert "A null namespace is only safe while discovery is also unresolved" in gpu_selection
+    assert (
+        "Namespace knowledge is authoritative even while membership is unavailable" in gpu_selection
+    )
+    gpu_info = _read("hooks/use-gpu-info.ts")
+    assert "cachedPinnableGpuContext" in gpu_info
+    assert 'unavailableVulkan ? "vulkan" : undefined' in gpu_info
+    assert "cachedPinnableGpuIndexKind" in gpu_info
+    config = _read("features/model-picker/model-config/per-model-config.ts")
+    assert '"selectedGpuIndexKind"' in config
+
+
+def test_staged_gpu_pick_reconciles_with_async_namespace_discovery():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "reconcileGpuSelection(" in page
+    assert "setConfig((current)" in page
+    assert "reconcileConfigGpuSelection(" in page
+    assert "gpuIndexKind" in page
+    assert "pinnableDevices" in page
+    assert "reconciled.ids === null ? undefined : reconciled.indexKind" in " ".join(page.split())
+    assert "selectsAll ? null : next" not in page
+    gpu_info = _read("hooks/use-gpu-info.ts")
+    assert 'inferenceGpu?.backend === "vulkan"' in gpu_info
+    assert "!inferenceGpu.available" in gpu_info
+
+
+def test_compare_classifies_gguf_before_reconciling_gpu_ids():
+    compare = _read("features/chat/shared-composer.tsx")
+    metadata = compare.index("fetchGgufStagedMetadata(")
+    reconcile = compare.index("reconcilePersistedGpuIds(", metadata)
+    validate = compare.index("const validation = await validateModel(", reconcile)
+    load = compare.index("const resp = await loadModel(", validate)
+    assert metadata < reconcile < validate < load
+    assert compare.count("resolvedIsDiffusion") >= 3
+    assert "prepareHfTokenForUse(" in compare
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "isDiffusion?: boolean" in page
+    assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in page
+
+
+def test_model_config_prepares_hf_token_before_gguf_metadata_preflight():
+    """Settings classification must use the same stale-token recovery as load."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'import { prepareHfTokenForUse } from "@/features/hf-auth";' in page
+    effect = page.split("// Fetch GGUF header dims", 1)[1]
+    effect = effect.split("const stagedDims =", 1)[0]
+    prepare = effect.index("prepareHfTokenForUse(hfToken || null)")
+    metadata = effect.index("fetchGgufStagedMetadata({", prepare)
+    assert prepare < metadata
+    assert "if (!preparedToken.proceed)" in effect
+    cancel = effect.index("if (!preparedToken.proceed)")
+    assert "settleWithoutMetadata();" in effect[cancel:metadata]
+    assert effect.count("settleWithoutMetadata();") == 2
+    assert "hf_token: preparedToken.token" in effect
+    assert "hf_token: hfToken" not in effect
+
+
+def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
+    """The single-model load path classifies a GGUF via fetchGgufStagedMetadata
+    before validateModel/loadModel run. The Hub rejects an invalid Authorization
+    header with 401 even for a PUBLIC repo, so that preflight must prepare the
+    token like every other caller; otherwise a stale saved token aborts the whole
+    load instead of offering the "continue anonymously / replace token" recovery.
+    """
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    prepare = runtime.index("prepareHfTokenForUse(")
+    metadata = runtime.index("fetchGgufStagedMetadata({", prepare)
+    assert prepare < metadata
+    # The raw store token must not be handed to the preflight.
+    assert "hf_token: preparedToken.token" in runtime
+    assert (
+        "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime
+    ), "GGUF metadata preflight must not send the unprepared stored token"
+    assert 'throw new Error("Model load cancelled.")' in runtime
+
+
+def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
+    """Background autoload performs the same GGUF classification probe as the
+    interactive paths, so a stale saved token must take the same recovery path.
+    """
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    prepare = autoload.index("prepareHfTokenForUse(")
+    metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
+    assert prepare < metadata
+    assert "hf_token: preparedToken.token" in autoload
+    assert 'throw new Error("Model load cancelled.")' in autoload
+
+
+def test_cpu_only_llama_build_hides_gpu_picker():
+    src = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
+    assert "and not LlamaCppBackend._backend_lacks_gpu_lib()" in src
+
+
+def test_vulkan_inference_devices_do_not_replace_global_gpu_info():
+    backend = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
+    assert '"gguf_gpu_ids_supported": gpu_ids_supported' in backend
+    assert '"inference_gpu": inference_gpu_info' in backend
+    frontend = _read("hooks/use-gpu-info.ts")
+    assert 'inference?.backend === "vulkan"' in frontend
+    assert "data?.gpu?.devices ?? []" in frontend
+
+
+def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
+    api = _read("features/chat/api/chat-api.ts")
+    assert "isDiffusion: res.is_diffusion ?? false" in api
+
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'className={isDiffusion ? "hidden" : ROW_CLASS}' in page
+    assert "withoutUnsupportedDiffusionSettings(config, gpuIndexKind)" in page
+    assert "reconcileConfigGpuSelection(" in page
+    assert "resolvedIsDiffusion" in page
+    assert "stagedMetadataPending ||" in page
+    assert "config.selectedGpuIds != null" in page
+    for field in (
+        'gpuMemoryMode: "auto"',
+        "gpuLayers: undefined",
+        "nCpuMoe: undefined",
+        "tensorParallel: false",
+        "selectedGpuIds: undefined",
+        "selectedGpuIndexKind: undefined",
+    ):
+        assert field in page
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():
@@ -831,8 +1055,10 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
         "selection.previousConfig ? (selection.previousConfig.nParallel ?? null) "
         ": useChatRuntimeStore.getState().nParallel;" in runtime
     )
+    # Matched on the call prefix, not the whole call: the staged apply also
+    # carries the resolved diffusion flag. Only the ordering is the contract.
     assert runtime.index("const previousNParallel") < runtime.index(
-        "applyPerModelConfigToRuntime(pendingLoadConfig);"
+        "applyPerModelConfigToRuntime(pendingLoadConfig,"
     ), "a config staged on the selection must not replace it either"
     picker = " ".join(_read("features/chat/chat-page.tsx").split())
     assert (
@@ -852,17 +1078,34 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     inference inventory (ggml ordinals, the space `--device Vulkan<i>` pins) rather than
     the torch view, which can miss cards llama-server drives."""
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
-    # The Vulkan inventory is consulted first, and only when it has devices.
-    assert (
-        "const inference = data?.inference_gpu; "
-        'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
-    )
+    # The Vulkan inventory is authoritative even while its probe is temporarily
+    # empty. Falling through would expose physical CUDA/ROCm IDs in an ordinal
+    # picker and make DiffusionGemma offer a selection the route rejects.
+    assert "const inference = data?.inference_gpu; " 'if (inference?.backend === "vulkan") {' in src
+    # A confirmed-Vulkan backend with no enumerated devices yet must return no
+    # devices, not fall through to the torch/CUDA inventory below.
+    assert "if (!(inference.devices ?? []).length) return [];" in src
     # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
     assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
-    assert 'physicalIndex: picksAccepted && d.index_kind === "vulkan",' in src
-    # The torch fallback keeps its physical-only gate and the XPU ban.
-    assert 'data?.device_backend !== "xpu" &&' in src
-    assert 'physicalIndex: pinnableBackend && d.index_kind === "physical",' in src
+    assert 'pinnable: picksAccepted && d.index_kind === "vulkan",' in src
+    # A Vulkan ordinal is not a CUDA ID, so the torch-side diffusion runner
+    # cannot take the pick even when llama-server can.
+    assert "diffusionPinnable: false," in src
+    # The torch fallback keeps the XPU ban for torch ordinals only: a Vulkan
+    # ordinal stays pickable even when this list arrives from an XPU host.
+    assert (
+        "pinnable: pinnableBackend && "
+        '(d.index_kind === "vulkan" || '
+        '(data?.device_backend !== "xpu" && d.index_kind === "physical")),' in src
+    )
+    # Only a physical index is ever handed to the diffusion runner, and ROCm
+    # counts: it reuses torch.cuda.* and the same physical-ID path, so excluding
+    # it would hide the picker on every multi-GPU ROCm host.
+    assert (
+        "const diffusionBackend = "
+        'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
+    )
+    assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
 
 
 def test_only_gguf_configs_are_mirrored_to_the_server():
@@ -1373,7 +1616,9 @@ def test_settings_open_reads_status_before_resolving_the_quant():
         "await refreshResidentModelStatus(); if (settingsOpenSeq.current !== openSeq) return;"
         in page
     )
-    assert page.count("await refreshResidentModelStatus();") == 2
+    # Three: both handlers read on entry, and openModelSettings reads again after the
+    # variant lookup, whose network round trip is its own window for a switch to land.
+    assert page.count("await refreshResidentModelStatus();") == 3
 
 
 def test_a_local_quant_folder_resolves_its_variants_by_path():
@@ -1402,13 +1647,14 @@ def test_no_settings_target_is_built_on_an_unread_store():
     reloads with what it seeded, so a target built before the status read lands can
     persist and launch the settings of the model an API switch displaced."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
-    # Both handlers read first and drop the open if a newer one started meanwhile.
-    assert page.count("await refreshResidentModelStatus();") == 2
+    # Both handlers read first and drop the open if a newer one started meanwhile, and
+    # the variant lookup's await gets the same treatment. Every read carries the guard.
+    assert page.count("await refreshResidentModelStatus();") == 3
     assert (
         page.count(
             "await refreshResidentModelStatus(); if (settingsOpenSeq.current !== openSeq) return;"
         )
-        == 2
+        == 3
     )
     # Nothing may build a target off a concurrent read instead of an awaited one.
     assert "Promise.all([ listGgufVariants(" not in page
@@ -1420,8 +1666,15 @@ def test_an_empty_status_is_read_against_the_idle_unload_setting():
     checkpoint only while the loop is armed."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     adopt = " ".join(_read("features/hub/lib/adopt-inference-status.ts").split())
-    assert "idleUnloadArmed.current = settings.idleUnloadActive;" in hub
-    assert "idleUnloadArmed: idleUnloadArmed.current," in hub
+    assert ".then((settings) => settings.idleUnloadActive)" in hub
+    # Awaited, not raced: the first status read is the one most likely to land on an
+    # evicted model, and an unresolved default of false would clear a checkpoint the
+    # idle loop is about to bring back.
+    assert (
+        "Promise.all([getInferenceStatus(), readIdleUnloadArmed()]) "
+        ".then(([status, idleUnloadArmed]) => {" in hub
+    )
+    assert "idleUnloadArmed," in hub
     assert "if (state.idleUnloadArmed) { return false; }" in adopt
     assert "actions.clearCheckpoint?.();" in adopt
 

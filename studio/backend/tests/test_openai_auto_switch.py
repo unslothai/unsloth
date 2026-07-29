@@ -4760,6 +4760,19 @@ def test_forget_clears_the_filename_derived_key_a_load_still_reads(override_stor
     assert settings.get_model_overrides() == {}
 
 
+def test_forget_clears_the_bare_repo_entry_the_quant_inherited_from(override_store):
+    # A save under repo:QUANT copies the flags off a legacy bare entry and leaves it in
+    # place, and the loader falls back to it when the qualified key misses. Clearing only
+    # the qualified key hands the same flags straight back on the next load.
+    settings.set_model_override(
+        "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 8192,
+    )
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_override("unsloth/B-GGUF") == {}
+    assert settings.get_model_overrides() == {}
+
+
 def test_forget_clears_every_spelling_of_one_model(override_store):
     # Two spellings of one repo can coexist; clearing only the named one makes the survivor
     # the sole fold match, so the next load reapplies what was just forgotten.

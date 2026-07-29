@@ -540,10 +540,11 @@ function ModelSelectorContent({
             key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
             target={visibleConfigTarget}
             onBack={() => setConfigTarget(null)}
-            onRun={(config) =>
+            onRun={(config, isDiffusion) =>
               onSelect(visibleConfigTarget.id, {
                 ...visibleConfigTarget.meta,
                 config,
+                isDiffusion,
                 forceReload: true,
               })
             }

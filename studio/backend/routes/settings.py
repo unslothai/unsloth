@@ -471,6 +471,19 @@ def update_openai_auto_switch_override(
                     llama_extra_args = [],
                     max_seq_length = None,
                 )
+            # The mirror image of the carry-over above. A save under repo:QUANT copies the
+            # flags off a legacy bare `repo` entry and leaves that entry in place, and the
+            # loader falls back to it when the qualified key misses, so clearing only the
+            # qualified key hands the same flags straight back on the next load and the
+            # forget silently does nothing. Nothing in the UI can reach the bare entry for
+            # a repo that requires a variant, so this is its only way out.
+            bare_id = _bare_model_id(payload.model_id)
+            if bare_id and bare_id not in target_ids:
+                set_model_override(
+                    bare_id,
+                    llama_extra_args = [],
+                    max_seq_length = None,
+                )
         else:
             # Save under the key a load resolves to, as the removal branch does: the literal
             # id would leave two keys for one model, making every other casing ambiguous.

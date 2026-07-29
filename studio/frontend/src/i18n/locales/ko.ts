@@ -27,10 +27,18 @@ export const ko = {
     product: "Unsloth Studio",
     accountMenu: "{name} 계정 메뉴",
     updateAvailable: "업데이트 사용 가능",
+    resize: {
+      collapse: "클릭하여 접기",
+      expand: "클릭하여 펼치기",
+      drag: "드래그하여 크기 조절",
+    },
     aria: {
       home: "Unsloth 홈",
       closeSidebar: "사이드바 닫기",
       openSidebar: "사이드바 열기",
+      resizeSidebar: "사이드바 크기 조절 또는 접기",
+      resizeRunSettings: "실행 설정 크기 조절 또는 닫기",
+      openRunSettings: "실행 설정 열기",
       chatOptions: "채팅 옵션",
       runOptions: "학습 옵션",
     },
@@ -315,6 +323,8 @@ export const ko = {
         diskUsage: "{used} 사용 중 / {total}",
         diskFree: "{free} 여유",
         modelsFolder: "모델 폴더",
+        modelsFolderKeywords:
+          "모델 폴더 디렉터리 디렉토리 경로 위치 저장 다운로드 캐시 저장소 디스크 드라이브 이동 변경 models folder path hugging face",
         modelsFolderDescription: "다운로드한 모델이 저장되는 위치입니다.",
         openAction: "열기",
         copyAction: "경로 복사",
@@ -450,7 +460,7 @@ export const ko = {
       codingAgents: "코딩 에이전트",
       codingAgentsHint:
         "이 서버를 대상으로 코딩 에이전트를 실행합니다. 로드된 모델을 사용하며, 로컬 서버는 API 키를 자동으로 발급하고 원격 서버는 명령에 포함합니다.",
-      codingAgentsSwap: "claude를 codex, openclaw, opencode, hermes 또는 pi로 바꾸세요.",
+      codingAgentsSwap: "claude를 codex, openclaw, opencode 또는 hermes로 바꾸세요.",
       codingAgentDetected: "이 컴퓨터에 설치됨",
       codingAgentsDetectedHint: "이 컴퓨터에서 감지됨: {agents}.",
       relativeNever: "없음",

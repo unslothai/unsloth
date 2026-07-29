@@ -606,6 +606,8 @@ export function ApiMonitorPage(): ReactElement {
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const baseUrl = `${isTauri ? (serverUrl ?? getApiBase()) : origin}/v1`;
   const serverStatus = data?.status ?? "idle";
+  // Older backends omit the field; only an explicit `false` means recording is off.
+  const loggingDisabled = data?.logging_enabled === false;
   const statusCopy =
     serverStatus === "generating"
       ? "Serving requests"
@@ -783,7 +785,7 @@ export function ApiMonitorPage(): ReactElement {
         <StatCard
           label="Requests"
           value={formatCount(stats.total)}
-          hint="recent window"
+          hint={loggingDisabled ? "recording off" : "recent window"}
         />
         <StatCard label="Completed" value={formatCount(stats.completed)} />
         <StatCard
@@ -864,9 +866,11 @@ export function ApiMonitorPage(): ReactElement {
               </div>
             ) : visible.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-muted-foreground">
-                {entries.length === 0
-                  ? "No API traffic yet. Point a client at the base URL above to see requests here."
-                  : "No requests match this filter."}
+                {entries.length > 0
+                  ? "No requests match this filter."
+                  : loggingDisabled
+                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Studio to re-enable."
+                    : "No API traffic yet. Point a client at the base URL above to see requests here."}
               </p>
             ) : (
               visible.map((entry) => (

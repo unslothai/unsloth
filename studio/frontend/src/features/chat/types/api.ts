@@ -85,7 +85,7 @@ export interface LoadModelRequest {
   n_cpu_moe?: number;
   /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
   tensor_split?: number[] | null;
-  /** Picked physical GPU indices (omit/empty = automatic). */
+  /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
 }
 
@@ -95,6 +95,7 @@ export interface ValidateModelResponse {
   identifier?: string | null;
   display_name?: string | null;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
@@ -334,6 +335,8 @@ export interface ApiMonitorResponse {
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Absent on older backends -- treat only an explicit `false` as disabled. */
+  logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
 }
 

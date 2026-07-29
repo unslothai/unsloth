@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 import structlog
 
+from utils.child_stdio import utf8_child_env
 from utils.process_lifetime import child_popen_kwargs
 
 logger = structlog.get_logger(__name__)
@@ -159,6 +160,8 @@ def resolve_prebuilt_for_host(
             cmd,
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
         )
         out = (proc.stdout or "").strip()
@@ -303,7 +306,10 @@ def stream_installer(
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
-        env = env,
+        encoding = "utf-8",
+        errors = "replace",
+        # Make the Python child emit the UTF-8 we decode above.
+        env = utf8_child_env(env),
         **child_popen_kwargs(),
     )
     timed_out = threading.Event()

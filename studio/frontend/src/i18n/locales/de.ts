@@ -27,10 +27,18 @@ export const de = {
     product: "Unsloth Studio",
     accountMenu: "Kontomenü von {name}",
     updateAvailable: "Update verfügbar",
+    resize: {
+      collapse: "Zum Einklappen klicken",
+      expand: "Zum Ausklappen klicken",
+      drag: "Zum Ändern der Größe ziehen",
+    },
     aria: {
       home: "Unsloth Startseite",
       closeSidebar: "Seitenleiste schließen",
       openSidebar: "Seitenleiste öffnen",
+      resizeSidebar: "Seitenleiste anpassen oder einklappen",
+      resizeRunSettings: "Ausführungseinstellungen anpassen oder schließen",
+      openRunSettings: "Ausführungseinstellungen öffnen",
       chatOptions: "Chat-Optionen",
       runOptions: "Trainingslauf-Optionen",
     },
@@ -330,9 +338,23 @@ export const de = {
         diskFree: "{free} frei",
         modelsFolder: "Modell-Ordner",
         modelsFolderDescription:
-          "Wo heruntergeladene Modelle gespeichert werden.",
+          "Wo heruntergeladene Modelle gespeichert werden. Ändern Sie ihn, um Modelle nicht auf dem Systemlaufwerk abzulegen.",
+        modelsFolderKeywords:
+          "Modelle Ordner Verzeichnis Pfad Speicherort Download Downloads Cache Speicher Festplatte Laufwerk verschieben ändern hugging face",
+        futureDownloads: "Nur neue Downloads",
+        environmentManaged:
+          "Wird über die Umgebungsvariable {variable} verwaltet.",
+        locationFree: "{free} frei",
         openAction: "Öffnen",
         copyAction: "Pfad kopieren",
+        changeAction: "Ändern",
+        resetAction: "Standard verwenden",
+        chooseTitle: "Speicherort für Modell-Downloads wählen",
+        chooseAction: "Für künftige Downloads verwenden",
+        cacheSaved: "Speicherort für Modell-Downloads aktualisiert",
+        cacheSaveError:
+          "Der Speicherort für Modell-Downloads konnte nicht geändert werden",
+        cachePickerError: "Die Ordnerauswahl konnte nicht geöffnet werden",
         copied: "Pfad kopiert",
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",
@@ -469,7 +491,7 @@ export const de = {
       codingAgentsHint:
         "Starten Sie einen Coding-Agent gegen diesen Server. Er verwendet das geladene Modell; ein lokaler Server erstellt automatisch einen API-Schlüssel, ein entfernter fügt ihn dem Befehl hinzu.",
       codingAgentsSwap:
-        "Ersetzen Sie claude durch codex, openclaw, opencode, hermes oder pi.",
+        "Ersetzen Sie claude durch codex, openclaw, opencode oder hermes.",
       codingAgentDetected: "Auf diesem Gerät installiert",
       codingAgentsDetectedHint: "Auf diesem Gerät erkannt: {agents}.",
       relativeNever: "nie",

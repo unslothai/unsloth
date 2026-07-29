@@ -24,6 +24,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { sameGpuSelection } from "@/hooks/gpu-selection";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 
@@ -244,15 +245,21 @@ export function applyActiveModelStatusToStore(
     incomingGpuMode === "manual" ? (status.n_cpu_moe ?? null) : null;
   const incomingSplit =
     incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
-  const incomingGpuIds = status.is_gguf
-    ? (status.requested_gpu_ids ?? status.gpu_ids ?? null)
-    : null;
+  const incomingGpuFields = loadedGpuMemoryFields(status);
+  const incomingGpuIds = incomingGpuFields.loadedGpuIds;
+  const incomingGpuIndexKind = incomingGpuFields.loadedGpuIndexKind;
   const gpuStatusChanged =
     prevState.loadedGpuMemoryMode !== incomingGpuMode ||
     prevState.loadedGpuLayers !== incomingGpuLayers ||
     prevState.loadedNCpuMoe !== incomingNCpuMoe ||
     !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
-    !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
+    !sameGpuSelection(
+      {
+        ids: prevState.loadedGpuIds,
+        indexKind: prevState.loadedGpuIndexKind,
+      },
+      { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
+    ) ||
     prevState.loadedCustomContextLength !== gpuPin;
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
@@ -262,11 +269,16 @@ export function applyActiveModelStatusToStore(
         prevState.nCpuMoe !== prevState.loadedNCpuMoe ||
         !sameArray(prevState.splitRatio, prevState.loadedSplitRatio))) ||
     prevState.customContextLength !== prevState.loadedCustomContextLength;
-  const gpuIdsEditPending = !sameArray(
-    prevState.selectedGpuIds,
-    prevState.loadedGpuIds,
+  const gpuIdsEditPending = !sameGpuSelection(
+    {
+      ids: prevState.selectedGpuIds,
+      indexKind: prevState.selectedGpuIndexKind,
+    },
+    {
+      ids: prevState.loadedGpuIds,
+      indexKind: prevState.loadedGpuIndexKind,
+    },
   );
-  const incomingGpuFields = loadedGpuMemoryFields(status);
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
   const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
@@ -283,7 +295,10 @@ export function applyActiveModelStatusToStore(
         customContextLength: prevState.customContextLength,
       }),
     ...(preserveSameModelEdits &&
-      gpuIdsEditPending && { selectedGpuIds: prevState.selectedGpuIds }),
+      gpuIdsEditPending && {
+        selectedGpuIds: prevState.selectedGpuIds,
+        selectedGpuIndexKind: prevState.selectedGpuIndexKind,
+      }),
   };
 
   useChatRuntimeStore.setState({
@@ -381,9 +396,15 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
+    // The one load param that only ever seeded from null, so a switch left the previous
+    // model's template in the store. The Hub settings page reads that as the new model's
+    // loaded config, and Apply or Remember then saves A's template under B and reloads B
+    // with the wrong prompt format. Re-seed on a switch, under the same seedLoadParams
+    // guard the fields above use so a re-adoption of the same model keeps a dirty edit.
     ...(status.chat_template_override !== undefined &&
-      prevState.loadedChatTemplateOverride === null &&
-      prevState.chatTemplateOverride === null && {
+      (seedLoadParams ||
+        (prevState.loadedChatTemplateOverride === null &&
+          prevState.chatTemplateOverride === null)) && {
         chatTemplateOverride: status.chat_template_override,
         loadedChatTemplateOverride: status.chat_template_override,
       }),

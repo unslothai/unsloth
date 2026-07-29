@@ -27,10 +27,18 @@ export const zhCN = {
     product: "Unsloth Studio",
     accountMenu: "{name} 账号菜单",
     updateAvailable: "有可用更新",
+    resize: {
+      collapse: "点击折叠",
+      expand: "点击展开",
+      drag: "拖动调整大小",
+    },
     aria: {
       home: "Unsloth 首页",
       closeSidebar: "关闭侧边栏",
       openSidebar: "打开侧边栏",
+      resizeSidebar: "调整或折叠侧边栏",
+      resizeRunSettings: "调整或关闭运行设置",
+      openRunSettings: "打开运行设置",
       chatOptions: "聊天选项",
       runOptions: "训练选项",
     },
@@ -408,6 +416,8 @@ export const zhCN = {
         diskUsage: "已用 {used} / {total}",
         diskFree: "{free} 可用",
         modelsFolder: "模型文件夹",
+        modelsFolderKeywords:
+          "模型 文件夹 目录 路径 位置 下载 缓存 存储 磁盘 驱动器 移动 更改 models folder path hugging face",
         modelsFolderDescription: "已下载模型的存储位置。",
         openAction: "打开",
         copyAction: "复制路径",
@@ -539,7 +549,7 @@ export const zhCN = {
       codingAgents: "编程智能体",
       codingAgentsHint:
         "针对此服务器启动编程智能体。它会使用已加载的模型；本地服务器会自动生成 API 密钥，远程服务器则会将其包含在命令中。",
-      codingAgentsSwap: "可将 claude 替换为 codex、openclaw、opencode、hermes 或 pi。",
+      codingAgentsSwap: "可将 claude 替换为 codex、openclaw、opencode 或 hermes。",
       codingAgentDetected: "已安装在本机",
       codingAgentsDetectedHint: "本机检测到：{agents}。",
       relativeNever: "从未",
