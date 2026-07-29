@@ -227,6 +227,11 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     )
     assert "cancelled = true;" in target
     assert "if (initialization && !initialization.ok)" in target
+    assert "const dispose = () =>" in target
+    assert "deleteStoredChatThreads([initialization.remoteId])" in target
+    assert "appendStarted = true;" in target
+    assert "dispose," in target
+    assert "target.dispose();" in THREAD
     assert "discardQueuedChatRunSettings(settingsId)" in target
     assert "discardQueuedChatRunSettingsForThread(threadId);" in THREAD
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
@@ -234,6 +239,8 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert "? queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
     assert ": liveRuntime" in CHAT_ADAPTER
     assert "checkpoint: liveRuntime.params.checkpoint" in CHAT_ADAPTER
+    assert "const liveResearchRuntime = useChatRuntimeStore.getState();" in CHAT_ADAPTER
+    assert "checkpoint: liveResearchRuntime.params.checkpoint" in CHAT_ADAPTER
     assert "usePromptQueueUI.getState().isRunning" in CHAT_PAGE
     assert "Object.values(runtime.runningByThreadId).some(Boolean)" in CHAT_PAGE
     assert "getPreStreamRunReservationCount() > 0" in CHAT_PAGE

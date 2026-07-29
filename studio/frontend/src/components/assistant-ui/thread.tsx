@@ -127,6 +127,7 @@ import {
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { deleteStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -227,6 +228,7 @@ type PromptQueueTarget = {
   getRunningThreadIds: () => string[];
   append: (prompt: string) => void | Promise<void>;
   cancel: () => void;
+  dispose: () => void;
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
 };
@@ -299,6 +301,9 @@ function clearPromptQueueRetryTimer(run: PromptQueueRun) {
 
 function deletePromptQueueRun(run: PromptQueueRun) {
   run.generation += 1;
+  for (const target of new Set(run.items.map((item) => item.target))) {
+    target.dispose();
+  }
   clearPromptQueueRetryTimer(run);
   promptQueueActiveRunIds.delete(run.id);
   promptQueueDispatchingRunIds.delete(run.id);
@@ -326,6 +331,9 @@ function resetPromptQueues() {
   for (const run of promptQueueRuns.values()) {
     run.generation += 1;
     clearPromptQueueRetryTimer(run);
+    for (const target of new Set(run.items.map((item) => item.target))) {
+      target.dispose();
+    }
   }
   promptQueueRuns.clear();
   promptQueueActiveRunIds.clear();
@@ -2048,7 +2056,7 @@ const Composer: FC<{
           .threadListItem()
           .initialize()
           .then(
-            () => ({ ok: true as const }),
+            ({ remoteId }) => ({ ok: true as const, remoteId }),
             (error: unknown) => ({ ok: false as const, error }),
           );
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
@@ -2107,6 +2115,27 @@ const Composer: FC<{
     };
     const pendingSettingsIds = new Set<number>();
     let cancelled = false;
+    let disposed = false;
+    let appendStarted = false;
+    const dispose = () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      cancelled = true;
+      if (!queuedThreadInitialization) {
+        return;
+      }
+      void queuedThreadInitialization
+        .then((initialization) => {
+          if (initialization.ok && !appendStarted) {
+            return deleteStoredChatThreads([initialization.remoteId]);
+          }
+        })
+        .catch(() => {
+          // Deletion remains best-effort; normal history refresh reconciles it.
+        });
+    };
     return {
       getDocumentThreadId: () => {
         const state = getThreadListItemState();
@@ -2132,6 +2161,7 @@ const Composer: FC<{
             markThreadIncognito(id);
           }
         }
+        appendStarted = true;
         const settingsId = registerQueuedChatRunSettings(
           getQueueThreadIds(),
           runSettingsAtQueueStart,
@@ -2140,19 +2170,21 @@ const Composer: FC<{
         try {
           thread.append(appendTextToThread(prompt));
         } catch (error) {
+          appendStarted = false;
           pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);
           throw error;
         }
       },
       cancel: () => {
-        cancelled = true;
+        dispose();
         for (const settingsId of pendingSettingsIds) {
           discardQueuedChatRunSettings(settingsId);
         }
         pendingSettingsIds.clear();
         getThreadRuntime()?.cancelRun();
       },
+      dispose,
       isIndexing: () =>
         promptQueueTargetMountedRef.current && indexingActiveRef.current,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,

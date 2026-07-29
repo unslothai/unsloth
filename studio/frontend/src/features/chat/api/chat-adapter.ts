@@ -2169,7 +2169,23 @@ export function createOpenAIStreamAdapter(
             throw new Error("Load a model first.");
           }
         }
-        runtime = useChatRuntimeStore.getState();
+        const liveResearchRuntime = useChatRuntimeStore.getState();
+        runtime = queuedRunSettings
+          ? queuedRunSettings.params.checkpoint
+            ? {
+              ...liveResearchRuntime,
+              ...queuedRunSettings,
+              params: queuedRunSettings.params,
+            }
+            : {
+              ...liveResearchRuntime,
+              ...queuedRunSettings,
+              params: {
+                ...queuedRunSettings.params,
+                checkpoint: liveResearchRuntime.params.checkpoint,
+              },
+            }
+          : liveResearchRuntime;
         if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
