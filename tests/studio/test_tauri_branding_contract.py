@@ -47,7 +47,7 @@ def test_desktop_artwork_uses_plain_unsloth_lockups() -> None:
     for component in ("startup-screen.tsx", "update-screen.tsx"):
         source = read(FRONTEND / "src/components/tauri" / component)
         assert "/sticker.png" in source
-        assert 'fontFamily: \'"Hellix", sans-serif\'' in source
+        assert "fontFamily: '\"Hellix\", sans-serif'" in source
         assert "unsloth" in source
         assert "/studio.png" not in source
 
@@ -76,9 +76,7 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
         *sorted((FRONTEND / "src").rglob("*.tsx")),
     ]
     offenders = [
-        str(path.relative_to(REPO))
-        for path in display_sources
-        if "Unsloth Studio" in read(path)
+        str(path.relative_to(REPO)) for path in display_sources if "Unsloth Studio" in read(path)
     ]
     assert offenders == []
 
