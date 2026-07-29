@@ -3,14 +3,10 @@
 
 """This branch is what gets uploaded to PyPI, so its metadata has to satisfy PyPI's rules.
 
-PyPI rejects any PEP 508 direct reference in ``Requires-Dist`` with
-``Invalid value for requires_dist. Error: Can't have direct dependency``
-(pypi/warehouse#7136), and ``twine check`` does not catch it beforehand
-(pypa/twine#726) -- the upload just 400s. ``main`` carries hundreds of direct URL
-requirements for the CUDA/XPU/ROCm wheel indexes, so every merge from ``main`` is a
-chance to import one here and break publishing. Nothing else guards that.
-
-Offline by design: structural checks only, no network.
+PyPI rejects any PEP 508 direct reference in ``Requires-Dist`` (pypi/warehouse#7136) and
+``twine check`` does not catch it (pypa/twine#726): the upload just 400s. ``main`` carries
+hundreds of direct URL requirements for the wheel indexes, so every merge from it can
+break publishing, and nothing else guards that. Structural checks only, no network.
 """
 
 from __future__ import annotations
@@ -43,13 +39,10 @@ def _all_requirements() -> list[tuple[str, str]]:
 
 class TestNoDirectUrlRequirements:
     def test_no_requirement_uses_a_direct_url(self):
-        """Ask packaging, not the spelling.
-
-        PEP 508 allows any whitespace around the `@`, and the scheme is case
-        insensitive, so `flash-attn@https://...` and `flash-attn @ HTTPS://...` are both
-        valid direct references that a substring match on " @ https://" would wave
-        through - the exact upload failure this guards. `Requirement.url` is set for
-        every form of them.
+        """Parse rather than substring-match: PEP 508 allows any whitespace around the
+        `@` and a case-insensitive scheme, so `flash-attn@https://...` and
+        `flash-attn @ HTTPS://...` both slip past a " @ https://" match.
+        `Requirement.url` is set for every form.
         """
         packaging_requirements = pytest.importorskip("packaging.requirements")
         offenders = []
@@ -78,12 +71,11 @@ class TestNoDirectUrlRequirements:
 
 class TestExtraReferencesResolve:
     def test_every_unsloth_extra_reference_exists(self):
-        """A `unsloth[foo]` pointing at an extra this branch does not define installs
-        nothing and fails silently, which is how a partially ported extras block breaks.
+        """A `unsloth[foo]` naming an undefined extra installs nothing and fails silently.
 
-        Parsed and canonicalized rather than pattern-matched: project names and extra
-        names are both case and separator insensitive (PEP 503, PEP 685), so pip honours
-        `Unsloth[Rocm72_Torch2100]` while a lowercase regex would never look at it.
+        Canonicalized on both sides: project and extra names are case and separator
+        insensitive (PEP 503, PEP 685), so pip honours `Unsloth[Rocm72_Torch2100]`
+        while a lowercase regex would never look at it.
         """
         packaging_requirements = pytest.importorskip("packaging.requirements")
         packaging_utils = pytest.importorskip("packaging.utils")
@@ -108,7 +100,7 @@ class TestExtraReferencesResolve:
 
 class TestAmdExtraIsInstallableFromPyPI:
     """`pip install unsloth[amd]` is the supported AMD entry point, so the extra has to
-    exist here and stay a version floor -- a URL pin would be unpublishable."""
+    exist here and stay a version floor: a URL pin would be unpublishable."""
 
     def test_amd_extra_exists_and_floors_bitsandbytes(self):
         extras = _load()["project"].get("optional-dependencies", {})
@@ -127,9 +119,8 @@ class TestAmdExtraIsInstallableFromPyPI:
 
 
 class TestRuntimeImportsAreDeclared:
-    """This branch's base install has to satisfy every module-scope import on the CLI
-    entry path. typer supplied click until 0.26.0 dropped it (#7504); it still supplies
-    rich, so rich is satisfied only by chance unless we declare it ourselves."""
+    """The base install must cover every module-scope import on the CLI entry path:
+    typer supplied click until 0.26.0 dropped it (#7504), and supplies rich by chance."""
 
     ENTRY_PATH_IMPORTS = ("click", "rich", "structlog", "typer")
 
@@ -147,9 +138,8 @@ class TestRuntimeImportsAreDeclared:
 
 
 class TestAcceleratorExtrasCarryTheirCompanions:
-    """Each accelerator extra composes a stack: `-ampere-` variants add flash-attn and
-    torch 2.10 variants add the torchcodec audio path. A variant that silently drops one
-    installs a quietly weaker environment than its siblings."""
+    """`-ampere-` variants add flash-attn and torch 2.10 variants add the torchcodec
+    audio path; dropping one installs a quietly weaker stack than its siblings."""
 
     def test_torch2100_extras_pull_the_audio_path(self):
         extras = _load()["project"].get("optional-dependencies", {})

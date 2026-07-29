@@ -59,8 +59,7 @@ dependencies = [
     # imports that, so every command needs it. typer supplied it until 0.27
     # dropped the dependency, which left this satisfied only by chance.
     "click>=8.0",
-    # unsloth_cli/__init__.py imports commands/chat.py, which imports rich at
-    # module level, so every command needs it. typer still pulls rich, but it
+    # Imported at module level on the CLI entry path. typer still pulls rich, but it
     # pulled click too until 0.26.0 dropped it: same shape, so declare it.
     "rich",
 ]
@@ -157,12 +156,9 @@ huggingface = [
     "pyyaml",
     "nest-asyncio",
 ]
-# "notorch" means this list declares no torch of its own, not that installing it
-# leaves you torch-free: extras are additive to [project].dependencies, which on
-# this branch deliberately carry the full runtime so a bare `pip install unsloth`
-# works, and accelerate/peft/sentence-transformers each require torch anyway. The
-# genuinely torch-free path is the installer's --no-deps pass over
-# studio/backend/requirements/no-torch-runtime.txt, not plain pip resolution.
+# "notorch" means this list declares no torch, not that you end up torch-free: extras
+# are additive to [project].dependencies, which carry the full runtime here. The
+# torch-free path is the installer's --no-deps pass over no-torch-runtime.txt, not pip.
 # Kept byte-identical to main so the two branches can be diffed for drift.
 huggingfacenotorch = [
     "unsloth_zoo>=2026.7.6",
@@ -184,17 +180,13 @@ huggingfacenotorch = [
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
-# What this extra does on this branch is raise the bitsandbytes floor; it does not
-# hand you a ROCm stack. The base dependencies still apply, so ROCm torch has to
-# come from the AMD index or already be installed (pip leaves an installed
-# +rocm torch alone, since it satisfies the base specifier). Use install.sh or
-# `unsloth studio install` for a torch-free AMD install.
+# Raises the bitsandbytes floor; it does not hand you a ROCm stack. The base deps still
+# apply, so ROCm torch must come from the AMD index or be installed already (pip leaves
+# a +rocm torch alone). Use install.sh or `unsloth studio install` for a torch-free AMD install.
 amd = [
     "unsloth[huggingfacenotorch]",
-    # 4-bit decode is unreliable on ROCm before 0.50.0, the first PyPI release
-    # carrying the full path: blocksize/warp decoupling (bnb #1887), fused SIMT
-    # GEMM on RDNA (#1979), RDNA3/4 workgroup fix (#2012). Keep in step with
-    # install.sh and studio/install_python_stack.py.
+    # 4-bit decode is unreliable on ROCm before 0.50.0 (bnb #1887, #1979, #2012).
+    # Keep in step with install.sh and studio/install_python_stack.py.
     "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
     "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
@@ -556,12 +548,10 @@ flashattention = [
     "ninja ; ('linux' in sys_platform)",
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
-# torchcodec is the audio decode path; its releases track torch minor versions,
-# so each torch minor gets its own window (#7225). It publishes no sdist and only
-# manylinux_2_28_x86_64, macosx_*_arm64 and win_amd64 wheels, so Linux aarch64,
-# Windows ARM64 and Intel Mac have nothing to resolve and pip would hard-fail the
-# whole install. Gate on the platforms that have a wheel, matching
-# PLATFORM_LACKS_TORCHCODEC_WHEEL in studio/install_python_stack.py.
+# torchcodec releases track torch minor versions, so each torch minor gets its own
+# window (#7225). It ships no sdist and only x86_64 linux/windows and arm64 macOS
+# wheels, so elsewhere pip would hard-fail the whole install: gate on the platforms
+# with a wheel, matching PLATFORM_LACKS_TORCHCODEC_WHEEL in install_python_stack.py.
 audio-torch280 = [
     "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]

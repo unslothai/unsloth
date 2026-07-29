@@ -45,9 +45,8 @@ def _stub_torch(monkeypatch, version: str):
 
 
 def test_torch210_extras_bundle_audio_torch210():
-    """The ROCm extras pin torch from the AMD wheel index, which PyPI rejects as a
-    direct reference, so this branch does not carry them. Check whichever torch 2.10
-    extras it does define, and require at least one."""
+    """ROCm extras pin torch by direct URL, which PyPI rejects, so this branch omits
+    them: check whichever torch 2.10 extras it defines, and require at least one."""
     text = PYPROJECT.read_text(encoding = "utf-8")
     checked = 0
     for extra in (
