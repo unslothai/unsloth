@@ -178,13 +178,15 @@ export async function countChatInputTokens(payload: {
   enabled_tools?: string[];
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
-}): Promise<{ input_tokens: number }> {
+  // `model` is informational: the endpoint counts with whatever is resident and reports
+  // which that was, in the same shape status publishes (model_identifier ?? active_model).
+}): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return parseJsonOrThrow<{ input_tokens: number }>(response);
+  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
 
 export async function validateModel(

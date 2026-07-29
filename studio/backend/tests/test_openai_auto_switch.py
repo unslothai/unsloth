@@ -3231,7 +3231,9 @@ def test_chat_count_tokens_prices_the_loaded_model_without_switching(monkeypatch
     # loaded model A must not drag the backend back to it: count whatever is loaded.
     switched, _counted = _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 42)
     payload = _count_request([{"role": "user", "content": content}])
-    assert _counted_body(payload) == {"input_tokens": 42}
+    # And the reply names the tokenizer that produced the total, which is B rather than
+    # the A the stale payload asked for, so the caller can tell the two apart.
+    assert _counted_body(payload) == {"input_tokens": 42, "model": "org/B-GGUF"}
     assert switched == []
 
 
@@ -3251,7 +3253,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         enable_tools = True,
         enabled_tools = ["web_search"],
     )
-    assert _counted_body(payload) == {"input_tokens": 99}
+    assert _counted_body(payload) == {"input_tokens": 99, "model": "org/A-GGUF"}
     assert gate.get("tools_on") is True
     assert [t.get("function", {}).get("name") for t in counted.get("tools") or []] == ["web_search"]
     assert any(
@@ -3341,6 +3343,35 @@ def test_chat_count_tokens_declines_a_pending_turn_that_would_retrieve(
         assert counted == {}, "the tokenizer must not be reached for a declined count"
 
 
+def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch):
+    """A load landing while the tokenizer runs leaves a total attributable to neither
+    model, and the caller's own checkpoint guard never moved, so reporting either
+    identity would have it trust the number."""
+    _switched, counted = _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 555)
+    backend = inference_route.get_llama_cpp_backend()
+    inner = backend.count_chat_tokens
+
+    def _count_then_swap(*args, **kwargs):
+        result = inner(*args, **kwargs)
+        # Another tab finishes loading B while this count is in the worker thread.
+        backend.model_identifier = "org/B-GGUF"
+        return result
+
+    backend.count_chat_tokens = _count_then_swap
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert total is None, (
+        "a total counted across a model change must not be published as either model's"
+    )
+    assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
+
+
 def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     # The completion path joins every system/developer turn into one, so the count must
     # render the prompt the next request would build rather than the raw history.
@@ -3401,7 +3432,7 @@ def test_chat_count_tokens_renders_the_requested_reasoning_mode(
         monkeypatch, count = 7, reasoning_style = reasoning_style
     )
     payload = _count_request([{"role": "user", "content": "hello"}], **fields)
-    assert _counted_body(payload) == {"input_tokens": 7}
+    assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
     assert counted.get("chat_template_kwargs") == expected
 
 

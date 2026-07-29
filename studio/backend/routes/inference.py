@@ -3676,6 +3676,38 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
     )
 
 
+def _llama_status_model_ids(llama_backend) -> "tuple[Optional[str], Optional[str]]":
+    """The ``(active_model, model_identifier)`` pair ``/api/inference/status`` publishes
+    for a loaded GGUF. A native-lease load reports only the display label, never the
+    leased on-disk path. Shared with the token count endpoint, which hands the same
+    identity back so a caller can tell whose tokenizer produced a count."""
+    model_id = getattr(llama_backend, "model_identifier", None)
+    native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
+    display_model_id = getattr(
+        llama_backend, "_native_display_label", None
+    ) or display_label_for_native_path(model_id)
+    if (
+        native_grant_backed
+        and model_id
+        and display_model_id == model_id
+        and os.path.isabs(model_id)
+    ):
+        display_model_id = os.path.basename(model_id)
+    elif not native_grant_backed and display_model_id == model_id:
+        # No label registered, so report the clean public id, not the snapshot's sha.
+        display_model_id = _llama_public_model_id(llama_backend) or display_model_id
+    return display_model_id, (None if native_grant_backed else model_id)
+
+
+def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
+    """The exact string a Studio client holds as ``params.checkpoint`` for the loaded
+    GGUF: ``status.model_identifier ?? status.active_model``. Built from the same pair
+    the status handler returns so the two cannot drift, letting a client compare an
+    identity handed back here against the one it captured."""
+    display_model_id, model_identifier = _llama_status_model_ids(llama_backend)
+    return display_model_id if model_identifier is None else model_identifier
+
+
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
 # Sentinel a raw-body endpoint passes when the request omits ``model``: it must
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
@@ -7117,20 +7149,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
-            _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
-            _display_model_id = getattr(
-                llama_backend, "_native_display_label", None
-            ) or display_label_for_native_path(_model_id)
-            if (
-                _native_grant_backed
-                and _model_id
-                and _display_model_id == _model_id
-                and os.path.isabs(_model_id)
-            ):
-                _display_model_id = os.path.basename(_model_id)
-            elif not _native_grant_backed and _display_model_id == _model_id:
-                # No label registered, so report the clean public id, not the snapshot's sha.
-                _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
+            # Shared with the token count endpoint, which hands the same identity back
+            # so a client can tell whose tokenizer produced a count.
+            _display_model_id, _reported_model_identifier = _llama_status_model_ids(llama_backend)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the
@@ -7150,7 +7171,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _reported_chat_template_override = None
             return InferenceStatusResponse(
                 active_model = _display_model_id,
-                model_identifier = None if _native_grant_backed else _model_id,
+                model_identifier = _reported_model_identifier,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 is_diffusion = llama_backend.is_diffusion,
@@ -14558,6 +14579,14 @@ async def chat_count_tokens(
         payload.preserve_thinking,
     )
 
+    # Whose tokenizer this is. The endpoint counts against whatever is loaded now (see
+    # the docstring), so another tab or API client's load landing after this caller's
+    # last status refresh silently moves the tokenizer, while the caller's own guard
+    # only ever sees that its captured checkpoint has not changed. Report the identity
+    # in the same shape /api/inference/status publishes, so the caller can drop a total
+    # that belongs to a model it is not showing a context window for.
+    _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
+
     try:
         count = await asyncio.to_thread(
             llama_backend.count_chat_tokens,
@@ -14572,7 +14601,14 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
-    return JSONResponse(content = {"input_tokens": int(count)})
+    # A load landing mid-count leaves the total attributable to neither model, and
+    # reporting either identity would have the caller trust it.
+    if _llama_status_checkpoint_id(llama_backend) != _tokenizer_model:
+        raise HTTPException(
+            status_code = 503,
+            detail = "The loaded model changed while counting tokens.",
+        )
+    return JSONResponse(content = {"input_tokens": int(count), "model": _tokenizer_model})
 
 
 @router.post("/messages/count_tokens")

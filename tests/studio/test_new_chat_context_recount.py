@@ -126,6 +126,7 @@ HARNESS_PRELUDE = """
 export const world: any = {
   storedMessages: {} as Record<string, any[]>,
   countedMessages: [] as any[][],
+  countedModel: undefined as string | undefined,
   switchedToNewThread: 0,
   promptQueueStops: 0,
 };
@@ -207,10 +208,15 @@ function buildLocalTokenCountReasoning(): Record<string, unknown> {
   return {};
 }
 
-// 12 tokens for the bare template, 25 more per message actually sent.
+// 12 tokens for the bare template, 25 more per message actually sent. The endpoint also
+// names the tokenizer that produced the total; world.countedModel unset means the reply
+// omits it, as an older backend would.
 async function countChatInputTokens(payload: any): Promise<any> {
   world.countedMessages.push(payload.messages);
-  return { input_tokens: 12 + payload.messages.length * 25 };
+  return {
+    input_tokens: 12 + payload.messages.length * 25,
+    ...(world.countedModel === undefined ? {} : { model: world.countedModel }),
+  };
 }
 
 const requestPromptQueueStop = (_opts: any): void => {
@@ -575,26 +581,42 @@ LIVE_INCOGNITO_BRANCH = """
 
 
 @pytest.mark.parametrize(
-    ("world_setup", "expected_sent"),
+    ("world_setup", "expected_sent", "counted_model"),
     [
         # No runtime branch published yet (the history loader's own call runs before the
         # import): the stored records are the only source, and both turns must be priced.
-        pytest.param(TWO_STORED_TURNS, 2, id = "stored_branch"),
+        pytest.param(TWO_STORED_TURNS, 2, None, id = "stored_branch"),
         # A temporary/incognito chat persists nothing at all, so listStoredChatMessages
         # returns [] by design and the records would price a bare template.
-        pytest.param(LIVE_INCOGNITO_BRANCH, 3, id = "incognito_thread_stores_nothing"),
+        pytest.param(LIVE_INCOGNITO_BRANCH, 3, None, id = "incognito_thread_stores_nothing"),
         # The user regenerated, then switched back to the first answer. The newest stored
         # leaf is the retry, so records reconstruct four turns the request would not send.
-        pytest.param(RETRY_BRANCH_STORED + LIVE_BRANCH, 2, id = "runtime_shows_an_older_branch"),
+        pytest.param(
+            RETRY_BRANCH_STORED + LIVE_BRANCH, 2, None, id = "runtime_shows_an_older_branch"
+        ),
+        # The endpoint counts with whatever is resident, never the model asked for. Another
+        # tab loaded a different GGUF after this client's last status refresh, so the total
+        # came from a tokenizer whose context window the bar is not showing. This client's
+        # own checkpoint never moved, so the identity reported back is the only witness.
+        pytest.param(
+            TWO_STORED_TURNS, 2, "unsloth/other-gguf", id = "another_client_swapped_the_model"
+        ),
     ],
 )
-def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent):
+def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, counted_model):
     """The post-load recount on a real chat: a model change clears the per-thread cache,
     so the bar has to be refilled by pricing the conversation rather than reusing the last
     completion's usage. It must price the branch the next request would send -- the mounted
     runtime's when it has one, the stored records otherwise -- and it must reach the
-    per-thread cache setActiveThreadId restores from, or the bar blanks on the way back."""
-    expected_total = 12 + 25 * expected_sent
+    per-thread cache setActiveThreadId restores from, or the bar blanks on the way back.
+
+    A total counted by a tokenizer other than the one the bar is showing a window for is
+    dropped instead, leaving the previous usage in place."""
+    # None means the reply names the model this client already holds, so it is published.
+    expected_total = 12 + 25 * expected_sent if counted_model is None else None
+    counted_model_setup = (
+        "" if counted_model is None else f'world.countedModel = {json.dumps(counted_model)};'
+    )
     out = _run(
         textwrap.dedent(
             f"""
@@ -607,6 +629,7 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent):
               world,
             }} from "./harness.ts";
             {LOADED_MODEL}
+            {counted_model_setup}
             {world_setup}
             seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
             await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
@@ -623,9 +646,14 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent):
     )
     assert out["counts"] == 1
     assert len(out["sent"]) == expected_sent, "the branch the request would send must be priced"
-    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total
-    assert out["cached"] is not None, "the recount must reach the per-thread cache"
-    assert (out["cached"] or {}).get("totalTokens") == expected_total
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a total from another model's tokenizer must not reach the bar"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == expected_total, (
+        "nor the per-thread cache setActiveThreadId restores from"
+    )
+    if expected_total is not None:
+        assert out["cached"] is not None, "the recount must reach the per-thread cache"
 
 
 def test_adopting_the_resident_gguf_reprices_the_open_thread():

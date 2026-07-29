@@ -205,14 +205,23 @@ export async function refreshContextUsage(options?: {
 
     // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`
     // injects schemas the client cannot see.
-    const { input_tokens: inputTokens } = await countChatInputTokens({
-      model: capturedCheckpoint,
-      messages: outbound,
-      ...buildLocalTokenCountReasoning(),
-      ...countExtras,
-    });
+    const { input_tokens: inputTokens, model: countedModel } =
+      await countChatInputTokens({
+        model: capturedCheckpoint,
+        messages: outbound,
+        ...buildLocalTokenCountReasoning(),
+        ...countExtras,
+      });
 
     if (stale()) return;
+    // That endpoint counts with whatever is resident, never the model asked for, so a
+    // load from another tab or API client landing between this client's last status
+    // refresh and the count returns a total from a tokenizer whose window the bar is
+    // not showing. The checkpoint guards above cannot see it -- this client's own
+    // checkpoint never moved -- so the identity reported back is the only witness.
+    if (countedModel != null && countedModel !== capturedCheckpoint) {
+      return;
+    }
     // Compared even when null: a count started with no thread must not land on one since opened.
     if (useChatRuntimeStore.getState().activeThreadId !== capturedThreadId) {
       return;
