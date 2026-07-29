@@ -26,6 +26,12 @@ def _read(rel: str) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def _read_backend(rel: str) -> str:
+    path = WORKDIR / "studio" / "backend" / rel
+    assert path.exists(), f"missing backend source file: {path}"
+    return path.read_text()
+
+
 def test_models_api_sends_token_via_header_not_query():
     """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
     token through hubTokenHeader, never as a ?hf_token= query param (which leaks
@@ -472,6 +478,61 @@ def test_local_gguf_diagnostics_gate_on_broad_is_gguf():
     vram = re.search(r"const showContextVramWarning =.*?;", src, re.S)
     assert spec and "isGguf &&" in spec.group(0) and "isLoadedGguf" not in spec.group(0)
     assert vram and "isGguf &&" in vram.group(0) and "isLoadedGguf" not in vram.group(0)
+
+
+def test_local_mtp_warning_covers_path_and_native_gguf_sources():
+    """The local MTP recovery text must cover direct files, custom folders,
+    and native-picker labels instead of classifying only .gguf suffixes."""
+    src = _read("features/chat/chat-settings-sheet.tsx")
+    local = re.search(r"const isLocalGguf =.*?;", src, re.S)
+    assert local
+    assert "isGguf &&" in local.group(0)
+    assert "activeModelIsLocal" in local.group(0)
+    assert "isLocalModelPath" in local.group(0)
+    # Two signals must not classify the model here, because both mislabel a
+    # remote GGUF as local: a native token, which outlives a switch to a remote
+    # model, and a bare .gguf suffix, since a one-slash org/name.gguf is a
+    # repository id. activeModelIsLocal is the backend's own answer for both.
+    assert "activeNativePathToken" not in local.group(0)
+    assert ".gguf" not in local.group(0)
+
+    # Switching models must drop both together: a kept flag would classify the
+    # newly selected model by the old one's provenance.
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    reset = re.search(r"setCheckpoint: \(modelId, ggufVariant\) =>.*?\}\),", store, re.S)
+    assert reset
+    assert "activeModelIsLocal: false" in reset.group(0)
+    assert "specFallbackReason: null" in reset.group(0)
+    assert "isLocalGguf" in src.split('specFallbackReason === "drafter_not_found"', 1)[1]
+
+
+def test_local_mtp_warning_uses_backend_source_metadata():
+    types = _read("features/chat/types/api.ts")
+    assert types.count("is_local_model?: boolean") >= 2
+
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert "activeModelIsLocal: status.is_local_model ?? false" in status
+
+    runtime = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "activeModelIsLocal: boolean" in runtime
+    assert runtime.count("activeModelIsLocal: false") >= 2
+
+    load = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "activeModelIsLocal: loadResponse.is_local_model ?? false" in load
+
+    models = _read_backend("models/inference.py")
+    assert models.count("is_local_model: bool = Field(") >= 2
+
+    route = _read_backend("routes/inference.py")
+    assert route.count("is_local_model = config.is_local") >= 2
+    # GGUF status reports the provenance the load recorded. Re-deriving it from
+    # the filesystem would flip a local model to remote once its directory goes
+    # away underneath a running server.
+    assert "llama_backend._is_local_model = bool(native_grant_backed or config.is_local)" in route
+    # Both GGUF responses report it: the status poll and the already_loaded
+    # dedup reply. Either one re-deriving it reintroduces the flip.
+    assert route.count("is_local_model = _loaded_is_local_model(") >= 2
+    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
