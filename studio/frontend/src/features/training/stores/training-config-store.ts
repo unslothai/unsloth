@@ -149,6 +149,7 @@ let _trainOnCompletionsManuallySet = false;
 // Has the user manually edited the LR since the last model load? When false,
 // switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
+let _trainingMethodEditGeneration = 0;
 
 // Stash the YAML learning rate so setTrainingMethod can restore it when
 // switching back from full to adapter.
@@ -404,6 +405,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       const loadAndApplyModelDefaults = (modelName: string) => {
         _modelConfigController?.abort();
         const controller = new AbortController();
+        const trainingMethodEditGeneration = _trainingMethodEditGeneration;
         _modelConfigController = controller;
         set({
           isLoadingModelDefaults: true,
@@ -479,6 +481,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ).then((method) => {
                 if (get().selectedModel !== modelName) return;
                 if (get().trainingMethod === "cpt") return;
+                if (
+                  _trainingMethodEditGeneration !==
+                  trainingMethodEditGeneration
+                ) {
+                  return;
+                }
                 if (method) {
                   const lrPatch =
                     !_learningRateManuallySet && !modelConfigHasLR
@@ -902,6 +910,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setProjectName: (projectName) => set({ projectName }),
         setTrainingMethod: (trainingMethod) => {
+          _trainingMethodEditGeneration += 1;
           const state = get();
           set(
             buildTrainingMethodPatch(

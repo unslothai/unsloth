@@ -1340,3 +1340,25 @@ def test_picker_shell_handles_ime_focus_and_short_viewports():
     assert "function switchToDevice()" in shell
     assert "window.requestAnimationFrame" in shell
     assert "onSwitchDevice={switchToDevice}" in shell
+
+
+def test_manual_training_method_wins_over_delayed_auto_selection():
+    source = _read("features/training/stores/training-config-store.ts")
+
+    assert "let _trainingMethodEditGeneration = 0;" in source
+    loader = source.split(
+        "const loadAndApplyModelDefaults = (modelName: string) =>", 1
+    )[1].split("const runDatasetCheck =", 1)[0]
+    assert (
+        "const trainingMethodEditGeneration = _trainingMethodEditGeneration;"
+        in loader
+    )
+    assert (
+        "_trainingMethodEditGeneration !==\n"
+        "                  trainingMethodEditGeneration"
+        in loader
+    )
+    setter = source.split(
+        "setTrainingMethod: (trainingMethod) =>", 1
+    )[1].split("setDatasetSource:", 1)[0]
+    assert "_trainingMethodEditGeneration += 1;" in setter
