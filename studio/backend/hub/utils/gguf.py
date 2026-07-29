@@ -324,30 +324,25 @@ def list_gguf_variants_from_hf_cache(
         if root is not None
         else iter_hf_cache_snapshots(repo_id)
     )
-    # The inventory row hands out one snapshot as its load id and a local load
-    # reads only that one directory, so this walk has to land on the same one.
-    # A plain newest-first walk reports a half-downloaded split quant from a
-    # newer snapshot as downloaded while /load points elsewhere, so the newest
-    # snapshot holding at least one whole quant wins, exactly as
-    # _repo_gguf_payload_snapshots does, and only that snapshot's completed
-    # subset is offered. Requiring the whole directory to be complete instead
-    # would skip a newer snapshot that mixes a finished quant with an
-    # interrupted one and hide the finished quant behind an older revision's
-    # larger one, which auto-load may not have the memory for.
+    # The row hands out one snapshot as its load id and a local load reads only
+    # that directory, so this walk must land on the same one. A plain newest-first
+    # walk reports a half-downloaded split quant as downloaded while /load points
+    # elsewhere, so the newest snapshot holding a whole quant wins, exactly as
+    # _repo_gguf_payload_snapshots picks it, and only its completed subset is
+    # offered. Requiring the whole directory to be complete would instead hide a
+    # finished quant behind an older revision's larger one.
     #
-    # The vision flag travels with the snapshot that won and is never OR-ed
-    # across the walk. A projector fetched on its own into some other snapshot
-    # is not reachable from the one the row pins -- the loader looks for
-    # companions no higher than the selected snapshot dir -- so carrying that
-    # flag over advertised a vision model that then loads blind. When no
-    # snapshot has a whole quant the first one with anything wins, as before.
+    # The vision flag travels with the winning snapshot and is never OR-ed across
+    # the walk: a projector fetched on its own into another snapshot is not
+    # reachable from the pinned one (the loader looks for companions no higher
+    # than it), so carrying the flag over advertised a model that loads blind.
+    # When no snapshot has a whole quant the first one with anything wins.
     fallback: Optional[tuple[list[GgufVariantInfo], bool]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         if variants:
             complete = complete_snapshot_variants(str(snapshot))
-            # A quant with no label cannot be judged, so it is kept rather than
-            # dropped; with nothing complete the list stays as it was.
+            # An unlabelled quant cannot be judged, so it is kept.
             usable = [v for v in variants if not v.quant or v.quant in complete]
             if usable:
                 return usable, has_vision

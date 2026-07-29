@@ -6,9 +6,8 @@
 Runs the real ``autoLoadSmallestModel`` from chat-adapter.ts under node with the
 module boundary stubbed, so these assert behaviour (which /api/inference/load
 calls happen, what the user is told) rather than source text. The sweep's
-catches are parameterless, so before the fix a cached repo whose load rejected
-fell straight through to fetching an unrelated default model and reported
-success for it.
+catches are parameterless, so a cached repo whose load rejected fell through to
+fetching an unrelated default model and reported success for it.
 """
 
 import json
@@ -285,9 +284,9 @@ def _toasts(out: dict, kind: str) -> list[dict]:
 
 
 def test_failed_cached_load_does_not_download_the_default_model():
-    """The reported case: the only cached repo is enumerated fine but its load
-    OOMs, and the default GGUF would load. Auto-load must stop at the failure
-    instead of fetching a model the user never asked for."""
+    """The reported case: the only cached repo enumerates fine but its load OOMs
+    and the default GGUF would load. Auto-load must stop at the failure instead
+    of fetching a model the user never asked for."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " load: (p) => p.model_path === GEMMA.repo_id ? new Error(OOM) : LOADED(p) })"
@@ -393,8 +392,8 @@ def test_a_later_cached_model_can_still_load_after_an_earlier_failure():
 
 def test_reported_failure_is_flagged_so_callers_drop_the_generic_advice():
     """Both send paths show a generic "No model loaded" toast whenever the sweep
-    returns loaded: false. Without a flag that lands after the detailed toast,
-    making the retry advice the last thing the user sees."""
+    returns loaded: false, which without a flag lands after the detailed toast
+    and buries it."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " load: () => new Error(OOM) })"
@@ -412,11 +411,10 @@ def test_empty_device_does_not_flag_a_reported_failure():
 
 
 def test_a_resume_only_cached_row_is_skipped_so_the_default_still_downloads():
-    """An interrupted download leaves a row the backend already marks
-    partial/can_chat=false, kept for the resume and delete affordances. The
-    sweep attempted it anyway, and with the failure gate above that rejection
-    suppressed the default download, so a half-finished cache left chat with no
-    model at all."""
+    """An interrupted download leaves a row the backend marks
+    partial/can_chat=false for the resume and delete affordances. The sweep
+    attempted it anyway, and with the failure gate above that rejection
+    suppressed the default download."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/half', load_id: 'org/half',"
         " size_bytes: 1, partial: true, capabilities: { can_chat: false } }],"

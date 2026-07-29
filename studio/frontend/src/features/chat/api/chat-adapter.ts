@@ -1501,13 +1501,11 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 
 /** Whether a cache row is a model the user can actually chat with.
  *
- *  The cache endpoints also return rows that exist only for the resume/delete
- *  affordances (an interrupted or cancelled download), and those carry
- *  partial: true with can_chat: false. Auto-load used to attempt them anyway
- *  and fall through on the rejection; now that a rejection suppresses the
- *  default download, attempting one would leave chat with no model at all.
- *  Both fields are optional so an older backend that omits them keeps its
- *  current behaviour of trying the row. */
+ *  The cache endpoints also return resume/delete-only rows (an interrupted or
+ *  cancelled download) carrying partial: true with can_chat: false. Now that a
+ *  rejection suppresses the default download, attempting one would leave chat
+ *  with no model at all. Both fields are optional so an older backend that omits
+ *  them keeps trying the row. */
 function isChattableCachedRepo(repo: {
   partial?: boolean;
   capabilities?: { can_chat?: boolean } | null;
@@ -1519,8 +1517,8 @@ async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
   /** A specific load failure was already reported, so callers must not replace
-   *  it with their generic "no model loaded" advice. Optional so every other
-   *  return keeps its existing shape. */
+   *  it with generic "no model loaded" advice. Optional so every other return
+   *  keeps its shape. */
   loadFailureReported?: boolean;
 }> {
   if (await tryAdoptServerActiveModel()) {
@@ -1568,11 +1566,10 @@ async function autoLoadSmallestModel(): Promise<{
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
-  // Why the last attempted load failed, set only when /api/inference/load
-  // itself rejected, so enumeration hiccups (variant listing, validate) keep
-  // their existing fall-through behaviour. Boxed because a plain `let` assigned
-  // only inside a nested function narrows to `null` under control-flow
-  // analysis, which would make every read below a `never`.
+  // Why the last load failed, set only when /api/inference/load itself
+  // rejected, so enumeration hiccups (variant listing, validate) keep falling
+  // through. Boxed because a plain `let` assigned only inside a nested function
+  // narrows to `null`, making every read below a `never`.
   const loadFailure: { current: { label: string; detail: string } | null } = {
     current: null,
   };
@@ -1582,7 +1579,7 @@ async function autoLoadSmallestModel(): Promise<{
       error instanceof Error && error.message.trim() ? error.message.trim() : "";
     loadFailure.current = {
       label,
-      // Older backends (and non-Error throws) carry no detail; still name the
+      // Older backends and non-Error throws carry no detail; still name the
       // model that failed rather than silently fetching a different one.
       detail:
         detail || "The server did not report a reason. Check the Studio logs.",
@@ -1733,9 +1730,9 @@ async function autoLoadSmallestModel(): Promise<{
           }
         : {}),
     }).catch((error: unknown) => {
-      // The sweep's parameterless catches discard this error, which is what let
-      // a genuine load failure fall through to the "no downloaded models" Hub
-      // download. Rethrowing keeps the awaited type and their control flow.
+      // The sweep's parameterless catches discard this error, which let a
+      // genuine load failure fall through to the Hub download. Rethrowing keeps
+      // the awaited type and their control flow.
       noteLoadFailure(failureLabel, error);
       throw error;
     });
@@ -1857,7 +1854,7 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedModels().catch(() => []),
     ]);
     // Filtered once, so the last-used lookup below sees the same set as the
-    // sweeps and neither can spend a load attempt on a resume-only row.
+    // sweeps and neither spends a load attempt on a resume-only row.
     const ggufRepos = allGgufRepos.filter(isChattableCachedRepo);
     const modelRepos = allModelRepos.filter(isChattableCachedRepo);
 
@@ -2012,9 +2009,8 @@ async function autoLoadSmallestModel(): Promise<{
     // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
     // A cached model that was tried and failed stops here too: the user has
-    // models on disk, so the reason is the useful answer and pulling an
-    // unrelated default off the Hub is not. A device with nothing cached never
-    // sets loadFailure and still falls through to the download below.
+    // models on disk, so the reason is the useful answer, not an unrelated Hub
+    // default. Nothing cached never sets loadFailure and still falls through.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);
       if (loadFailure.current) {
@@ -2190,8 +2186,8 @@ export function createOpenAIStreamAdapter(
           const { loaded, blockedByTrustRemoteCode, loadFailureReported } =
             await autoLoadSmallestModel();
           if (!loaded) {
-            // A reported load failure already names the model and the reason,
-            // so the generic advice would only bury it.
+            // A reported failure already names the model and reason; the
+            // generic advice would bury it.
             if (!loadFailureReported) {
               toast.error(
                 blockedByTrustRemoteCode
@@ -2467,8 +2463,8 @@ export function createOpenAIStreamAdapter(
           throw error;
         }
         if (!loaded) {
-          // A reported load failure already names the model and the reason, so
-          // the generic advice would only bury it.
+          // A reported failure already names the model and reason; the generic
+          // advice would bury it.
           if (!loadFailureReported) {
             toast.error(
               blockedByTrustRemoteCode

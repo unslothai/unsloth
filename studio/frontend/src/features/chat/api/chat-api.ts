@@ -271,9 +271,9 @@ export interface CachedGgufRepo {
   capabilities?: CachedRepoCapabilities | null;
 }
 
-/** The subset of the row's capabilities auto-load acts on. The backend sends
- *  the whole block on both cache endpoints; the rest is only read by the Hub
- *  view models, which have their own wider type. */
+/** The subset of the row's capabilities auto-load acts on. The backend sends the
+ *  whole block on both cache endpoints; the rest is read only by the Hub view
+ *  models, which have their own wider type. */
 export interface CachedRepoCapabilities {
   can_chat?: boolean;
 }

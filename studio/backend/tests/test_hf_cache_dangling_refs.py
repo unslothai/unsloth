@@ -8,8 +8,7 @@ commit with no ``snapshots/<commit>/`` directory and omits it from ``.repos``,
 so the model stays visible in the model picker (a plain directory walk) while
 disappearing from every Hub inventory endpoint that feeds chat auto-load.
 
-The repair is read-only: the hidden repo is rebuilt from the same directories
-huggingface_hub reads and the ref file is left exactly as it is, because
+The repair is read-only: the ref file is left exactly as it is, because
 ``_cache_commit_hash_for_specific_revision`` writes refs with an unlocked
 in-place ``write_text``, so no external process can delete one race-free.
 """
@@ -40,9 +39,9 @@ def _build_repo(
 ) -> Path:
     """A cache repo shaped like HF's, using regular files rather than symlinks.
 
-    ``_scan_cached_repo`` resolves each snapshot entry to its blob, and a
+    ``_scan_cached_repo`` resolves each snapshot entry to its blob and a
     regular file resolves to itself, so this exercises the real scanner while
-    staying runnable on Windows without the symlink privilege.
+    running on Windows without the symlink privilege.
     """
     repo_dir = cache_root / name
     refs = repo_dir / "refs"
@@ -167,8 +166,8 @@ def test_a_healthy_cache_is_returned_untouched(tmp_path, monkeypatch):
 def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monkeypatch):
     """snapshot_download writes refs/<revision> before fetching the first file.
 
-    There is no snapshot to recover yet, so nothing must be reported as
-    downloaded -- that would be the very "already have it" lie #7374 is about.
+    There is no snapshot to recover yet, so nothing may be reported as
+    downloaded.
     """
     repo_dir = tmp_path / "models--Org--Model"
     (repo_dir / "snapshots").mkdir(parents = True)
@@ -309,9 +308,8 @@ def _autoload_rows(
 
 
 def test_auto_load_sees_a_model_hidden_behind_a_dangling_ref(tmp_path, monkeypatch):
-    """The #7374 symptom end to end: the snapshot is on disk and the picker
-    lists it, but auto-load's inventory reported nothing downloaded and the app
-    fell through to a fresh download."""
+    """End to end: the snapshot is on disk and the picker lists it, but the
+    inventory reported nothing downloaded and the app re-downloaded."""
     repo_dir = _build_repo(tmp_path)
     snapshot = repo_dir / "snapshots" / SNAPSHOT
     (snapshot / "config.json").write_text("{}", encoding = "utf-8")
@@ -374,10 +372,8 @@ def _two_snapshot_repo(
 
     Realistic because a metadata probe (config.json only) against a commit that
     has moved on materialises a newer, weightless snapshot beside the download.
-
-    ``ref = None`` leaves no ``refs/main`` at all, which is what a fetch pinned
-    to a commit hash leaves behind: ``snapshot_download`` only writes a ref for
-    a branch or tag.
+    ``ref = None`` leaves no ``refs/main``, which is what a commit-pinned fetch
+    leaves: ``snapshot_download`` only writes a ref for a branch or tag.
     """
     repo_dir = cache_root / "models--Org--Model"
     (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
@@ -457,9 +453,8 @@ def test_load_id_still_prefers_the_newest_snapshot_that_holds_the_payload(tmp_pa
 
 def test_load_id_leaves_the_payload_snapshot_when_main_resolves_elsewhere(tmp_path, monkeypatch):
     """A ``refs/main`` that resolves is not enough: the metadata probe that
-    strands the weights in an older snapshot also repoints ``refs/main`` at the
-    weightless one, so loading by repo id lands on a revision with no weights
-    and the app downloads the model again."""
+    strands the weights in an older snapshot repoints it at the weightless one,
+    so loading by repo id lands on a revision with no weights."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
         older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
@@ -527,13 +522,11 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
     llama-server for a shard that is absent while a complete quant sits in an
     older snapshot.
 
-    The load id therefore names the newest snapshot whose quants are all on
-    disk, but the variant lookup still walked snapshots newest-first, so the
-    half downloaded split quant was offered as downloaded while /load pointed at
-    an older snapshot that does not hold it. Auto-load then failed on a cache
-    that has a perfectly usable quant. Both ends are asserted here because they
-    are only correct together: the load id and the quants offered under it have
-    to agree on one directory."""
+    The load id names the newest snapshot whose quants are all on disk, but the
+    variant lookup walked snapshots newest-first, so the half-downloaded split
+    quant was offered as downloaded while /load pointed at an older snapshot
+    without it. Both ends are asserted because they are only correct together:
+    the load id and the quants offered under it must name one directory."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -568,17 +561,15 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
     "newer_files, offered",
     [
         # With nothing complete anywhere the newest snapshot holding quants is
-        # still reported, which is what shipped before, and it still agrees with
-        # the load id.
+        # still reported, as shipped, and still agrees with the load id.
         pytest.param(
             {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
             ["Q8_0"],
             id = "nothing-complete-anywhere",
         ),
         # When that snapshot holds a whole quant beside the half-downloaded one,
-        # offering both as downloaded shadowed the usable one: auto-load takes
-        # only the smallest and a rejected load now suppresses the default
-        # download, so chat was left with no model at all.
+        # offering both shadowed the usable one: auto-load takes only the
+        # smallest, and a rejected load now suppresses the default download.
         pytest.param(
             {
                 "Model-Q8_0.gguf": b"\0" * 64,
@@ -609,16 +600,14 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
 
 def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_path, monkeypatch):
     """A whole small quant can sit in the newest snapshot beside an interrupted
-    split one while an older snapshot holds nothing but a whole larger quant.
+    split one while an older snapshot holds only a whole larger quant.
 
-    Requiring the whole directory to be complete skipped that newest snapshot
-    outright, so both the load id and the offered quants fell back to the older
-    revision and the fully downloaded small quant disappeared. Auto-load takes
-    only the smallest quant offered, so it would then spend its one attempt on
-    the larger one and, if that does not fit in memory, leave chat with no model
-    while a usable quant sat on disk. The snapshot counts as usable and its
-    completed subset is what gets offered, so both ends still name one directory
-    and the interrupted quant is still withheld."""
+    Requiring the whole directory to be complete skipped that newest snapshot, so
+    both the load id and the offered quants fell back to the older revision and
+    the finished small quant disappeared. Auto-load takes only the smallest quant
+    offered, so it would spend its attempt on the larger one and, if that does
+    not fit, leave chat with no model. The snapshot counts as usable and only its
+    completed subset is offered, so both ends still name one directory."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -652,11 +641,11 @@ def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_
 
 
 def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkeypatch):
-    """The repo-level format is allowed to rest on transformer-named weights
-    alone, but a pinned load id names one directory and from_pretrained needs
-    ``config.json`` inside it. Pinning a weight-only snapshot advertised the row
-    as loadable while the load could only fail; keep the repo id, which can
-    still fill the config in from the hub."""
+    """The repo-level format may rest on transformer-named weights alone, but a
+    pinned load id names one directory and from_pretrained needs ``config.json``
+    inside it. Pinning a weight-only snapshot advertised the row as loadable
+    while the load could only fail; keep the repo id, which can still fill the
+    config in from the hub."""
     _two_snapshot_repo(
         tmp_path,
         older_files = {"model.safetensors": b"\0" * 11},
@@ -679,10 +668,9 @@ def test_no_snapshot_holds_the_payload_so_a_dangling_ref_pins_nothing(tmp_path, 
     """Same repo, but with the dangling ``refs/main`` this branch exists for.
 
     The rule above is enforced by leaving the row on the repo id, and the
-    dangling-ref arm used to overrule it and pin the fallback newest snapshot
-    anyway, which is the one already known not to hold the payload. Pinning a
-    directory the load cannot use is worse than the repo id, which can still
-    complete the config from the hub."""
+    dangling-ref arm used to overrule it and pin the fallback newest snapshot,
+    already known not to hold the payload. Pinning a directory the load cannot
+    use is worse than the repo id, which can still complete the config."""
     _two_snapshot_repo(
         tmp_path,
         older_files = {"model.safetensors": b"\0" * 11},
@@ -714,12 +702,10 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
 @pytest.mark.parametrize(
     "older_files, newer_files, ref, pinned",
     [
-        # ``quant_method`` and the model-card fields were read from the newest
-        # snapshot while the load id names the payload one, so the row described
-        # a directory it does not hand out. The metadata probe that strands the
-        # payload carries neither the quantization config nor the model card, so
-        # the quant chip and the On Device type filter judged the model on
-        # absent data.
+        # Read from the newest snapshot while the load id names the payload one,
+        # the row described a directory it does not hand out: the stranding
+        # probe carries neither the quantization config nor the model card, so
+        # the quant chip and the type filter judged the model on absent data.
         pytest.param(
             {
                 "config.json": QUANTIZED_CONFIG,
@@ -741,11 +727,10 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
             id = "newest-snapshot-fallback",
         ),
         # Both revisions are self-contained payloads and ``refs/main`` resolves
-        # onto the OLDER one, so the load id deliberately stays the repo id --
-        # and ``from_pretrained`` then reads the OLDER directory. Describing the
-        # row from the newest payload snapshot instead let a revision that never
-        # loads name the quant method and the model card; a newer speech
-        # revision could hide the chat model the ref actually resolves to.
+        # onto the OLDER one, so the load id stays the repo id and
+        # ``from_pretrained`` reads the OLDER directory. Describing the row from
+        # the newest payload snapshot let a revision that never loads name the
+        # quant method and the model card.
         pytest.param(
             {
                 "config.json": QUANTIZED_CONFIG,
@@ -783,12 +768,11 @@ def test_metadata_describes_the_snapshot_the_row_hands_out(
 
 def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
     """Payload selection matched GGUF companions by bare file name, but the
-    ``MTP/`` drafters unsloth ships are only recognisable from the path
-    relative to the snapshot (``huggingface_hub`` sets ``file_name`` to the
-    bare name for nested files, and the recovered mirror matches it). A
-    snapshot holding nothing but a drafter therefore counted as holding the
-    payload and won the load id, while the variant lister -- which does look at
-    the relative path -- offers nothing from it."""
+    ``MTP/`` drafters unsloth ships are recognisable only from the snapshot
+    relative path (``huggingface_hub`` sets ``file_name`` to the bare name for
+    nested files, and the recovered mirror matches it). A drafter-only snapshot
+    therefore won the load id, while the variant lister -- which does
+    relativise -- offers nothing from it."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -811,10 +795,9 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "older_files, newer_files, has_vision",
     [
-        # A projector fetched on its own lands in a newer snapshot that holds no
-        # main quant, so the row pins the older one. OR-ing the vision flag over
-        # the whole walk advertised a vision model whose projector the load can
-        # never reach, and the served quant then answered image turns blind.
+        # A projector fetched on its own lands in a newer snapshot with no main
+        # quant, so the row pins the older one. OR-ing the vision flag over the
+        # walk advertised a projector the load can never reach.
         pytest.param(
             {"Model-Q4_K_M.gguf": b"\0" * 32},
             {"mmproj-F16.gguf": b"\0" * 64},
@@ -878,8 +861,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
     """Either repo-wide partial signal, neither of which records a revision.
 
     The manifest names a file the pinned older snapshot holds at a different
-    size, which is what a revision that renamed or resized its weights leaves
-    behind for the previous one.
+    size, as a revision that renamed or resized its weights leaves behind.
     """
     from hub.utils import download_manifest
 
@@ -907,10 +889,8 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
         # model that loads fine.
         pytest.param({"config.json": b"{}"}, NEWER, OLDER, False, id = "pinned-older-snapshot"),
         # Negative side: when the row advertises the newest snapshot the signal
-        # does describe it, and a cancelled download with no ``.incomplete``
-        # blob left behind has nothing else to give it away. No ``refs/main``
-        # at all, which is what a commit-pinned fetch leaves: the ref carries no
-        # evidence about the attempt, so the newest snapshot still owns it.
+        # does describe it. No ``refs/main`` at all, as a commit-pinned fetch
+        # leaves, carries no evidence, so the newest snapshot still owns it.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             None,
@@ -919,9 +899,8 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             id = "advertised-snapshot",
         ),
         # A ``refs/main`` naming a commit with no directory does carry evidence:
-        # the ref is rewritten before the first file lands, so the attempt that
-        # left the signal never materialised a snapshot and the complete payload
-        # already on disk must not inherit it.
+        # the ref is rewritten before the first file lands, so that attempt
+        # materialised no snapshot and the payload on disk must not inherit it.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             UPSTREAM_HEAD,
@@ -930,11 +909,10 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             id = "unmaterialised-attempt",
         ),
         # ``refs/main`` resolves onto the OLDER payload snapshot while the newer
-        # one is a self-contained payload too, so the load id stays the repo id
-        # and the load reads the OLDER directory. The signal still belongs to
-        # the newest snapshot, so checking the row against that one charged an
-        # interrupted update to a revision it does not describe and dropped
-        # ``can_chat`` for a model that loads.
+        # one is self-contained too, so the load id stays the repo id and the
+        # load reads the OLDER directory. The signal still belongs to the newest
+        # snapshot, so judging the row against it dropped ``can_chat`` for a
+        # model that loads.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             OLDER,
@@ -972,10 +950,9 @@ def test_repo_wide_partial_signals_are_charged_to_the_newest_snapshot(
 
 
 def test_gguf_partial_is_judged_against_the_snapshot_the_row_advertises(tmp_path, monkeypatch):
-    """The GGUF row picked its payload snapshot after computing ``partial``,
-    and that walk used the repo's blobs plus the newest snapshot. An
-    interrupted re-download therefore flipped ``can_chat`` off for the older,
-    complete quant the row hands out as its load id."""
+    """The GGUF row picked its payload snapshot after computing ``partial``, a
+    walk over the repo's blobs plus the newest snapshot, so an interrupted
+    re-download flipped ``can_chat`` off for the older complete quant."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -1018,14 +995,11 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
 def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
     signal, tmp_path, monkeypatch
 ):
-    """The recovered row's own scenario, and the reason it must not arrive
-    partial. ``snapshot_download`` rewrites ``refs/main`` with the new commit
-    before it fetches a byte, and the downloader writes the manifest earlier
-    still, so an update interrupted before the first file leaves the previous
-    complete snapshot as the only payload on disk under a ref that resolves
-    nowhere. That is exactly the state this branch recovers rows from, and
-    charging the interrupted attempt's signals to the cached payload handed
-    chat auto-load a model it had to skip."""
+    """The recovered row's own scenario, and why it must not arrive partial.
+    ``snapshot_download`` rewrites ``refs/main`` before fetching a byte and the
+    manifest is written earlier still, so an update interrupted before the first
+    file leaves the previous complete snapshot as the only payload, under a ref
+    that resolves nowhere -- the state this branch recovers rows from."""
     repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
     snapshot = repo_dir / "snapshots" / SNAPSHOT
     (snapshot / "config.json").write_text("{}", encoding = "utf-8")
@@ -1042,9 +1016,8 @@ def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
     "older_files, newer_files, ref, advertised, partial",
     [
         # A same-variant re-download that stops before materialising its
-        # snapshot leaves a manifest listing the new revision's files. Verifying
-        # it against the older snapshot the row pins fails on any rename or size
-        # change, so the one complete quant on disk looked broken.
+        # snapshot leaves a manifest of the new revision's files; verifying it
+        # against the pinned older snapshot fails on any rename or size change.
         pytest.param(
             {"Model-Q4_K_M.gguf": b"\0" * 32},
             {"config.json": b"{}"},
@@ -1097,9 +1070,9 @@ def test_a_gguf_variant_marker_from_a_newer_attempt_does_not_disable_the_pinned_
     tmp_path, monkeypatch
 ):
     """The GGUF twin of the repo-wide marker rule. A cancel marker is keyed by
-    (repo, variant) with no revision, so re-downloading the quant the row
-    already holds and cancelling it marked the complete copy in the older,
-    advertised snapshot broken and On Device hid a loadable GGUF."""
+    (repo, variant) with no revision, so cancelling a re-download of a quant the
+    row already holds marked the complete copy in the advertised snapshot
+    broken."""
     from hub.utils import download_manifest
     from hub.utils.gguf import list_local_gguf_variants
 
