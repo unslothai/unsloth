@@ -5374,6 +5374,7 @@ async def _load_model_impl(
             )
             if (
                 gguf_runtime_matches
+                and getattr(llama_backend, "_expects_audio_input", False)
                 and not extra_args_disable_mmproj(retry_extra_args)
                 and not getattr(llama_backend, "_has_audio_input", False)
             ):
@@ -7140,6 +7141,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
+            is_chat_capable = model_info.get("is_chat_capable", True),
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
             inference = inference_config,

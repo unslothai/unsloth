@@ -2420,6 +2420,7 @@ class LlamaCppBackend:
         self._audio_probed: bool = False
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
+        self._expects_audio_input: bool = False
         self._is_chat_capable: bool = True
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # Monotonic timestamp set in _kill_process; read by load_model
@@ -7106,6 +7107,7 @@ class LlamaCppBackend:
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
+            self._expects_audio_input = bool(has_audio_input)
             self._is_chat_capable = bool(is_chat_capable)
 
             # Read GGUF metadata (context_length, chat_template); header-only.
@@ -7347,7 +7349,7 @@ class LlamaCppBackend:
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     )
-                projector_has_audio = False
+                projector_has_audio = None
                 projector_has_vision = None
                 if launch_mmproj_path:
                     try:
@@ -7355,8 +7357,8 @@ class LlamaCppBackend:
                             read_mmproj_audio_capability,
                             read_mmproj_vision_capability,
                         )
-                        projector_has_audio = (
-                            read_mmproj_audio_capability(launch_mmproj_path) is True
+                        projector_has_audio = read_mmproj_audio_capability(
+                            launch_mmproj_path
                         )
                         projector_has_vision = read_mmproj_vision_capability(launch_mmproj_path)
                     except Exception as e:
@@ -7370,7 +7372,14 @@ class LlamaCppBackend:
                     and bool(is_vision)
                     and projector_has_vision is not False
                 )
-                effective_uses_mmproj = effective_is_vision or projector_has_audio
+                effective_audio_mmproj = (
+                    bool(launch_mmproj_path)
+                    and (
+                        projector_has_audio is True
+                        or (bool(has_audio_input) and projector_has_audio is not False)
+                    )
+                )
+                effective_uses_mmproj = effective_is_vision or effective_audio_mmproj
                 if is_vision and not effective_is_vision:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
@@ -8309,7 +8318,7 @@ class LlamaCppBackend:
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.
-                self._mmproj_has_audio = projector_has_audio
+                self._mmproj_has_audio = effective_audio_mmproj
 
                 cmd = [
                     binary,
@@ -9919,6 +9928,7 @@ class LlamaCppBackend:
             self._audio_type = None
             self._audio_probed = False
             self._has_audio_input = False
+            self._expects_audio_input = False
             self._is_chat_capable = True
             self._mmproj_has_audio = False
             self._port = None

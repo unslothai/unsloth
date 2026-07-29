@@ -91,6 +91,7 @@ def test_cached_audio_projector_is_forwarded_and_clears_false_vision():
     assert "gguf_mmproj_file = cached_mmproj" in source
     assert "projector_has_vision is not True" in source
     assert "has_vision = False" in source
+    assert "elif _env_offline()" in source
     assert "gguf_is_vision = False" in source
 
 
@@ -108,9 +109,19 @@ def test_audio_projector_loads_retry_and_share_download_exclusion():
     assert 'kwargs.get("is_vision") or kwargs.get("has_audio_input")' in guard_source
     assert "(config.is_vision or config.has_audio_input)" in route_source
     assert "config and config.has_audio_input" in route_source
+    assert 'getattr(llama_backend, "_expects_audio_input", False)' in route_source
     assert "not extra_args_disable_mmproj(retry_extra_args)" in route_source
     assert "await asyncio.to_thread(" in route_source
     assert "_resolve_load_model_config" in route_source
+
+
+def test_runtime_status_persists_chat_capability_without_revalidation():
+    backend_root = Path(__file__).resolve().parent.parent
+    backend_source = (backend_root / "core" / "inference" / "inference.py").read_text()
+    route_source = (backend_root / "routes" / "inference.py").read_text()
+
+    assert '"is_chat_capable": getattr(config, "is_chat_capable", True)' in backend_source
+    assert 'is_chat_capable = model_info.get("is_chat_capable", True)' in route_source
 
 
 class _AudioProbeClient:

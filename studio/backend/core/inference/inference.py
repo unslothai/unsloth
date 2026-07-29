@@ -367,6 +367,7 @@ class InferenceBackend:
                 "is_audio": config.is_audio,
                 "audio_type": config.audio_type,
                 "has_audio_input": config.has_audio_input,
+                "is_chat_capable": getattr(config, "is_chat_capable", True),
                 "model_path": config.path,
                 "base_model": config.base_model if config.is_lora else None,
                 "loaded_adapters": {},

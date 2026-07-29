@@ -1450,32 +1450,11 @@ async function autoLoadSmallestModel(): Promise<{
   blockedByTrustRemoteCode: boolean;
   blockedByCapability?: boolean;
 }> {
-  const initialStore = useChatRuntimeStore.getState();
   if (await tryAdoptServerActiveModel({
-    acceptStatus: async (status) => {
-      const activeModel = status.model_identifier;
-      if (!activeModel) {
-        // Native-path loads intentionally redact their real identifier. The
-        // server already classified the loaded config, so use status metadata
-        // instead of trying to validate an unresolvable display label.
-        return status.is_chat_capable !== false;
-      }
-      try {
-        const validation = await validateModel({
-          model_path: activeModel,
-          max_seq_length:
-            status.requested_context_length ?? status.context_length ?? 0,
-          is_lora: false,
-          gguf_variant: status.gguf_variant ?? null,
-          hf_token: initialStore.hfToken || null,
-          load_in_4bit: true,
-          trust_remote_code: initialStore.params.trustRemoteCode ?? false,
-        });
-        return validation.is_chat_capable !== false;
-      } catch {
-        return false;
-      }
-    },
+    // Status describes the model that is already resident. Do not call the
+    // load-preflight validator here: its training/VRAM guard applies only to a
+    // new load and can reject harmless adoption of the running model.
+    acceptStatus: (status) => status.is_chat_capable !== false,
   })) {
     return { loaded: true, blockedByTrustRemoteCode: false };
   }

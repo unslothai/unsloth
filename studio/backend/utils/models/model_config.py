@@ -3167,6 +3167,12 @@ class ModelConfig:
                         projector_has_audio = read_mmproj_audio_capability(cached_mmproj) is True
                         if gguf_audio_type is None:
                             gguf_audio_type = detect_gguf_audio_type(cached_mmproj)
+                    elif _env_offline():
+                        # The aggregate variant scan may have seen a projector
+                        # from another snapshot. If compatibility resolution
+                        # rejected it, do not let the offline loader rediscover
+                        # and pair it with these cached weights.
+                        has_vision = False
                     config_source = _local_gguf_config_source(
                         cached_gguf,
                         str(cached_snapshot),
