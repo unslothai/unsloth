@@ -1063,7 +1063,9 @@ def _call_stdio_tool(
                     session.client.call_tool(name, args, raise_on_error = False),
                     rem,
                     cancel_event,
-                    _CANCEL_UNWIND_TIMEOUT,
+                    # An ephemeral session is closed below, so only a cached one
+                    # is worth waiting on.
+                    0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):

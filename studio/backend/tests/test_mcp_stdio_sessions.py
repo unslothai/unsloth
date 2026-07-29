@@ -341,9 +341,10 @@ def test_liveness_probe_runs_without_the_wedge_margin(fake_clients, monkeypatch)
     assert margins == [0.0, mcp_client._STDIO_WEDGE_MARGIN]
 
 
-def test_unwind_wait_is_stdio_only(fake_clients, monkeypatch):
-    # Only a cached session needs the cancelled call to finish unwinding; a
-    # one-shot client is discarded, so a Stop there must not wait for it.
+def test_unwind_wait_only_for_cached_sessions(fake_clients, monkeypatch):
+    # Only a cached session needs the cancelled call to finish unwinding. HTTP
+    # and scope-less stdio clients are discarded either way, so a Stop on those
+    # must return without waiting for one.
     seen = []
     real = mcp_client._race_tool_call
 
@@ -358,8 +359,9 @@ def test_unwind_wait_is_stdio_only(fake_clients, monkeypatch):
 
     monkeypatch.setattr(mcp_client, "_race_tool_call", spy)
     call_tool_sync(HTTP_URL, None, "t", {})
+    call_tool_sync(STDIO_URL, None, "t", {})  # no scope: ephemeral, closed after
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
-    assert seen == [0.0, mcp_client._CANCEL_UNWIND_TIMEOUT]
+    assert seen == [0.0, 0.0, mcp_client._CANCEL_UNWIND_TIMEOUT]
 
 
 def test_cancel_preserves_stateful_session(fake_clients):
