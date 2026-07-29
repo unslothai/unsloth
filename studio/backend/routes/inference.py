@@ -493,49 +493,21 @@ def _estimate_message_tokens(msg: dict) -> int:
         return 1
 
 
-def _reasoning_rendered_flags(messages: list, preserve_thinking: bool = False) -> list:
-    """Which turns' ``reasoning_content`` the chat template actually emits.
+def _estimate_messages_tokens(messages: list) -> int:
+    """Char-estimate of a whole message list.
 
-    Qwen3.5/3.6 emit prior reasoning only for ``loop.index0 > ns.last_query_index``,
-    and the bundled gemma-4 templates gate on ``(loop.index0 > last_user_idx) or
-    preserve_thinking`` with the kwarg pinned off at launch. So by default anything at
-    or before the last user turn is dropped before it reaches the model and must not be
-    counted, but a request that overrides ``preserve_thinking`` renders all of it and
-    every trace counts. Under-counting is the worse error: it leaves the retry over
-    ``n_ctx``, so an explicit override wins.
+    Counts ``reasoning_content`` unconditionally. Whether a template renders prior
+    reasoning is not knowable here: Qwen3.5 gates on ``loop.index0 >
+    ns.last_query_index``, gemma-4 on that index ``or preserve_thinking``, and
+    Kimi-K2-Thinking splits at ``ns.last_non_tool_call_assistant_msg`` instead, while a
+    GGUF can carry any template at all. Under-counting leaves the retry above ``n_ctx``
+    and burns the retry budget, so the estimate stays conservative and the caller clips
+    reasoning first to shrink what over-counting would otherwise hold onto.
     """
-    if preserve_thinking:
-        return [True] * len(messages)
-    last_user = -1
-    for index, msg in enumerate(messages):
-        if msg.get("role") == "user":
-            last_user = index
-    return [index > last_user for index in range(len(messages))]
+    return sum(_estimate_message_tokens(msg) for msg in messages)
 
 
-def _body_preserves_thinking(body: dict) -> bool:
-    return bool((body.get("chat_template_kwargs") or {}).get("preserve_thinking"))
-
-
-def _counted_message(msg: dict, rendered: bool) -> dict:
-    """``msg`` as the template will render it, for sizing only."""
-    if rendered or msg.get("reasoning_content") is None:
-        return msg
-    return {key: value for key, value in msg.items() if key != "reasoning_content"}
-
-
-def _estimate_messages_tokens(messages: list, preserve_thinking: bool = False) -> int:
-    return sum(
-        _estimate_message_tokens(_counted_message(msg, rendered))
-        for msg, rendered in zip(messages, _reasoning_rendered_flags(messages, preserve_thinking))
-    )
-
-
-def _truncate_middle_messages(
-    messages: list,
-    keep_ratio: float,
-    preserve_thinking: bool = False,
-):
+def _truncate_middle_messages(messages: list, keep_ratio: float):
     """Drop whole turn-groups from the middle of an OpenAI message list.
 
     Always kept: leading system message(s), the first group (task anchor),
@@ -570,10 +542,7 @@ def _truncate_middle_messages(
 
     # Size on what the template renders: an unrendered trace in a protected turn would
     # otherwise be undroppable weight and force the whole middle out to hit the target.
-    est_of = {
-        id(msg): _estimate_message_tokens(_counted_message(msg, rendered))
-        for msg, rendered in zip(messages, _reasoning_rendered_flags(messages, preserve_thinking))
-    }
+    est_of = {id(msg): _estimate_message_tokens(msg) for msg in messages}
     total_est = sum(est_of.values())
     target_est = int(total_est * keep_ratio)
 
@@ -606,10 +575,34 @@ _CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
 _CLIP_KEEP_CHARS = (1500, 400)
 
 
+def _clip_reasoning_contents(messages: list, keep: int = _CLIP_KEEP_CHARS[-1]) -> int:
+    """Clip every oversized assistant ``reasoning_content`` middle-out.
+
+    Runs before the prompt is sized, and unconditionally, for two reasons. Unlike
+    group-dropping it can shrink a protected turn, so a huge trace in the anchor or tail
+    stops forcing the whole middle out. And the overflow target is a fraction of the
+    estimate, so a giant trace inflates the target as well as the total and a
+    target-gated clip would stop while the trace still outweighed the conversation it is
+    competing with. Reasoning is the most expendable content on overflow, so on this
+    recovery path it goes to the tight budget straight away.
+    """
+    clipped = 0
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        rc = msg.get("reasoning_content")
+        if not isinstance(rc, str) or len(rc) <= 2 * keep + len(_CLIP_MARKER):
+            continue
+        msg["reasoning_content"] = rc[:keep] + _CLIP_MARKER + rc[-keep:]
+        clipped += 1
+    return clipped
+
+
 def _clip_long_contents(
     messages: list,
     target_est: int,
-    preserve_thinking: bool = False,
+    reasoning: bool = True,
+    contents: bool = True,
 ) -> int:
     """Clip oversized string contents middle-out until ``target_est`` is met.
 
@@ -634,20 +627,14 @@ def _clip_long_contents(
         ]
 
     clipped = 0
-    # Pass 1: clip reasoning_content on assistant messages.
-    for keep in _CLIP_KEEP_CHARS:
-        for msg in _reasoning_candidates():
-            if _estimate_messages_tokens(messages, preserve_thinking) <= target_est:
-                return clipped
-            rc = msg.get("reasoning_content")
-            if not isinstance(rc, str) or len(rc) <= 2 * keep + len(_CLIP_MARKER):
-                continue
-            msg["reasoning_content"] = rc[:keep] + _CLIP_MARKER + rc[-keep:]
-            clipped += 1
+    if reasoning:
+        clipped += _clip_reasoning_contents(messages, target_est)
+    if not contents:
+        return clipped
     # Pass 2: clip content fields as before.
     for keep in _CLIP_KEEP_CHARS:
         for msg in _candidates():
-            if _estimate_messages_tokens(messages, preserve_thinking) <= target_est:
+            if _estimate_messages_tokens(messages) <= target_est:
                 return clipped
             content = msg.get("content")
             if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
@@ -663,8 +650,9 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
-    preserve_thinking = _body_preserves_thinking(body)
-    total_est = _estimate_messages_tokens(messages, preserve_thinking)
+    # Before sizing: see _clip_reasoning_contents for why this cannot wait for a target.
+    clipped = _clip_reasoning_contents(messages)
+    total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
         keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
@@ -674,12 +662,13 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     # Scale the server-token target into char-estimate units.
     target_est = int(total_est * keep_ratio)
 
-    new_messages, dropped = _truncate_middle_messages(messages, keep_ratio, preserve_thinking)
+    new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
     if dropped:
         body["messages"] = new_messages
-    clipped = 0
-    if _estimate_messages_tokens(body.get("messages") or [], preserve_thinking) > target_est:
-        clipped = _clip_long_contents(body.get("messages") or [], target_est, preserve_thinking)
+    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
+        clipped += _clip_long_contents(
+            body.get("messages") or [], target_est, reasoning = False
+        )
     if not dropped and not clipped:
         return False
     if n_ctx:
