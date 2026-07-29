@@ -1551,13 +1551,15 @@ _MTIME_READERS = {
     # and _resolve_hf_cache_realpath took max() over iterdir(). The four named
     # functions rank plain directories (./models, LM Studio, Ollama) or read a
     # repo dir's mtime for an "updated at" column; none of them picks a snapshot.
-    "routes/models.py": frozenset({
-        "_blob_mtime",
-        "_scan_hf_cache",
-        "_scan_lmstudio_dir",
-        "_scan_models_dir",
-        "_scan_ollama_dir",
-    }),
+    "routes/models.py": frozenset(
+        {
+            "_blob_mtime",
+            "_scan_hf_cache",
+            "_scan_lmstudio_dir",
+            "_scan_models_dir",
+            "_scan_ollama_dir",
+        }
+    ),
 }
 
 
