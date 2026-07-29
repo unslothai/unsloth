@@ -1552,9 +1552,6 @@ def test_settings_open_reads_status_before_resolving_the_quant():
     API-driven switch, for as long as the window has kept focus, and opens the
     editor on the quant of whichever model that switch displaced."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert (
-        "const refreshResidentModelStatus = useCallback((): Promise<void> => {"
-        in page
-    )
+    assert "const refreshResidentModelStatus = useCallback((): Promise<void> => {" in page
     assert "const [res] = await Promise.all([ listGgufVariants(" in page
     assert "refreshResidentModelStatus(), ]);" in page
