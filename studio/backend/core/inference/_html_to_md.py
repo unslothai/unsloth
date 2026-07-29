@@ -394,9 +394,12 @@ class _MarkdownRenderer(HTMLParser):
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(text.strip())
-        if frame is not None and not in_nested_link:
+        nested_open = self._nested_buffer_open(frame) if frame is not None else False
+        # Size is tallied once, on the emit that reaches the frame. Counting text
+        # on its way INTO a nested buffer as well as when that buffer flushes its
+        # formatted output doubled it, so a kept header stripped once quoted.
+        if frame is not None and not nested_open:
             frame.rendered_chars += len(text.strip())
-        if frame is not None and not self._nested_buffer_open(frame):
             frame.parts.append(text)
             return
         if self._in_link:
@@ -1085,7 +1088,15 @@ def _is_heading_line(line: str) -> bool:
             i = j + 1
         else:
             break
-    return i < n and line[i] == "#"
+    # ATX rules: 1-6 hashes closed by whitespace or the line end. Without the
+    # closing check "#include" and "#hashtag" read as headings, and this decides
+    # whether a scope has any content, so a C snippet could lose to a teaser.
+    start = i
+    while i < n and line[i] == "#":
+        i += 1
+    if i == start or i - start > 6:
+        return False
+    return i >= n or line[i] in " \t"
 
 
 def _non_heading_chars(text: str) -> int:

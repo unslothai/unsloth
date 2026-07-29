@@ -21,7 +21,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference._html_to_md import html_to_markdown
+from core.inference._html_to_md import _is_heading_line, html_to_markdown
 from core.inference.tools import (
     _fetch_page_text,
     _fetch_url_raw,
@@ -1871,6 +1871,55 @@ def test_fenced_code_counts_as_retained_content():
     out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
     assert "comment line 1" in out
     assert "Sibling teaser" not in out
+
+
+def test_only_valid_atx_syntax_counts_as_a_heading():
+    # CommonMark needs 1-6 hashes closed by whitespace or the line end, so
+    # "#include" is prose. Eligibility is measured on non-heading text, and a C
+    # snippet whose every line began with # was reading as pure heading.
+    assert not _is_heading_line("#include <stdio.h>")
+    assert not _is_heading_line("#hashtag trending")
+    assert not _is_heading_line("####### seven hashes")
+    assert not _is_heading_line("##nospace")
+    assert _is_heading_line("# real heading")
+    assert _is_heading_line("###### six hashes")
+    assert _is_heading_line("> # quoted heading")
+
+
+def test_hash_prefixed_prose_still_wins_its_scope():
+    # Every line opens with a hash, so treating those as headings left the scope
+    # looking empty and handed the page to the sibling card.
+    lines = "".join("<p>#include &lt;header_%02d.h&gt;</p>" % i for i in range(14))
+    article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
+        _interlanguage_list(300),
+        lines,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "#include" in out
+    assert "Sibling teaser" not in out
+
+
+def test_header_size_is_independent_of_the_buffer_it_renders_through():
+    # Text was counted entering a nested buffer AND when that buffer flushed, so
+    # the same links stripped once quoted but survived bare.
+    links = "".join(
+        '<a href="/very/long/section/path/number/%03d/index">L%03d</a>' % (i, i)
+        for i in range(14)
+    )
+    wrapped = {
+        "bare": links,
+        "blockquote": f"<blockquote>{links}</blockquote>",
+        "cell": f"<table><tr><td>{links}</td></tr></table>",
+    }
+    kept = set()
+    for inner in wrapped.values():
+        body = "<main><header><h1>T</h1>%s</header><p>%s</p></main>" % (
+            inner,
+            "Article body. " * 30,
+        )
+        kept.add("L000" in html_to_markdown(f"<body>{body}</body>", main_content = True))
+    assert len(kept) == 1
 
 
 def test_header_inside_open_inline_code_leaves_delimiters_paired():
