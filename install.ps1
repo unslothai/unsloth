@@ -1159,12 +1159,16 @@ exit 0
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
     function Find-CompatiblePython {
+        # -X64Only returns the best already-installed x64 interpreter, or $null: never
+        # an ARM64 one. Last resort for Install-X64Python, where an x64 build of a
+        # lower-priority minor still beats ARM64.
+        param([switch]$X64Only)
         # Windows on ARM: prefer an x64 interpreter. pyarrow (via datasets) and
         # hf-transfer have never published a win_arm64 wheel, so a native ARM64 Python
         # source-builds both and dies on CMake / Rust minutes in; x64 wheels run fine
         # under emulation. Preference only: an ARM64 interpreter is still returned when
         # it is all there is, and the caller then bootstraps x64 or warns.
-        $preferX64 = ((Get-HostMachineArch) -eq "arm64")
+        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64")
         $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
@@ -1255,9 +1259,9 @@ exit 0
             if ($sameMinor.Count -eq 0) { continue }
             $x64 = $sameMinor | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
             if ($x64) { return $x64 }
-            return $sameMinor[0]
+            if (-not $X64Only) { return $sameMinor[0] }
         }
-        if ($candidates.Count -gt 0) { return $candidates[0] }
+        if (-not $X64Only -and $candidates.Count -gt 0) { return $candidates[0] }
         return $null
     }
 
@@ -1355,7 +1359,10 @@ exit 0
         }
         $found = Install-PythonFromPythonOrg -Arch "x86_64"
         if ($found -and $found.Arch -eq "x86_64") { return $found }
-        return $null
+        # Nothing installable (offline / no winget). An x64 build of another supported
+        # minor already on this box still runs the wheels ARM64 cannot, so take it
+        # rather than let the caller settle for the native interpreter.
+        return (Find-CompatiblePython -X64Only)
     }
 
     # ── Install Python if no compatible version (3.11-3.13) found ──
