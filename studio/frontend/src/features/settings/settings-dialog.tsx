@@ -63,7 +63,12 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
-  { id: "profile", labelKey: "settings.tabs.profile", icon: UserIcon },
+  {
+    id: "profile",
+    labelKey: "settings.tabs.profile",
+    icon: UserIcon,
+    badgeKey: "common.new",
+  },
   {
     id: "appearance",
     labelKey: "settings.tabs.appearance",

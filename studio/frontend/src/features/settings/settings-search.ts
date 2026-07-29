@@ -37,8 +37,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.description",
     "settings.profile.displayName",
     "settings.profile.nickname",
-    "settings.profile.avatarShape",
-    "settings.profile.greetingSloth",
+    // avatarShape lives inside the avatar edit popover, so it has no
+    // always-rendered label for search to scroll to.
   ],
   appearance: [
     "settings.appearance.theme.label",
@@ -81,6 +81,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   chat: [
     "settings.general.chatDefaults",
     "settings.general.autoTitleNewChats",
+    "settings.profile.greetingSloth",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",

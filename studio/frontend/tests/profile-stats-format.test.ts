@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  formatCompactNumber,
+  formatDuration,
+  formatMilliseconds,
+  heatLevel,
+  parseDayKey,
+  seriesForMode,
+} from "../src/features/profile/utils/stats-format.ts";
+
+test("compact numbers match the tile format", () => {
+  assert.equal(formatCompactNumber(0), "0");
+  assert.equal(formatCompactNumber(999), "999");
+  assert.equal(formatCompactNumber(1000), "1K");
+  assert.equal(formatCompactNumber(12_340), "12.3K");
+  assert.equal(formatCompactNumber(1_900_000_000), "1.9B");
+  assert.equal(formatCompactNumber(19_800_000_000), "19.8B");
+  // Past 100 of a unit the decimal is noise.
+  assert.equal(formatCompactNumber(123_400), "123K");
+  assert.equal(formatCompactNumber(Number.NaN), "0");
+});
+
+test("durations read the way the header does", () => {
+  assert.equal(formatDuration(0), "0m");
+  assert.equal(formatDuration(45), "45s");
+  assert.equal(formatDuration(90), "1m 30s");
+  assert.equal(formatDuration(14_880), "4h 8m");
+  assert.equal(formatDuration(180_000), "2d 2h");
+  assert.equal(formatMilliseconds(420), "420ms");
+  assert.equal(formatMilliseconds(2500), "2.5s");
+  assert.equal(formatMilliseconds(0), "—");
+});
+
+test("heat levels are relative to the busiest day", () => {
+  assert.equal(heatLevel(0, 1000), 0);
+  assert.equal(heatLevel(50, 1000), 1);
+  assert.equal(heatLevel(200, 1000), 2);
+  assert.equal(heatLevel(400, 1000), 3);
+  assert.equal(heatLevel(1000, 1000), 4);
+  // A single active day with no other history still shows up.
+  assert.equal(heatLevel(5, 0), 1);
+});
+
+test("day keys parse as local dates, not UTC", () => {
+  const parsed = parseDayKey("2026-03-09");
+  assert.equal(parsed.getFullYear(), 2026);
+  assert.equal(parsed.getMonth(), 2);
+  assert.equal(parsed.getDate(), 9);
+});
+
+test("series modes reshape the same daily data", () => {
+  // 2026-03-02 is a Monday, so this spans exactly two calendar weeks.
+  const daily = [
+    { date: "2026-03-02", tokens: 10 },
+    { date: "2026-03-03", tokens: 20 },
+    { date: "2026-03-08", tokens: 5 },
+    { date: "2026-03-09", tokens: 100 },
+  ];
+
+  assert.deepEqual(seriesForMode(daily, "daily"), [10, 20, 5, 100]);
+  assert.deepEqual(seriesForMode(daily, "cumulative"), [10, 30, 35, 135]);
+  // First three days are in the week of Mar 2 (35), Mar 9 starts a new week.
+  assert.deepEqual(seriesForMode(daily, "weekly"), [35, 35, 35, 100]);
+  assert.deepEqual(seriesForMode([], "weekly"), []);
+});
