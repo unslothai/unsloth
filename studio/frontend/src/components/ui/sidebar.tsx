@@ -24,13 +24,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
+import { useT } from "@/i18n"
 import { useIsMobile } from "@/hooks/use-mobile"
+import {
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MIN,
+  clampSidebarWidth,
+  useSidebarWidth,
+} from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
-const SIDEBAR_WIDTH = "17.5rem"
+const SIDEBAR_WIDTH = `${SIDEBAR_WIDTH_DEFAULT}px`
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
@@ -46,6 +54,11 @@ type SidebarContextProps = {
   pinned: boolean
   setPinned: (value: boolean) => void
   togglePinned: () => void
+  width: number
+  storedWidth: number
+  maxWidth: number
+  setWidth: (value: number) => void
+  resetWidth: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -80,6 +93,13 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+  const {
+    width,
+    max: maxWidth,
+    stored: storedWidth,
+    setWidth,
+    resetWidth,
+  } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
   React.useEffect(() => {
@@ -163,8 +183,13 @@ function SidebarProvider({
       pinned,
       setPinned,
       togglePinned,
+      width,
+      storedWidth,
+      maxWidth,
+      setWidth,
+      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, storedWidth, maxWidth, setWidth, resetWidth]
   )
 
   return (
@@ -173,7 +198,8 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            "--sidebar-width": SIDEBAR_WIDTH,
+            // The drag handle writes this same property live while resizing.
+            "--sidebar-width": `${width}px`,
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -311,7 +337,60 @@ function Sidebar({
         >
           {children}
         </div>
+        <SidebarResizeHandle side={side} />
       </div>
+    </div>
+  )
+}
+
+/**
+ * The sidebar's draggable edge, over the shared panel handle.
+ */
+function SidebarResizeHandle({
+  className,
+  side = "left",
+}: {
+  className?: string
+  side?: "left" | "right"
+}) {
+  const { open, toggleSidebar, width, storedWidth, maxWidth, setWidth, resetWidth } =
+    useSidebar()
+  const ref = React.useRef<HTMLDivElement>(null)
+  const t = useT()
+
+  return (
+    <div ref={ref} className="contents">
+      <PanelResizeHandle
+        edge={side === "right" ? "left" : "right"}
+        open={open}
+        width={width}
+        stored={storedWidth}
+        min={SIDEBAR_WIDTH_MIN}
+        max={maxWidth}
+        clamp={clampSidebarWidth}
+        setWidth={setWidth}
+        resetWidth={resetWidth}
+        onToggle={toggleSidebar}
+        target={() =>
+          ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ?? null
+        }
+        cssVar="--sidebar-width"
+        // The custom titlebar renders outside the wrapper and cannot inherit it.
+        rootVar="--studio-sidebar-live-width"
+        measure={() =>
+          ref.current
+            ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
+            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
+        }
+        label={t("shell.aria.resizeSidebar")}
+        toggleLabel={t("shell.aria.openSidebar")}
+        collapseHint={t("shell.resize.collapse")}
+        expandHint={t("shell.resize.expand")}
+        dragHint={t("shell.resize.drag")}
+        shortcut="ModB"
+        dataSlot="sidebar-resize-handle"
+        className={className}
+      />
     </div>
   )
 }
@@ -777,6 +856,7 @@ export {
   SidebarMenuSubItem,
   SidebarProvider,
   SidebarRail,
+  SidebarResizeHandle,
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,

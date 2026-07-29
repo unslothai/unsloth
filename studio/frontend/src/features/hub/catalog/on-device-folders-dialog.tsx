@@ -23,12 +23,21 @@ import {
   removeScanFolder,
 } from "@/features/hub";
 import { FolderBrowser } from "@/features/model-picker";
-import { openModelsDir } from "@/features/native-intents";
+import {
+  openModelsDir,
+  pickHuggingFaceCacheDir,
+} from "@/features/native-intents";
+import {
+  type HuggingFaceCacheSettings,
+  loadHuggingFaceCacheSettings,
+  updateHuggingFaceCacheSettings,
+} from "@/features/settings";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
+  DownloadCircle01Icon,
   FileSearchIcon,
   FolderAddIcon,
   FolderExportIcon,
@@ -47,6 +56,12 @@ function pathTail(path: string): string {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatFreeSpace(bytes: number | null): string | null {
+  if (bytes === null || !Number.isFinite(bytes)) return null;
+  const gb = bytes / 1024 ** 3;
+  return gb >= 10 ? `${Math.round(gb)} GB free` : `${gb.toFixed(1)} GB free`;
 }
 
 export function OnDeviceFoldersDialog({
@@ -68,6 +83,11 @@ export function OnDeviceFoldersDialog({
   );
   const refreshIdRef = useRef(0);
   const mutationVersionRef = useRef(0);
+  const [downloadCache, setDownloadCache] =
+    useState<HuggingFaceCacheSettings | null>(null);
+  const [downloadCacheLoaded, setDownloadCacheLoaded] = useState(false);
+  const [downloadBrowserOpen, setDownloadBrowserOpen] = useState(false);
+  const [downloadSaving, setDownloadSaving] = useState(false);
 
   const sortedFolders = useMemo(
     () => [...folders].sort((a, b) => a.path.localeCompare(b.path)),
@@ -108,9 +128,65 @@ export function OnDeviceFoldersDialog({
     return () => window.clearTimeout(timer);
   }, [open, refreshFolders]);
 
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    // The dialog stays mounted between opens, so re-arm the flag or a reopen
+    // shows the previous answer as if it were fresh.
+    setDownloadCacheLoaded(false);
+    loadHuggingFaceCacheSettings()
+      // Indexed locations do not depend on this. Null drops the stale path
+      // rather than offer Change against a location we could not confirm.
+      .catch(() => null)
+      .then((settings) => {
+        if (cancelled) return;
+        setDownloadCache(settings);
+        setDownloadCacheLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   const handleInventoryChanged = useCallback(() => {
     onInventoryChange?.();
   }, [onInventoryChange]);
+
+  // Relocating the cache changes which repos are on disk, but
+  // updateHuggingFaceCacheSettings already bumps the inventory version, which
+  // re-fetches every source. Refreshing here too would scan twice, since the
+  // two rounds carry different version keys and cannot be deduplicated.
+  const saveDownloadLocation = useCallback(async (nextPath: string | null) => {
+    setDownloadSaving(true);
+    try {
+      const settings = await updateHuggingFaceCacheSettings(nextPath);
+      setDownloadCache(settings);
+      toast.success("Download location updated", {
+        description: settings.cacheHome,
+      });
+    } catch (err) {
+      toast.error("Couldn't update the download location", {
+        description: formatError(err),
+      });
+    } finally {
+      setDownloadSaving(false);
+    }
+  }, []);
+
+  const changeDownloadLocation = useCallback(async () => {
+    if (!isTauri) {
+      setDownloadBrowserOpen(true);
+      return;
+    }
+    try {
+      const picked = await pickHuggingFaceCacheDir();
+      if (picked) await saveDownloadLocation(picked);
+    } catch (err) {
+      toast.error("Couldn't open the folder picker", {
+        description: formatError(err),
+      });
+    }
+  }, [saveDownloadLocation]);
 
   const handleAdd = useCallback(
     async (rawPath: string) => {
@@ -182,10 +258,10 @@ export function OnDeviceFoldersDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          className="gap-0 overflow-hidden p-0 sm:max-w-[620px] lg:max-w-[660px] xl:max-w-[680px] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
+          className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px] lg:max-w-[660px] xl:max-w-[680px] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
           overlayClassName="bg-black/20 backdrop-blur-none"
         >
-          <DialogHeader className="border-b border-border/60 px-5 py-4">
+          <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4">
             <DialogTitle className="text-ui-15">
               On-device locations
             </DialogTitle>
@@ -195,7 +271,78 @@ export function OnDeviceFoldersDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 px-5 py-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+            <div className="rounded-[14px] border border-border/70 bg-muted/20 p-3">
+              <div className="mb-2 flex items-center gap-2 text-ui-12 font-medium text-foreground">
+                <HugeiconsIcon
+                  icon={DownloadCircle01Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5 text-muted-foreground"
+                />
+                Download location
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                  readOnly={true}
+                  aria-label="Model download location"
+                  value={
+                    downloadCache?.cacheHome ??
+                    (downloadCacheLoaded ? "Unknown" : "Loading...")
+                  }
+                  title={downloadCache?.cacheHome}
+                  className="field-soft h-9 min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12"
+                />
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void changeDownloadLocation()}
+                    disabled={!downloadCache?.editable || downloadSaving}
+                    className="h-9 rounded-full px-3 text-ui-12p5"
+                  >
+                    {downloadSaving ? (
+                      <Spinner className="size-3.5" />
+                    ) : (
+                      <HugeiconsIcon
+                        icon={FolderSearchIcon}
+                        strokeWidth={1.75}
+                        data-icon="inline-start"
+                        className="size-3.5"
+                      />
+                    )}
+                    Change
+                  </Button>
+                  {downloadCache?.isCustom ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void saveDownloadLocation(null)}
+                      disabled={downloadSaving}
+                      className="h-9 rounded-full px-3 text-ui-12p5 text-muted-foreground"
+                    >
+                      Use default
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
+              <p className="mt-2 text-ui-10p5 text-muted-foreground">
+                {downloadCache?.source === "environment"
+                  ? `Managed by the ${
+                      downloadCache.environmentVariable ?? "HF_HOME"
+                    } environment variable.`
+                  : [
+                      "New downloads only. Models already on disk stay where they are.",
+                      formatFreeSpace(downloadCache?.freeBytes ?? null),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+              </p>
+            </div>
+
             <div className="rounded-[14px] border border-border/70 bg-muted/20 p-3">
               <div className="mb-2 flex items-center gap-2 text-ui-12 font-medium text-foreground">
                 <HugeiconsIcon
@@ -424,6 +571,16 @@ export function OnDeviceFoldersDialog({
         open={browserOpen}
         onOpenChange={setBrowserOpen}
         onSelect={(selectedPath) => void handleAdd(selectedPath)}
+      />
+
+      <FolderBrowser
+        open={!isTauri && downloadBrowserOpen}
+        onOpenChange={setDownloadBrowserOpen}
+        onSelect={(selectedPath) => void saveDownloadLocation(selectedPath)}
+        initialPath={downloadCache?.cacheHome}
+        title="Choose model download location"
+        confirmLabel="Use for future downloads"
+        showModelHints={false}
       />
     </>
   );
