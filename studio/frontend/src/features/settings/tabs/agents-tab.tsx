@@ -1119,7 +1119,9 @@ export function AgentsTab() {
         <div className="@container">
           <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(9rem,0.5fr)]">
             <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex items-center justify-between gap-3">
+              {/* Fixed height on every column header, so the padded docs link
+                  here cannot push this control below the other two. */}
+              <div className="flex h-5 items-center justify-between gap-3">
                 <span
                   data-settings-label={t("settings.agents.agent")}
                   className="text-xs font-medium text-foreground"
@@ -1198,12 +1200,14 @@ export function AgentsTab() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <span
-                data-settings-label={t("settings.agents.model")}
-                className="text-xs font-medium text-foreground"
-              >
-                {t("settings.agents.model")}
-              </span>
+              <div className="flex h-5 items-center">
+                <span
+                  data-settings-label={t("settings.agents.model")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.model")}
+                </span>
+              </div>
               <Popover
                 open={modelPickerOpen}
                 onOpenChange={(open) => {
@@ -1289,12 +1293,14 @@ export function AgentsTab() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <span
-                data-settings-label={t("settings.agents.quantization")}
-                className="text-xs font-medium text-foreground"
-              >
-                {t("settings.agents.quantization")}
-              </span>
+              <div className="flex h-5 items-center">
+                <span
+                  data-settings-label={t("settings.agents.quantization")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.quantization")}
+                </span>
+              </div>
               <Select
                 value={selectedVariant ?? undefined}
                 onValueChange={(variant) => {
