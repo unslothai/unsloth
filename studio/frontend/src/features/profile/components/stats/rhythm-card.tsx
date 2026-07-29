@@ -7,7 +7,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 import type { ProfileStats } from "../../api/profile-stats";
@@ -92,15 +92,18 @@ export function HourRhythmCard({ stats }: { stats: ProfileStats }) {
 /** Weekday distribution, Monday-first to match the activity grid columns. */
 export function WeekdayRhythmCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
+  // The app language, so the axis matches the rest of the panel when the user
+  // has picked a language that differs from the browser's.
+  const locale = useLocale();
   const names = useMemo(() => {
-    const formatter = new Intl.DateTimeFormat(navigator.language, {
+    const formatter = new Intl.DateTimeFormat(locale, {
       weekday: "short",
     });
     // 2024-01-01 was a Monday, so this walks Mon..Sun in the user's locale.
     return Array.from({ length: 7 }, (_, index) =>
       formatter.format(new Date(2024, 0, 1 + index)),
     );
-  }, []);
+  }, [locale]);
 
   const data = useMemo(
     () =>

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProfileStatsDay } from "../../api/profile-stats";
@@ -214,10 +214,12 @@ function BarColumn({
   const t = useT();
   const summary = columnSummary(column);
   const height = barHeight(summary.value, peak);
+  // The bar is scaled by summary.value, which in cumulative mode is the
+  // running total. The tooltip says "week of", so it reports that week.
   const title = summary.firstDay
     ? t("settings.profile.stats.weekTooltip", {
         date: dateFormatter.format(parseDayKey(summary.firstDay)),
-        tokens: formatFullNumber(summary.value),
+        tokens: formatFullNumber(summary.tokens),
       })
     : "";
 
@@ -246,9 +248,13 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
     () => buildColumns(daily, values, columns),
     [daily, values, columns],
   );
+  // The app language, not the browser's: those differ whenever the user picks
+  // a language in Settings, and it has to be a dependency so switching while
+  // the panel is open rebuilds the formatters.
+  const locale = useLocale();
   const monthLabels = useMemo(
-    () => buildMonthLabels(grid, navigator.language),
-    [grid],
+    () => buildMonthLabels(grid, locale),
+    [grid, locale],
   );
   // Daily scales against the busiest day, the bar modes against the busiest
   // column, so a full-height bar always means the peak week.
@@ -281,12 +287,12 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
 
   const dateFormatter = useMemo(
     () =>
-      new Intl.DateTimeFormat(navigator.language, {
+      new Intl.DateTimeFormat(locale, {
         month: "short",
         day: "numeric",
         year: "numeric",
       }),
-    [],
+    [locale],
   );
 
   return (

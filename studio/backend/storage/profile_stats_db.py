@@ -109,7 +109,12 @@ def _streaks(days: set[date], today: date) -> dict[str, Any]:
 
     The current streak survives a day that has not been used yet: a streak that
     ended yesterday is still "live" until today is over.
+
+    Imported history or a skewed client clock can date rows in the future.
+    Those are dropped up front so they cannot pad the longest streak or be
+    reported as the last active day either.
     """
+    days = {day for day in days if day <= today}
     if not days:
         return {"current": 0, "longest": 0, "lastActiveDay": None}
 
@@ -122,9 +127,7 @@ def _streaks(days: set[date], today: date) -> dict[str, Any]:
 
     last = ordered[-1]
     current_streak = 0
-    # A future-dated row (client clock ahead) is not a live streak: the last
-    # active day still has to be today or yesterday.
-    if timedelta(0) <= today - last <= timedelta(days = 1):
+    if today - last <= timedelta(days = 1):
         current_streak = 1
         cursor = last
         while cursor - timedelta(days = 1) in days:
@@ -186,14 +189,15 @@ class _MessageFold:
         bucket["threads"].add(thread_id)
 
 
-def _orphan_fork_keepers(conn) -> set[str]:
-    """Forks whose source is gone and that should still count their copies.
+def _fork_keepers(conn) -> set[str]:
+    """One fork per source, elected to stand in for originals that are gone.
 
-    ``forked_from_thread_id`` is not a foreign key, so deleting a source leaves
-    its forks holding the only copies of that ancestry. Enabling all of them
-    would multiply the usage by the number of siblings, so exactly one per dead
-    source is kept: the one carrying the most copied rows, which is the fork
-    that branched latest and therefore holds the longest ancestry.
+    A clone is normally ignored because the original is counted instead. When
+    the original is not there any more, whether its thread was deleted or just
+    that message was pruned, the clones become the only record. Letting every
+    sibling count them would multiply the usage, so exactly one fork per source
+    is allowed to: the one holding the most copied rows, which is the fork that
+    branched latest and therefore carries the longest ancestry.
     """
     rows = conn.execute(
         """
@@ -202,7 +206,6 @@ def _orphan_fork_keepers(conn) -> set[str]:
                  WHERE m.thread_id = t.id AND m.created_at < t.created_at) AS copied
         FROM chat_threads t
         WHERE t.forked_from_thread_id IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM chat_threads s WHERE s.id = t.forked_from_thread_id)
         """
     ).fetchall()
 
@@ -215,21 +218,36 @@ def _orphan_fork_keepers(conn) -> set[str]:
     return {thread_id for _, thread_id in best.values()}
 
 
+def _surviving_original_keys(conn) -> set[tuple[str, int, str]]:
+    """Identity of every message still living in a thread that has been forked.
+
+    Clones get fresh ids, so there is nothing to join on. Within one thread the
+    timestamp and role are enough to recognise the row a clone was taken from.
+    """
+    rows = conn.execute(
+        """
+        SELECT m.thread_id, m.created_at, m.role
+        FROM chat_messages m
+        WHERE m.thread_id IN (
+            SELECT DISTINCT forked_from_thread_id FROM chat_threads
+            WHERE forked_from_thread_id IS NOT NULL
+        )
+        """
+    )
+    return {(row["thread_id"], _as_int(row["created_at"]), row["role"]) for row in rows}
+
+
 def _fold_messages(conn, zone) -> _MessageFold:
     fold = _MessageFold()
-    keepers = _orphan_fork_keepers(conn)
+    keepers = _fork_keepers(conn)
+    surviving = _surviving_original_keys(conn)
     rows = conn.execute(
         """
         SELECT m.thread_id, m.role, m.metadata_json, m.attachments_json, m.created_at,
                t.title, t.model_id, t.model_type, t.pair_id,
-               t.created_at AS thread_created_at, t.forked_from_thread_id,
-               src.id AS fork_source_id
+               t.created_at AS thread_created_at, t.forked_from_thread_id
         FROM chat_messages m
         LEFT JOIN chat_threads t ON t.id = m.thread_id
-        -- forked_from_thread_id is not a foreign key, so it outlives the source.
-        -- Joining to the real row means the copies are only suppressed while
-        -- the originals are still there to be counted.
-        LEFT JOIN chat_threads src ON src.id = t.forked_from_thread_id
         ORDER BY m.thread_id, m.created_at
         """
     )
@@ -274,16 +292,14 @@ def _fold_messages(conn, zone) -> _MessageFold:
         fold.threads.add(conversation_id)
 
         # Forking clones the whole ancestry into the new thread, keeping each
-        # copy's original timestamp. Counting those again would double every
-        # metric for the branched-from conversation, so skip anything older
-        # than the fork itself. Once the source is gone one fork is elected to
-        # keep its copies, since they are then the only record left.
-        if (
-            row["forked_from_thread_id"]
-            and created_at < _as_int(row["thread_created_at"])
-            and (row["fork_source_id"] or thread_id not in keepers)
-        ):
-            continue
+        # copy's original timestamp. Skip a clone while the row it was taken
+        # from is still there to be counted; once that original is gone, only
+        # the elected fork stands in for it, so nothing is lost or doubled.
+        source_id = row["forked_from_thread_id"]
+        if source_id and created_at < _as_int(row["thread_created_at"]):
+            original = (source_id, created_at, row["role"])
+            if original in surviving or thread_id not in keepers:
+                continue
 
         fold.messages += 1
         thread_messages += 1

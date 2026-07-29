@@ -23,6 +23,11 @@ def stats_db(tmp_path, monkeypatch):
     invalidate_profile_stats_cache()
 
 
+# _seed_thread writes the assistant reply this far after the user turn, and
+# fork_chat_thread copies created_at verbatim, so clones must reuse it.
+REPLY_DELAY = timedelta(seconds = 10)
+
+
 def _ms(when: datetime) -> int:
     return int(when.timestamp() * 1000)
 
@@ -55,7 +60,7 @@ def _seed_thread(conn, thread_id: str, model_id: str, turns: list[tuple[datetime
                 "assistant",
                 json.dumps([{"type": "text", "text": "hello"}]),
                 json.dumps(metadata),
-                _ms(when + timedelta(seconds = 10)),
+                _ms(when + REPLY_DELAY),
             ),
         )
 
@@ -309,7 +314,7 @@ def test_forked_threads_do_not_double_count_copied_history(stats_db):
         conn.execute(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
             "created_at) VALUES ('fork-a0', 'fork', 'assistant', '[]', ?, ?)",
-            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2))),
+            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2) + REPLY_DELAY)),
         )
         conn.commit()
     finally:
@@ -418,7 +423,7 @@ def test_forks_count_as_chats_before_their_first_new_turn(stats_db):
         conn.execute(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
             "created_at) VALUES ('branch-a0', 'branch', 'assistant', '[]', ?, ?)",
-            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2))),
+            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2) + REPLY_DELAY)),
         )
         conn.commit()
     finally:
@@ -537,7 +542,7 @@ def test_deleting_the_source_thread_keeps_the_forks_copies(stats_db):
         conn.execute(
             "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
             "created_at) VALUES ('kept-a0', 'kept', 'assistant', '[]', ?, ?)",
-            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2))),
+            (json.dumps(_metadata(100, 50)), _ms(now - timedelta(hours = 2) + REPLY_DELAY)),
         )
         conn.commit()
     finally:
@@ -577,7 +582,12 @@ def test_sibling_forks_do_not_multiply_a_deleted_source(stats_db):
             conn.execute(
                 "INSERT INTO chat_messages (id, thread_id, role, content_json, "
                 "metadata_json, created_at) VALUES (?, ?, 'assistant', '[]', ?, ?)",
-                (f"{fork_id}-a0", fork_id, json.dumps(_metadata(100, 50)), _ms(older)),
+                (
+                    f"{fork_id}-a0",
+                    fork_id,
+                    json.dumps(_metadata(100, 50)),
+                    _ms(older + REPLY_DELAY),
+                ),
             )
         conn.commit()
     finally:
@@ -598,6 +608,67 @@ def test_sibling_forks_do_not_multiply_a_deleted_source(stats_db):
     # Exactly one surviving copy is counted, not one per sibling fork.
     assert stats["totals"]["totalTokens"] == 150
     assert stats["totals"]["messages"] == 1
+
+
+def test_deleting_an_original_message_keeps_the_forks_clone(stats_db):
+    """Pruning one pre-fork message leaves the clone as the only copy."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    older = now - timedelta(hours = 3)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "orig", "m", [(older, _metadata(100, 50))])
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, "
+            "updated_at, forked_from_thread_id, forked_from_message_id) "
+            "VALUES ('branch', 'fork', 'base', 'm', ?, ?, 'orig', 'orig-a0')",
+            (_ms(now), _ms(now)),
+        )
+        # The clone keeps the original's timestamp and role.
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('branch-a0', 'branch', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(100, 50)), _ms(older + timedelta(seconds = 10))),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # While the original is there the clone is ignored.
+    assert compute_profile_stats(days = 7)["totals"]["totalTokens"] == 150
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DELETE FROM chat_messages WHERE id = 'orig-a0'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    invalidate_profile_stats_cache()
+    stats = compute_profile_stats(days = 7)
+
+    # The thread survives but that message does not, so the clone stands in.
+    assert stats["totals"]["totalTokens"] == 150
+    assert stats["totals"]["assistantMessages"] == 1
+
+
+def test_future_history_cannot_pad_the_longest_streak(stats_db):
+    """Only the current streak was guarded; longest and lastActiveDay were not."""
+    base = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(
+            conn,
+            "skew",
+            "m",
+            [(base + timedelta(days = day), _metadata(10, 10)) for day in (3, 4, 5, 6)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    streak = compute_profile_stats(days = 366)["streak"]
+
+    assert streak == {"current": 0, "longest": 0, "lastActiveDay": None}
 
 
 def test_comparison_panes_count_as_one_chat(stats_db):
