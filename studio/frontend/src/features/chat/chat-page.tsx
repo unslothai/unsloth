@@ -523,6 +523,8 @@ function getIsLoraCompareFromState(
   return selected?.exportType === "lora";
 }
 
+const COMPARE_INVENTORY_WAIT_MS = 10_000;
+
 const CompareContent = memo(function CompareContent({
   pairId,
   projectId,
@@ -551,69 +553,46 @@ const CompareContent = memo(function CompareContent({
   );
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const [isLoraCompare, setIsLoraCompare] = useState<boolean | null>(null);
-  const [compareActive, setCompareActive] = useState(false);
   const [inventoryRefreshComplete, setInventoryRefreshComplete] =
     useState(false);
-  const usedInventoryFallbackRef = useRef(false);
-  const layoutCheckpointRef = useRef<string | null>(null);
-  const layoutCheckpointCapturedRef = useRef(false);
-  const handleCompareActiveChange = useCallback((active: boolean) => {
-    // If fallback compare starts before runtime hydration recovers, freeze the
-    // last pre-load checkpoint now. Later sequential loads mutate the global
-    // checkpoint and must not influence layout classification.
-    if (active && !layoutCheckpointCapturedRef.current) {
-      layoutCheckpointRef.current =
-        useChatRuntimeStore.getState().params.checkpoint;
-      layoutCheckpointCapturedRef.current = true;
-    }
-    setCompareActive(active);
-  }, []);
 
   useEffect(() => {
     let canceled = false;
+    const fallbackTimeoutId = window.setTimeout(() => {
+      if (!canceled) {
+        // Preserve a usable route if the backend remains connected but never
+        // settles the inventory request. This pair stays on the generalized
+        // layout so any conversations created there cannot disappear later.
+        setIsLoraCompare((current) => current ?? false);
+      }
+    }, COMPARE_INVENTORY_WAIT_MS);
     setInventoryRefreshComplete(false);
     void onRefreshModelInventories().finally(() => {
-      if (!canceled) setInventoryRefreshComplete(true);
+      if (!canceled) {
+        window.clearTimeout(fallbackTimeoutId);
+        setInventoryRefreshComplete(true);
+      }
     });
     return () => {
       canceled = true;
+      window.clearTimeout(fallbackTimeoutId);
     };
   }, [onRefreshModelInventories]);
 
-  // Wait for the full LoRA inventory before choosing the layout, then freeze
-  // that choice. Generalized compare temporarily changes the global checkpoint
-  // as it visits each pane; those later changes must never remount the layout.
+  // Wait for this compare mount's full LoRA inventory before choosing a layout.
+  // Once either the inventory or the bounded fallback chooses one, keep it for
+  // the lifetime of the pair so its persisted thread types remain visible.
   useEffect(() => {
-    if (!inventoryRefreshComplete) return;
-    if (modelsError && isLoraCompare === null) {
-      usedInventoryFallbackRef.current = true;
+    if (isLoraCompare !== null || !inventoryRefreshComplete) return;
+    if (modelsError) {
       setIsLoraCompare(false);
       return;
     }
-    if (modelRuntimeHydrated) {
-      if (usedInventoryFallbackRef.current) {
-        // A successful retry can land while generalized compare has temporarily
-        // loaded one pane into the global checkpoint. Keep the fallback layout
-        // mounted until submission ends, then classify the original checkpoint.
-        if (compareActive) return;
-      }
-      const state = useChatRuntimeStore.getState();
-      if (!layoutCheckpointCapturedRef.current) {
-        layoutCheckpointRef.current = state.params.checkpoint;
-        layoutCheckpointCapturedRef.current = true;
-      }
-      const checkpoint = layoutCheckpointRef.current;
-      const detected = getIsLoraCompareFromState(state, checkpoint);
-      if (usedInventoryFallbackRef.current) {
-        usedInventoryFallbackRef.current = false;
-        setIsLoraCompare(detected);
-      } else {
-        setIsLoraCompare((current) => current ?? detected);
-      }
-      return;
-    }
+    if (!modelRuntimeHydrated) return;
+    setIsLoraCompare(
+      getIsLoraCompareFromState(useChatRuntimeStore.getState()),
+    );
   }, [
-    compareActive,
     inventoryRefreshComplete,
     modelRuntimeHydrated,
     modelsError,
@@ -641,7 +620,6 @@ const CompareContent = memo(function CompareContent({
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
       onExitCompare={onExitCompare}
-      onComparingChange={handleCompareActiveChange}
     />
   );
 });
@@ -959,7 +937,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const idleThreadRefreshRef = useRef(0);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
-    isLora: false,
+    isLora: loraModels.some(
+      (lora) =>
+        lora.id === globalCheckpoint && lora.exportType === "lora",
+    ),
     ggufVariant: globalGgufVariant ?? undefined,
     isDiffusion: globalIsDiffusion,
   });
@@ -970,6 +951,24 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const initialThreadLookupCompleteRef = useRef(false);
   const [initialThreadLookupComplete, setInitialThreadLookupComplete] =
     useState(false);
+
+  useEffect(() => {
+    // A bounded inventory fallback can mount this path from a cached catalog.
+    // Retain (or later learn) adapter identity so sequential reloads continue
+    // to use the LoRA load semantics without remounting the conversation panes.
+    setModel1((current) => {
+      if (
+        current.isLora ||
+        !loraModels.some(
+          (lora) =>
+            lora.id === current.id && lora.exportType === "lora",
+        )
+      ) {
+        return current;
+      }
+      return { ...current, isLora: true };
+    });
+  }, [loraModels]);
 
   const handleModelsChange = useCallback(
     (deletedModel?: DeletedModelRef) => {

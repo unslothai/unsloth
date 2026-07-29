@@ -293,11 +293,16 @@ function finishFullInventoryRefresh(succeeded: boolean): void {
     fullInventoryRefreshesInFlight - 1,
   );
   if (fullInventoryRefreshesInFlight === 0) {
-    useChatRuntimeStore
-      .getState()
-      .setModelRuntimeHydrated(
-        fullInventoryRefreshSucceeded || fullInventoryHydrationBaseline,
-      );
+    const store = useChatRuntimeStore.getState();
+    if (fullInventoryRefreshSucceeded) {
+      // A failed sibling may have published an error before this overlapping
+      // refresh group settled. Any success published a current inventory, so
+      // the completed group must not leave that stale error behind.
+      store.setModelsError(null);
+    }
+    store.setModelRuntimeHydrated(
+      fullInventoryRefreshSucceeded || fullInventoryHydrationBaseline,
+    );
   }
 }
 
@@ -379,16 +384,23 @@ async function syncInferenceStatusToStore(options?: {
       finishFullInventoryRefresh(true);
     }
   } catch (error) {
-    if (includeLoras) {
-      finishFullInventoryRefresh(false);
+    if (signal?.aborted) {
+      if (includeLoras) {
+        finishFullInventoryRefresh(false);
+      }
+      return;
     }
-    if (signal?.aborted) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
     toast.error("Failed to refresh models", {
       description: message,
     });
+    // Finish after publishing the failure. If an overlapping sibling already
+    // succeeded, group completion clears this stale error atomically.
+    if (includeLoras) {
+      finishFullInventoryRefresh(false);
+    }
   }
 }
 

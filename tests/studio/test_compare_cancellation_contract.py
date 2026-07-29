@@ -32,23 +32,26 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     compare = compare.split("return isLoraCompare ?", 1)[0]
     assert "state.modelRuntimeHydrated" in compare
     assert "state.modelsError" in compare
-    assert "usedInventoryFallbackRef" in compare
-    assert "layoutCheckpointRef" in compare
-    assert "layoutCheckpointCapturedRef" in compare
-    assert "handleCompareActiveChange" in compare
-    assert "if (compareActive) return;" in compare
     assert "onRefreshModelInventories: () => Promise<void>" in compare
     assert "const [inventoryRefreshComplete, setInventoryRefreshComplete]" in compare
     assert "void onRefreshModelInventories().finally(" in compare
-    assert "if (!inventoryRefreshComplete) return;" in compare
-    assert "if (modelsError && isLoraCompare === null)" in compare
+    assert "COMPARE_INVENTORY_WAIT_MS" in compare
+    assert "window.setTimeout(" in compare
+    assert "current ?? false" in compare
+    assert "if (isLoraCompare !== null || !inventoryRefreshComplete) return;" in compare
+    assert "if (modelsError)" in compare
     assert "setIsLoraCompare(false);" in compare
-    assert "setIsLoraCompare(detected);" in compare
     assert "const [isLoraCompare, setIsLoraCompare]" in compare
     assert "getIsLoraCompareFromState(" in compare
     assert "useChatRuntimeStore.getState()" in compare
-    assert "current ??" in compare
     assert 'aria-busy="true"' in compare
+
+    generalized = page.split("const GeneralCompareContent = memo(", 1)[1]
+    generalized = generalized.split("const model2LoraBase", 1)[0]
+    assert "lora.id === globalCheckpoint" in generalized
+    assert "lora.id === current.id" in generalized
+    assert 'lora.exportType === "lora"' in generalized
+    assert "return { ...current, isLora: true };" in generalized
 
 
 def test_overlapping_inventory_refreshes_restore_hydration_as_a_group():
@@ -57,8 +60,14 @@ def test_overlapping_inventory_refreshes_restore_hydration_as_a_group():
     sync = sync.split("export async function resyncInferenceStatus", 1)[0]
     assert "beginFullInventoryRefresh();" in sync
     assert "finishFullInventoryRefresh(true);" in sync
-    assert sync.count("finishFullInventoryRefresh(false);") == 2
+    assert sync.count("finishFullInventoryRefresh(false);") == 3
     assert "fullInventoryRefreshSucceeded || fullInventoryHydrationBaseline" in runtime
+    assert "if (fullInventoryRefreshSucceeded)" in runtime
+    assert "store.setModelsError(null);" in runtime
+    failed = sync.split("} catch (error) {", 1)[1]
+    assert failed.index("setModelsError(message);") < failed.rindex(
+        "finishFullInventoryRefresh(false);"
+    )
 
 
 def test_same_model_reload_retains_origin_for_stop_reconciliation():
