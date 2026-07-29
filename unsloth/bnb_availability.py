@@ -18,10 +18,9 @@ From 0.46 a wheel whose native library never loaded still imports and hands back
 `throw_on_call` closure for every symbol, so attribute reads alone see a healthy wheel,
 `ALLOW_BITSANDBYTES` stays true and 4bit dies inside a kernel instead of falling back to
 16bit up front. A real handle is a ctypes function pointer and carries `restype`; a
-deferred failure is a plain Python function and does not. That is the whole test.
-
-Every probed handle has to be native, since the same verdict gates the module-scope binds
-in kernels/utils.py and one bad symbol there is the crash this exists to prevent.
+deferred failure is a plain Python function and does not. That is the whole test, applied
+to every probed handle: the same verdict gates the module-scope binds in kernels/utils.py,
+where one bad symbol is the crash this exists to prevent.
 
 Decides the capability flags only, never importability - a CPU-only install is exactly
 this shape and its Python side works. A leaf module: imports nothing from unsloth
@@ -62,12 +61,10 @@ def bitsandbytes_symbols(device_type):
 def check_native_kernels(bnb, device_type):
     """Raise unless every handle kernels/utils.py is about to bind is a real kernel.
 
-    All of them, not just one: this same verdict gates the module-scope binds, and a
-    symbol that resolves for the probe but not for the bind gives back the AttributeError
-    this exists to prevent. Partial export costs 8bit too, since `ALLOW_BITSANDBYTES`
-    gates both (loader.py clears each), but a wheel missing a symbol is a shape no flag
-    can make safe - refusing it beats crashing on it. Safe to repeat: ctypes caches each
-    handle on first lookup, so these are the ones bound later.
+    All of them: one that resolves here but not at the bind gives back the AttributeError
+    this prevents. Partial export costs 8bit too (`ALLOW_BITSANDBYTES` gates both), but a
+    wheel missing a symbol is a shape no flag makes safe. Safe to repeat - ctypes caches
+    each handle on first lookup, so these are the ones bound later.
     """
     if bnb is None:
         raise ImportError("Unsloth: `bitsandbytes` is not installed.")

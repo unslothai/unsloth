@@ -101,13 +101,8 @@ def test_a_lib_that_never_loaded_is_not_ready():
 
 
 def test_a_partially_exporting_library_is_not_ready():
-    """Every probed handle has to be native, not just one.
-
-    The same verdict gates the module-scope binds, so a library that resolves one symbol
-    and not another would pass the probe and then raise `AttributeError` at the bind it
-    was meant to prevent. It costs 8bit too (`ALLOW_BITSANDBYTES` gates both), but a
-    wheel missing a symbol is a shape no flag makes safe.
-    """
+    """One resolvable symbol is not enough: the same verdict gates the module-scope
+    binds, so a partial library would pass here and raise `AttributeError` at the bind."""
 
     class _MissingOne(_RealHandleLib):
         def __getattr__(self, name):
