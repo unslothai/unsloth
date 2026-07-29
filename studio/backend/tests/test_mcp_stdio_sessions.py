@@ -45,8 +45,15 @@ class FakeClient:
         # Models a dead stdio transport: real Client.is_connected() stays True
         # after the subprocess dies, so liveness is probed via the transport.
         self.dead = False
+        # A server still stuck on an abandoned call fails its ping.
+        self.ping_ok = True
         self.transport = SimpleNamespace(_is_session_dead = lambda: self.dead)
         FakeClient.instances.append(self)
+
+    async def ping(self) -> bool:
+        if not self.ping_ok:
+            await asyncio.sleep(30)
+        return True
 
     async def __aenter__(self):
         self.entered += 1
@@ -150,9 +157,9 @@ def test_http_stays_one_shot(fake_clients):
     assert all(c.entered == 1 and c.exited == 1 for c in fake_clients)
 
 
-def test_timeout_discards_stdio_session(fake_clients):
+def test_timeout_keeps_a_responsive_stdio_session(fake_clients):
+    # A stateful server (browser, DB handle) must survive one slow call.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
-    key = mcp_client._session_key(STDIO_URL, None, "chat")
     fake_clients[0].call_delay = 0.5
     out = call_tool_sync(
         STDIO_URL,
@@ -164,10 +171,49 @@ def test_timeout_discards_stdio_session(fake_clients):
         scope = "chat",
     )
     assert "timed out" in out
-    assert fake_clients[0].exited == 1
-    assert key not in mcp_client._stdio_key_locks
+    fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-2"
+    assert len(fake_clients) == 1
+    assert fake_clients[0].exited == 0
+
+
+def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
+    # If the server never answers the ping it is still stuck on the abandoned
+    # call, so it is replaced rather than reused.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    key = mcp_client._session_key(STDIO_URL, None, "chat")
+    fake_clients[0].call_delay = 0.5
+    fake_clients[0].ping_ok = False
+    out = call_tool_sync(
+        STDIO_URL,
+        None,
+        "slow",
+        {},
+        timeout = 0.05,
+        cancel_event = threading.Event(),
+        scope = "chat",
+    )
+    assert "timed out" in out
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
+    assert fake_clients[0].exited == 1
+    assert key in mcp_client._stdio_sessions
+
+
+def test_cancel_preserves_stateful_session(fake_clients):
+    # Pressing Stop must not tear down the server and its state.
+    call_tool_sync(STDIO_URL, None, "browser_navigate", {}, scope = "chat")
+    fake_clients[0].call_delay = 1.0
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+    out = call_tool_sync(
+        STDIO_URL, None, "browser_snapshot", {}, scope = "chat",
+        cancel_event = cancel, timeout = 5,
+    )
+    assert out == "Error: MCP tool 'browser_snapshot' cancelled"
+    fake_clients[0].call_delay = 0.0
+    assert call_tool_sync(STDIO_URL, None, "browser_snapshot", {}, scope = "chat") == "call-2"
+    assert len(fake_clients) == 1
 
 
 def test_no_timeout_allows_long_call(fake_clients):

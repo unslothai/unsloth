@@ -262,6 +262,7 @@ _STDIO_SESSION_REAP_INTERVAL = 30.0
 _STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
 _STDIO_CLOSE_TIMEOUT = 10.0
 _STDIO_WEDGE_MARGIN = 15.0
+_STDIO_PING_TIMEOUT = 5.0
 # Cap concurrent persistent sessions: each owns a subprocess + loop thread, and
 # the scope includes a caller-supplied thread_id, so an unbounded cache is a
 # resource-exhaustion surface. Overridable via env for large deployments.
@@ -308,6 +309,24 @@ def _transport_dead(session) -> bool:
     return False
 
 
+def _session_responsive(session) -> bool:
+    """Whether a session left dirty by an abandoned call can be reused: the
+    server must answer a ping, proving it is not still stuck on that call."""
+    client = session.client
+    if client is None:
+        return False
+    try:
+        answered = session.run(
+            asyncio.wait_for(client.ping(), _STDIO_PING_TIMEOUT), _STDIO_PING_TIMEOUT
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    if answered is False:
+        return False
+    session.dirty = False
+    return True
+
+
 class _SessionWedged(Exception):
     pass
 
@@ -332,6 +351,7 @@ class _StdioSession:
         self.client = None
         self.closed = threading.Event()
         self.defunct = False  # discarded; close once in_flight drains (see _retire)
+        self.dirty = False  # a call was abandoned on it; ping before reuse
         self._close_lock = threading.Lock()
         self.call_lock = threading.Lock()  # serializes tool calls on this session
         self.last_used = time.monotonic()
@@ -969,6 +989,13 @@ def _call_stdio_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
+            elif session.dirty and not _session_responsive(session):
+                # Still stuck on the abandoned call; only now is a fresh one needed.
+                discard_session = True
+                if attempt == 0:
+                    retry = True
+                else:
+                    raise RuntimeError("MCP server is not responding")
             else:
                 rem = _remaining()
                 # raise_on_error=False for the same reason as the one-shot path.
@@ -979,10 +1006,10 @@ def _call_stdio_tool(
                 )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
-            # _race_tool_call cancels the pending call but cancellation is
-            # cooperative. Never return this client to the cache while the
-            # timed-out/cancelled operation might still run on its transport.
-            discard_session = True
+            # Keep the session so a Stop doesn't destroy the server's state (an open
+            # browser, a DB handle). The abandoned reply can't be mis-delivered: the
+            # SDK drops replies whose request id is gone. Reuse is gated on a ping.
+            session.dirty = True
             raise
         except _SessionWedged:
             discard_session = True
