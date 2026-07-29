@@ -16,6 +16,9 @@ RESOURCE_PROVENANCE_KEY = "resource_provenance"
 
 _ATTESTED = "attested"
 _INCOMPLETE = "incomplete"
+_MODEL_LOAD_UNQUANTIZED = "unquantized"
+_MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
+_MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
 _REPO_ID_RE = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95})"
     r"(?:/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95}))?"
@@ -145,10 +148,12 @@ def _snapshot_declares_quantization(snapshot: Path) -> bool:
 
 
 def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
+    from hub.utils.hf_cache_state import same_existing_path
+
     try:
         snapshot = snapshot.resolve(strict = True)
         repo_dir = snapshot.parent.parent.resolve(strict = True)
-        if snapshot.parent != repo_dir / "snapshots":
+        if not same_existing_path(snapshot.parent, repo_dir / "snapshots"):
             return None
         relative = path.relative_to(snapshot)
         resolved = snapshot.joinpath(*relative.parts).resolve(strict = True)
@@ -234,7 +239,10 @@ def exact_model_snapshot_path(
     except (OSError, RuntimeError, ValueError):
         return None
 
-    from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+    from hub.utils.hf_cache_state import (
+        latest_snapshot_from_cache_path,
+        same_existing_path,
+    )
 
     validated = latest_snapshot_from_cache_path(
         str(requested),
@@ -248,7 +256,9 @@ def exact_model_snapshot_path(
         resolved = Path(validated).resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
-    if resolved != requested or not _snapshot_has_model_weights(resolved):
+    if not same_existing_path(resolved, requested) or not _snapshot_has_model_weights(
+        resolved
+    ):
         return None
     if require_quantized and not _snapshot_declares_quantization(resolved):
         return None
@@ -290,6 +300,7 @@ def exact_dataset_snapshot_path(path_value: Any, repo_id: Any) -> Optional[str]:
         return None
 
     from hub.utils.dataset_cache import dataset_snapshot_from_cache_path
+    from hub.utils.hf_cache_state import same_existing_path
 
     validated = dataset_snapshot_from_cache_path(str(requested), repo_id)
     if validated is None:
@@ -298,7 +309,9 @@ def exact_dataset_snapshot_path(path_value: Any, repo_id: Any) -> Optional[str]:
         resolved = validated.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
-    if resolved != requested or not _snapshot_has_dataset_data(resolved):
+    if not same_existing_path(resolved, requested) or not _snapshot_has_dataset_data(
+        resolved
+    ):
         return None
     return str(resolved)
 
@@ -492,8 +505,7 @@ def _object_value(value: Any, key: str) -> Any:
         return None
 
 
-def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
-    refs: set[tuple[str, str]] = set()
+def _loaded_model_objects(model: Any):
     queue = [model]
     seen: set[int] = set()
     while queue and len(seen) < 32:
@@ -501,7 +513,40 @@ def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
         if current is None or id(current) in seen:
             continue
         seen.add(id(current))
+        yield current
 
+        for attr in (
+            "config",
+            "hf_quantizer",
+            "model",
+            "auto_model",
+            "base_model",
+            "module",
+        ):
+            child = _object_value(current, attr)
+            if child is not None and id(child) not in seen:
+                queue.append(child)
+        modules = _object_value(current, "_modules")
+        if isinstance(modules, dict):
+            queue.extend(list(modules.values())[:16])
+
+
+def _loaded_model_is_4bit(model: Any) -> bool:
+    for current in _loaded_model_objects(model):
+        if _object_value(current, "is_loaded_in_4bit") is True:
+            return True
+        quantization = _object_value(current, "quantization_config")
+        if isinstance(quantization, dict):
+            if quantization.get("load_in_4bit") is True:
+                return True
+        elif _object_value(quantization, "load_in_4bit") is True:
+            return True
+    return False
+
+
+def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
+    refs: set[tuple[str, str]] = set()
+    for current in _loaded_model_objects(model):
         repo_id = _normalized_repo_id(
             _object_value(current, "_name_or_path")
             or _object_value(current, "name_or_path")
@@ -512,15 +557,21 @@ def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
         )
         if repo_id is not None and commit is not None:
             refs.add((repo_id, commit))
-
-        for attr in ("config", "model", "auto_model", "base_model", "module"):
-            child = _object_value(current, attr)
-            if child is not None and id(child) not in seen:
-                queue.append(child)
-        modules = _object_value(current, "_modules")
-        if isinstance(modules, dict):
-            queue.extend(list(modules.values())[:16])
     return refs
+
+
+def _attested_model_load_mode(
+    snapshot: str,
+    model: Any,
+    load_in_4bit: bool,
+) -> Optional[str]:
+    if not load_in_4bit:
+        return _MODEL_LOAD_UNQUANTIZED
+    if _snapshot_declares_quantization(Path(snapshot)):
+        return _MODEL_LOAD_PREQUANTIZED_4BIT
+    if _loaded_model_is_4bit(model):
+        return _MODEL_LOAD_RUNTIME_4BIT
+    return None
 
 
 def attest_loaded_model(
@@ -529,32 +580,38 @@ def attest_loaded_model(
     *,
     load_target: Any,
     load_in_4bit: bool,
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    selected_repo = config.get("actual_model_repo_id") or config.get("model_name")
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    selected_repo = config.get("actual_model_repo_id")
+    if selected_repo is None:
+        from utils.utils import canonical_model_repo_id
+
+        selected_repo = canonical_model_repo_id(str(config.get("model_name") or ""))
     direct = exact_model_snapshot_path(
         load_target,
         selected_repo,
-        require_quantized = load_in_4bit,
     )
     if direct is not None:
-        return _normalized_repo_id(selected_repo), direct, None
+        load_mode = _attested_model_load_mode(direct, model, load_in_4bit)
+        if load_mode is not None:
+            return _normalized_repo_id(selected_repo), direct, load_mode, None
 
-    resolved: set[tuple[str, str]] = set()
+    resolved: set[tuple[str, str, str]] = set()
     for repo_id, commit in _loaded_model_refs(model):
         snapshot = exact_model_snapshot_for_commit(
             repo_id,
             commit,
-            require_quantized = load_in_4bit,
         )
         if snapshot is not None:
-            resolved.add((repo_id, snapshot))
+            load_mode = _attested_model_load_mode(snapshot, model, load_in_4bit)
+            if load_mode is not None:
+                resolved.add((repo_id, snapshot, load_mode))
     if len(resolved) == 1:
-        repo_id, snapshot = resolved.pop()
-        return repo_id, snapshot, None
+        repo_id, snapshot, load_mode = resolved.pop()
+        return repo_id, snapshot, load_mode, None
     if len(resolved) > 1:
-        return None, None, "model_metadata_ambiguous"
+        return None, None, None, "model_metadata_ambiguous"
     reason = "model_quantized_snapshot_unattested" if load_in_4bit else "model_snapshot_unattested"
-    return None, None, reason
+    return None, None, None, reason
 
 
 def _dataset_reason(config: dict[str, Any]) -> str:
@@ -577,7 +634,7 @@ def build_worker_provenance_event(
     model_load_in_4bit: bool,
     dataset_loaded_from_exact_snapshot: bool,
 ) -> dict[str, Any]:
-    model_repo_id, model_snapshot, model_reason = attest_loaded_model(
+    model_repo_id, model_snapshot, model_load_mode, model_reason = attest_loaded_model(
         config,
         model,
         load_target = model_load_target,
@@ -602,6 +659,7 @@ def build_worker_provenance_event(
             "status": _ATTESTED if model_snapshot else _INCOMPLETE,
             "repo_id": model_repo_id,
             "snapshot_path": model_snapshot,
+            "load_mode": model_load_mode,
         },
         "dataset": {
             "status": _ATTESTED if dataset_snapshot else _INCOMPLETE,
@@ -615,7 +673,12 @@ def incomplete_worker_provenance_event(*reasons: str) -> dict[str, Any]:
     return {
         "type": "resource_provenance",
         "version": RESOURCE_PROVENANCE_VERSION,
-        "model": {"status": _INCOMPLETE, "repo_id": None, "snapshot_path": None},
+        "model": {
+            "status": _INCOMPLETE,
+            "repo_id": None,
+            "snapshot_path": None,
+            "load_mode": None,
+        },
         "dataset": {"status": _INCOMPLETE, "snapshot_path": None},
         "reasons": list(reasons) or ["provenance_unavailable"],
     }
@@ -642,6 +705,7 @@ def normalize_worker_provenance_event(
 
     model_repo_id = _normalized_repo_id(model_event.get("repo_id"))
     model_snapshot = None
+    model_load_mode = None
     if (
         event.get("version") == RESOURCE_PROVENANCE_VERSION
         and model_event.get("status") == _ATTESTED
@@ -649,8 +713,27 @@ def normalize_worker_provenance_event(
         model_snapshot = exact_model_snapshot_path(
             model_event.get("snapshot_path"),
             model_repo_id,
-            require_quantized = bool(config.get("load_in_4bit")),
         )
+        if model_snapshot is not None:
+            event_load_mode = model_event.get("load_mode")
+            snapshot_is_quantized = _snapshot_declares_quantization(
+                Path(model_snapshot)
+            )
+            if bool(config.get("load_in_4bit")):
+                if (
+                    event_load_mode in (None, _MODEL_LOAD_PREQUANTIZED_4BIT)
+                    and snapshot_is_quantized
+                ):
+                    model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
+                elif (
+                    event_load_mode == _MODEL_LOAD_RUNTIME_4BIT
+                    and not snapshot_is_quantized
+                ):
+                    model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
+            elif event_load_mode in (None, _MODEL_LOAD_UNQUANTIZED):
+                model_load_mode = _MODEL_LOAD_UNQUANTIZED
+            if model_load_mode is None:
+                model_snapshot = None
     if model_snapshot is None:
         model_repo_id = None
         if "model_event_invalid" not in reasons:
@@ -677,6 +760,7 @@ def normalize_worker_provenance_event(
             "version": RESOURCE_PROVENANCE_VERSION,
             "status": "complete" if complete else "incomplete",
             "model_status": _ATTESTED if model_snapshot else _INCOMPLETE,
+            "model_load_mode": model_load_mode,
             "dataset_status": _ATTESTED if dataset_snapshot else _INCOMPLETE,
             "reasons": reasons,
         },
@@ -693,11 +777,46 @@ def resource_provenance_is_complete(config: dict[str, Any]) -> bool:
 
 
 def validate_exact_model_pin(config: dict[str, Any]) -> str:
+    marker = config.get(RESOURCE_PROVENANCE_KEY)
+    stored_load_mode = config.get("resume_model_load_mode")
+    if stored_load_mode is None and isinstance(marker, dict):
+        stored_load_mode = marker.get("model_load_mode")
+    load_in_4bit = bool(config.get("load_in_4bit"))
+    if load_in_4bit:
+        if stored_load_mode is None:
+            model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
+        elif stored_load_mode in {
+            _MODEL_LOAD_PREQUANTIZED_4BIT,
+            _MODEL_LOAD_RUNTIME_4BIT,
+        }:
+            model_load_mode = stored_load_mode
+        else:
+            model_load_mode = None
+    elif stored_load_mode in (None, _MODEL_LOAD_UNQUANTIZED):
+        model_load_mode = _MODEL_LOAD_UNQUANTIZED
+    else:
+        model_load_mode = None
+
+    if model_load_mode is None:
+        raise ExactResumeResourcesUnavailable(
+            "The exact model snapshot for this run is no longer available."
+        )
+    model_repo_id = config.get("actual_model_repo_id")
+    if model_repo_id is None:
+        from utils.utils import canonical_model_repo_id
+
+        model_repo_id = canonical_model_repo_id(str(config.get("model_name") or ""))
     model_snapshot = exact_model_snapshot_path(
         config.get("model_snapshot_path"),
-        config.get("actual_model_repo_id") or config.get("model_name"),
-        require_quantized = bool(config.get("load_in_4bit")),
+        model_repo_id,
+        require_quantized = model_load_mode == _MODEL_LOAD_PREQUANTIZED_4BIT,
     )
+    if (
+        model_snapshot is not None
+        and model_load_mode == _MODEL_LOAD_RUNTIME_4BIT
+        and _snapshot_declares_quantization(Path(model_snapshot))
+    ):
+        model_snapshot = None
     if model_snapshot is None:
         raise ExactResumeResourcesUnavailable(
             "The exact model snapshot for this run is no longer available."

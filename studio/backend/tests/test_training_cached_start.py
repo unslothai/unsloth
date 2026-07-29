@@ -183,7 +183,7 @@ def test_untrainable_gate_inspects_verified_snapshot_path(tmp_path):
     assert "Adapter-only local models" in exc_info.value.detail
 
 
-def test_untrainable_gate_inspects_discovered_known_cache(tmp_path):
+def test_untrainable_gate_inspects_selected_cache(tmp_path):
     route = _load_route_module("training_route_discovered_cache_format")
     snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
@@ -198,6 +198,119 @@ def test_untrainable_gate_inspects_discovered_known_cache(tmp_path):
 
     assert exc_info.value.status_code == 400
     assert "Adapter-only local models" in exc_info.value.detail
+
+
+def test_online_probe_ignores_unadvertised_stale_cache(tmp_path):
+    route = _load_route_module("training_route_online_ignores_stale_cache")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "adapter_config.json").write_text("{}")
+
+    with patch.object(route, "_remote_model_is_adapter", return_value = False):
+        route._reject_untrainable_model_request(_request())
+
+
+def test_unavailable_probe_inspects_unadvertised_cache(tmp_path):
+    route = _load_route_module("training_route_outage_inspects_cache")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "adapter_config.json").write_text("{}")
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = HTTPException(status_code = 503, detail = "unavailable"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(_request())
+
+    assert exc_info.value.status_code == 400
+    assert "Adapter-only local models" in exc_info.value.detail
+
+
+def test_unavailable_probe_uses_cached_shorthand_model(tmp_path):
+    route = _load_route_module("training_route_outage_shorthand_cache")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"x")
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = HTTPException(status_code = 503, detail = "unavailable"),
+    ):
+        pin = route._reject_untrainable_model_request(_request(model_name = "test"))
+
+    assert pin == ("unsloth/test", str(snapshot.resolve()))
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
+    from core.training import worker
+    from core.training.training import _apply_cache_pins, _build_training_worker_config
+
+    route = _load_route_module(f"training_route_cache_pin_to_worker_{offline}")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"x")
+    captured: dict = {}
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: captured.update(kwargs) or True,
+    )
+    if offline:
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        probe_error = AssertionError("offline cache start must not query Hub metadata")
+    else:
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        probe_error = HTTPException(status_code = 503, detail = "unavailable")
+
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(
+            route,
+            "_remote_model_is_adapter",
+            side_effect = probe_error,
+        ),
+        patch.object(route, "load_model_defaults", return_value = {}),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        patch("utils.transformers_version.latest_tier_active_for", return_value = False),
+        patch(
+            "core.inference.get_inference_backend",
+            return_value = type("InferenceBackend", (), {"active_model_name": None})(),
+        ),
+        patch(
+            "core.export.get_export_backend",
+            return_value = type("ExportBackend", (), {"current_checkpoint": None})(),
+        ),
+    ):
+        response = _start(route, _request(model_name = "test"))
+
+    assert response.status == "queued"
+    assert captured["actual_model_repo_id"] == "unsloth/test"
+    assert captured["model_snapshot_path"] == str(snapshot.resolve())
+    assert captured["require_validated_model_snapshot"] is True
+
+    config = _build_training_worker_config(captured)
+    _apply_cache_pins(config)
+    events: list[dict] = []
+    assert worker._verify_config_pins(
+        config,
+        SimpleNamespace(put = events.append),
+    ) is True
+    assert config["actual_model_repo_id"] == "unsloth/test"
+    assert config["model_snapshot_path"] == str(snapshot.resolve())
+    assert config["require_validated_model_snapshot"] is True
+    assert worker._cache_artifact_fallback_allowed(
+        config,
+        OSError("incomplete cache"),
+        "model",
+    ) is False
 
 
 def test_untrainable_gate_rejects_remote_adapter():
@@ -362,16 +475,14 @@ def test_reset_route_reports_superseded_job_without_mutation():
     assert calls == ["job_old"]
 
 
-def test_resume_route_uses_source_run_resource_pins(tmp_path):
+def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
     route = _load_route_module("training_route_resume_resource_provenance")
     model_root = tmp_path / "models--unsloth--test"
     old_model = model_root / "snapshots" / "commit-old"
     new_model = model_root / "snapshots" / "commit-new"
     for snapshot in (old_model, new_model):
         snapshot.mkdir(parents = True)
-        (snapshot / "config.json").write_text(
-            json.dumps({"quantization_config": {"load_in_4bit": True}})
-        )
+        (snapshot / "config.json").write_text("{}")
         (snapshot / "model.safetensors").write_bytes(b"x")
     dataset_root = tmp_path / "datasets--org--dataset"
     old_dataset = dataset_root / "snapshots" / "commit-old"
@@ -397,6 +508,7 @@ def test_resume_route_uses_source_run_resource_pins(tmp_path):
             "version": 1,
             "status": "complete",
             "model_status": "attested",
+            "model_load_mode": "runtime_4bit",
             "dataset_status": "attested",
             "reasons": [],
         },
@@ -462,7 +574,23 @@ def test_resume_route_uses_source_run_resource_pins(tmp_path):
     assert captured["require_exact_resume_resources"] is True
     assert captured["require_exact_model_resource"] is True
     assert captured["require_exact_dataset_resource"] is True
+    assert captured["resume_model_load_mode"] == "runtime_4bit"
     assert tier_targets == [str(old_model.resolve())]
+
+    from core.training.training import (
+        _apply_cache_pins,
+        _build_training_worker_config,
+    )
+
+    with patch(
+        "core.training.training.get_device",
+        return_value = SimpleNamespace(value = "cuda"),
+    ):
+        worker_config = _build_training_worker_config(captured)
+    _apply_cache_pins(worker_config)
+
+    assert worker_config["resume_model_load_mode"] == "runtime_4bit"
+    assert worker_config["model_snapshot_path"] == str(old_model.resolve())
 
 
 def test_resume_resource_provenance_restores_model_structure():
@@ -513,7 +641,7 @@ def test_resume_resource_provenance_restores_model_structure():
         },
     }
 
-    route._apply_resume_resource_provenance(request, resume_run)
+    route._prepare_resume_resource_provenance(request, resume_run)
 
     for field, expected in source_structure.items():
         assert getattr(request, field) == expected
@@ -541,7 +669,7 @@ def test_resume_resource_provenance_rejects_invalid_stored_structure(invalid_str
     }
 
     with pytest.raises(HTTPException) as exc_info:
-        route._apply_resume_resource_provenance(request, resume_run)
+        route._prepare_resume_resource_provenance(request, resume_run)
 
     assert exc_info.value.status_code == 409
     assert "invalid training configuration" in exc_info.value.detail
@@ -624,7 +752,7 @@ def test_resume_resource_provenance_rejects_identity_changes(request_overrides, 
     }
 
     with pytest.raises(HTTPException) as exc_info:
-        route._apply_resume_resource_provenance(request, resume_run)
+        route._prepare_resume_resource_provenance(request, resume_run)
 
     assert exc_info.value.status_code == 409
     assert detail in exc_info.value.detail
@@ -659,7 +787,7 @@ def test_legacy_resume_config_cannot_inject_cache_pins():
         "config_json": source_config,
     }
 
-    route._apply_resume_resource_provenance(request, resume_run)
+    route._prepare_resume_resource_provenance(request, resume_run)
 
     assert request.model_known_cached is False
     assert request.model_local_path is None
@@ -691,7 +819,7 @@ def test_unattested_current_hub_model_resume_is_rejected(status):
     }
 
     with pytest.raises(HTTPException) as exc_info:
-        route._apply_resume_resource_provenance(request, resume_run)
+        route._prepare_resume_resource_provenance(request, resume_run)
 
     assert exc_info.value.status_code == 409
 
@@ -1136,7 +1264,8 @@ def test_worker_local_files_only_flags():
     assert worker._dataset_local_files_only({}) is False
 
 
-def test_worker_security_scans_exact_model_load_target():
+@pytest.mark.parametrize("offline", [False, True])
+def test_worker_security_scans_exact_model_load_target(offline):
     from core.training import worker
 
     snapshot = "/cache/models--org--model/snapshots/deadbeef"
@@ -1159,6 +1288,7 @@ def test_worker_security_scans_exact_model_load_target():
             )
             or decision,
         ),
+        patch("utils.utils.hf_env_offline", return_value = offline),
     ):
         result = worker._model_load_security_error(
             {
@@ -1171,7 +1301,7 @@ def test_worker_security_scans_exact_model_load_target():
         )
 
     assert result is None
-    assert scanned == [(snapshot, True)]
+    assert scanned == [(snapshot, offline)]
 
 
 def test_worker_remote_retry_security_scan_is_not_local_only():
@@ -1194,6 +1324,7 @@ def test_worker_remote_retry_security_scan_is_not_local_only():
             )
             or decision,
         ),
+        patch("utils.utils.hf_env_offline", return_value = False),
     ):
         result = worker._model_load_security_error(
             {
@@ -1207,6 +1338,47 @@ def test_worker_remote_retry_security_scan_is_not_local_only():
 
     assert result is None
     assert scanned == [("org/model", False)]
+
+
+def test_worker_security_scopes_pinned_target_before_registry_fallback():
+    from core.training import worker
+
+    snapshot = "/cache/models--org--model/snapshots/deadbeef"
+    scanned: list[tuple[str, tuple[str, ...]]] = []
+    decision = SimpleNamespace(blocked = False)
+
+    with (
+        patch(
+            "utils.models.model_config.get_base_model_from_lora_identifier",
+            return_value = None,
+        ),
+        patch(
+            "utils.security.security_load_subdirs",
+            side_effect = lambda target, _token: (
+                ("LLM",) if target == snapshot else ("registry",)
+            ),
+        ),
+        patch(
+            "utils.security.evaluate_file_security",
+            side_effect = lambda target, **kwargs: scanned.append(
+                (target, kwargs["load_subdirs"])
+            )
+            or decision,
+        ),
+        patch("utils.utils.hf_env_offline", return_value = False),
+    ):
+        result = worker._model_load_security_error(
+            {
+                "model_name": "org/model",
+                "model_snapshot_path": snapshot,
+                "trust_remote_code": False,
+            },
+            snapshot,
+            None,
+        )
+
+    assert result is None
+    assert scanned == [(snapshot, ("LLM", "registry"))]
 
 
 def test_worker_security_consent_uses_exact_target_and_base():

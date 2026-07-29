@@ -293,13 +293,6 @@ async def delete_training_run(
     if delete_artifacts:
         output_dir = run.get("output_dir")
         if output_dir:
-            if _output_dirs_overlap(output_dir, _active_training_output_dir()):
-                raise HTTPException(
-                    status_code = 409,
-                    detail = (
-                        "Cannot delete artifacts while a training run is writing to this directory"
-                    ),
-                )
             delete_outcome = await asyncio.to_thread(
                 _delete_run_output_dir_guarded,
                 run_id,

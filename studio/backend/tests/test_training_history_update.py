@@ -128,9 +128,13 @@ def test_sanitize_db_config_strips_subject_and_secrets():
             "subject": "alice@example.com",
             "hf_token": "hf_secret",
             "wandb_token": "wb_secret",
+            "resume_model_load_mode": "runtime_4bit",
+            "require_validated_model_snapshot": True,
             "lora_r": 16,
         }
     )
     assert "subject" not in db
     assert "hf_token" not in db and "wandb_token" not in db
+    assert "resume_model_load_mode" not in db
+    assert "require_validated_model_snapshot" not in db
     assert db["model_name"] == "unsloth/test-model" and db["lora_r"] == 16

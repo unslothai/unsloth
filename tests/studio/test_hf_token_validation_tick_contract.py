@@ -481,6 +481,13 @@ def test_superseded_training_reset_preserves_the_current_runtime():
     assert "currentRuntime.resetGeneration !== expectedResetGeneration" in guarded_reset
     assert "await syncTrainingRuntimeFromBackend().catch(() => undefined)" in guarded_reset
     assert "return;" in guarded_reset
+    assert (
+        dismiss.count(
+            "await syncTrainingRuntimeFromBackend().catch(() => undefined)"
+        )
+        == 2
+    )
+    assert "await syncTrainingRuntimeFromBackend();" not in dismiss
 
 
 def test_cancel_invalidates_fresh_and_resume_preflight_leases():

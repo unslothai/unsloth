@@ -83,7 +83,7 @@ export function useTrainingActions() {
       toast.error("Training still active", {
         description: message,
       });
-      await syncTrainingRuntimeFromBackend();
+      await syncTrainingRuntimeFromBackend().catch(() => undefined);
     }
   }, []);
 

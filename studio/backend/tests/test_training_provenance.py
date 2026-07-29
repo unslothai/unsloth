@@ -197,7 +197,7 @@ def test_resume_route_restores_attested_actual_model_repo(tmp_path):
         hf_dataset = "org/dataset",
     )
 
-    actual_repo_id = route._apply_resume_resource_provenance(
+    actual_repo_id, _, _, _, _ = route._prepare_resume_resource_provenance(
         request,
         {
             "model_name": "org/selected",
@@ -238,6 +238,43 @@ def test_4bit_attestation_rejects_full_precision_selected_snapshot(tmp_path):
     assert event["model"]["status"] == "incomplete"
     assert updates["model_snapshot_path"] is None
     assert updates[RESOURCE_PROVENANCE_KEY]["status"] == "incomplete"
+
+
+def test_4bit_attestation_accepts_verified_runtime_quantization(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/selected", "selected-commit")
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    model = SimpleNamespace(
+        is_loaded_in_4bit = True,
+        config = SimpleNamespace(
+            _name_or_path = "org/selected",
+            _commit_hash = "selected-commit",
+        ),
+    )
+    config = {
+        "model_name": "org/selected",
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        model,
+        model_load_target = "org/selected",
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["status"] == "attested"
+    assert event["model"]["load_mode"] == "runtime_4bit"
+    assert updates["model_snapshot_path"] == str(model_snapshot)
+    assert updates[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+    assert (
+        updates[RESOURCE_PROVENANCE_KEY]["model_load_mode"]
+        == "runtime_4bit"
+    )
+    assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
 def test_config_only_snapshot_cannot_attest_model_weights(tmp_path):

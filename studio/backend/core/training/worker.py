@@ -127,6 +127,10 @@ def _cache_artifact_fallback_allowed(
     require_exact = bool(
         config.get("require_exact_resume_resources")
         or config.get(f"require_exact_{resource}_resource")
+        or (
+            resource == "model"
+            and config.get("require_validated_model_snapshot")
+        )
     )
     if resource == "dataset":
         from hub.utils.dataset_cache import dataset_cache_fallback_allowed
@@ -204,10 +208,30 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
     for message in config.get("cache_pin_warnings") or []:
         _send_status(event_queue, message)
     model_path = config.get("model_snapshot_path")
+    require_validated_snapshot = bool(
+        config.get("require_validated_model_snapshot")
+    )
+    if require_validated_snapshot and not model_path:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": (
+                    "The cached model snapshot selected during preflight is no longer "
+                    "available."
+                ),
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return False
     if model_path and not require_model:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+        from utils.utils import canonical_model_repo_id
 
-        pinned_repo_id = config.get("actual_model_repo_id") or config["model_name"]
+        pinned_repo_id = (
+            config.get("actual_model_repo_id")
+            or canonical_model_repo_id(config["model_name"])
+        )
         config["model_snapshot_path"] = latest_snapshot_from_cache_path(
             model_path,
             "model",
@@ -215,6 +239,19 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
             ("config.json", "adapter_config.json"),
         )
         if config["model_snapshot_path"] is None:
+            if require_validated_snapshot:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": (
+                            "The cached model snapshot selected during preflight is no "
+                            "longer available."
+                        ),
+                        "stack": "",
+                        "ts": time.time(),
+                    }
+                )
+                return False
             config["actual_model_repo_id"] = None
     dataset_path = config.get("dataset_snapshot_path")
     if dataset_path and not require_dataset:
@@ -486,18 +523,23 @@ def _model_load_security_error(
     except Exception as error:
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
 
+    from utils.utils import hf_env_offline
+
     primary_name = config["model_name"]
-    selected_snapshot = config.get("model_snapshot_path")
+    local_only_load = hf_env_offline()
     for target in dict.fromkeys(targets):
-        load_subdirs = security_load_subdirs(
-            primary_name if target == load_target else target,
-            hf_token,
-        )
+        load_subdirs = security_load_subdirs(target, hf_token)
+        if target == load_target and target != primary_name:
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (*load_subdirs, *security_load_subdirs(primary_name, hf_token))
+                )
+            )
         decision = evaluate_file_security(
             target,
             hf_token = hf_token,
             load_subdirs = load_subdirs,
-            local_only_load = bool(selected_snapshot and target == selected_snapshot),
+            local_only_load = local_only_load,
         )
         if decision.blocked:
             return {

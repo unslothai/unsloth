@@ -29,6 +29,13 @@ def _safe_is_dir(path: Path) -> bool:
         return False
 
 
+def same_existing_path(first: Path, second: Path) -> bool:
+    try:
+        return first.samefile(second)
+    except (OSError, ValueError):
+        return False
+
+
 def hf_cache_root(*, create: bool = False, root: Optional[Path] = None) -> Optional[Path]:
     from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -170,9 +177,9 @@ def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
         refs = (repo_root / "refs").resolve(strict = True)
         ref_path = (refs / ref).resolve(strict = True)
         if (
-            refs.parent != repo_root
+            not same_existing_path(refs.parent, repo_root)
             or not refs.is_dir()
-            or ref_path.parent != refs
+            or not same_existing_path(ref_path.parent, refs)
             or not ref_path.is_file()
             or ref_path.stat().st_size > 256
         ):
@@ -190,7 +197,7 @@ def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
         return None
     try:
         snapshots = (repo_root / "snapshots").resolve(strict = True)
-        if snapshots.parent != repo_root or not snapshots.is_dir():
+        if not same_existing_path(snapshots.parent, repo_root) or not snapshots.is_dir():
             return None
         snapshot = (snapshots / commit).resolve(strict = True)
         snapshot.relative_to(snapshots)
@@ -219,13 +226,16 @@ def validated_repo_cache_path(
         )
         if repo_dir is None:
             return None
-        allowed_roots = {
+        allowed_roots = [
             root.resolve(strict = True)
             for root in hf_cache_roots()
             if root.exists()
-        }
+        ]
         repo_dir = repo_dir.resolve(strict = True)
-        if repo_dir.parent not in allowed_roots:
+        if not any(
+            same_existing_path(repo_dir.parent, root)
+            for root in allowed_roots
+        ):
             return None
         resolved.relative_to(repo_dir)
         return repo_dir, resolved
@@ -250,10 +260,10 @@ def latest_snapshot_from_cache_path(
             return any((path / name).is_file() for name in metadata_filenames)
 
         snapshots = (repo_dir / "snapshots").resolve(strict = True)
-        if snapshots.parent != repo_dir or not snapshots.is_dir():
+        if not same_existing_path(snapshots.parent, repo_dir) or not snapshots.is_dir():
             return None
-        if selected != repo_dir:
-            if selected.parent != snapshots or not selected.is_dir():
+        if not same_existing_path(selected, repo_dir):
+            if not same_existing_path(selected.parent, snapshots) or not selected.is_dir():
                 return None
             return str(selected) if has_metadata(selected) else None
 
@@ -267,7 +277,7 @@ def latest_snapshot_from_cache_path(
             except (OSError, RuntimeError):
                 continue
             if (
-                candidate.parent == snapshots
+                same_existing_path(candidate.parent, snapshots)
                 and candidate.is_dir()
                 and has_metadata(candidate)
             ):

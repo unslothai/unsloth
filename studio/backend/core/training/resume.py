@@ -250,7 +250,13 @@ def _resource_resume_cache_key(config: dict) -> Optional[str]:
     if isinstance(marker, dict):
         marker = {
             key: marker.get(key)
-            for key in ("version", "status", "model_status", "dataset_status")
+            for key in (
+                "version",
+                "status",
+                "model_status",
+                "model_load_mode",
+                "dataset_status",
+            )
         }
     values = {
         "resource_provenance": marker,

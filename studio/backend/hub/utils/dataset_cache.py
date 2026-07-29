@@ -16,6 +16,7 @@ from hub.utils.dataset_processed_cache import (
 from hub.utils.hf_cache_state import (
     iter_repo_cache_dirs,
     ref_snapshot_dir,
+    same_existing_path,
     validated_repo_cache_path,
 )
 
@@ -114,10 +115,14 @@ def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) ->
     repo_dir, selected = validated
     try:
         snapshots = (repo_dir / "snapshots").resolve(strict = True)
-        if snapshots.parent != repo_dir or not snapshots.is_dir():
+        if not same_existing_path(snapshots.parent, repo_dir) or not snapshots.is_dir():
             return None
-        if selected != repo_dir:
-            return selected if selected.parent == snapshots and selected.is_dir() else None
+        if not same_existing_path(selected, repo_dir):
+            return (
+                selected
+                if same_existing_path(selected.parent, snapshots) and selected.is_dir()
+                else None
+            )
         pinned = ref_snapshot_dir(repo_dir)
         if pinned is not None:
             return pinned
@@ -127,7 +132,7 @@ def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) ->
                 candidate = path.resolve(strict = True)
             except (OSError, RuntimeError):
                 continue
-            if candidate.parent == snapshots and candidate.is_dir():
+            if same_existing_path(candidate.parent, snapshots) and candidate.is_dir():
                 candidates.append(candidate)
         if not candidates:
             return None
@@ -148,7 +153,10 @@ def processed_dataset_cache_path(local_path: Optional[str], repo_id: str) -> Opt
         expected = repo_id.replace("/", "___").lower()
         if (
             resolved.name.lower() != expected
-            or resolved.parent not in set(hf_datasets_cache_roots())
+            or not any(
+                same_existing_path(resolved.parent, root)
+                for root in hf_datasets_cache_roots()
+            )
             or not resolved.is_dir()
         ):
             return None
@@ -234,7 +242,7 @@ def resolved_dataset_snapshot_file(
     try:
         snapshot_path = Path(snapshot).resolve(strict = True)
         repo_dir = snapshot_path.parent.parent.resolve(strict = True)
-        if snapshot_path.parent != repo_dir / "snapshots":
+        if not same_existing_path(snapshot_path.parent, repo_dir / "snapshots"):
             return None
         resolved = snapshot_path.joinpath(
             *PurePosixPath(source_path).parts
@@ -279,7 +287,10 @@ def complete_dataset_snapshot_path(
         hub_cache = repo_dir.parent.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
-    if snapshot != selected or snapshot.parent != repo_dir / "snapshots":
+    if (
+        not same_existing_path(snapshot, selected)
+        or not same_existing_path(snapshot.parent, repo_dir / "snapshots")
+    ):
         return None
 
     from hub.utils import download_manifest
@@ -289,6 +300,11 @@ def complete_dataset_snapshot_path(
         snapshot.name,
         hub_cache = hub_cache,
     )
+    manifest_hub_cache = (
+        _canonical_path(manifest.hub_cache)
+        if manifest is not None
+        else None
+    )
     if (
         manifest is None
         or manifest.repo_type != "dataset"
@@ -296,7 +312,8 @@ def complete_dataset_snapshot_path(
         or manifest.version != 2
         or not manifest.metadata_derived
         or manifest.commit_hash != snapshot.name
-        or _canonical_path(manifest.hub_cache) != hub_cache
+        or manifest_hub_cache is None
+        or not same_existing_path(manifest_hub_cache, hub_cache)
         or not manifest.expected_files
     ):
         return None

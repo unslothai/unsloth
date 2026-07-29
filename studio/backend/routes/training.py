@@ -13,6 +13,7 @@ from typing import Dict, Optional, Any
 import structlog
 from loggers import get_logger
 import asyncio
+import threading
 from datetime import datetime
 import uuid as _uuid
 
@@ -51,7 +52,7 @@ except ImportError:
 # Auth
 from auth.authentication import authenticated_via_api_key, get_current_subject
 
-from utils.utils import hf_env_offline, log_and_http_error
+from utils.utils import canonical_model_repo_id, hf_env_offline, log_and_http_error
 
 from models import (
     TrainingStartRequest,
@@ -77,6 +78,8 @@ logger = get_logger(__name__)
 
 _LOCAL_MODEL_PROBE_LIMIT = 2000
 _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS = 5.0
+# Serialize route lifecycle backend calls without blocking the event loop.
+_TRAINING_ROUTE_LIFECYCLE_LOCK = threading.Lock()
 
 
 class _LocalModelProbeIncomplete(RuntimeError):
@@ -86,6 +89,25 @@ class _LocalModelProbeIncomplete(RuntimeError):
 # once stepping: the pre-first-step phase (model load + tokenization) can take far
 # longer, and timing out there made a healthy long-prep run look frozen.
 _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
+
+
+def _run_training_lifecycle_call(callback, *args, **kwargs):
+    with _TRAINING_ROUTE_LIFECYCLE_LOCK:
+        return callback(*args, **kwargs)
+
+
+def _stop_training_if_active(backend, *, save: bool, expected_job_id: Optional[str]):
+    with _TRAINING_ROUTE_LIFECYCLE_LOCK:
+        is_active = backend.is_training_active()
+        stopped = (
+            backend.stop_training(
+                save = save,
+                expected_job_id = expected_job_id,
+            )
+            if is_active
+            else False
+        )
+    return is_active, stopped
 
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
@@ -155,12 +177,10 @@ def _remote_model_is_adapter(
     model_name: str,
     hf_token: Optional[str],
 ) -> bool:
-    repo_id = model_name.strip()
-    if "/" not in repo_id:
-        repo_id = f"unsloth/{repo_id}"
-    try:
-        from huggingface_hub import model_info as hf_model_info
+    from huggingface_hub import model_info as hf_model_info
 
+    repo_id = canonical_model_repo_id(model_name)
+    try:
         info = hf_model_info(
             repo_id,
             token = hf_token,
@@ -227,7 +247,10 @@ def _detect_local_gguf(path: Path) -> Optional[str]:
     return None
 
 
-def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
+def _reject_untrainable_model_request(
+    request: TrainingStartRequest,
+    actual_model_repo_id: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
     model_format = (request.model_format or "").strip().lower()
     if model_format == "gguf":
         raise HTTPException(
@@ -240,6 +263,7 @@ def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
             detail = "Adapter models are inference-only and cannot be trained as base models.",
         )
     path: Optional[Path] = None
+    outage_model_pin: Optional[tuple[str, str]] = None
     if is_local_path(request.model_name):
         try:
             path = Path(request.model_name).expanduser().resolve(strict = True)
@@ -248,36 +272,71 @@ def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
     else:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
+        snapshot = None
+        offline_mode = hf_env_offline()
         if request.resume_from_checkpoint and request.model_snapshot_path:
             snapshot = latest_snapshot_from_cache_path(
                 request.model_snapshot_path,
                 "model",
-                request.model_name,
+                canonical_model_repo_id(
+                    actual_model_repo_id or request.model_name
+                ),
                 ("config.json", "adapter_config.json"),
             )
-        elif request.model_known_cached or request.model_local_path or hf_env_offline():
+        elif (
+            request.model_known_cached
+            or request.model_local_path
+            or offline_mode
+        ):
             from core.training.training import _resolve_model_snapshot
 
             snapshot = _resolve_model_snapshot(
                 request.model_name,
                 request.model_local_path,
             )
-        else:
-            snapshot = None
         if snapshot:
             path = Path(snapshot)
+            if offline_mode and not request.resume_from_checkpoint:
+                outage_model_pin = (
+                    canonical_model_repo_id(request.model_name),
+                    snapshot,
+                )
+    metadata_error: Optional[HTTPException] = None
     if path is None:
-        if _remote_model_is_adapter(request.model_name, request.hf_token or None):
+        try:
+            is_adapter = _remote_model_is_adapter(
+                request.model_name,
+                request.hf_token or None,
+            )
+        except HTTPException as error:
+            if error.status_code != 503:
+                raise
+            metadata_error = error
+            from core.training.training import _resolve_model_snapshot
+
+            snapshot = _resolve_model_snapshot(
+                request.model_name,
+                request.model_local_path,
+            )
+            if snapshot is None:
+                raise
+            path = Path(snapshot)
+            outage_model_pin = (
+                canonical_model_repo_id(request.model_name),
+                snapshot,
+            )
+        else:
+            if not is_adapter:
+                return
             raise HTTPException(
                 status_code = 400,
                 detail = (
                     "Adapter models are inference-only and cannot be trained as base models."
                 ),
             )
-        return
     has_trainable_weights = _has_trainable_local_weights(path)
     if has_trainable_weights:
-        return
+        return outage_model_pin
     if _has_adapter_metadata(path):
         raise HTTPException(
             status_code = 400,
@@ -300,6 +359,8 @@ def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "GGUF-only local models are inference-only and cannot be trained.",
         )
+    if metadata_error is not None:
+        raise metadata_error
 
 
 _RESUME_DATASET_DEFAULTS = {
@@ -358,10 +419,11 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
 def _prepare_resume_resource_provenance(
     request: TrainingStartRequest,
     resume_run: dict,
-) -> tuple[Optional[str], bool, bool, bool]:
+) -> tuple[Optional[str], bool, bool, bool, Optional[str]]:
     stored = training_run_config(resume_run)
     from core.training.provenance import (
         ExactResumeResourcesUnavailable,
+        RESOURCE_PROVENANCE_KEY,
         exact_resume_resource_requirements,
         resource_provenance_is_complete,
     )
@@ -439,20 +501,19 @@ def _prepare_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
+    marker = stored.get(RESOURCE_PROVENANCE_KEY)
+    model_load_mode = (
+        _normalized_optional_string(marker.get("model_load_mode"))
+        if requires_exact_model and isinstance(marker, dict)
+        else None
+    )
     return (
         _normalized_optional_string(stored.get("actual_model_repo_id")),
         requires_exact_model,
         requires_exact_dataset,
         resource_provenance_is_complete(stored),
+        model_load_mode,
     )
-
-
-def _apply_resume_resource_provenance(
-    request: TrainingStartRequest,
-    resume_run: dict,
-) -> Optional[str]:
-    actual_model_repo_id, _, _, _ = _prepare_resume_resource_provenance(request, resume_run)
-    return actual_model_repo_id
 
 
 @router.get("/hardware")
@@ -532,7 +593,7 @@ async def start_training(
                 )
 
         # Check before mutating state.
-        if backend.is_training_active():
+        if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             return TrainingJobResponse(
                 job_id = existing_job_id or "",
@@ -551,24 +612,34 @@ async def start_training(
         resume_output_dir: Optional[str] = None
         resume_run: Optional[dict] = None
         resume_actual_model_repo_id: Optional[str] = None
+        resume_model_load_mode: Optional[str] = None
         resume_requires_exact_resources = False
         resume_requires_exact_model = False
         resume_requires_exact_dataset = False
         if request.resume_from_checkpoint:
             try:
-                resume_output_dir = normalize_resume_output_dir(request.resume_from_checkpoint)
+                resume_output_dir = await asyncio.to_thread(
+                    normalize_resume_output_dir,
+                    request.resume_from_checkpoint,
+                )
             except ValueError as e:
                 # Deliberate user-facing validation message.
                 validation_message = str(e)
                 raise HTTPException(status_code = 400, detail = validation_message)
 
-            resume_run = get_resumable_run_by_output_dir(resume_output_dir)
-            if not resume_run or not can_resume_run(resume_run):
+            resume_run = await asyncio.to_thread(
+                get_resumable_run_by_output_dir,
+                resume_output_dir,
+            )
+            if not resume_run or not await asyncio.to_thread(can_resume_run, resume_run):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
                 )
-            resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
+            resume_checkpoint = await asyncio.to_thread(
+                get_resume_checkpoint_path,
+                resume_output_dir,
+            )
             if not resume_checkpoint:
                 raise HTTPException(
                     status_code = 400,
@@ -580,6 +651,7 @@ async def start_training(
                 resume_requires_exact_model,
                 resume_requires_exact_dataset,
                 resume_requires_exact_resources,
+                resume_model_load_mode,
             ) = await asyncio.to_thread(
                 _prepare_resume_resource_provenance,
                 request,
@@ -665,7 +737,17 @@ async def start_training(
                     ),
                 )
 
-        await asyncio.to_thread(_reject_untrainable_model_request, request)
+        outage_model_pin = await asyncio.to_thread(
+            _reject_untrainable_model_request,
+            request,
+            resume_actual_model_repo_id,
+        )
+        training_actual_model_repo_id = resume_actual_model_repo_id
+        training_model_snapshot_path = request.model_snapshot_path
+        if outage_model_pin is not None:
+            training_actual_model_repo_id, training_model_snapshot_path = (
+                outage_model_pin
+            )
 
         # Convert request to backend kwargs.
         training_kwargs = {
@@ -680,8 +762,9 @@ async def start_training(
             "model_known_cached": request.model_known_cached,
             "model_local_path": request.model_local_path,
             "model_format": request.model_format,
-            "model_snapshot_path": request.model_snapshot_path,
-            "actual_model_repo_id": resume_actual_model_repo_id,
+            "model_snapshot_path": training_model_snapshot_path,
+            "actual_model_repo_id": training_actual_model_repo_id,
+            "resume_model_load_mode": resume_model_load_mode,
             "dataset_known_cached": request.dataset_known_cached,
             "dataset_local_path": request.dataset_local_path,
             "dataset_snapshot_path": request.dataset_snapshot_path,
@@ -743,6 +826,7 @@ async def start_training(
             "require_exact_resume_resources": resume_requires_exact_resources,
             "require_exact_model_resource": resume_requires_exact_model,
             "require_exact_dataset_resource": resume_requires_exact_dataset,
+            "require_validated_model_snapshot": outage_model_pin is not None,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
@@ -857,7 +941,9 @@ async def start_training(
         from utils.transformers_version import SidecarSwapInProgress
 
         try:
-            success = backend.start_training(
+            success = await asyncio.to_thread(
+                _run_training_lifecycle_call,
+                backend.start_training,
                 job_id = job_id,
                 before_spawn = _free_vram_for_training,
                 resume_source_run_id = resume_run["id"] if resume_run else None,
@@ -918,18 +1004,14 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        is_active = backend.is_training_active()
-        logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
-
-        if not is_active:
-            return TrainingStopResponse(
-                status = "idle", message = "No training job is currently running"
-            )
-
-        if not backend.stop_training(
+        is_active, stopped = await asyncio.to_thread(
+            _stop_training_if_active,
+            backend,
             save = body.save,
             expected_job_id = body.expected_job_id,
-        ):
+        )
+        logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
+        if not is_active or not stopped:
             return TrainingStopResponse(
                 status = "idle", message = "No training job is currently running"
             )
@@ -957,7 +1039,11 @@ async def reset_training(
     """Reset training state so the user can return to configuration."""
     try:
         backend = get_training_backend()
-        result = backend.reset_training_state(expected_job_id = body.expected_job_id)
+        result = await asyncio.to_thread(
+            _run_training_lifecycle_call,
+            backend.reset_training_state,
+            expected_job_id = body.expected_job_id,
+        )
         if result == "superseded":
             return {"status": "superseded"}
         if result == "active":
@@ -987,7 +1073,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
-        is_active = backend.is_training_active()
+        is_active = await asyncio.to_thread(backend.is_training_active)
 
         try:
             progress = backend.trainer.get_training_progress()
@@ -1233,7 +1319,7 @@ async def stream_training_progress(
 
         # ── Initial status (only on fresh connections) ───────────
         if resume_from_step is None:
-            is_active = backend.is_training_active()
+            is_active = await asyncio.to_thread(backend.is_training_active)
             tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
             initial_total_steps = getattr(tp, "total_steps", 0) if tp else 0
             initial_epoch = getattr(tp, "epoch", None) if tp else None
@@ -1293,7 +1379,7 @@ async def stream_training_progress(
             backend.step_history
         )
 
-        while backend.is_training_active():
+        while await asyncio.to_thread(backend.is_training_active):
             # Client gone: end the generator without falling through to the final
             # "complete" frame, which a buffered/proxy consumer could otherwise read
             # as a finished run while training is still active.

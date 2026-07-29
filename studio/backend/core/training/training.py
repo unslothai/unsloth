@@ -36,6 +36,7 @@ from utils.native_path_leases import (
     run_without_native_path_secret,
 )
 from utils.paths import is_local_path, outputs_root
+from utils.utils import canonical_model_repo_id
 
 logger = get_logger(__name__)
 
@@ -155,6 +156,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "model_format": values.get("model_format"),
         "model_snapshot_path": values.get("model_snapshot_path"),
         "actual_model_repo_id": values.get("actual_model_repo_id"),
+        "resume_model_load_mode": values.get("resume_model_load_mode"),
         "dataset_known_cached": values.get("dataset_known_cached", False),
         "dataset_local_path": values.get("dataset_local_path"),
         "dataset_snapshot_path": values.get("dataset_snapshot_path"),
@@ -226,6 +228,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "require_exact_dataset_resource": values.get(
             "require_exact_dataset_resource", False
         ),
+        "require_validated_model_snapshot": values.get(
+            "require_validated_model_snapshot", False
+        ),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -263,6 +268,8 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "require_exact_resume_resources",
             "require_exact_model_resource",
             "require_exact_dataset_resource",
+            "require_validated_model_snapshot",
+            "resume_model_load_mode",
         }
     }
     s3_config = config.get("s3_config")
@@ -288,16 +295,17 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
         latest_snapshot_from_cache_path,
     )
 
+    repo_id = canonical_model_repo_id(model_name)
     snapshot = latest_snapshot_from_cache_path(
-        local_path, "model", model_name, _MODEL_SNAPSHOT_METADATA
+        local_path, "model", repo_id, _MODEL_SNAPSHOT_METADATA
     )
     if snapshot:
         return snapshot
-    for repo_dir in iter_repo_cache_dirs("model", model_name):
+    for repo_dir in iter_repo_cache_dirs("model", repo_id):
         snapshot = latest_snapshot_from_cache_path(
             str(repo_dir),
             "model",
-            model_name,
+            repo_id,
             _MODEL_SNAPSHOT_METADATA,
         )
         if snapshot:
@@ -322,11 +330,25 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["model_snapshot_path"] = None
         return
     requested_pin = config.get("model_snapshot_path")
+    require_validated_snapshot = bool(
+        config.get("require_validated_model_snapshot")
+    )
+    if require_validated_snapshot and not (
+        requested_pin and config.get("actual_model_repo_id")
+    ):
+        from .provenance import ExactResumeResourcesUnavailable
+
+        raise ExactResumeResourcesUnavailable(
+            "The cached model snapshot selected during preflight is no longer available."
+        )
     model_claimed = bool(config.get("model_known_cached") or config.get("model_local_path"))
     if resume and requested_pin:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
-        pinned_repo_id = config.get("actual_model_repo_id") or model_name
+        pinned_repo_id = (
+            config.get("actual_model_repo_id")
+            or canonical_model_repo_id(model_name)
+        )
         pin = latest_snapshot_from_cache_path(
             requested_pin, "model", pinned_repo_id, _MODEL_SNAPSHOT_METADATA
         )
@@ -347,8 +369,29 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["model_snapshot_path"] = pin
         if pin is None:
             config["actual_model_repo_id"] = None
+        else:
+            config["actual_model_repo_id"] = pinned_repo_id
+    elif requested_pin and config.get("actual_model_repo_id"):
+        from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+
+        pinned_repo_id = config["actual_model_repo_id"]
+        pin = latest_snapshot_from_cache_path(
+            requested_pin,
+            "model",
+            pinned_repo_id,
+            _MODEL_SNAPSHOT_METADATA,
+        )
+        config["model_snapshot_path"] = pin
+        if pin is None:
+            if require_validated_snapshot:
+                from .provenance import ExactResumeResourcesUnavailable
+
+                raise ExactResumeResourcesUnavailable(
+                    "The cached model snapshot selected during preflight is no longer available."
+                )
+            config["actual_model_repo_id"] = None
     elif model_claimed:
-        config["actual_model_repo_id"] = None
+        pinned_repo_id = canonical_model_repo_id(model_name)
         pin = _resolve_model_snapshot(model_name, config.get("model_local_path"))
         if (
             pin is not None
@@ -365,6 +408,7 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
                 f"Cached copy of {model_name} not found on disk; downloading from Hugging Face."
             )
         config["model_snapshot_path"] = pin
+        config["actual_model_repo_id"] = pinned_repo_id if pin is not None else None
     else:
         config["model_snapshot_path"] = None
         config["actual_model_repo_id"] = None
@@ -377,12 +421,16 @@ def resolve_training_model_load_target(values: dict[str, Any]) -> str:
         "model_local_path": values.get("model_local_path"),
         "model_snapshot_path": values.get("model_snapshot_path"),
         "actual_model_repo_id": values.get("actual_model_repo_id"),
+        "resume_model_load_mode": values.get("resume_model_load_mode"),
         "resume_from_checkpoint": values.get("resume_from_checkpoint"),
         "require_exact_resume_resources": values.get(
             "require_exact_resume_resources", False
         ),
         "require_exact_model_resource": values.get(
             "require_exact_model_resource", False
+        ),
+        "require_validated_model_snapshot": values.get(
+            "require_validated_model_snapshot", False
         ),
         "load_in_4bit": values.get("load_in_4bit", True),
     }
