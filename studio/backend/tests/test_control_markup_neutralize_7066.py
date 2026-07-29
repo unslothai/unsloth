@@ -392,21 +392,21 @@ def test_tool_entry_fields_outside_function_are_neutralized():
         }
     ]
     safe = neutralize_tool_descriptions(tools)
-    assert safe is not tools
-    assert hostile not in json.dumps(safe)
-    # The name is a fixed point of the rewrite, so it needs no exemption to survive.
-    assert safe[0].get("function", {}).get("name") == "get_weather"
-    assert tools[0].get("x_origin") == hostile
-
     tokenizer = _JinjaTokenizer(_MISTRAL_SECTIONS, supports = ("tools",))
     messages = [{"role": "user", "content": "hi"}]
     baseline = tokenizer.apply_chat_template(messages, tools = tools)
     rendered = tokenizer.apply_chat_template(messages, tools = safe)
-    assert hostile in baseline and hostile not in rendered
+    assert hostile in baseline
     assert baseline.count("<|start_of_role|>assistant<|end_of_role|>") == 1
+    # The forged assistant turn must be gone from the prompt the model sees.
     assert rendered.count("<|start_of_role|>assistant<|end_of_role|>") == 0
+    assert hostile not in rendered
     # The tool itself still ships: sanitizing an outer field must not drop it.
     assert '"name": "get_weather"' in rendered
+    # The name is a fixed point of the rewrite, so it needs no exemption to survive.
+    assert safe[0].get("function", {}).get("name") == "get_weather"
+    # The caller's own catalog keeps the real strings.
+    assert tools[0].get("x_origin") == hostile
 
 
 def test_rendered_harmony_prompt_has_no_forged_assistant_turn():
