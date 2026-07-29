@@ -315,28 +315,12 @@ def _session_responsive(
     budget: Optional[float] = None,
     cancel_event = None,
 ) -> bool:
-    """Whether a session left dirty by an abandoned call can be reused. The
-    round-trip proves the server is alive and still answering, so a wedged one
-    is replaced while a healthy one keeps its state; anything short of a reply
-    -- an error, a wedge, or no budget left to ask -- rejects the session rather
-    than guessing from local state.
-
-    It does NOT prove the abandoned call itself has finished: MCP requests are
-    concurrent, and a cancellation the client cannot signal (the SDK sends no
-    notifications/cancelled) may still be running server-side. Nothing in the
-    protocol exposes that, and every other MCP client dispatches the next call
-    with no probe at all, so this is the strongest available guarantee.
-
-    The probe is a raw single-page tools/list rather than ping (on a modern-era
-    connection -- the default mode="auto" against a fastmcp 4 server -- ping
-    answers "Method not found", which would retire every live session this is
-    meant to protect) and rather than the high-level list_tools(), which
-    auto-paginates up to 250 pages and could spend the whole budget enumerating
-    a large tool list.
-
-    ``budget`` is the caller's remaining deadline, so recovery stays inside the
-    one timeout window rather than adding to it, and ``cancel_event`` lets Stop
-    interrupt the probe like it interrupts connect and the call itself."""
+    """Whether a session left dirty by an abandoned call can be reused: the
+    server must answer inside ``budget`` (the caller's remaining deadline).
+    Proves the server is alive, not that the abandoned call finished -- MCP
+    requests are concurrent. Probes with a raw single-page tools/list: ping
+    answers "Method not found" on a modern-era connection, and list_tools()
+    auto-paginates up to 250 pages."""
     client = session.client
     if client is None:
         return False
@@ -951,11 +935,8 @@ async def _race_tool_call(
         for t in (call_task, watch_task):
             if not t.done():
                 t.cancel()
-        # Wait for the cancelled call to unwind before its session is reused, so
-        # the next call can't be dispatched while this one is still on the
-        # transport. Comes out of the caller's remaining budget, never on top of
-        # it; a coroutine that outlasts it leaves the session dirty and the
-        # liveness probe decides whether it is reusable.
+        # Let a cancelled call unwind before its session is reused, out of the
+        # caller's remaining budget. Outlasting it just leaves the session dirty.
         left = _unwind_budget(unwind_timeout, timeout, time.monotonic() - started)
         if left:
             await asyncio.wait({call_task, watch_task}, timeout = left)
@@ -1063,15 +1044,13 @@ def _call_stdio_tool(
                     session.client.call_tool(name, args, raise_on_error = False),
                     rem,
                     cancel_event,
-                    # An ephemeral session is closed below, so only a cached one
-                    # is worth waiting on.
+                    # Only a cached session is worth waiting on.
                     0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
-            # Keep the session so a Stop doesn't destroy the server's state (an open
-            # browser, a DB handle). The abandoned reply can't be mis-delivered: the
-            # SDK drops replies whose request id is gone. Reuse is gated on a ping.
+            # Keep the session so a Stop doesn't destroy the server's state; the
+            # SDK drops the abandoned reply, and reuse is gated on a live probe.
             session.dirty = True
             raise
         except _SessionWedged:
