@@ -1311,6 +1311,8 @@ _MTIME_READERS = {
     "hub/utils/hf_cache_state.py": frozenset({"snapshot_selection_key"}),
     "hub/utils/gguf.py": frozenset(),
     "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
+    # Mirrors what huggingface_hub records per revision; it selects nothing.
+    "hub/utils/inventory_scan.py": frozenset({"_recover_repo_hidden_by_dangling_refs"}),
 }
 
 
