@@ -53,7 +53,6 @@ import {
   applyActiveModelStatusToStore,
   clampLocalReasoningEffort,
   normalizeSpeculativeType,
-  reasoningCapsFromLoad,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
 import {
@@ -388,22 +387,14 @@ async function syncInferenceStatusToStore(options?: {
       // An idle-reload stash is authoritative even across browser reloads or
       // stale tabs: hydrate the concrete identity the backend will restore.
       if (statusRes.idle_unloaded && statusRes.model_identifier) {
+        const previousGgufVariant =
+          useChatRuntimeStore.getState().activeGgufVariant;
         setCheckpoint(statusRes.model_identifier, statusRes.gguf_variant);
-        syncModelCapabilities(statusRes.model_identifier, statusRes);
-        const supportsReasoning = statusRes.supports_reasoning ?? false;
-        const supportsTools = statusRes.supports_tools ?? false;
-        const idleReasoningCaps = reasoningCapsFromLoad(statusRes);
-        useChatRuntimeStore.setState({
-          loadedIsMultimodal: isMultimodalResponse(statusRes),
-          loadedIsDiffusion: statusRes.is_diffusion ?? false,
-          supportsReasoning,
-          reasoningAlwaysOn: statusRes.reasoning_always_on ?? false,
-          ...idleReasoningCaps,
-          supportsPreserveThinking:
-            statusRes.supports_preserve_thinking ?? false,
-          supportsTools,
-          ...resolveToolsEnabledOnLoad(supportsTools),
+        applyActiveModelStatusToStore(statusRes, {
+          previousCheckpoint: selectedCheckpoint,
+          previousGgufVariant,
         });
+        syncModelCapabilities(statusRes.model_identifier, statusRes);
       } else if (
         // Another client may own a normal no-active interval while its model
         // loads, so do not erase this tab's selection until the backend is idle.

@@ -104,7 +104,7 @@ export function reasoningCapsFromLoad(resp: {
 export function resolveInferenceCheckpointId(
   status: InferenceStatusResponse,
 ): string | null {
-  if (!status.active_model) return null;
+  if (!status.active_model && !status.idle_unloaded) return null;
   return status.model_identifier ?? status.active_model;
 }
 

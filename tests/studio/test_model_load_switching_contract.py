@@ -257,7 +257,7 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
         ROOT / "studio" / "backend" / "core" / "inference" / "llama_keepwarm.py"
     ).read_text(encoding="utf-8")
     assert "get_last_unloaded_state()" in backend_route
-    assert "_, idle_gguf_variant = last_unloaded_model[:2]" in backend_route
+    assert "idle_internal_identifier, idle_gguf_variant = last_unloaded_model[:2]" in backend_route
     assert 'idle_capabilities.get("model_identifier")' in backend_route
     assert "model_identifier = backend.active_model_name or idle_model_identifier" in backend_route
     assert '_last_unloaded_capabilities = None' in keepwarm
@@ -266,10 +266,13 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
     assert '"supports_tools": backend.supports_tools' in keepwarm
     assert "statusRes.idle_unloaded && statusRes.model_identifier" in runtime
     assert "syncModelCapabilities(statusRes.model_identifier, statusRes);" in runtime
-    assert "loadedIsMultimodal: isMultimodalResponse(statusRes)" in runtime
-    assert "loadedIsDiffusion: statusRes.is_diffusion ?? false" in runtime
-    assert "const idleReasoningCaps = reasoningCapsFromLoad(statusRes);" in runtime
+    assert "applyActiveModelStatusToStore(statusRes, {" in runtime
     assert "statusRes.loading.length === 0" in runtime
+    assert "backend.active_model_name is None and not loading_models" in backend_route
+    assert '"cache_type_kv": backend.cache_type_kv' in keepwarm
+    assert '"requested_parallel_slots": backend.requested_parallel_slots' in keepwarm
+    assert 'cache_type_kv = idle_capabilities.get("cache_type_kv")' in backend_route
+    assert 'parallel_slots = idle_capabilities.get("parallel_slots")' in backend_route
 
 
 def test_native_rollback_rechecks_cancellation_after_token_lease():

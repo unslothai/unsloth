@@ -7362,17 +7362,27 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
         from core.inference.llama_keepwarm import get_last_unloaded_state
+        loading_models = list(getattr(backend, "loading_models", set()))
         last_unloaded_model, idle_capabilities = (
             get_last_unloaded_state()
-            if backend.active_model_name is None
+            if backend.active_model_name is None and not loading_models
             else (None, {})
         )
         idle_unloaded = last_unloaded_model is not None
         idle_model_identifier = None
         idle_gguf_variant = None
         if last_unloaded_model is not None:
-            _, idle_gguf_variant = last_unloaded_model[:2]
+            idle_internal_identifier, idle_gguf_variant = last_unloaded_model[:2]
             idle_model_identifier = idle_capabilities.get("model_identifier")
+            idle_chat_template_override = idle_capabilities.get(
+                "chat_template_override"
+            )
+            idle_auto_chat_template_override = resolve_effective_chat_template_override(
+                model_identifier = idle_internal_identifier,
+                user_override = None,
+            )
+            if idle_chat_template_override == idle_auto_chat_template_override:
+                idle_capabilities["chat_template_override"] = None
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
@@ -7384,8 +7394,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             gguf_variant = idle_gguf_variant,
             is_vision = idle_capabilities.get("is_vision", is_vision),
             is_gguf = idle_unloaded,
-            is_local_model = bool(
-                backend.active_model_name and is_local_path(backend.active_model_name)
+            is_local_model = idle_capabilities.get(
+                "is_local_model",
+                bool(backend.active_model_name and is_local_path(backend.active_model_name)),
             ),
             is_diffusion = idle_capabilities.get("is_diffusion", False),
             is_audio = idle_capabilities.get("is_audio", is_audio),
@@ -7393,7 +7404,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             has_audio_input = idle_capabilities.get(
                 "has_audio_input", has_audio_input
             ),
-            loading = list(getattr(backend, "loading_models", set())),
+            loading = loading_models,
             loaded = list(backend.models.keys()),
             inference = inference_config,
             requires_trust_remote_code = _resolve_loaded_trust_remote_code(
@@ -7419,8 +7430,34 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             supports_tools = idle_capabilities.get(
                 "supports_tools", _sf_flags["supports_tools"]
             ),
-            context_length = _positive_int_or_none(model_info.get("context_length")),
-            chat_template = chat_template,
+            chat_template = idle_capabilities.get("chat_template", chat_template),
+            context_length = idle_capabilities.get(
+                "context_length",
+                _positive_int_or_none(model_info.get("context_length")),
+            ),
+            max_context_length = idle_capabilities.get("max_context_length"),
+            native_context_length = idle_capabilities.get("native_context_length"),
+            cache_type_kv = idle_capabilities.get("cache_type_kv"),
+            chat_template_override = idle_capabilities.get("chat_template_override"),
+            speculative_type = idle_capabilities.get("speculative_type"),
+            spec_draft_n_max = idle_capabilities.get("spec_draft_n_max"),
+            tensor_parallel = idle_capabilities.get("tensor_parallel"),
+            gpu_memory_mode = idle_capabilities.get("gpu_memory_mode"),
+            gpu_layers = idle_capabilities.get("gpu_layers"),
+            n_cpu_moe = idle_capabilities.get("n_cpu_moe"),
+            tensor_split = idle_capabilities.get("tensor_split"),
+            requested_context_length = idle_capabilities.get(
+                "requested_context_length"
+            ),
+            n_layers = idle_capabilities.get("n_layers"),
+            n_moe_layers = idle_capabilities.get("n_moe_layers"),
+            gpu_ids = idle_capabilities.get("gpu_ids"),
+            requested_gpu_ids = idle_capabilities.get("requested_gpu_ids"),
+            requested_parallel_slots = idle_capabilities.get(
+                "requested_parallel_slots"
+            ),
+            parallel_slots = idle_capabilities.get("parallel_slots"),
+            spec_fallback_reason = idle_capabilities.get("spec_fallback_reason"),
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
             llama_cpp_installed_tag = _installed_tag,

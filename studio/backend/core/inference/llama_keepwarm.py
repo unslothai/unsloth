@@ -427,6 +427,31 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         "reasoning_effort_levels": backend.reasoning_effort_levels,
                         "supports_preserve_thinking": backend.supports_preserve_thinking,
                         "supports_tools": backend.supports_tools,
+                        "chat_template": backend.chat_template,
+                        "chat_template_override": backend.chat_template_override,
+                        "context_length": backend.context_length,
+                        "max_context_length": backend.max_context_length,
+                        "native_context_length": backend.native_context_length,
+                        "cache_type_kv": backend.cache_type_kv,
+                        "speculative_type": backend.requested_spec_mode,
+                        "spec_draft_n_max": backend.spec_draft_n_max,
+                        "tensor_parallel": backend.tensor_parallel,
+                        "gpu_memory_mode": backend.gpu_memory_mode,
+                        "gpu_layers": backend.gpu_layers,
+                        "n_cpu_moe": backend.n_cpu_moe,
+                        "tensor_split": backend.tensor_split,
+                        "requested_context_length": backend.requested_n_ctx,
+                        "n_layers": backend.n_layers,
+                        "n_moe_layers": backend.n_moe_layers,
+                        "gpu_ids": backend.gpu_ids,
+                        "requested_gpu_ids": backend.requested_gpu_ids,
+                        "requested_parallel_slots": backend.requested_parallel_slots,
+                        "parallel_slots": backend.effective_parallel_slots,
+                        "spec_fallback_reason": backend.spec_fallback_reason,
+                        "is_local_model": bool(
+                            getattr(backend, "_native_grant_backed", False)
+                            or getattr(backend, "_is_local_model", False)
+                        ),
                     }
                     manifest = None
                     if get_auto_unload_keep_kv():
