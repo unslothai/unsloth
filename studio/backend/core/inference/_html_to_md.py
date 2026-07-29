@@ -332,6 +332,7 @@ class _MarkdownRenderer(HTMLParser):
         # tee is told to treat that one emit as heading output.
         self._link_had_heading: bool = False
         self._emit_as_heading: bool = False
+        self._replaying: bool = False
         # Text under the open <a>, credited only at </a>: an <a> left open adopts
         # body prose, which is not furniture.
         self._link_header_chars: int = 0
@@ -383,7 +384,11 @@ class _MarkdownRenderer(HTMLParser):
         in_nested_link = (
             self._in_link and self._link_seq != frame.outer_link_seq if frame else False
         )
-        as_heading = (self._heading_marks and not in_nested_link) or self._emit_as_heading
+        # A flushed buffer re-delivers text already teed on the way in, so replays
+        # never tee; _finish_link is the exception and re-arms the tee itself.
+        as_heading = (
+            self._heading_marks and not in_nested_link and not self._replaying
+        ) or self._emit_as_heading
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(text.strip())
@@ -406,6 +411,15 @@ class _MarkdownRenderer(HTMLParser):
             self._out.append(text)
 
     # ------------------------------------------------------------------
+    def _emit_replay(self, text: str) -> None:
+        """Emit a flushed buffer's own output, which must not be teed as a heading
+        a second time (the raw text was teed when it entered the buffer)."""
+        was, self._replaying = self._replaying, True
+        try:
+            self._emit(text)
+        finally:
+            self._replaying = was
+
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
         # Strip trailing whitespace, then collapse blank lines.
@@ -436,7 +450,7 @@ class _MarkdownRenderer(HTMLParser):
         if not self._current_row:
             return
         line = "| " + " | ".join(self._current_row) + " |"
-        self._emit(line + "\n")
+        self._emit_replay(line + "\n")
         if not self._header_row_done and (self._row_has_th or self._is_first_row):
             sep = "| " + " | ".join("---" for _ in self._current_row) + " |"
             self._emit(sep + "\n")
@@ -548,11 +562,12 @@ class _MarkdownRenderer(HTMLParser):
             # Drained, not just closed: a late </pre> would otherwise replay the
             # block outside the stripped header and push the article past the cap.
             self._pre_parts = []
-            self._emit("\n\n```\n" + raw + "\n```\n\n")
+            fence = _fence_for(raw)
+            self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
         while len(self._bq_stack) > frame.outer_bq_depth:
             prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
             if prefixed:
-                self._emit("\n\n" + prefixed + "\n\n")
+                self._emit_replay("\n\n" + prefixed + "\n\n")
         # A list left open inside the header would indent the body's own lists under phantom nesting.
         while len(self._list_stack) > frame.outer_list_depth:
             if self._list_stack.pop() == "ol" and self._ol_counter:
@@ -796,7 +811,7 @@ class _MarkdownRenderer(HTMLParser):
                 content = "".join(self._bq_stack.pop())
                 prefixed = self._prefix_blockquote(content)
                 if prefixed:
-                    self._emit("\n\n" + prefixed + "\n\n")
+                    self._emit_replay("\n\n" + prefixed + "\n\n")
 
         elif tag == "ul":
             if self._list_stack and self._list_stack[-1] == "ul":
@@ -814,10 +829,13 @@ class _MarkdownRenderer(HTMLParser):
             raw = "".join(self._pre_parts)
             self._in_pre = False
             self._pre_parts = []
-            block = "```\n" + raw + "\n```"
-            self._emit("\n\n" + block + "\n\n")
+            fence = _fence_for(raw)
+            block = f"{fence}\n{raw}\n{fence}"
+            self._emit_replay("\n\n" + block + "\n\n")
 
-        elif tag == "code" and not self._in_pre:
+        # Already closed means a header frame recovered it; emitting the second
+        # backtick here would leave the rest of the page formatted as code.
+        elif tag == "code" and not self._in_pre and self._in_inline_code:
             self._in_inline_code = False
             self._emit("`")
 
@@ -846,16 +864,20 @@ class _MarkdownRenderer(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
             return
-        self._count_header_text(data)
         if self._in_pre:
+            self._count_header_text(data)
             self._pre_parts.append(data)
             return
         # Preserve literal whitespace inside inline <code> spans.
         if self._in_inline_code:
+            self._count_header_text(data)
             self._emit(data)
             return
         # Collapse all whitespace (including newlines) per HTML rules.
         text = re.sub(r"\s+", " ", data)
+        # Sized after collapsing, as the reader sees it: a run of source spaces in
+        # a link otherwise clears the floor at ~100% density and drops the byline.
+        self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation).
         if self._in_table and not self._in_cell and not text.strip():
             return
@@ -896,8 +918,9 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_pre:
             raw = "".join(self._pre_parts)
             self._in_pre = False
-            block = "```\n" + raw + "\n```"
-            self._emit("\n\n" + block + "\n\n")
+            fence = _fence_for(raw)
+            block = f"{fence}\n{raw}\n{fence}"
+            self._emit_replay("\n\n" + block + "\n\n")
 
         # Flatten any open blockquote buffers (innermost first).
         while self._bq_stack:
@@ -1093,14 +1116,31 @@ def _non_heading_chars(text: str) -> int:
     """Length of *text* ignoring blanks and heading lines, including headings
     behind blockquote or list prefixes (``> # Title``). Fenced code counts in
     full: a ``#`` there is a comment, not a heading."""
-    total, in_fence = 0, False
+    total, fence = 0, 0
     for line in text.split("\n"):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-            continue
-        if line.strip() and (in_fence or not _is_heading_line(line)):
-            total += len(line) if in_fence else _visible_len(line)
+        stripped = line.strip()
+        # Only a run of backticks at least as long as the opener closes the block,
+        # so a literal ``` line in the code cannot end it early.
+        if len(stripped) >= 3 and stripped.count("`") == len(stripped):
+            if not fence:
+                fence = len(stripped)
+                continue
+            if len(stripped) >= fence:
+                fence = 0
+                continue
+        if stripped and (fence or not _is_heading_line(line)):
+            total += len(line) if fence else _visible_len(line)
     return total
+
+
+def _fence_for(raw: str) -> str:
+    """Fence long enough to survive backticks in *raw*, as CommonMark requires:
+    a literal ``` line inside the block would otherwise close it early."""
+    longest = run = 0
+    for char in raw:
+        run = run + 1 if char == "`" else 0
+        longest = max(longest, run)
+    return "`" * max(3, longest + 1)
 
 
 def _visible_len(line: str) -> int:
@@ -1110,10 +1150,19 @@ def _visible_len(line: str) -> int:
     total, i, n = 0, 0, len(line)
     while i < n:
         if line[i] == "]" and i + 1 < n and line[i + 1] == "(":
-            end = line.find(")", i + 2)
-            if end == -1:
+            # Destinations may hold balanced or escaped parens (/card(foo)?q=..),
+            # so stopping at the first ) leaves the rest scored as prose.
+            j, depth = i + 2, 1
+            while j < n and depth:
+                char = line[j]
+                if char == "\\":
+                    j += 2
+                    continue
+                depth += (char == "(") - (char == ")")
+                j += 1
+            if depth:
                 break
-            i = end + 1
+            i = j
             continue
         total += 1
         i += 1

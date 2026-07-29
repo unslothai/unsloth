@@ -1866,6 +1866,76 @@ def test_fenced_code_counts_as_retained_content():
     assert "Sibling teaser" not in out
 
 
+_FENCE = "`" * 3
+
+
+def test_link_destination_scan_balances_parentheses():
+    # A destination may legally hold parens, so stopping at the first ) scored
+    # the rest of the URL as prose and handed the scope to a link-only card.
+    query = "utm_source=x&" * 25
+    card = '<article><header>%s</header><p><a href="/card(foo)?%s">Read</a></p></article>' % (
+        "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
+        query,
+    )
+    real = "<article><p>%s</p></article>" % ("The genuine article body text here. " * 20)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "The genuine article body text here." in out
+    assert "/card(foo)?" not in out
+
+
+def test_literal_fence_inside_pre_does_not_end_the_code_region():
+    # A ``` line in the source is content; ending the fence there made the rest
+    # of the snippet read as headings, so the article looked empty.
+    code = "<pre>%s\n%s</pre>" % (
+        _FENCE,
+        "\n".join("# code line %d" % i for i in range(20)),
+    )
+    article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
+        _interlanguage_list(300),
+        code,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text here. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "code line 1" in out
+    assert "Sibling teaser" not in out
+
+
+def test_heading_through_a_nested_buffer_is_emitted_once():
+    # The title was teed raw entering the blockquote and again when the quote
+    # flushed, so a stripped header kept two copies of it.
+    body = '<main><header><div role="heading"><blockquote>UniqueTitle</blockquote></div><ul>%s</ul></header><p>%s</p></main>' % (
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("UniqueTitle") == 1
+
+
+def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
+    # </code> arrives after </header>; the frame already closed the span, so
+    # emitting again left an unmatched delimiter across the rest of the page.
+    body = "<main><header><h1>T</h1><code>navcode<ul>%s</ul></header><p>%s</p></code></main>" % (
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("`") % 2 == 0
+    assert "Article body." in out
+
+
+def test_header_text_is_sized_after_whitespace_collapses():
+    # The run collapses to one space when rendered, so counting it raw pushed a
+    # short byline over the floor at near total link density and dropped it.
+    byline = '<a href="/a">Jane%sDoe</a><time>July 2026</time>' % (" " * 300)
+    body = "<main><header><h1>T</h1>%s</header><p>%s</p></main>" % (
+        byline,
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Jane Doe" in out
+    assert "July 2026" in out
+
+
 def test_link_destinations_do_not_count_as_retained_prose():
     # A tracking URL is not prose: this card shows 4 visible characters but its
     # serialized destination scored 339, enough to displace the real article.
