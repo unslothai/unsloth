@@ -92,7 +92,7 @@ def neutralize_turn_boundary_markup(text: str) -> str:
 
 
 def neutralize_control_markup_in_messages(messages: list) -> list:
-    """Neutralize control markup in message content (#7066).
+    """Neutralize control markup in message content and tool-result names (#7066).
 
     User / system / tool turns lose every control marker. Assistant turns lose
     only the turn boundaries and keep their structural think / channel / tool
@@ -108,33 +108,44 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
     changed = False
     out: list = []
     for msg in messages:
-        content = msg.get("content") if isinstance(msg, dict) else None
-        if not isinstance(msg, dict) or not content:
+        if not isinstance(msg, dict):
             out.append(msg)
             continue
+        role = (msg.get("role") or "").strip().lower()
         rewrite = (
-            neutralize_turn_boundary_markup
-            if (msg.get("role") or "").strip().lower() == "assistant"
-            else neutralize_control_markup
+            neutralize_turn_boundary_markup if role == "assistant" else neutralize_control_markup
         )
-        if isinstance(content, str):
-            new_content = rewrite(content)
-        elif isinstance(content, list):
-            # The UI sends OpenAI-style parts; rewrite each part's text on its own
-            # and pass non-text parts (images, audio) through untouched.
-            new_content = [
-                {**part, "text": rewrite(part["text"])}
-                if isinstance(part, dict) and isinstance(part.get("text"), str)
-                else rewrite(part)
-                if isinstance(part, str)
-                else part
-                for part in content
-            ]
-        else:
-            out.append(msg)
-            continue
-        if new_content != content:
-            out.append({**msg, "content": new_content})
+        updates: dict = {}
+        # A tool result's "name" is prompt text too. Gemma-4 falls back to it for
+        # the function name whenever "tool_call_id" matches no preceding call and
+        # concatenates it straight into the "<|tool_response>" block, so a marker
+        # there closes the block and forges a turn exactly like one in "content"
+        # would (#7066).
+        name = msg.get("name")
+        if role == "tool" and isinstance(name, str) and name:
+            new_name = neutralize_control_markup(name)
+            if new_name != name:
+                updates["name"] = new_name
+        content = msg.get("content")
+        if content:
+            new_content = content
+            if isinstance(content, str):
+                new_content = rewrite(content)
+            elif isinstance(content, list):
+                # The UI sends OpenAI-style parts; rewrite each part's text on its own
+                # and pass non-text parts (images, audio) through untouched.
+                new_content = [
+                    {**part, "text": rewrite(part["text"])}
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    else rewrite(part)
+                    if isinstance(part, str)
+                    else part
+                    for part in content
+                ]
+            if new_content != content:
+                updates["content"] = new_content
+        if updates:
+            out.append({**msg, **updates})
             changed = True
         else:
             out.append(msg)

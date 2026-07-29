@@ -37,6 +37,7 @@ from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
+    neutralize_control_markup_in_messages,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
@@ -1223,6 +1224,12 @@ class InferenceBackend:
             else:
                 vision_messages = [user_msg]
 
+            # This renders through the processor's own template, so it never reaches
+            # the apply_chat_template_for_generation choke point (#7066). Rebind
+            # user_msg to the neutralized copy so the no-system retry below keeps it.
+            vision_messages = neutralize_control_markup_in_messages(vision_messages)
+            user_msg = vision_messages[-1]
+
             try:
                 input_text = processor.apply_chat_template(
                     vision_messages, add_generation_prompt = True, tokenize = False
@@ -1437,6 +1444,10 @@ class InferenceBackend:
                 ],
             },
         ]
+
+        # Same direct-processor render as the vision path: no choke point in the way,
+        # so the transcription prompt has to be neutralized here (#7066).
+        audio_messages = neutralize_control_markup_in_messages(audio_messages)
 
         # apply_chat_template does audio embedding + tokenization in one step
         inputs = processor.apply_chat_template(

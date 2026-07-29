@@ -13029,6 +13029,18 @@ class LlamaCppBackend:
         elif isinstance(system, list):
             system_text = _block_text(system)
 
+        # Count the prompt generation actually sends. The chat paths neutralize
+        # control markup before templating (#7066), so counting the raw text would
+        # render a different prompt through /apply-template and report a budget for
+        # a prompt no request ever uses.
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup,
+            neutralize_control_markup_in_messages,
+        )
+
+        messages = neutralize_control_markup_in_messages(messages)
+        system_text = neutralize_control_markup(system_text)
+
         try:
             with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
 
