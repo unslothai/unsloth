@@ -2476,30 +2476,23 @@ def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
 
 
 def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """Best-effort PID-reuse guard: False only when we can prove it isn't ours.
+    """False only when a recorded start time proves this PID is a different process.
 
-    psutil is not a base CLI dependency, so the CLI meets records it cannot check.
-    Those are stopped anyway -- the old `stop` signalled its PID with no checks at
-    all, and skipping a live server is the orphan bug this exists to fix.
-    The cmdline check covers untimed legacy records -- the in-venv path runs
-    run_server() in-process, so its argv is `unsloth studio ...` with no run.py.
+    Any recorded time matching is enough -- a stale record must not veto a live
+    server that reused the PID. Untimed records (legacy studio.pid, or a server
+    started without psutil) cannot be checked, so they are trusted: the old `stop`
+    signalled with no checks at all, and skipping a live server is the orphan bug
+    this exists to fix.
     """
     known = [c for c in created_times if c is not None]
-    untimed = not created_times or len(known) < len(created_times)
+    if not known or len(known) < len(created_times):
+        return True
     try:
         import psutil
-
-        proc = psutil.Process(pid)
-        if known:
-            actual = proc.create_time()
-            if any(abs(actual - c) < 1.0 for c in known):
-                return True
-            if not untimed:
-                return False
-        cmdline = " ".join(proc.cmdline()).lower()
+        actual = psutil.Process(pid).create_time()
     except Exception:
         return True
-    return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
+    return any(abs(actual - c) < 1.0 for c in known)
 
 
 def _signal_stop(pid: int) -> "str | None":

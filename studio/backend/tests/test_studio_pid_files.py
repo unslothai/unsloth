@@ -21,8 +21,9 @@ if str(_BACKEND) not in sys.path:
 
 import run  # noqa: E402
 
-# Captured before the autouse fixture stubs it, for the tests that exercise it.
+# Captured before the autouse fixture stubs them, for the tests that exercise them.
 _REAL_IS_STUDIO_BACKEND = run._pid_is_studio_backend
+_REAL_PID_ALIVE = run._pid_alive
 
 
 @pytest.fixture(autouse = True)
@@ -105,6 +106,36 @@ def test_remove_pid_file_leaves_a_reused_entry_alone(tmp_path):
     assert own.read_text(encoding = "utf-8") == "999999"
 
 
+def test_windows_liveness_does_not_call_every_pid_alive(monkeypatch):
+    # os.kill(pid, 0) raises OSError for every pid on Windows, so without the
+    # tasklist fallback a stale record would block its port forever.
+    import subprocess
+
+    monkeypatch.setattr(run, "_pid_alive", _REAL_PID_ALIVE)
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = '"python.exe","8550",...')
+    )
+
+    assert run._pid_alive(8550) is True
+    assert run._pid_alive(9999) is False
+
+
+def test_windows_liveness_prunes_when_tasklist_fails(monkeypatch):
+    import subprocess
+
+    def _boom(*a, **k):
+        raise OSError("tasklist missing")
+
+    monkeypatch.setattr(run, "_pid_alive", _REAL_PID_ALIVE)
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "run", _boom)
+
+    assert run._pid_alive(8550) is False
+
+
 def test_read_pid_record_parses_pid_time_and_address(tmp_path):
     (tmp_path / "r.pid").write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
 
@@ -130,6 +161,21 @@ def test_read_pid_record_rejects_a_corrupt_file(tmp_path):
     (tmp_path / "r.pid").write_text("not-a-pid", encoding = "utf-8")
 
     assert run._read_pid_record(tmp_path / "r.pid") is None
+
+
+def test_graceful_shutdown_drops_the_record_last(monkeypatch):
+    # Cleanup can take seconds while the server is still alive. Dropping the record
+    # first leaves a retried `stop` or a new launch unable to find it.
+    order = []
+    monkeypatch.setattr(run, "_remove_pid_file", lambda: order.append("remove_record"))
+
+    class _Server:
+        def __setattr__(self, name, value):
+            order.append("release_socket")
+
+    run._graceful_shutdown(_Server())
+
+    assert order == ["release_socket", "remove_record"]
 
 
 def test_own_studio_on_port_is_found_without_psutil(tmp_path, monkeypatch):
@@ -166,7 +212,7 @@ def test_a_reused_pid_is_not_treated_as_our_studio(tmp_path, monkeypatch):
 
 def test_an_unverifiable_record_still_blocks_a_duplicate(tmp_path, monkeypatch):
     # Can't tell: refusing with a clear message beats a silent second instance.
-    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): None)
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): True)
     (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
     assert run._own_studio_on_port(8901, "127.0.0.1") == 8550
@@ -201,9 +247,17 @@ def test_a_stale_record_on_another_port_does_not_hide_a_live_server(tmp_path, mo
     assert run._own_studio_on_port(9000, "127.0.0.1") == 1234
 
 
-def test_legacy_records_match_an_in_process_studio(monkeypatch):
-    # The in-venv path calls run_server() in-process, so argv is `unsloth studio`
-    # with no run.py. Rejecting it would strand a running server.
+def test_a_start_time_is_the_only_thing_that_disproves_a_record(monkeypatch):
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+
+    assert run._pid_is_studio_backend(8550, [999.0]) is True
+    assert run._pid_is_studio_backend(8550, [111.5]) is False
+
+
+def test_a_bare_run_py_command_line_is_not_rejected(monkeypatch):
+    # `cd studio/backend && python run.py --port 8901` has no "studio" or "unsloth"
+    # in argv. Guessing from the command line called that "not ours".
     monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
 
     class _FakeProcess:
@@ -211,30 +265,25 @@ def test_legacy_records_match_an_in_process_studio(monkeypatch):
             self.pid = pid
 
         def cmdline(self):
-            return ["/root/.unsloth/studio/unsloth_studio/bin/unsloth", "studio", "-p", "8901"]
+            return ["python", "run.py", "--port", "8901"]
+
+        def create_time(self):
+            return 111.5
 
     monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
 
     assert run._pid_is_studio_backend(8550) is True
 
 
-def test_legacy_records_do_not_match_a_training_run(monkeypatch):
-    # No start time recorded: the cmdline check must not accept `unsloth train`.
+def test_an_untimed_legacy_record_is_trusted(monkeypatch):
+    # `python run.py --port 8901` has no telltale argv, so guessing from the
+    # command line rejected real servers. Only a start time can disprove one.
     monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
-
-    class _FakeProcess:
-        def __init__(self, pid):
-            self.pid = pid
-
-        def cmdline(self):
-            if self.pid == 8550:
-                return ["python", "/pkg/studio/backend/run.py", "--port", "8901"]
-            return ["python", "-m", "unsloth", "train", "run.py"]
-
-    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
 
     assert run._pid_is_studio_backend(8550) is True
-    assert run._pid_is_studio_backend(9999) is False
+    assert run._pid_is_studio_backend(8550, [None]) is True
+    assert run._pid_is_studio_backend(8550, [111.5, None]) is True
 
 
 def test_a_legacy_server_on_the_port_is_recognised(tmp_path, monkeypatch):

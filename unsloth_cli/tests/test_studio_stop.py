@@ -168,8 +168,9 @@ def test_stop_signals_a_live_server_whose_pid_has_a_stale_record(monkeypatch, tm
     assert not list(tmp_path.glob("studio-*.pid"))
 
 
-def test_pid_identity_check_accepts_an_in_process_studio(monkeypatch):
-    # The in-venv path calls run_server() in-process: argv has no run.py.
+def test_a_bare_run_py_command_line_is_not_rejected(monkeypatch):
+    # `cd studio/backend && python run.py --port 8901` has no "studio" or "unsloth"
+    # in argv. Guessing from the command line deleted its record without stopping it.
     studio_mod = _studio()
 
     class _FakeProcess:
@@ -177,11 +178,24 @@ def test_pid_identity_check_accepts_an_in_process_studio(monkeypatch):
             self.pid = pid
 
         def cmdline(self):
-            return ["/root/.unsloth/studio/unsloth_studio/bin/unsloth", "studio", "-p", "8901"]
+            return ["python", "run.py", "--port", "8901"]
+
+        def create_time(self):
+            return 111.5
 
     monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
 
     assert studio_mod._pid_is_studio_server(8550) is True
+
+
+def test_an_untimed_record_is_trusted(monkeypatch):
+    # A legacy `python run.py --port 8901` has no telltale argv, and the in-venv
+    # path runs in-process. Guessing from the command line rejected real servers.
+    studio_mod = _studio()
+
+    assert studio_mod._pid_is_studio_server(8550) is True
+    assert studio_mod._pid_is_studio_server(8550, [None]) is True
+    assert studio_mod._pid_is_studio_server(8550, [111.5, None]) is True
 
 
 def test_an_unverifiable_record_is_still_stopped(monkeypatch):
@@ -237,29 +251,6 @@ def test_pid_identity_check_trusts_the_record_without_psutil(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", None)
 
     assert studio_mod._pid_is_studio_server(8550) is True
-
-
-def test_pid_identity_check_matches_a_studio_command_line(monkeypatch):
-    # Legacy records carry no start time, so fall back to the command line -- but
-    # `unsloth train` and a stray run.py must not match.
-    studio_mod = _studio()
-
-    class _FakeProcess:
-        def __init__(self, pid):
-            self.pid = pid
-
-        def cmdline(self):
-            if self.pid == 8550:
-                return ["/venv/bin/python", "/pkg/studio/backend/run.py", "--port", "8901"]
-            return ["/venv/bin/python", "-m", "unsloth", "train", "run.py"]
-
-        def create_time(self):
-            return 111.5
-
-    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
-
-    assert studio_mod._pid_is_studio_server(8550) is True
-    assert studio_mod._pid_is_studio_server(9999) is False
 
 
 def test_pid_identity_check_uses_the_recorded_start_time(monkeypatch):

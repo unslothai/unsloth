@@ -797,6 +797,20 @@ def _pid_alive(pid: int) -> bool:
         return psutil.pid_exists(pid)
     except ImportError:
         pass
+    if sys.platform == "win32":
+        # os.kill(pid, 0) raises OSError for every pid on Windows, so a stale record
+        # would look alive forever and block this port. Unconfirmed means prune.
+        import subprocess
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            ).stdout
+        except Exception:
+            return False
+        return f'"{int(pid)}"' in out
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -836,29 +850,21 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None
     return pid, created, address
 
 
-def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> "bool | None":
-    """Guard against PID reuse. True = ours, False = not ours, None = can't tell.
+def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
+    """False only when a recorded start time proves this PID is a different process.
 
-    Any recorded start time matching is enough: a stale record must not veto a live
-    server that reused the PID. The cmdline check covers untimed legacy records --
-    the in-venv path runs run_server() in-process, so argv is `unsloth studio ...`.
+    Any recorded time matching is enough -- a stale record must not veto a live
+    server that reused the PID. Untimed records cannot be checked at all, so they
+    are trusted: a legacy `python run.py` has no telltale argv, and guessing from
+    the command line rejected real servers.
     """
     known = [c for c in created_times if c is not None]
-    untimed = not created_times or len(known) < len(created_times)
-    if known:
-        actual = _process_create_time(pid)
-        if actual is None:
-            return True if untimed else None
-        if any(abs(actual - c) < 1.0 for c in known):
-            return True
-        if not untimed:
-            return False
-    try:
-        import psutil
-        cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
-    except Exception:
+    if not known or len(known) < len(created_times):
         return True
-    return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
+    actual = _process_create_time(pid)
+    if actual is None:
+        return True
+    return any(abs(actual - c) < 1.0 for c in known)
 
 
 def _own_studio_on_port(port: int, host: str) -> "int | None":
@@ -881,8 +887,7 @@ def _own_studio_on_port(port: int, host: str) -> "int | None":
             continue
         if not _addresses_collide(address, host, port):
             continue
-        # None (unverifiable) counts as ours: refusing beats a silent duplicate.
-        if _pid_is_studio_backend(pid, [created]) is not False:
+        if _pid_is_studio_backend(pid, [created]):
             return pid
     return _legacy_studio_on_port(port)
 
@@ -903,12 +908,12 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     # and this port's records were just checked. Only count a record that still
     # matches the live process: a stale one may just share a reused PID.
     for other in _per_port_records():
-        if other and other[0] == pid and _pid_is_studio_backend(pid, [other[1]]) is not False:
+        if other and other[0] == pid and _pid_is_studio_backend(pid, [other[1]]):
             return None
     blocker = _get_pid_on_port(port)
     if blocker is not None and blocker[0] != pid:
         return None
-    if _pid_is_studio_backend(pid, [created]) is False:
+    if not _pid_is_studio_backend(pid, [created]):
         return None
     return pid
 
@@ -995,7 +1000,6 @@ def _graceful_shutdown(server = None):
     Called from signal handlers to clean up children before exit. Critical on
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
-    _remove_pid_file()
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn (releases the listening socket).
@@ -1048,6 +1052,9 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error in process-lifetime sweep: %s", e)
 
+    # Last: while cleanup runs the server is still alive, and dropping the record
+    # early leaves a retried `stop` or a new launch unable to find it.
+    _remove_pid_file()
     logger.info("All subprocesses cleaned up")
 
 
