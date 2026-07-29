@@ -647,6 +647,8 @@ def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBac
     b._requested_spec_mode = "auto"
     b._chat_template_override = None
     b._gguf_path = None
+    b._is_vision_capable = False
+    b._load_mmproj = False
     return b
 
 
@@ -694,6 +696,56 @@ def test_diffusion_dedupe_ignores_projector_request_default():
             backend,
         )
         is True
+    )
+
+
+def test_text_gguf_dedupe_ignores_projector_request():
+    """Projector intent cannot change a text-only GGUF launch."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+    backend._is_vision_capable = False
+    backend._load_mmproj = False
+
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            LoadRequest(model_path = "owner/repo"),
+            backend,
+        )
+        is True
+    )
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            LoadRequest(model_path = "owner/repo", load_mmproj = False),
+            backend,
+        )
+        is True
+    )
+
+
+def test_disabled_vision_gguf_dedupe_keeps_projector_intent():
+    """A vision-capable text-only load must still reload when projector is enabled."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+    backend._is_vision_capable = True
+    backend._load_mmproj = False
+
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            LoadRequest(model_path = "owner/repo", load_mmproj = False),
+            backend,
+        )
+        is True
+    )
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            LoadRequest(model_path = "owner/repo", load_mmproj = True),
+            backend,
+        )
+        is False
     )
 
 

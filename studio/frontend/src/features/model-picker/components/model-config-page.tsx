@@ -910,7 +910,10 @@ export function ModelConfigPage({
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
-                isVision={stagedDims?.isVision ?? false}
+                isVision={
+                  Boolean(stagedDims?.isVision) ||
+                  config.visionProjectorEnabled === false
+                }
               />
             )}
 

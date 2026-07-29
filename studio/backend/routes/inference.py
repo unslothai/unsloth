@@ -3228,9 +3228,12 @@ def _request_matches_loaded_settings(
             strip_mmproj = "load_mmproj" in getattr(request, "model_fields_set", set()),
         )
     )
-    requested_load_mmproj = _effective_load_mmproj(
-        request.load_mmproj,
-        effective_extra,
+    requested_load_mmproj = bool(
+        llama_backend.is_vision_capable
+        and _effective_load_mmproj(
+            request.load_mmproj,
+            effective_extra,
+        )
     )
     if not llama_backend.is_diffusion and requested_load_mmproj != bool(llama_backend.load_mmproj):
         return False

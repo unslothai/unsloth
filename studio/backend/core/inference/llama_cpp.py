@@ -1988,6 +1988,7 @@ class LlamaCppBackend:
         self._spec_fallback_reason: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
+        self._is_vision_capable: bool = False
         self._load_mmproj: bool = True
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
         # runner, not llama-server. Set from the GGUF architecture at load.
@@ -2161,6 +2162,11 @@ class LlamaCppBackend:
     @property
     def is_vision(self) -> bool:
         return self._is_vision
+
+    @property
+    def is_vision_capable(self) -> bool:
+        """Whether the active GGUF supports a vision projector."""
+        return getattr(self, "_is_vision_capable", self._is_vision)
 
     @property
     def load_mmproj(self) -> bool:
@@ -5115,6 +5121,7 @@ class LlamaCppBackend:
         self._gguf_path = model_path
         self._hf_repo = hf_repo
         self._is_vision = False
+        self._is_vision_capable = False
         self._load_mmproj = False
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
@@ -6745,9 +6752,7 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 # Record actual launch capability, not merely raw request intent.
-                effective_load_mmproj = (
-                    bool(effective_is_vision) if is_vision else bool(effective_mmproj_requested)
-                )
+                effective_load_mmproj = bool(effective_is_vision)
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual
@@ -8307,6 +8312,7 @@ class LlamaCppBackend:
                 else:
                     self._hf_variant = None
                 self._is_vision = effective_is_vision
+                self._is_vision_capable = bool(is_vision)
                 self._load_mmproj = effective_load_mmproj
                 self._model_identifier = model_identifier
 
@@ -9010,7 +9016,9 @@ class LlamaCppBackend:
         if self._requested_n_ctx != int(n_ctx):
             return False
         if not self._is_diffusion:
-            requested_load_mmproj = bool(load_mmproj and not extra_args_disable_mmproj(extra_args))
+            requested_load_mmproj = bool(
+                is_vision and load_mmproj and not extra_args_disable_mmproj(extra_args)
+            )
             if bool(getattr(self, "_load_mmproj", True)) != requested_load_mmproj:
                 return False
 
@@ -9232,6 +9240,7 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
+            self._is_vision_capable = False
             self._load_mmproj = True
             self._is_audio = False
             self._audio_type = None

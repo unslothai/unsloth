@@ -79,6 +79,8 @@ def _loaded_backend(**overrides):
     backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
     backend._is_vision = False
+    backend._is_vision_capable = False
+    backend._load_mmproj = False
     backend._extra_args = None
     backend._extra_args_source = None
     backend._gguf_path = None
@@ -258,6 +260,24 @@ def test_already_in_target_state_compares_effective_mmproj_state():
         )
         is False
     )
+
+
+def test_already_in_target_state_ignores_mmproj_for_text_model():
+    backend = _loaded_backend(_load_mmproj = False)
+    common = dict(
+        gguf_path = None,
+        model_identifier = "owner/repo",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = None,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+    )
+
+    assert backend._already_in_target_state(**common, load_mmproj = True) is True
+    assert backend._already_in_target_state(**common, load_mmproj = False) is True
 
 
 def test_diffusion_target_state_ignores_projector_default():

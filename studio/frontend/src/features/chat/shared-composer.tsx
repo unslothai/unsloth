@@ -1047,9 +1047,8 @@ export function SharedComposer({
         const effectiveTensorParallel = ownRemembered
           ? ownConfig.tensorParallel
           : fallbackTensorParallel;
-        const effectiveVisionProjector = ownRemembered
-          ? (ownConfig.visionProjectorEnabled ?? true)
-          : compareLoadKnobs.visionProjectorEnabled;
+        const effectiveVisionProjector =
+          ownConfig.visionProjectorEnabled ?? true;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
