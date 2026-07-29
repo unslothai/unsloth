@@ -895,8 +895,12 @@ def detect_reasoning_flags(
     tpl = chat_template
     prefix = f"{log_source}: " if log_source else ""
 
+    # 'none' is this style's disable sentinel, not an effort level: the off
+    # switch is enable_thinking=false, and the Think menu already hides it.
+    # Left in, it is the weakest level, so a stored effort the model does not
+    # offer clamps onto it and silently disables thinking (Kimi-K3).
     effort_levels = (
-        _extract_reasoning_effort_levels(tpl)
+        [lv for lv in _extract_reasoning_effort_levels(tpl) if lv != "none"]
         if ("reasoning_effort" in tpl and "enable_thinking" in tpl)
         else []
     )
@@ -904,7 +908,7 @@ def detect_reasoning_flags(
         # DeepSeek-V4's encoder accepts reasoning_effort {'high', 'max'} but its
         # template only branches on 'max', so the literal scan misses 'high'. Add it
         # (matched on whole repo-name segments, so 'deepseek-v40' won't false-match)
-        # to expose the full none/high/max ladder instead of none/max.
+        # to expose the full high/max ladder instead of max alone.
         segments = re.split(r"[-_.]", (model_identifier or "").lower().split("/")[-1])
         is_dsv4 = "deepseek4" in segments or any(
             a == "deepseek" and b == "v4" for a, b in zip(segments, segments[1:])
