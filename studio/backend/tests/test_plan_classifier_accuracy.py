@@ -48,15 +48,17 @@ DISCARD_BUDGET = 4
 
 
 def _corpus():
-    with open(DATA, encoding="utf-8") as fh:
+    with open(DATA, encoding = "utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]
 
 
-def _report(rows, limit=10):
+def _report(rows, limit = 10):
     lines = []
     for row in rows[:limit]:
         text = " ".join(row["text"].split())
-        lines.append(f"  [{row['model']}/{row['prompt_class']}] {row['prompt']!r}\n    {text[:200]!r}")
+        lines.append(
+            f"  [{row['model']}/{row['prompt_class']}] {row['prompt']!r}\n    {text[:200]!r}"
+        )
     if len(rows) > limit:
         lines.append(f"  ... and {len(rows) - limit} more")
     return "\n".join(lines)
