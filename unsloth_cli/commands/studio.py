@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Sequence
 import typer
 
 from unsloth_cli import _studio_deps
@@ -2265,6 +2265,9 @@ def run(
         # Headless serving prints its own URL/API-key banner; the Tauri-only
         # TAURI_PORT line would corrupt that machine-parseable output.
         emit_tauri_port = False,
+        # We read the bound port back below, so a fallback past another Studio is
+        # safe here and keeps side-by-side model runs working.
+        abort_if_own_studio = False,
     )
     # Forward the frontend validated before the gate (in-venv path).
     if resolved_frontend is not None:
@@ -2424,6 +2427,7 @@ def run(
 # ── unsloth studio stop ───────────────────────────────────────────────
 
 _PID_FILE = STUDIO_HOME / "studio.pid"
+PID_FILE_GLOB = "studio-*.pid"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -2453,58 +2457,210 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-@studio_app.command()
-def stop():
-    """Stop a running Unsloth Studio server.
+def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from PID file contents."""
+    lines = text.splitlines()
+    if not lines or not lines[0].strip().isdigit():
+        return None
+    try:
+        # isdigit() is not enough: "²".isdigit() is True but int() rejects it.
+        pid = int(lines[0].strip())
+    except ValueError:
+        return None
+    # kill(0) signals our whole process group; kill(1) is init. Never either.
+    if pid < 2:
+        return None
+    created = None
+    if len(lines) > 1:
+        try:
+            created = float(lines[1].strip())
+        except ValueError:
+            created = None
+    return pid, created
 
-    Reads the PID from ~/.unsloth/studio/studio.pid and sends SIGTERM
-    (or TerminateProcess on Windows) to shut it down gracefully.
+
+def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from a PID file."""
+    try:
+        text = path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return _parse_pid_record(text)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Drop a record without letting one bad file end the loop.
+
+    An undeletable record must not stop us reaching the other servers -- that is
+    the orphan this command exists to prevent.
     """
+    try:
+        path.unlink(missing_ok = True)
+    except OSError as e:
+        typer.echo(f"Could not remove PID file {path.name}: {e}", err = True)
+
+
+def _report_unreadable(paths: "list[Path]") -> None:
+    """Say which servers we could not reach, since `stop` is about to exit 1."""
+    names = ", ".join(sorted(p.name for p in paths))
+    typer.echo(
+        f"Could not read {len(paths)} PID file(s): {names}. A server recorded "
+        f"there may still be running; re-run with permission to read "
+        f"{STUDIO_HOME} to stop it.",
+        err = True,
+    )
+
+
+def _pid_file_entries(
+    unreadable: "list[Path] | None" = None,
+) -> "list[tuple[int, list[float | None], list[Path]]]":
+    """(pid, create_times, files) per recorded server, including the legacy studio.pid.
+
+    Paths that could not be read are appended to `unreadable` when given, so the
+    caller can tell "nothing is running" apart from "something is running and we
+    could not see it".
+
+    Grouped by PID: a server writes both its per-port file and studio.pid, and
+    signalling twice would hit the SIG_DFL the first SIGTERM installs, hard-killing
+    it mid-shutdown. Every recorded time is kept -- a stale file and a live server
+    can share a PID, and the stale one must not veto the live one.
+    """
+    by_pid: "dict[int, tuple[list[float | None], list[Path]]]" = {}
+    try:
+        paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
+    except OSError:
+        paths = [_PID_FILE]
+    seen = set()
+    for path in paths:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # Unreadable is not the same as invalid. A root-owned record, or one
+            # caught mid-write, still belongs to a live server, and deleting it
+            # strands that server -- the bug this command exists to fix.
+            typer.echo(f"Cannot read PID file {path.name}: {e}", err = True)
+            if unreadable is not None:
+                unreadable.append(path)
+            continue
+        record = _parse_pid_record(text)
+        if record is None:
+            typer.echo(f"Ignoring invalid PID file {path.name}")
+            _unlink_quietly(path)
+            continue
+        pid, created = record
+        created_times, files = by_pid.setdefault(pid, ([], []))
+        created_times.append(created)
+        files.append(path)
+    return [(pid, times, files) for pid, (times, files) in by_pid.items()]
+
+
+def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
+    """False only when a recorded start time proves this PID is a different process.
+
+    Any recorded time matching is enough -- a stale record must not veto a live
+    server that reused the PID. Records with no time at all (a legacy studio.pid,
+    or a server started without psutil) cannot be checked, so they are trusted:
+    the old `stop` signalled with no checks at all, and skipping a live server is
+    the orphan bug this exists to fix.
+
+    An untimed record sitting *alongside* a timed one carries no information, so
+    it must not cancel the timed one either. Every current server writes both a
+    timed per-port record and an untimed studio.pid, so letting the untimed half
+    win made this check inert exactly where it matters and let `stop` SIGTERM an
+    unrelated process that had inherited the PID.
+    """
+    known = [c for c in created_times if c is not None]
+    if not known:
+        return True
+    try:
+        import psutil
+        actual = psutil.Process(pid).create_time()
+    except Exception:
+        return True
+    return any(abs(actual - c) < 1.0 for c in known)
+
+
+def _signal_stop(pid: int) -> "str | None":
+    """SIGTERM (or taskkill) the pid. Returns an error string, or None on success."""
     import signal as _signal
 
-    if not _PID_FILE.is_file():
-        typer.echo("No running Unsloth server found (no PID file).")
-        raise typer.Exit(0)
-
-    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
-    if not pid_text.isdigit():
-        typer.echo(f"Invalid PID file contents: {pid_text}")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(1)
-
-    pid = int(pid_text)
-
-    # Check if still alive (os.kill(pid, 0) is invalid on Windows -- see _pid_alive).
-    if not _pid_alive(pid):
-        typer.echo(f"Unsloth server (PID {pid}) is not running. Cleaning up stale PID file.")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(0)
-
-    # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
+    if pid < 2:
+        return f"refusing to signal PID {pid}"
     try:
         if sys.platform == "win32":
             # /T also stops llama-server children, which otherwise keep GPU and port.
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check = True)
         else:
             os.kill(pid, _signal.SIGTERM)
-        typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
     except ProcessLookupError:
-        typer.echo(f"Unsloth server (PID {pid}) already exited.")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(0)
+        return None
     except Exception as e:
-        typer.echo(f"Failed to stop Unsloth server (PID {pid}): {e}", err = True)
-        raise typer.Exit(1)
+        return str(e)
+    return None
 
-    # Wait briefly for the process to exit and clean up.
+
+@studio_app.command()
+def stop():
+    """Stop every running Unsloth Studio server for this STUDIO_HOME.
+
+    The port fallback can leave more than one running, so stop them all.
+    """
+    unreadable: "list[Path]" = []
+    entries = _pid_file_entries(unreadable)
+    if not entries:
+        if unreadable:
+            # Reporting success here would be a lie: the records we could not
+            # read are kept, and the servers behind them are still serving.
+            _report_unreadable(unreadable)
+            raise typer.Exit(1)
+        typer.echo("No running Unsloth server found (no PID file).")
+        raise typer.Exit(0)
+
+    signalled, failed = [], []
+    for pid, created_times, paths in entries:
+        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created_times):
+            for path in paths:
+                _unlink_quietly(path)
+            continue
+        error = _signal_stop(pid)
+        if error is not None:
+            failed.append((pid, error))
+            typer.echo(f"Failed to stop Unsloth server (PID {pid}): {error}", err = True)
+            continue
+        typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
+        signalled.append((pid, paths))
+
+    if not signalled and not failed:
+        if unreadable:
+            _report_unreadable(unreadable)
+            raise typer.Exit(1)
+        typer.echo("No running Unsloth server found (cleaned up stale PID files).")
+        raise typer.Exit(0)
+
+    pending = list(signalled)
     for _ in range(10):
+        if not pending:
+            break
         time.sleep(0.5)
-        if not _pid_alive(pid):
-            _PID_FILE.unlink(missing_ok = True)
-            typer.echo("Unsloth server stopped.")
-            raise typer.Exit(0)
+        for entry in list(pending):
+            pid, paths = entry
+            if not _pid_alive(pid):
+                for path in paths:
+                    _unlink_quietly(path)
+                pending.remove(entry)
 
-    typer.echo("Unsloth server is shutting down (may take a few seconds).")
+    stopped = len(signalled) - len(pending)
+    if stopped:
+        typer.echo(f"Unsloth server{'s' if stopped > 1 else ''} stopped ({stopped}).")
+    for pid, _paths in pending:
+        typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
+    if unreadable:
+        _report_unreadable(unreadable)
+    if failed or unreadable:
+        raise typer.Exit(1)
 
 
 # ── unsloth studio setup / update ─────────────────────────────────────
