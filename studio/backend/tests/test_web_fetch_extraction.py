@@ -1903,9 +1903,12 @@ def test_literal_fence_inside_pre_does_not_end_the_code_region():
 def test_heading_through_a_nested_buffer_is_emitted_once():
     # The title was teed raw entering the blockquote and again when the quote
     # flushed, so a stripped header kept two copies of it.
-    body = '<main><header><div role="heading"><blockquote>UniqueTitle</blockquote></div><ul>%s</ul></header><p>%s</p></main>' % (
-        _interlanguage_list(300),
-        "Article body. " * 30,
+    body = (
+        '<main><header><div role="heading"><blockquote>UniqueTitle</blockquote></div><ul>%s</ul></header><p>%s</p></main>'
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
     )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert out.count("UniqueTitle") == 1
