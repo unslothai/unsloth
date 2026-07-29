@@ -180,7 +180,7 @@ Function PageReinstall
   ; A WiX installer stores the installation info in registry
   ; using a UUID and so we have to loop through all keys under
   ; `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`
-  ; and check if `DisplayName` and `Publisher` keys match ${PRODUCTNAME} and ${MANUFACTURER}
+  ; and match the current or legacy display name with ${MANUFACTURER}
   ;
   ; This has a potential issue that there maybe another installation that matches
   ; our ${PRODUCTNAME} and ${MANUFACTURER} but wasn't installed by our WiX installer,
@@ -193,7 +193,10 @@ Function PageReinstall
     IntOp $0 $0 + 1
     ReadRegStr $R0 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "DisplayName"
     ReadRegStr $R1 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "Publisher"
-    StrCmp "$R0$R1" "${PRODUCTNAME}${MANUFACTURER}" 0 wix_loop
+    StrCmp "$R1" "${MANUFACTURER}" 0 wix_loop
+    StrCmp "$R0" "${PRODUCTNAME}" wix_name_match
+    StrCmp "$R0" "${INSTALLIDENTITY}" 0 wix_loop
+    wix_name_match:
     ReadRegStr $R0 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1" "UninstallString"
     ${StrCase} $R1 $R0 "L"
     ${StrLoc} $R0 $R1 "msiexec" ">"
@@ -936,13 +939,16 @@ Function CreateOrUpdateStartMenuShortcut
   ; migrate old shortcuts to target the new MAINBINARYNAME
   StrCpy $R0 0
 
-  !insertmacro IsShortcutTarget "$SMPROGRAMS\${INSTALLIDENTITY}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  Pop $0
-  ${If} $0 = 1
-    Delete "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-    Rename "$SMPROGRAMS\${INSTALLIDENTITY}.lnk" "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-    StrCpy $R0 1
+  ${If} $OldMainBinaryName != ""
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\${INSTALLIDENTITY}.lnk" "$INSTDIR\$OldMainBinaryName"
+    Pop $0
+    ${If} $0 = 1
+      Delete "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+      Rename "$SMPROGRAMS\${INSTALLIDENTITY}.lnk" "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+      !insertmacro SetShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+      !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+      StrCpy $R0 1
+    ${EndIf}
   ${EndIf}
 
   !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
@@ -986,13 +992,16 @@ Function CreateOrUpdateDesktopShortcut
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
 
-  !insertmacro IsShortcutTarget "$DESKTOP\${INSTALLIDENTITY}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  Pop $0
-  ${If} $0 = 1
-    Delete "$DESKTOP\${PRODUCTNAME}.lnk"
-    Rename "$DESKTOP\${INSTALLIDENTITY}.lnk" "$DESKTOP\${PRODUCTNAME}.lnk"
-    !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
-    Return
+  ${If} $OldMainBinaryName != ""
+    !insertmacro IsShortcutTarget "$DESKTOP\${INSTALLIDENTITY}.lnk" "$INSTDIR\$OldMainBinaryName"
+    Pop $0
+    ${If} $0 = 1
+      Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+      Rename "$DESKTOP\${INSTALLIDENTITY}.lnk" "$DESKTOP\${PRODUCTNAME}.lnk"
+      !insertmacro SetShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+      !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+      Return
+    ${EndIf}
   ${EndIf}
 
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"

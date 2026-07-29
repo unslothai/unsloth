@@ -49,6 +49,11 @@ def test_desktop_package_transitions_preserve_legacy_installs() -> None:
     assert "Uninstall\\${INSTALLIDENTITY}" in installer
     assert "${MANUKEY}\\${INSTALLIDENTITY}" in installer
     assert "$LOCALAPPDATA\\${INSTALLIDENTITY}" in installer
+
+    assert 'StrCmp "$R0" "${PRODUCTNAME}" wix_name_match' in installer
+    assert 'StrCmp "$R0" "${INSTALLIDENTITY}" 0 wix_loop' in installer
+    assert '"$SMPROGRAMS\\${INSTALLIDENTITY}.lnk" "$INSTDIR\\$OldMainBinaryName"' in installer
+    assert '"$DESKTOP\\${INSTALLIDENTITY}.lnk" "$INSTDIR\\$OldMainBinaryName"' in installer
     assert 'Rename "$SMPROGRAMS\\${INSTALLIDENTITY}.lnk"' in installer
     assert 'Rename "$DESKTOP\\${INSTALLIDENTITY}.lnk"' in installer
 
