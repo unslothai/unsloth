@@ -972,14 +972,47 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# ── HTTP GET to stdout (supports curl and wget) ──
+# install.sh takes either transport everywhere, so a wget-only box installs fine
+# and then stalled here, where curl was the only way to fetch anything.
+_setup_http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+    else
+        return 1
+    fi
+}
+
+# Same, with a deadline, for the checks that must not hang the install.
+# wget has nothing like curl's total-transfer --max-time: --timeout is per
+# operation and it retries 20 times, so a stalled server took minutes and a slow
+# drip never ended. --tries=1 plus an outer `timeout` restores the 5s ceiling;
+# without timeout (base macOS, which ships curl anyway) the per-operation bound
+# stands rather than the check being dropped.
+_setup_http_get_timed() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 5 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 wget -qO- --timeout=5 --tries=1 "$1"
+        else
+            wget -qO- --timeout=5 --tries=1 "$1"
+        fi
+    else
+        return 1
+    fi
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
     if _is_verbose; then
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        _setup_http_get https://astral.sh/uv/install.sh | sh
     else
-        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
     export PATH="$HOME/.local/bin:$PATH"
@@ -1020,7 +1053,7 @@ import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
