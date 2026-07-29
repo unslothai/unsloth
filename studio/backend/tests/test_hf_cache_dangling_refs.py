@@ -991,6 +991,52 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
     assert rows[0]["capabilities"].get("can_chat") is False
 
 
+@pytest.mark.parametrize(
+    "older_files, partial",
+    [
+        # Half a split quant and no manifest or marker: the ``.incomplete`` blob
+        # is the only evidence the pinned snapshot is unfinished, so the dangling
+        # ref must not clear it.
+        pytest.param(
+            {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
+            True,
+            id = "pinned-snapshot-holds-half-a-split-quant",
+        ),
+        # Negative side: the pinned snapshot serves the whole quant, so the
+        # unmaterialised attempt is charged to nothing and the row stays chattable.
+        pytest.param(
+            {
+                "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32,
+                "Model-Q4_K_M-00002-of-00002.gguf": b"\0" * 32,
+            },
+            False,
+            id = "pinned-snapshot-holds-the-whole-quant",
+        ),
+    ],
+)
+def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
+    older_files, partial, tmp_path, monkeypatch
+):
+    """A legacy interrupted GGUF download predates the manifest, so its only
+    trace is an ``.incomplete`` blob. A later update that rewrote ``refs/main``
+    and fetched no file made that ref dangle, and suppressing every repo-wide
+    signal on sight then reported the recovered row as chattable and offered its
+    half-fetched shard as downloaded."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = older_files,
+        newer_files = {"config.json": b"{}"},
+        ref = UPSTREAM_HEAD,
+    )
+    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("partial") is partial
+    assert rows[0]["capabilities"].get("can_chat") is not partial
+
+
 @pytest.mark.parametrize("signal", ["marker", "manifest"])
 def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
     signal, tmp_path, monkeypatch

@@ -580,12 +580,15 @@ def _repo_signal_applies_to_snapshot(
     A ``refs/main`` naming a commit with no directory pins that attempt to a
     revision absent from disk, so no snapshot may inherit it: leaving it on the
     newest one charged an interrupted update to the previous complete payload
-    -- the very state the dangling-ref recovery restores rows from.
+    -- the very state the dangling-ref recovery restores rows from. It excuses
+    only a snapshot that can actually serve the row: a pinned snapshot holding
+    nothing but half a split quant has no other evidence it is unfinished, and
+    dropping the signal advertised shards that are not on disk.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return True
     if _default_ref_names_an_absent_snapshot(repo_cache_dir):
-        return False
+        return _snapshot_offers_only_broken_gguf(snapshot_dir)
     return _is_latest_snapshot(repo_cache_dir, snapshot_dir)
 
 
@@ -694,6 +697,25 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
                 complete.add(quant)
                 break
     return complete
+
+
+def _snapshot_offers_only_broken_gguf(snapshot_dir: Optional[Path]) -> bool:
+    """Whether *snapshot_dir* advertises GGUF quants and not one of them is whole.
+
+    Split shards name their own total, so this judges the pinned snapshot on its
+    own contents, with no ref, marker or manifest. Offering nothing is not proof
+    of breakage (a safetensors snapshot offers no quant), and one whole quant
+    beside a broken one still loads -- the rule ``is_gguf_repo_partial`` keeps.
+    """
+    if snapshot_dir is None:
+        return False
+    from hub.utils.gguf import list_local_gguf_variants
+    try:
+        variants, _ = list_local_gguf_variants(str(snapshot_dir))
+        offered = {v.quant for v in variants if getattr(v, "quant", None)}
+    except Exception:
+        return False
+    return bool(offered) and not (offered & _completed_gguf_variants(snapshot_dir))
 
 
 def snapshot_variants_all_complete(snapshot: str) -> bool:
