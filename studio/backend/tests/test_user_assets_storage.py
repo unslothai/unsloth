@@ -560,28 +560,20 @@ def test_legacy_import_ledger_is_keyset_paginated():
     pages = []
     cursor = None
     while True:
-        page = user_assets_db.list_legacy_imports(
-            "owner", source, cursor = cursor, limit = 2
-        )
+        page = user_assets_db.list_legacy_imports("owner", source, cursor = cursor, limit = 2)
         pages.append(page)
         cursor = page["nextCursor"]
         if cursor is None:
             break
 
-    assert [len(page["recipes"]) + len(page["executions"]) for page in pages] == [
-        2,
-        2,
-        1,
-    ]
+    assert [len(page["recipes"]) + len(page["executions"]) for page in pages] == [2, 2, 1]
     assert [item for page in pages for item in page["executions"]] == ["e1", "e2"]
     assert [item for page in pages for item in page["recipes"]] == ["r1", "r2", "r3"]
     assert pages[-1]["nextCursor"] is None
     with pytest.raises(UserAssetValidationError, match = "cursor"):
         user_assets_db.list_legacy_imports("owner", source, cursor = "not-a-cursor")
     with pytest.raises(HTTPException) as route_error:
-        user_assets_legacy_import.bootstrap(
-            cursor = "not-a-cursor", limit = 2, current_subject = "owner"
-        )
+        user_assets_legacy_import.bootstrap(cursor = "not-a-cursor", limit = 2, current_subject = "owner")
     assert route_error.value.status_code == 422
     assert route_error.value.detail["code"] == "invalid_cursor"
 

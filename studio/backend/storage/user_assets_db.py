@@ -841,17 +841,11 @@ def list_legacy_imports(
         next_cursor = None
         if len(rows) > limit and page_rows:
             last = page_rows[-1]
-            next_cursor = _encode_legacy_import_cursor(
-                last["entity_kind"], last["legacy_id"]
-            )
+            next_cursor = _encode_legacy_import_cursor(last["entity_kind"], last["legacy_id"])
         return {
-            "recipes": [
-                row["legacy_id"] for row in page_rows if row["entity_kind"] == "recipe"
-            ],
+            "recipes": [row["legacy_id"] for row in page_rows if row["entity_kind"] == "recipe"],
             "executions": [
-                row["legacy_id"]
-                for row in page_rows
-                if row["entity_kind"] == "execution"
+                row["legacy_id"] for row in page_rows if row["entity_kind"] == "execution"
             ],
             "nextCursor": next_cursor,
         }
