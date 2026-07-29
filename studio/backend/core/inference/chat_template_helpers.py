@@ -242,10 +242,16 @@ def neutralize_tool_descriptions(tools):
     The predicate is the markup rewrite itself, not that grammar, so a passthrough
     client's ``ns.tool`` or ``functions.NAME:IDX`` still ships untouched.
 
-    Every other string takes the rewrite, which is the identity on a schema that
-    holds no control markup -- a real ``enum`` value or property key has no "<"
-    for the pattern to match, so a live catalog is returned unchanged and two
-    distinct keys cannot collide onto one.
+    Every other string takes the rewrite -- the whole entry, not just the nested
+    ``function``: ``ChatCompletionRequest.tools`` is a bare ``list[dict]``, so an
+    extension field alongside ``type`` / ``function`` survives to the template, and
+    Mistral-Small-3 / Magistral render the catalog as ``[AVAILABLE_TOOLS]{{ tools |
+    tojson }}[/AVAILABLE_TOOLS]``, which serializes the entry whole. Once the name
+    has passed the drop check it holds no markup, so the rewrite is already the
+    identity on it and needs no exemption. The rewrite is likewise the identity on
+    a schema that holds no control markup -- a real ``enum`` value or property key
+    has no "<" for the pattern to match, so a live catalog is returned unchanged
+    and two distinct keys cannot collide onto one.
     """
     if not tools or not isinstance(tools, list):
         return tools
@@ -266,18 +272,11 @@ def neutralize_tool_descriptions(tools):
             )
             changed = True
             continue
-        updates: dict = {}
-        for key, value in target.items():
-            if key == "name":
-                continue
-            new_value = _neutralize_argument_leaves(value)
-            if new_value != value:
-                updates[key] = new_value
-        if not updates:
+        new_tool = _neutralize_argument_leaves(tool)
+        if new_tool == tool:
             out.append(tool)
             continue
-        new_target = {**target, **updates}
-        out.append({**tool, "function": new_target} if target is function else new_target)
+        out.append(new_tool)
         changed = True
     return out if changed else tools
 
