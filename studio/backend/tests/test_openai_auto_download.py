@@ -684,7 +684,12 @@ class _Req:
         self.headers = headers or {}
 
 
-def _hook(model, request, enabled, current_subject = None):
+def _hook(
+    model,
+    request,
+    enabled,
+    current_subject = None,
+):
     import utils.openai_auto_switch_settings as s
 
     original = s.get_openai_auto_download_enabled
@@ -730,7 +735,11 @@ def test_hook_uses_the_anthropic_envelope_on_messages(hub):
 
 def test_hook_swallows_unexpected_failures(hub, monkeypatch):
     # A broken download path must not turn a servable request into a 500.
-    async def _boom(model, hf_token = None, **kwargs):
+    async def _boom(
+        model,
+        hf_token = None,
+        **kwargs,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(auto_dl, "maybe_auto_download", _boom)
@@ -739,7 +748,6 @@ def test_hook_swallows_unexpected_failures(hub, monkeypatch):
 
 def _download_rows():
     from core.inference.api_monitor import api_monitor
-
     return [e for e in api_monitor.snapshot() if e["event"] == "download"]
 
 
@@ -777,9 +785,7 @@ def test_an_api_key_download_keeps_the_attribution_and_names_its_caller(hub):
     rows = _download_rows()
     assert rows and all(row["via_api_key"] is True for row in rows)
     # Still shared: another subject sees the row, just not the attribution.
-    others = [
-        e for e in api_monitor.snapshot(subject = "someone-else") if e["event"] == "download"
-    ]
+    others = [e for e in api_monitor.snapshot(subject = "someone-else") if e["event"] == "download"]
     assert len(others) == len(rows)
     assert all(row["via_api_key"] is False for row in others)
 

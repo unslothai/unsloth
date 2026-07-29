@@ -446,9 +446,7 @@ class ApiMonitor:
             # one: they are another caller's history too, and an owned shared row
             # is exactly what an API-key load produces.
             self._entries = deque(
-                entry
-                for entry in self._entries
-                if entry.shared or entry.subject != subject
+                entry for entry in self._entries if entry.shared or entry.subject != subject
             )
 
     def _visible(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:

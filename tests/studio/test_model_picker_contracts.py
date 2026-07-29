@@ -1081,9 +1081,7 @@ def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}" in sidebar
 
-    signature = " ".join(
-        _read("features/model-picker/model-config/config-signature.ts").split()
-    )
+    signature = " ".join(_read("features/model-picker/model-config/config-signature.ts").split())
     # "No live config yet" has to be its own value: that transition is exactly
     # the one that must remount.
     assert 'if (!config) { return "none"; }' in signature
