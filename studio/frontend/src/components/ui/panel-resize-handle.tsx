@@ -15,6 +15,8 @@ import { getClientPlatform } from "@/components/tauri/window-titlebar"
 
 /** Pointer travel (px) below which a drag counts as a plain click. */
 const DRAG_SLOP = 4
+/** A compatibility click lands immediately after pointer-up. */
+const CLICK_COMPAT_WINDOW_MS = 300
 /** Arrow-key resize step for keyboard users. */
 const RESIZE_STEP = 16
 
@@ -100,9 +102,11 @@ export function PanelResizeHandle({
   // What the pointer asked for, before the viewport cap. Committing the capped
   // value instead would quietly downgrade a stored preference on a narrow window.
   const rawRef = React.useRef(0)
-  // Set when a pointer or key sequence already toggled, so the click that
-  // follows does not toggle a second time.
-  const handledRef = React.useRef(false)
+  // When a pointer sequence last ended. The browser's compatibility click
+  // lands in the same tick, so only a click that close behind is a duplicate.
+  // A timestamp cannot go stale the way an armed flag does: a genuine cancel
+  // emits no click, and a later assistive-tech click still gets through.
+  const handledAtRef = React.useRef(0)
   const committedRef = React.useRef(width)
   React.useEffect(() => {
     committedRef.current = width
@@ -133,11 +137,9 @@ export function PanelResizeHandle({
   )
 
   const endDrag = React.useCallback(() => {
-    // Only a sequence that actually started should suppress the click the
-    // browser sends next, whether it ended in a release or a cancel. This also
-    // runs as the effect cleanup, where no drag happened and a bare click from
-    // assistive tech must still get through.
-    if (dragRef.current) handledRef.current = true
+    // Only a sequence that actually started can produce a compatibility click.
+    // This also runs as the effect cleanup, where no drag happened.
+    if (dragRef.current) handledAtRef.current = Date.now()
     dragRef.current = null
     if (frameRef.current) {
       cancelAnimationFrame(frameRef.current)
@@ -271,10 +273,7 @@ export function PanelResizeHandle({
           onClick={() => {
             // Switch and voice control activate by dispatching a bare click
             // with no pointer or key events, which nothing else here catches.
-            if (handledRef.current) {
-              handledRef.current = false
-              return
-            }
+            if (Date.now() - handledAtRef.current < CLICK_COMPAT_WINDOW_MS) return
             onToggle()
           }}
           onPointerEnter={() => setHovered(true)}
