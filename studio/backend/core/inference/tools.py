@@ -892,6 +892,8 @@ def _is_dynamic_import_callable(
 def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset()) -> bool:
     if isinstance(node, ast.Name):
         return node.id in dynamic_namespace_aliases
+    if isinstance(node, ast.Attribute) and node.attr == "__globals__":
+        return True
     if (
         isinstance(node, ast.Attribute)
         and node.attr == "__dict__"
@@ -5627,6 +5629,120 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
+    def _function_import_parameters():
+        import_aliases = {"__import__", "import_module"}
+        namespace_aliases = {"__builtins__", "builtins", "sys", "yaml"}
+        import_module_aliases = {"__builtins__", "builtins", "importlib"}
+
+        def assigned_names(target):
+            if isinstance(target, ast.Name):
+                return {target.id}
+            if isinstance(target, (ast.Tuple, ast.List)):
+                return set().union(*(assigned_names(element) for element in target.elts))
+            return set()
+
+        # Resolve straightforward aliases independently of statement order.
+        # This is conservative: a later reassignment is still treated as
+        # potentially import-capable at an earlier control-flow join.
+        changed = True
+        while changed:
+            changed = False
+            for candidate in ast.walk(tree):
+                if isinstance(candidate, ast.Import):
+                    for alias in candidate.names:
+                        if alias.name in {"builtins", "importlib"}:
+                            bound = alias.asname or alias.name
+                            if bound not in import_module_aliases:
+                                import_module_aliases.add(bound)
+                                changed = True
+                elif isinstance(candidate, ast.ImportFrom) and candidate.module in {
+                    "builtins",
+                    "importlib",
+                }:
+                    for alias in candidate.names:
+                        if alias.name in {"__import__", "import_module"}:
+                            bound = alias.asname or alias.name
+                            if bound not in import_aliases:
+                                import_aliases.add(bound)
+                                changed = True
+                elif isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                    targets = (
+                        candidate.targets
+                        if isinstance(candidate, ast.Assign)
+                        else (candidate.target,)
+                    )
+                    value = candidate.value
+                    if not _is_dynamic_import_callable(
+                        value,
+                        import_aliases,
+                        namespace_aliases,
+                        import_module_aliases,
+                    ):
+                        continue
+                    for target in targets:
+                        for name in assigned_names(target):
+                            if name not in import_aliases:
+                                import_aliases.add(name)
+                                changed = True
+
+        definitions: dict[str, list[tuple[list[str], set[str], str | None, str | None]]] = {}
+        for candidate in ast.walk(tree):
+            if not isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            positional = [
+                argument.arg
+                for argument in (
+                    *getattr(candidate.args, "posonlyargs", ()),
+                    *candidate.args.args,
+                )
+            ]
+            keyword_only = {argument.arg for argument in candidate.args.kwonlyargs}
+            definitions.setdefault(candidate.name, []).append(
+                (
+                    positional,
+                    keyword_only,
+                    candidate.args.vararg.arg if candidate.args.vararg else None,
+                    candidate.args.kwarg.arg if candidate.args.kwarg else None,
+                )
+            )
+
+        supplied: dict[str, set[str]] = {}
+        for candidate in ast.walk(tree):
+            if not (
+                isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Name)
+                and candidate.func.id in definitions
+            ):
+                continue
+            for positional, keyword_only, vararg, kwarg in definitions[candidate.func.id]:
+                for index, argument in enumerate(candidate.args):
+                    if not _is_dynamic_import_callable(
+                        argument,
+                        import_aliases,
+                        namespace_aliases,
+                        import_module_aliases,
+                    ):
+                        continue
+                    if index < len(positional):
+                        supplied.setdefault(candidate.func.id, set()).add(positional[index])
+                    elif vararg:
+                        supplied.setdefault(candidate.func.id, set()).add(vararg)
+                for keyword in candidate.keywords:
+                    if not _is_dynamic_import_callable(
+                        keyword.value,
+                        import_aliases,
+                        namespace_aliases,
+                        import_module_aliases,
+                    ):
+                        continue
+                    if keyword.arg in {*positional, *keyword_only}:
+                        supplied.setdefault(candidate.func.id, set()).add(keyword.arg)
+                    elif keyword.arg is None and kwarg:
+                        supplied.setdefault(candidate.func.id, set()).add(kwarg)
+        return supplied
+
+    import_parameters_by_function = _function_import_parameters()
+
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
@@ -6433,8 +6549,12 @@ def _check_signal_escape_patterns(code: str):
                     )
                 # A parameter may be supplied __import__/import_module at the
                 # call site, which this local analysis cannot prove away.
-                self.dynamic_import_aliases.update(arg_names)
-                self.function_parameter_aliases.update(arg_names)
+                import_parameter_names = import_parameters_by_function.get(
+                    getattr(node, "name", ""),
+                    set(),
+                ).intersection(arg_names)
+                self.dynamic_import_aliases.update(import_parameter_names)
+                self.function_parameter_aliases.update(import_parameter_names)
                 if isinstance(node, ast.Lambda):
                     self.visit(node.body)
                 else:
@@ -6478,6 +6598,16 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Lambda(self, node):
             self._visit_function_scope(node)
+            if _is_pyyaml_module_expr(
+                node.body,
+                self.yaml_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization module escapes through return value",
+                )
             if _is_dynamic_import_callable(
                 node.body,
                 self.dynamic_import_aliases,
@@ -6631,6 +6761,16 @@ def _check_signal_escape_patterns(code: str):
             if node.value is None:
                 return
             self.visit(node.value)
+            if _is_pyyaml_module_expr(
+                node.value,
+                self.yaml_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization module escapes through return value",
+                )
             if _pyyaml_loader_is_safe(
                 node.value,
                 self.yaml_aliases,

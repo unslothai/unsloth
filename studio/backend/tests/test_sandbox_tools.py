@@ -861,6 +861,41 @@ class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
         [
+            (
+                "import yaml\n"
+                "def get_yaml():\n"
+                "    return globals()['yaml']\n"
+                "get_yaml().unsafe_load(payload)"
+            ),
+            (
+                "import yaml\n"
+                "get_yaml = lambda: globals()['yaml']\n"
+                "get_yaml().unsafe_load(payload)"
+            ),
+            (
+                "import yaml\n"
+                "def marker():\n"
+                "    pass\n"
+                "marker.__globals__['yaml'].unsafe_load(payload)"
+            ),
+            (
+                "def parse(importer):\n"
+                "    return importer('yaml').unsafe_load(payload)\n"
+                "im = __import__\n"
+                "parse(im)"
+            ),
+        ],
+    )
+    def test_returned_module_globals_and_import_parameter_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+        assert _python_is_potentially_unsafe(code)
+
+    def test_unrelated_parameter_factory_load_allowed(self):
+        _ok("def read(factory):\n    return factory().load()\nread(dataset_factory)")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
             "from yaml import loader as yl\nyl.Loader('a: 1')",
             ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
             "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",
