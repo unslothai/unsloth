@@ -5199,6 +5199,26 @@ def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monke
     assert not first.exists()
 
 
+@pytest.mark.parametrize("agent", ["codex", "codex-subagent"])
+def test_windows_codex_homes_use_the_short_parent(monkeypatch, tmp_path, agent):
+    # codex-subagent nests CODEX_HOME under <home>/parent, so the long Studio auth
+    # path would eat even more of the legacy MAX_PATH budget than a plain launch.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.Path, "home", staticmethod(lambda: tmp_path))
+
+    assert start._ephemeral_session_parent(agent) == tmp_path / ".unsloth" / ".tmp"
+    parent = start._ephemeral_session_parent(agent)
+    assert start._ephemeral_session_prefix(agent, parent) == "u-codex-"
+
+
+def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.Path, "home", staticmethod(lambda: tmp_path))
+
+    assert start._ephemeral_session_parent("claude") is None
+    assert start._ephemeral_session_prefix("claude", None) == "unsloth-claude-"
+
+
 def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
     # These homes sit under Studio's auth tree, which nothing else prunes, so a wrapper
     # killed before its finally runs must be reclaimed by the next launch.

@@ -2808,9 +2808,13 @@ def _temporary_agent_config(prefix: str):
         yield path
 
 
+# codex-subagent nests CODEX_HOME under <home>/parent, so it needs the short root too.
+_CODEX_SHORT_HOME_AGENTS = ("codex", "codex-subagent")
+
+
 def _ephemeral_session_parent(agent: str) -> Optional[Path]:
     """Return a non-system-temp parent when an agent needs one."""
-    if os.name != "nt" or agent != "codex":
+    if os.name != "nt" or agent not in _CODEX_SHORT_HOME_AGENTS:
         return None
     # Codex creates a deeply nested curated-plugin checkout below CODEX_HOME.
     # A normal %TEMP%\unsloth-codex-* home can exceed legacy Windows path
@@ -2824,7 +2828,9 @@ def _ephemeral_session_parent(agent: str) -> Optional[Path]:
 
 def _ephemeral_session_prefix(agent: str, parent: Optional[Path]) -> str:
     """Return the platform-specific prefix for an ephemeral agent home."""
-    return "u-codex-" if agent == "codex" and parent is not None else f"unsloth-{agent}-"
+    if agent in _CODEX_SHORT_HOME_AGENTS and parent is not None:
+        return "u-codex-"
+    return f"unsloth-{agent}-"
 
 
 @contextlib.contextmanager
@@ -2967,11 +2973,12 @@ def _session_config(
         # Windows codex keeps #7519's short, locked home (MAX_PATH + stale reclaim);
         # every other agent uses the Studio-private root.
         parent = _ephemeral_session_parent(agent)
+        prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:
-            with _short_ephemeral_session(parent) as path:
+            with _short_ephemeral_session(parent, prefix) as path:
                 yield path
         else:
-            with _temporary_agent_config(f"unsloth-{agent}-") as path:
+            with _temporary_agent_config(prefix) as path:
                 yield path
     else:
         # Never wipe this dir: a previously printed recipe may still be running
