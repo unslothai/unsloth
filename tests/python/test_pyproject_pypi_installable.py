@@ -16,16 +16,12 @@ Offline by design: structural checks only, no network.
 from __future__ import annotations
 
 import pathlib
-import re
 import sys
 
 import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
-
-_EXTRA_REF = re.compile(r"unsloth\[([\w\-\.,\s]+)\]")
-
 
 def _load() -> dict:
     if sys.version_info >= (3, 11):
@@ -46,11 +42,23 @@ def _all_requirements() -> list[tuple[str, str]]:
 
 class TestNoDirectUrlRequirements:
     def test_no_requirement_uses_a_direct_url(self):
-        offenders = [
-            (extra, req)
-            for extra, req in _all_requirements()
-            if "@ http://" in req or "@ https://" in req or "@ git+" in req
-        ]
+        """Ask packaging, not the spelling.
+
+        PEP 508 allows any whitespace around the `@`, and the scheme is case
+        insensitive, so `flash-attn@https://...` and `flash-attn @ HTTPS://...` are both
+        valid direct references that a substring match on " @ https://" would wave
+        through - the exact upload failure this guards. `Requirement.url` is set for
+        every form of them.
+        """
+        packaging_requirements = pytest.importorskip("packaging.requirements")
+        offenders = []
+        for extra, req in _all_requirements():
+            try:
+                parsed = packaging_requirements.Requirement(req)
+            except Exception:  # noqa: BLE001 - test_every_requirement_parses reports it
+                continue
+            if parsed.url:
+                offenders.append((extra, req))
         assert offenders == [], (
             "PyPI rejects direct references in Requires-Dist, so these would fail the "
             f"upload (only found at publish time): {offenders[:5]}"
@@ -70,16 +78,30 @@ class TestNoDirectUrlRequirements:
 class TestExtraReferencesResolve:
     def test_every_unsloth_extra_reference_exists(self):
         """A `unsloth[foo]` pointing at an extra this branch does not define installs
-        nothing and fails silently, which is how a partially ported extras block breaks."""
+        nothing and fails silently, which is how a partially ported extras block breaks.
+
+        Parsed and canonicalized rather than pattern-matched: project names and extra
+        names are both case and separator insensitive (PEP 503, PEP 685), so pip honours
+        `Unsloth[Rocm72_Torch2100]` while a lowercase regex would never look at it.
+        """
+        packaging_requirements = pytest.importorskip("packaging.requirements")
+        packaging_utils = pytest.importorskip("packaging.utils")
+        canonicalize = packaging_utils.canonicalize_name
+
         extras = _load()["project"].get("optional-dependencies", {})
+        defined = {canonicalize(name) for name in extras}
         dangling = []
         for name, deps in extras.items():
             for dep in deps:
-                for match in _EXTRA_REF.finditer(dep):
-                    for ref in match.group(1).split(","):
-                        ref = ref.strip()
-                        if ref and ref not in extras:
-                            dangling.append((name, ref))
+                try:
+                    parsed = packaging_requirements.Requirement(dep)
+                except Exception:  # noqa: BLE001 - test_every_requirement_parses reports it
+                    continue
+                if canonicalize(parsed.name) != "unsloth":
+                    continue
+                for ref in parsed.extras:
+                    if canonicalize(ref) not in defined:
+                        dangling.append((name, ref))
         assert dangling == [], f"extras referencing undefined extras: {dangling}"
 
 
