@@ -1406,6 +1406,9 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
@@ -1426,6 +1429,21 @@ function ThreadNewChatSwitch({
     // request, so price them. modelLoading defers to the post-load recount.
     void refreshContextUsage();
   }, [aui, isLoading, nonce]);
+
+  // On a RELOAD of /chat?new=<uuid> the effect above runs before the first
+  // /api/inference/status answers. Neither the local checkpoint nor the GGUF
+  // window is persisted, so that recount returns without counting, and the
+  // hydration recount skips this view because its thread is deliberately null.
+  // Retry once the resident model is known, while the bar is still blank and no
+  // thread has been persisted -- a real completion's usage is never recounted.
+  useEffect(() => {
+    if (isLoading || modelLoading || !checkpoint || ggufContextLength == null) {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    if (store.activeThreadId != null || store.contextUsage != null) return;
+    void refreshContextUsage();
+  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce]);
 
   return null;
 }
