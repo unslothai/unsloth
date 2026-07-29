@@ -252,6 +252,7 @@ def test_npm_install_hint_uses_user_prefix_on_posix(monkeypatch, tmp_path):
     ]
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "managed node layout is POSIX")
 def test_npm_executable_uses_studio_managed_node(monkeypatch, tmp_path):
     start.ensure_studio_backend_path()
     from utils import node_runtime
@@ -271,6 +272,7 @@ def test_npm_executable_uses_studio_managed_node(monkeypatch, tmp_path):
     assert start._npm_executable() == str(npm)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
 def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
     # WSL inherits the Windows PATH, so a shim can precede a usable native npm.
     native = "/usr/bin/npm"
@@ -279,16 +281,23 @@ def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
     monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs:/usr/bin")
     monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
 
+    found = {"/mnt/c/Program Files/nodejs": shim, "/usr/bin": native}
+
     def fake_which(name, path = None):
         if os.path.isabs(name):
             return name
-        return {"/mnt/c/Program Files/nodejs": shim, "/usr/bin": native}.get(path)
+        # No path given means search all of PATH, so the shim wins as it does in WSL.
+        for entry in (path or os.environ["PATH"]).split(os.pathsep):
+            if entry in found:
+                return found[entry]
+        return None
 
     monkeypatch.setattr(start.shutil, "which", fake_which)
 
     assert start._npm_executable() == native
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX hint form")
 def test_npm_install_hint_without_resolvable_home(monkeypatch):
     # A bare container UID has no home; the hint must still build so an already
     # installed agent can launch.
@@ -309,6 +318,7 @@ def test_managed_node_probe_tolerates_unsupported_path_flavour(monkeypatch):
     assert start._managed_node_tools() is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "managed node layout is POSIX")
 def test_npm_executable_uses_managed_npm_when_system_node_has_none(monkeypatch, tmp_path):
     start.ensure_studio_backend_path()
     from utils import node_runtime
@@ -332,6 +342,7 @@ def test_npm_executable_uses_managed_npm_when_system_node_has_none(monkeypatch, 
     assert start._npm_executable() == str(npm)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
 def test_npm_executable_prefers_managed_npm_over_windows_npm_in_wsl(monkeypatch, tmp_path):
     start.ensure_studio_backend_path()
     from utils import node_runtime
@@ -355,6 +366,7 @@ def test_npm_executable_prefers_managed_npm_over_windows_npm_in_wsl(monkeypatch,
     assert start._npm_executable() == str(npm)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "managed node layout is POSIX")
 def test_augment_path_includes_studio_managed_node(monkeypatch, tmp_path):
     start.ensure_studio_backend_path()
     from utils import node_runtime
@@ -414,6 +426,7 @@ def test_install_agent_reports_os_error_without_traceback(monkeypatch, capsys):
     assert "Run it yourself, then re-run" in err
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX install command")
 def test_install_agent_runs_managed_npm_with_its_node_on_path(monkeypatch, tmp_path):
     monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)

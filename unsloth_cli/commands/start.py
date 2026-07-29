@@ -2521,13 +2521,16 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
 def _npm_executable() -> Optional[str]:
     managed_node = _managed_node_tools()
     if not (managed_node and managed_node[2]):
-        # WSL inherits the Windows PATH, so a shim often shadows a usable native npm.
-        # Skip shims and keep looking instead of stopping at shutil.which's first hit.
-        for directory in os.get_exec_path():
-            executable = shutil.which("npm", path = directory)
-            if executable is None or _wsl_windows_executable([executable]):
-                continue
+        executable = shutil.which("npm")
+        if executable and not _wsl_windows_executable([executable]):
             return executable
+        if executable:
+            # WSL inherits the Windows PATH, so the shim just rejected may be shadowing a
+            # usable native npm further along it. Keep looking rather than giving up here.
+            for directory in os.get_exec_path():
+                candidate = shutil.which("npm", path = directory)
+                if candidate and not _wsl_windows_executable([candidate]):
+                    return candidate
 
     return str(managed_node[1]) if managed_node is not None else None
 
