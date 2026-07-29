@@ -226,6 +226,9 @@ async def start_training(
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
+        from utils.hardware import hardware as _hw
+        from utils.hardware import ensure_hardware_detected
+
         if request.dataset_streaming:
             if not request.hf_dataset:
                 raise HTTPException(
@@ -242,9 +245,6 @@ async def start_training(
                     status_code = 400,
                     detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
                 )
-            from utils.hardware import hardware as _hw
-            from utils.hardware import ensure_hardware_detected
-
             # DEVICE is no longer set by the lifespan -- the warm thread fills it
             # in a moment after the socket binds, so a start that lands in that
             # window would read None, skip the MLX rejection, and hand a
@@ -295,6 +295,11 @@ async def start_training(
                         "Streaming is not supported with S3 datasets."
                     ),
                 )
+        else:
+            # The synchronous backend start builds its worker config with
+            # get_device(). Detect off-loop first so an ordinary early start
+            # cannot stall login, liveness, or health while torch imports.
+            await asyncio.to_thread(ensure_hardware_detected)
 
         # Convert request to backend kwargs.
         training_kwargs = {

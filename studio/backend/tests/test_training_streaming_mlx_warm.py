@@ -53,6 +53,12 @@ _STREAMING_START = {
     "eval_steps": 0,
 }
 
+_NON_STREAMING_START = {
+    **_STREAMING_START,
+    "dataset_streaming": False,
+    "max_steps": None,
+}
+
 _MLX_REJECTION = "dataset_streaming is not yet supported on Apple Silicon (MLX)"
 
 
@@ -162,3 +168,19 @@ def test_rejection_still_fires_once_detection_has_already_run(
     assert response.status_code == 400
     assert _MLX_REJECTION in response.json()["detail"]
     spawn_calls.start_training.assert_not_called()
+
+
+def test_non_streaming_start_detects_before_entering_the_sync_backend(
+    monkeypatch, hardware_globals, spawn_calls, client
+):
+    """An ordinary start reaches a synchronous worker-config build that reads
+    the device, so it must also finish detection through the route's off-loop
+    handoff."""
+    _pretend_cpu_linux(monkeypatch)
+    hardware_globals.DEVICE = None
+
+    response = client.post("/training/start", json = _NON_STREAMING_START)
+
+    assert response.status_code == 200, response.text
+    assert hardware_globals.DEVICE == hw.DeviceType.CPU
+    spawn_calls.start_training.assert_called_once()

@@ -96,6 +96,25 @@ def test_post_warm_thread_joins_the_warm_before_doing_stack_work():
     assert statements, "body must not be empty"
 
 
+def test_post_warm_work_honours_the_coordinated_warm_kill_switch():
+    body = _post_warm_body()
+    statements = [
+        node
+        for node in body.body
+        if not (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        )
+    ]
+    guard = statements[0]
+
+    assert isinstance(guard, ast.If), "the kill-switch guard must run before stack work"
+    condition = ast.unparse(guard.test)
+    assert "DISABLE_ENV_VAR" in condition and "os.environ" in condition
+    assert any(isinstance(node, ast.Return) for node in guard.body)
+
+
 def test_post_warm_thread_is_started_by_the_lifespan():
     referenced = _names_called(_lifespan_body())
     assert "_post_warm_background_work" in referenced, (

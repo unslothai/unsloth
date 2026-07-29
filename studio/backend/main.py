@@ -340,7 +340,7 @@ from utils.hardware import (
 )
 import utils.hardware.hardware as _hw_module
 
-from utils.torch_warmup import join_background_warm, start_background_warm
+from utils.torch_warmup import DISABLE_ENV_VAR, join_background_warm, start_background_warm
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
@@ -510,6 +510,9 @@ def _post_warm_background_work() -> None:
     Joining the warm first means the stack is imported once, in the intended
     order, and these two then run against a warm module cache.
     """
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return
+
     join_background_warm()
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
