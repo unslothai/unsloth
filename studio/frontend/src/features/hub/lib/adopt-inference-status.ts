@@ -21,6 +21,9 @@ export interface ResidentAdoptionState {
   activeGgufVariant: string | null;
   /** ``modelLoading``: a load this tab started still owns the store. */
   modelLoading: boolean;
+  /** Whether the idle-unload loop will actually free the model. From
+   * ``/openai-auto-switch``; ``/status`` says nothing about it. */
+  idleUnloadArmed: boolean;
 }
 
 /** What ``/api/inference/status`` says is resident, already resolved. */
@@ -34,6 +37,9 @@ export interface ResidentStatusFacts {
 export interface ResidentAdoptionActions {
   /** Re-pin ``params.checkpoint`` onto the resident model. */
   setCheckpoint: (checkpointId: string, ggufVariant: string | null) => void;
+  /** Drop a checkpoint the server has genuinely unloaded. Optional, so a caller
+   * that only wants the pinning half can leave it out. */
+  clearCheckpoint?: () => void;
   /**
    * Apply the rest of the status. Receives the store values from BEFORE
    * ``setCheckpoint`` ran, which is how applyActiveModelStatusToStore tells a
@@ -68,10 +74,18 @@ export function adoptResidentModelStatus(
     return false;
   }
   if (!checkpointId) {
-    // An empty status is not the same as a model going away: an idle unload frees the
-    // model but keeps a stash the next request reloads, and /status carries no field
-    // telling the two apart. The store names the model meanwhile, so leave it pinned;
-    // clearing belongs to whatever performed the unload, not to an observation of one.
+    // An empty status means one of two things and /status cannot say which. Armed,
+    // the idle loop frees the model but keeps a stash the next request reloads, and
+    // the store names it meanwhile, so clearing would drop a selection that is coming
+    // back. Disarmed, nothing will bring it back, and leaving the row resident seeds
+    // the settings editor from a launch config nothing is running.
+    if (state.idleUnloadArmed) {
+      return false;
+    }
+    if (state.checkpoint) {
+      actions.clearCheckpoint?.();
+      return true;
+    }
     return false;
   }
   const previous = {

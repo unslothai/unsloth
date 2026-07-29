@@ -1337,7 +1337,9 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     # One rule, one definition: the Hub row applies the same test.
     identity = _read("features/hub/lib/model-identity.ts")
     assert "export function isStandaloneGgufPath(" in identity
-    assert 'modelId.toLowerCase().endsWith(".gguf")' in identity
+    # The suffix, and something that names a file on this machine: see
+    # test_a_repo_id_ending_in_gguf_keeps_its_quant for why the suffix is not enough.
+    assert "GGUF_SUFFIX_RE.test(modelId)" in identity
     row_identity = _read("features/hub/inventory/settings-identity.ts")
     assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
 
@@ -1410,6 +1412,29 @@ def test_no_settings_target_is_built_on_an_unread_store():
     )
     # Nothing may build a target off a concurrent read instead of an awaited one.
     assert "Promise.all([ listGgufVariants(" not in page
+
+
+def test_an_empty_status_is_read_against_the_idle_unload_setting():
+    """/status cannot say whether an empty answer is an idle eviction that reloads
+    or a real unload, so the Hub reads the only endpoint that knows and keeps the
+    checkpoint only while the loop is armed."""
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    adopt = " ".join(_read("features/hub/lib/adopt-inference-status.ts").split())
+    assert "idleUnloadArmed.current = settings.idleUnloadActive;" in hub
+    assert "idleUnloadArmed: idleUnloadArmed.current," in hub
+    assert "if (state.idleUnloadArmed) { return false; }" in adopt
+    assert "actions.clearCheckpoint?.();" in adopt
+
+
+def test_a_repo_id_ending_in_gguf_keeps_its_quant():
+    """Repo ids ending in .gguf are real on the Hub, an iMat repo among them, and
+    those hold every quant. A suffix-only test reads one as a single file, drops
+    the variant, and saves Q4 and Q8 under one key."""
+    identity = " ".join(_read("features/hub/lib/model-identity.ts").split())
+    assert "if (modelId == null || !GGUF_SUFFIX_RE.test(modelId)) { return false; }" in identity
+    assert "PUBLIC_ID_PATH_PREFIX_RE.test(modelId) ||" in identity
+    assert "modelId.split(\"/\").length - 1 >= 2 ||" in identity
+    assert "isNativeFileLabel(modelId)" in identity
 
 
 def test_cached_repo_settings_key_follows_the_row_not_the_view():

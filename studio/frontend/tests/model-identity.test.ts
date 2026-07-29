@@ -11,6 +11,7 @@ import type {
 } from "../src/features/hub/inventory/types.ts";
 import {
   isOllamaLinkPath,
+  isStandaloneGgufPath,
   modelIdsMatch,
   publicModelId,
   residentModelIdMatches,
@@ -330,4 +331,32 @@ test("a .gguf filename carrying a colon is not folded into a variant", () => {
   assert.equal(splitQuantSuffix(upper), null);
   assert.equal(splitQuantSuffix(lower), null);
   assert.notEqual(modelStorageKey(upper, null), modelStorageKey(lower, null));
+});
+
+// Repo ids ending in .gguf are real on the Hub, an iMat repo among them, and those hold
+// every quant of a model. Reading one as a single file drops its variant, so Q4 and Q8
+// save under the same key and the last one written wins for both.
+const STANDALONE_GGUF_CASES: [string, boolean][] = [
+  ["/models/llama.gguf", true],
+  ["/mnt/c/models/llama.gguf", true],
+  ["C:\\models\\llama.gguf", true],
+  ["\\\\server\\share\\llama.gguf", true],
+  ["./models/llama.gguf", true],
+  ["~/models/llama.gguf", true],
+  // A dropped or picked file, which /status echoes back by bare name.
+  ["llama.gguf", true],
+  // Repo ids: one separator, no anchor. These are repos, not files.
+  ["lex-au/Orpheus-3b-FT-Q8_0.gguf", false],
+  ["NexesQuants/TeeZee_Kyllene-Yi-34B-v1.1-iMat.GGUF", false],
+  ["Joshua65535/qwen2.5-1.5b-instruct-q4_k_m.gguf", false],
+  ["unsloth/Qwen3-8B-GGUF", false],
+  ["", false],
+];
+
+test("only a file on this machine counts as a standalone gguf", () => {
+  for (const [modelId, expected] of STANDALONE_GGUF_CASES) {
+    assert.equal(isStandaloneGgufPath(modelId), expected, modelId);
+  }
+  assert.equal(isStandaloneGgufPath(null), false);
+  assert.equal(isStandaloneGgufPath(undefined), false);
 });

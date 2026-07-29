@@ -23,6 +23,7 @@ const RESIDENT = {
  */
 function refusing(messages: {
   setCheckpoint?: string;
+  clearCheckpoint?: string;
   applyStatus?: string;
 }) {
   const refuse = (message = "unreachable") => {
@@ -32,6 +33,7 @@ function refusing(messages: {
   };
   return {
     setCheckpoint: refuse(messages.setCheckpoint),
+    clearCheckpoint: refuse(messages.clearCheckpoint),
     applyStatus: refuse(messages.applyStatus),
   };
 }
@@ -131,7 +133,29 @@ test("a load in flight is not fought", () => {
   assert.deepEqual(calls, []);
 });
 
-test("an empty status leaves the checkpoint pinned", () => {
+test("an empty status drops the checkpoint when idle unload is disarmed", () => {
+  // Nothing will bring the model back, so it really is gone: another tab, the
+  // monitor or the API unloaded it. Leaving the row resident seeds the settings
+  // editor from a launch config nothing is running.
+  const cleared: string[] = [];
+  const adopted = adoptResidentModelStatus(
+    { checkpointId: null, ggufVariant: null },
+    emptyStore({ checkpoint: "/models/llama.gguf", activeGgufVariant: "Q4_K_M" }),
+    {
+      ...refusing({
+        setCheckpoint: "nothing is resident, so nothing may be pinned",
+        applyStatus: "there is no status to apply",
+      }),
+      clearCheckpoint: () => {
+        cleared.push("cleared");
+      },
+    },
+  );
+  assert.equal(adopted, true);
+  assert.deepEqual(cleared, ["cleared"]);
+});
+
+test("an empty status leaves the checkpoint pinned while idle unload is armed", () => {
   // An empty status is not the model going away: an idle unload frees it but keeps a
   // stash the next request reloads, and /status carries no field telling the two apart.
   // The store names the model meanwhile, so an observation must not clear it.
@@ -140,9 +164,11 @@ test("an empty status leaves the checkpoint pinned", () => {
     emptyStore({
       checkpoint: "/models/llama.gguf",
       activeGgufVariant: "Q4_K_M",
+      idleUnloadArmed: true,
     }),
     refusing({
       setCheckpoint: "nothing is resident, so nothing may be pinned",
+      clearCheckpoint: "the stash will reload exactly this model",
       applyStatus: "there is no status to apply",
     }),
   );

@@ -54,6 +54,8 @@ export function emptyStore(
     checkpointIsExternal: false,
     activeGgufVariant: null,
     modelLoading: false,
+    // Off by default, as the setting is, so a test opts in to the stash case.
+    idleUnloadArmed: false,
     ...overrides,
   };
 }

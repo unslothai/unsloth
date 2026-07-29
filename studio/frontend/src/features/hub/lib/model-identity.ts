@@ -183,8 +183,23 @@ export function isNativeFileLabel(modelId: string | null | undefined): boolean {
 // A scanned standalone .gguf, keyed by its on-disk path with no variant: it has no quant
 // to choose between, and adopting the filename label would key one file's config two
 // ways. settings-identity.ts applies the same rule to a Hub row.
+//
+// The suffix alone does not say that. Repo ids ending in .gguf are real on the Hub, an
+// iMat repo among them, and those hold every quant of a model: reading one as a single
+// file drops its variant and collapses Q4 and Q8 onto the same key. So the id also has to
+// name something on this machine, which a repo id never does.
 export function isStandaloneGgufPath(
   modelId: string | null | undefined,
 ): boolean {
-  return modelId != null && modelId.toLowerCase().endsWith(".gguf");
+  if (modelId == null || !GGUF_SUFFIX_RE.test(modelId)) {
+    return false;
+  }
+  return (
+    PUBLIC_ID_PATH_PREFIX_RE.test(modelId) ||
+    // A drive letter, or more separators than the single one a repo id carries.
+    (modelId.length >= 2 && modelId[1] === ":") ||
+    modelId.includes("\\") ||
+    modelId.split("/").length - 1 >= 2 ||
+    isNativeFileLabel(modelId)
+  );
 }

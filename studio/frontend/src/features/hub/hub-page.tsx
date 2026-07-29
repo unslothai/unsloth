@@ -23,6 +23,7 @@ import {
   resolveInitialConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
@@ -390,6 +391,10 @@ export function ModelsPage() {
 
   // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
+  // Read once and kept: /status cannot say whether an empty answer is an idle
+  // eviction that will reload or a real unload, and only this endpoint knows.
+  // Unread it stays false, which is the setting's own default.
+  const idleUnloadArmed = useRef(false);
   // Returns the read so a caller that needs the answer first can wait for it.
   const refreshResidentModelStatus = useCallback((): Promise<void> => {
     const seq = ++residentStatusSeq.current;
@@ -410,10 +415,14 @@ export function ModelsPage() {
             checkpointIsExternal: isExternalModelId(store.params.checkpoint),
             activeGgufVariant: store.activeGgufVariant,
             modelLoading: store.modelLoading,
+            idleUnloadArmed: idleUnloadArmed.current,
           },
           {
             setCheckpoint: (checkpointId, ggufVariant) => {
               store.setCheckpoint(checkpointId, ggufVariant);
+            },
+            clearCheckpoint: () => {
+              store.clearCheckpoint();
             },
             // Landing here is the one entry point that has applied no status yet, so the
             // settings page would read the live config off a store holding defaults.
@@ -433,6 +442,11 @@ export function ModelsPage() {
   // adoptResidentModelStatus makes re-reading safe: it stands down for an external
   // selection and for a load this tab started.
   useEffect(() => {
+    loadOpenAIAutoSwitchSettings()
+      .then((settings) => {
+        idleUnloadArmed.current = settings.idleUnloadActive;
+      })
+      .catch(() => undefined);
     void refreshResidentModelStatus();
     const unsubscribe = subscribeResidentStatusRefresh(
       refreshResidentModelStatus,
