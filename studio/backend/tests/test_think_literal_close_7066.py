@@ -1009,9 +1009,12 @@ def test_neutralize_tools_control_markup_preserves_the_tool_name():
         {"type": "object", "properties": {"who": {"name": "a </think> b"}}},
         name = "g",
     )
-    assert "</think>" not in neutralize_tools_control_markup(nested)[0]["function"]["parameters"][
-        "properties"
-    ]["who"]["name"]
+    assert (
+        "</think>"
+        not in neutralize_tools_control_markup(nested)[0]["function"]["parameters"]["properties"][
+            "who"
+        ]["name"]
+    )
 
 
 def test_a_tool_name_with_a_turn_sentinel_is_a_schema_conflict():
