@@ -101,3 +101,52 @@ class TestAmdExtraIsInstallableFromPyPI:
         extras = _load()["project"].get("optional-dependencies", {})
         assert any("huggingfacenotorch" in d for d in extras["amd"])
         assert "huggingfacenotorch" in extras
+
+
+class TestRuntimeImportsAreDeclared:
+    """This branch's base install has to satisfy every module-scope import on the CLI
+    entry path. typer supplied click until 0.26.0 dropped it (#7504); it still supplies
+    rich, so rich is satisfied only by chance unless we declare it ourselves."""
+
+    ENTRY_PATH_IMPORTS = ("click", "rich", "structlog", "typer")
+
+    def test_cli_entry_path_imports_are_base_dependencies(self):
+        packaging_requirements = pytest.importorskip("packaging.requirements")
+        base = _load()["project"].get("dependencies", [])
+        declared = {
+            packaging_requirements.Requirement(r).name.lower().replace("_", "-")
+            for r in base
+        }
+        missing = [p for p in self.ENTRY_PATH_IMPORTS if p not in declared]
+        assert missing == [], (
+            "imported at module scope by unsloth_cli/__init__.py's import chain but not "
+            f"declared in base dependencies: {missing}"
+        )
+
+
+class TestAcceleratorExtrasCarryTheirCompanions:
+    """Each accelerator extra composes a stack: `-ampere-` variants add flash-attn and
+    torch 2.10 variants add the torchcodec audio path. A variant that silently drops one
+    installs a quietly weaker environment than its siblings."""
+
+    def test_torch2100_extras_pull_the_audio_path(self):
+        extras = _load()["project"].get("optional-dependencies", {})
+        targets = [
+            n
+            for n in extras
+            if n.endswith("torch2100") and "only" not in n and n.startswith("cu")
+        ]
+        assert targets, "expected cu*-torch2100 extras to exist"
+        missing = [n for n in targets if not any("audio-torch" in d for d in extras[n])]
+        assert missing == [], f"torch 2.10 extras missing the audio extra: {missing}"
+
+    def test_ampere_torch280_extras_pull_flash_attention(self):
+        extras = _load()["project"].get("optional-dependencies", {})
+        targets = [n for n in extras if n.endswith("-ampere-torch280")]
+        assert targets, "expected *-ampere-torch280 extras to exist"
+        missing = [
+            n
+            for n in targets
+            if not any("flashattention" in d or "flash-attn" in d for d in extras[n])
+        ]
+        assert missing == [], f"ampere torch 2.8 extras missing flash-attn: {missing}"

@@ -59,6 +59,10 @@ dependencies = [
     # imports that, so every command needs it. typer supplied it until 0.27
     # dropped the dependency, which left this satisfied only by chance.
     "click>=8.0",
+    # unsloth_cli/__init__.py imports commands/chat.py, which imports rich at
+    # module level, so every command needs it. typer still pulls rich, but it
+    # pulled click too until 0.26.0 dropped it: same shape, so declare it.
+    "rich",
 ]
 
 [project.scripts]
@@ -506,16 +510,19 @@ cu126-torch2100 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu126onlytorch2100]",
+    "unsloth[audio-torch210]",
 ]
 cu128-torch2100 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu128onlytorch2100]",
+    "unsloth[audio-torch210]",
 ]
 cu130-torch2100 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch2100]",
+    "unsloth[audio-torch210]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -536,6 +543,17 @@ flashattention = [
     "packaging ; ('linux' in sys_platform)",
     "ninja ; ('linux' in sys_platform)",
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
+]
+# torchcodec is the audio decode path; its releases track torch minor versions,
+# so each torch minor gets its own window (#7225).
+audio-torch280 = [
+    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9'",
+]
+audio-torch290 = [
+    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10'",
+]
+audio-torch210 = [
+    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10'",
 ]
 colab-ampere-torch211 = [
     "unsloth[huggingface]",
@@ -769,6 +787,7 @@ cu130-ampere-torch280 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch280]",
+    "unsloth[flashattention]",
 ]
 cu126-ampere-torch290 = [
     "unsloth[huggingface]",
@@ -804,16 +823,19 @@ cu126-ampere-torch2100 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu126onlytorch2100]",
+    "unsloth[audio-torch210]",
 ]
 cu128-ampere-torch2100 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu128onlytorch2100]",
+    "unsloth[audio-torch210]",
 ]
 cu130-ampere-torch2100 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch2100]",
+    "unsloth[audio-torch210]",
 ]
 
 [project.urls]
