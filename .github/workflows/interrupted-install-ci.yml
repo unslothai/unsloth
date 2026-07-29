@@ -130,6 +130,19 @@ jobs:
             tail -30 logs/install.log || true
             exit 1
           fi
+          # reason alone is not proof: the driver re-checks liveness after the marker
+          # delay, but the installer can still finish in the window between that check
+          # and the signal, leaving reason=marker-hit over a COMPLETED install. The probe
+          # then reads HEALTHY and the re-run assertion below is skipped, so the leg goes
+          # green having interrupted nothing. The exit status separates the two: SIGTERM
+          # takes install.sh's trap to 143 (install.sh:716) and SIGKILL to 137, while only
+          # an install that ran to completion exits 0.
+          if [ "$installer_exit" = "0" ]; then
+            echo "::error::installer exited 0 -- it COMPLETED inside the kill window, so"
+            echo "::error::nothing was interrupted and this leg asserts nothing."
+            tail -30 logs/install.log || true
+            exit 1
+          fi
 
       - name: What state is the install in?
         id: probe
@@ -250,6 +263,17 @@ jobs:
             Write-Host "::error::installer never reached '${{ matrix.marker }}' (reason=$($vals['interrupt_reason']))."
             Write-Host '::error::This leg proves nothing: without this check it passes via the'
             Write-Host '::error::probe NO_CLI safe path, exactly as the POSIX legs once did.'
+            Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+          }
+          # Same guard as the POSIX leg: the driver re-checks HasExited after the marker
+          # delay, but the installer can still finish between that check and Stop-Tree,
+          # leaving reason=marker-hit over a COMPLETED install that then probes HEALTHY
+          # and skips the re-run assertion. Stop-Process -Force terminates with a non-zero
+          # code, so only an install that ran to completion reports 0.
+          if ($vals['installer_exit'] -eq '0') {
+            Write-Host '::error::installer exited 0 -- it COMPLETED inside the kill window, so'
+            Write-Host '::error::nothing was interrupted and this leg asserts nothing.'
             Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
             exit 1
           }
