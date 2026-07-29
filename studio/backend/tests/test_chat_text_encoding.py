@@ -81,7 +81,15 @@ def test_remote_code_scan_reads_non_ascii_sources(tmp_path: Path) -> None:
     from utils.security import remote_code_scan
 
     source = "# Grüße über Öl\nVALUE = '世界'\n"
-    (tmp_path / "modeling_custom.py").write_text(source, encoding = "utf-8")
+    # newline = "" pins the bytes on disk, so Windows line end translation cannot make the
+    # read back differ by \r. open() because Path.write_text() only grew newline in 3.10.
+    with open(
+        tmp_path / "modeling_custom.py",
+        "w",
+        encoding = "utf-8",
+        newline = "",
+    ) as handle:
+        handle.write(source)
 
     files = remote_code_scan.repo_remote_code_files(str(tmp_path))
 
@@ -93,8 +101,7 @@ def test_model_config_reads_do_not_rely_on_the_locale_encoding(tmp_path: Path) -
     the Windows bug on Linux and macOS. ``-X warn_default_encoding`` makes
     CPython flag any text I/O that falls back to the locale, so this fails on
     every platform if an ``encoding`` argument goes missing again."""
-    # The readers swallow exceptions to stay resilient, so record the warnings
-    # rather than raising on them.
+    # The readers swallow exceptions, so record the warnings instead of raising.
     script = textwrap.dedent(
         f"""
         import sys, warnings
