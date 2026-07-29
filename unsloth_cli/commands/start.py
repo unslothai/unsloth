@@ -2799,13 +2799,13 @@ def _agents_config_root() -> Path:
 
 @contextlib.contextmanager
 def _temporary_agent_config(prefix: str):
+    # These homes live under Studio's auth tree, which nothing else prunes, so reuse the
+    # locked session helper: a wrapper killed before its finally runs leaves a home that
+    # the next launch reclaims, and the lock keeps a live session from being swept.
     temp_root = _agents_config_root() / ".tmp"
     temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
-    path = Path(tempfile.mkdtemp(prefix = prefix, dir = temp_root))
-    try:
+    with _short_ephemeral_session(temp_root, prefix) as path:
         yield path
-    finally:
-        shutil.rmtree(path, ignore_errors = True)
 
 
 def _ephemeral_session_parent(agent: str) -> Optional[Path]:
@@ -2874,9 +2874,9 @@ def _locked_file(path: Path, blocking: bool = True):
         handle.close()
 
 
-def _reclaim_stale_ephemeral_sessions(parent: Path) -> None:
-    """Remove abandoned short Codex homes while preserving locked live sessions."""
-    for path in parent.glob("u-codex-*"):
+def _reclaim_stale_ephemeral_sessions(parent: Path, prefix: str) -> None:
+    """Remove abandoned session homes while preserving locked live sessions."""
+    for path in parent.glob(f"{prefix}*"):
         if not path.is_dir():
             continue
         active_lock = path / ".active.lock"
@@ -2907,8 +2907,8 @@ def _refresh_ephemeral_session_marker(path: Path, stop: threading.Event) -> None
 
 
 @contextlib.contextmanager
-def _short_ephemeral_session(parent: Path):
-    """Create a short Codex home whose lock makes crash cleanup concurrency-safe."""
+def _short_ephemeral_session(parent: Path, prefix: str = "u-codex-"):
+    """Create a session home whose lock makes crash cleanup concurrency-safe."""
     path = None
     active_lock = contextlib.ExitStack()
     heartbeat_stop = None
@@ -2917,8 +2917,8 @@ def _short_ephemeral_session(parent: Path):
         with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
             if not cleanup_lock:  # The blocking acquisition should always succeed.
                 raise RuntimeError(f"Could not lock ephemeral session root: {parent}")
-            _reclaim_stale_ephemeral_sessions(parent)
-            path = Path(tempfile.mkdtemp(prefix = "u-codex-", dir = parent))
+            _reclaim_stale_ephemeral_sessions(parent, prefix)
+            path = Path(tempfile.mkdtemp(prefix = prefix, dir = parent))
             locked = active_lock.enter_context(_locked_file(path / ".active.lock"))
             if not locked:
                 raise RuntimeError(f"Could not lock ephemeral session home: {path}")
@@ -2926,7 +2926,7 @@ def _short_ephemeral_session(parent: Path):
             heartbeat = threading.Thread(
                 target = _refresh_ephemeral_session_marker,
                 args = (path / ".active.lock", heartbeat_stop),
-                name = "unsloth-codex-home-heartbeat",
+                name = "unsloth-agent-home-heartbeat",
                 daemon = True,
             )
             heartbeat.start()

@@ -5199,6 +5199,30 @@ def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monke
     assert not first.exists()
 
 
+def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
+    # These homes sit under Studio's auth tree, which nothing else prunes, so a wrapper
+    # killed before its finally runs must be reclaimed by the next launch.
+    agents_root = tmp_path / "agents"
+    temp_root = agents_root / ".tmp"
+    temp_root.mkdir(parents = True)
+    monkeypatch.setattr(start, "_agents_config_root", lambda: agents_root)
+    abandoned = temp_root / "unsloth-claude-abandoned"
+    abandoned.mkdir()
+    (abandoned / ".active.lock").write_bytes(b"\0")
+    (abandoned / "state.json").write_text("left behind")
+    old = time.time() - start._CODEX_EPHEMERAL_STALE_SECONDS - 1
+    os.utime(abandoned / ".active.lock", (old, old))
+    recent = temp_root / "unsloth-claude-still-running"
+    recent.mkdir()
+    (recent / ".active.lock").write_bytes(b"\0")
+
+    with start._session_config("claude", launch = True) as home:
+        assert not abandoned.exists()
+        assert recent.exists()
+        assert home.parent == temp_root
+    assert not home.exists()
+
+
 def test_session_config_serializes_normal_short_home_deletion(monkeypatch, tmp_path):
     short_parent = tmp_path / "u"
     short_parent.mkdir()
