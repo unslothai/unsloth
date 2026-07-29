@@ -1294,6 +1294,19 @@ def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
     assert "compute_metrics" not in messages[0]
 
 
+def _warn_once(caplog, **trainer_kwargs):
+    fake_trainer = _patch_fake_sft_trainer()
+    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
+        fake_trainer(
+            model = _warn_text_model(),
+            train_dataset = Dataset.from_dict({"text": ["sample"]}),
+            **trainer_kwargs,
+        )
+    messages = [r.message for r in caplog.records if "Sample packing skipped" in r.message]
+    assert len(messages) == 1
+    return messages[0]
+
+
 @pytest.mark.parametrize(
     "strategy, expect_data_loss", [(None, False), ("bfd", False), ("wrapped", True)]
 )
@@ -1304,21 +1317,42 @@ def test_packing_skip_warning_claims_data_loss_only_for_wrapped(
     # pc.list_slice), so skipping packing costs no tokens there. Only "wrapped" would have
     # split long samples instead of cutting them.
     monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
-    fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     if strategy is not None:
         config.packing_strategy = strategy
 
-    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
-        fake_trainer(
-            model = _warn_text_model(),
-            args = config,
-            train_dataset = Dataset.from_dict({"text": ["sample"]}),
-        )
+    message = _warn_once(caplog, args = config)
+    assert ("TRUNCATED" in message) is expect_data_loss
 
-    messages = [r.message for r in caplog.records if "Sample packing skipped" in r.message]
-    assert len(messages) == 1
-    assert ("TRUNCATED" in messages[0]) is expect_data_loss
+
+def test_packing_skip_warning_treats_legacy_trl_as_wrapped(monkeypatch, caplog):
+    # On a trl whose pack_dataset takes no `strategy`, packing_strategy does not exist on the
+    # config either, and _WRAPPED_PACKING_SETUP treats that as wrapped. Defaulting it to "bfd"
+    # would suppress the warning exactly where the tokens really are lost.
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    import trl.data_utils
+
+    monkeypatch.setattr(
+        trl.data_utils, "pack_dataset", lambda dataset, seq_length, map_kwargs = None: dataset
+    )
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    assert "TRUNCATED" in _warn_once(caplog, args = config)
+
+
+def test_packing_skip_warning_is_silent_when_preparation_is_skipped(monkeypatch, caplog):
+    # skip_prepare_dataset returns the dataset before tokenization, so nothing is truncated
+    # and the data-loss wording would be false even under wrapped packing.
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    config = SimpleNamespace(
+        packing = True,
+        padding_free = None,
+        remove_unused_columns = True,
+        packing_strategy = "wrapped",
+        dataset_kwargs = {"skip_prepare_dataset": True},
+    )
+
+    assert "TRUNCATED" not in _warn_once(caplog, args = config)
 
 
 def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):

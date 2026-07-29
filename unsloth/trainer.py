@@ -781,10 +781,27 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 f"Unsloth: Sample packing skipped ({reason} detected) even though "
                 f"packing=True was requested."
             )
-            # Only "wrapped" would have saved these tokens. The default "bfd" strategy
-            # truncates every example to seq_length before packing, so under it the skip
-            # costs no tokens and claiming data loss would be false.
-            if getattr(config_arg, "packing_strategy", "bfd") == "wrapped":
+            # Only claim data loss where packing would really have saved the tokens.
+            # "bfd" truncates every example to seq_length before binning, and a skipped
+            # dataset prep never truncates at all, so neither loses anything to the skip.
+            # Legacy trl whose pack_dataset has no `strategy` behaves as wrapped, so
+            # mirror the test in _WRAPPED_PACKING_SETUP (rl_replacements.py).
+            try:
+                from trl.data_utils import pack_dataset
+
+                pack_has_strategy = "strategy" in inspect.signature(pack_dataset).parameters
+            except Exception:
+                pack_has_strategy = True
+            would_wrap = (
+                getattr(config_arg, "packing_strategy", None) == "wrapped"
+                or not pack_has_strategy
+            )
+            # rl.py sets skip_prepare_dataset for an UnslothVisionDataCollator, but that
+            # runs inside the wrapped __init__ below, so test the collator directly.
+            prep_skipped = bool(
+                (getattr(config_arg, "dataset_kwargs", None) or {}).get("skip_prepare_dataset")
+            ) or isinstance(data_collator, _UnslothVisionDataCollatorBase)
+            if would_wrap and not prep_skipped:
                 message += (
                     " Sequences longer than the max sequence length will now be TRUNCATED"
                     " instead of split across additional sequences, which can silently drop a"
