@@ -559,20 +559,47 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
     assert offered == ["Q4_K_M"]
 
 
-def test_gguf_variants_still_list_when_no_snapshot_is_complete(tmp_path, monkeypatch):
-    """The completeness preference must not empty the list: with nothing
-    complete anywhere, the newest snapshot holding quants is still reported,
-    which is what shipped before, and it still agrees with the load id."""
+@pytest.mark.parametrize(
+    "newer_files, offered",
+    [
+        # With nothing complete anywhere the newest snapshot holding quants is
+        # still reported, which is what shipped before, and it still agrees with
+        # the load id.
+        pytest.param(
+            {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+            ["Q8_0"],
+            id = "nothing-complete-anywhere",
+        ),
+        # When that snapshot holds a whole quant beside the half-downloaded one,
+        # offering both as downloaded shadowed the usable one: auto-load takes
+        # only the smallest and a rejected load now suppresses the default
+        # download, so chat was left with no model at all.
+        pytest.param(
+            {
+                "Model-Q8_0.gguf": b"\0" * 64,
+                "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16,
+            },
+            ["Q8_0"],
+            id = "one-whole-quant-beside-a-half-one",
+        ),
+    ],
+)
+def test_gguf_variants_still_list_when_no_snapshot_is_complete(
+    newer_files, offered, tmp_path, monkeypatch
+):
+    """The completeness preference must not empty the list, and must not offer a
+    quant whose shards are missing while a whole one sits beside it."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
         older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
-        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+        newer_files = newer_files,
     )
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
-    assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == ["Q8_0"]
+    load_dir = Path(rows[0]["load_id"])
+    assert load_dir == repo_dir / "snapshots" / NEWER
+    assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == offered
 
 
 def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkeypatch):
@@ -727,48 +754,70 @@ def test_a_repo_root_drafter_still_leaves_a_real_quant_selectable(tmp_path, monk
     assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
 
 
-def test_a_cancel_marker_from_a_newer_attempt_does_not_disable_the_pinned_snapshot(
-    tmp_path, monkeypatch
+def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
+    """Either repo-wide partial signal, neither of which records a revision.
+
+    The manifest names a file the pinned older snapshot holds at a different
+    size, which is what a revision that renamed or resized its weights leaves
+    behind for the previous one.
+    """
+    from hub.utils import download_manifest
+
+    if kind == "marker":
+        download_manifest.write_cancel_marker(
+            "model", "Org/Model", None, "http", hub_cache = hub_cache
+        )
+        return
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        None,
+        [download_manifest.ExpectedFile("model.safetensors", 99)],
+        "http",
+        hub_cache = hub_cache,
+    )
+
+
+@pytest.mark.parametrize("signal", ["marker", "manifest"])
+@pytest.mark.parametrize(
+    "newer_files, ref, advertised, partial",
+    [
+        # The signal belongs to the newest snapshot while the row advertises an
+        # older, complete one, so inheriting it turned ``can_chat`` off for a
+        # model that loads fine.
+        pytest.param({"config.json": b"{}"}, NEWER, OLDER, False, id = "pinned-older-snapshot"),
+        # Negative side: when the row advertises the newest snapshot the signal
+        # does describe it, and a cancelled download with no ``.incomplete``
+        # blob left behind has nothing else to give it away.
+        pytest.param(
+            {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+            UPSTREAM_HEAD,
+            NEWER,
+            True,
+            id = "advertised-snapshot",
+        ),
+    ],
+)
+def test_repo_wide_partial_signals_are_charged_to_the_newest_snapshot(
+    signal, newer_files, ref, advertised, partial, tmp_path, monkeypatch
 ):
-    """A cancel marker is repo-wide and records only the *last* attempt (it is
-    cleared at every download start and on success), so it belongs to the
-    newest snapshot. The row advertises an older, complete one, so inheriting
-    the marker turned ``can_chat`` off for a model that loads fine."""
-    from hub.utils import download_manifest
-
+    """A cancel marker and a repo-wide manifest both record only the *last*
+    attempt (the marker is cleared at every download start and on success; the
+    manifest is overwritten), so both belong to the newest snapshot and neither
+    may be verified against an older revision's payload."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
         older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}"},
-        ref = NEWER,
+        newer_files = newer_files,
+        ref = ref,
     )
-    download_manifest.write_cancel_marker("model", "Org/Model", None, "http", hub_cache = tmp_path)
+    _write_repo_wide_signal(signal, tmp_path)
 
     rows = _autoload_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
-    assert rows[0].get("partial") is False
-    assert rows[0]["capabilities"].get("can_chat") is True
-
-
-def test_a_cancel_marker_against_the_advertised_snapshot_is_still_partial(tmp_path, monkeypatch):
-    """Negative side of the same rule: when the row advertises the newest
-    snapshot the marker does describe it, and a cancelled download with no
-    ``.incomplete`` blob left behind has nothing else to give it away."""
-    repo_dir = _two_snapshot_repo(
-        tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
-    )
-    from hub.utils import download_manifest
-
-    download_manifest.write_cancel_marker("model", "Org/Model", None, "http", hub_cache = tmp_path)
-
-    rows = _autoload_rows(tmp_path, monkeypatch)
-
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
-    assert rows[0].get("partial") is True
-    assert rows[0]["capabilities"].get("can_chat") is False
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / advertised
+    assert rows[0].get("partial") is partial
+    assert rows[0]["capabilities"].get("can_chat") is not partial
 
 
 def test_gguf_partial_is_judged_against_the_snapshot_the_row_advertises(tmp_path, monkeypatch):

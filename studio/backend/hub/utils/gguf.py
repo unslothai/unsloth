@@ -317,7 +317,10 @@ def list_gguf_variants_from_hf_cache(
     repo_id: str, root: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     # Imported here, not at module scope: inventory_scan imports this module.
-    from hub.utils.inventory_scan import snapshot_variants_all_complete
+    from hub.utils.inventory_scan import (
+        complete_snapshot_variants,
+        snapshot_variants_all_complete,
+    )
 
     snapshots = (
         iter_hf_cache_snapshots(repo_id, root = root)
@@ -332,6 +335,11 @@ def list_gguf_variants_from_hf_cache(
     # _repo_gguf_payload_snapshots does. The vision flag is OR-ed in because a
     # skipped newer snapshot can be a projector fetched on its own; when nothing
     # is complete the first snapshot with anything wins, as it did before.
+    #
+    # That fallback still reports every quant it finds as downloaded. Auto-load
+    # takes only the smallest one and a rejected load now suppresses the default
+    # download, so a half-downloaded split quant beside a whole one left chat
+    # with no model at all; keep the whole ones when the snapshot has any.
     any_vision = False
     fallback: Optional[tuple[list[GgufVariantInfo], bool]] = None
     for snapshot in snapshots:
@@ -340,7 +348,11 @@ def list_gguf_variants_from_hf_cache(
         if variants and snapshot_variants_all_complete(str(snapshot)):
             return variants, any_vision
         if fallback is None and (variants or has_vision):
-            fallback = (variants, has_vision)
+            complete = complete_snapshot_variants(str(snapshot))
+            # A quant with no label cannot be judged, so it is kept rather than
+            # dropped; with nothing complete the list stays as it was.
+            usable = [v for v in variants if not v.quant or v.quant in complete]
+            fallback = (usable or variants, has_vision)
     return fallback
 
 

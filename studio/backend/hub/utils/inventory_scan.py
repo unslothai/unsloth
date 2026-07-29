@@ -693,6 +693,16 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
         return False
 
 
+def complete_snapshot_variants(snapshot: str) -> set[str]:
+    """Quant labels in *snapshot* whose files are all on disk. Same labels as
+    ``snapshot_variants_all_complete`` compares, for callers that need the subset
+    rather than the all-or-nothing answer."""
+    try:
+        return _completed_gguf_variants(Path(snapshot))
+    except (OSError, RuntimeError, ValueError):
+        return set()
+
+
 def _manifest_partial(
     repo_type: RepoType,
     repo_id: str,
@@ -787,10 +797,18 @@ def is_snapshot_partial(
     row will hand out as its load identity. Without it they use the newest
     snapshot, so a weightless metadata-only revision beside a complete download
     flags the row partial and ``can_chat`` goes false for a model that loads
-    fine."""
+    fine.
+
+    The repo-wide manifest carries no revision either, so it gets the same
+    attribution as the marker and the ``.incomplete`` blobs: it describes the
+    revision the last attempt was writing, which is the newest. Verifying it
+    against an older pinned snapshot compares one revision's file list with
+    another's payload, and any rename or size change between the two flagged a
+    complete, loadable row partial."""
     from hub.utils import download_manifest
+    repo_signal_applies = _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
     return _compose_partial(
-        lambda: _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
+        lambda: repo_signal_applies
         and download_manifest.has_cancel_marker(
             repo_type,
             repo_id,
@@ -798,7 +816,8 @@ def is_snapshot_partial(
             hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
         ),
         lambda: _snapshot_legacy_partial(repo_type, repo_id, repo_cache_dir, snapshot_dir),
-        lambda: _manifest_partial(
+        lambda: repo_signal_applies
+        and _manifest_partial(
             repo_type,
             repo_id,
             None,
