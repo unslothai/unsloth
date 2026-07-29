@@ -191,8 +191,16 @@ def _warm_unsloth_zoo() -> None:
     if not _load_shared():
         # _load_shared() already logged why and left the shim on its degraded
         # stubs, so downloads still work -- but the stage is cold and that must
-        # show in warm_status(). Purge first so the next importer re-runs
-        # unsloth_zoo/__init__ against an empty cache.
+        # show in warm_status(). Purge first so the next *direct* importer of
+        # unsloth_zoo (model loading, export, the MLX paths) re-runs its
+        # __init__ against an empty cache rather than against the submodules
+        # this failure left behind.
+        #
+        # It deliberately does not un-stick the shim's own negative cache:
+        # _load_shared() pins one DownloadStallError for the process, and the
+        # raise site in _wait_response() and the `except` in load_model() must
+        # keep resolving to that same class. Re-arming it per call would let the
+        # two disagree mid-download and the stall handler would be bypassed.
         purge_partial_import("unsloth_zoo")
         raise RuntimeError("unsloth_zoo unavailable; the download stall watchdog stays degraded")
 
