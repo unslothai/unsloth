@@ -1211,6 +1211,35 @@ exit 0
                 } catch {}
             }
         }
+        # ARM64 host only: `py -3.12` runs the launcher's preferred build for that
+        # minor, normally the native ARM64 one, so a same-minor x64 install that is
+        # not preferred and not on PATH never becomes a candidate and the x64
+        # preference below silently loses to ARM64. `-3.12-64` cannot disambiguate
+        # (deprecated since 3.11, it only means "not 32-bit"), so enumerate every
+        # registration with -0p and probe each path like any other candidate.
+        if ($preferX64) {
+            foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
+                $listed = @()
+                try { $listed = @(& $pyLauncher.Source "-0p" 2>$null) } catch {}
+                foreach ($line in $listed) {
+                    # " -V:3.12 *        C:\...\python.exe" / " -3.12-64   C:\...\python.exe":
+                    # tag, optional default marker, then a path that may contain spaces.
+                    $m = [regex]::Match([string]$line, '(?i)^\s*-\S+\s+\*?\s*"?(?<p>\S.*?\.exe)"?\s*$')
+                    if (-not $m.Success) { continue }
+                    $exe = $m.Groups['p'].Value.Trim()
+                    if ($candidates | Where-Object { $_.Path -eq $exe }) { continue }
+                    if (-not (Test-Path -LiteralPath $exe)) { continue }
+                    if (Test-IsCondaPython $exe) { continue }
+                    try {
+                        $out = & $exe --version 2>&1 | Out-String
+                        if ($out -match "Python (3\.1[1-3])\.\d+") {
+                            $candidates += @{ Version = $Matches[1]; Path = $exe }
+                        }
+                    } catch {}
+                }
+            }
+        }
         # ARM64 host only: prefer x64, but only within one minor. $minors is the
         # caller's version preference, so ranking on architecture alone would answer
         # UNSLOTH_PYTHON=3.12 with an x64 3.13 and never bootstrap x64 3.12. Walk the

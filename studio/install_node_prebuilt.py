@@ -748,8 +748,16 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     try:
         _replace_with_retry(extracted_root, install_dir)
     except OSError:
+        # The forward rename retries for ~16s, which is ample time for a scanner to
+        # open the backup too. A plain os.replace here would then raise over the
+        # original error and leave no install_dir at all, turning a failed update into
+        # a lost runtime, so the rollback gets the same backoff and never masks the
+        # failure it is recovering from.
         if backup is not None and not install_dir.exists():
-            os.replace(backup, install_dir)
+            try:
+                _replace_with_retry(backup, install_dir)
+            except OSError as rollback_exc:
+                log(f"could not restore the previous Node install from {backup}: {rollback_exc}")
         raise
     if backup is not None:
         shutil.rmtree(backup, ignore_errors = True)

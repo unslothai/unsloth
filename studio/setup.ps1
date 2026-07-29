@@ -4162,9 +4162,6 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
     -not ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
 if ($WillBuildLlamaFromSource) {
-    Ensure-BuildToolsForLlamaSourceBuild
-    # refresh so the chain below sees a newly installed cmake
-    $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional for consumers, so only the automatic fallback after
         # a failed prebuilt download arrives here without it. Last chance to install:
@@ -4177,6 +4174,15 @@ if ($WillBuildLlamaFromSource) {
             } catch { }
         }
         $HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+    }
+    # Git first, then the toolchain. Ensure-BuildToolsForLlamaSourceBuild exits the
+    # setup when VS Build Tools cannot be installed, so running it first made the
+    # git degraded path below unreachable on a clean no-winget box, and on a winget
+    # box it spent a multi-GB Build Tools download on a clone that cannot happen.
+    if ($HasGitForBuild) {
+        Ensure-BuildToolsForLlamaSourceBuild
+        # refresh so the chain below sees a newly installed cmake
+        $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
     }
 }
 
@@ -4195,6 +4201,17 @@ if ($LocalLlamaCppLinked) {
     # up new model architecture support (e.g. Gemma 4).
     Write-Host ""
     step "llama.cpp" "already built"
+} elseif (-not $HasGitForBuild) {
+    # Reported before cmake: the toolchain install is now skipped without git, so
+    # cmake may be missing purely as a consequence. Degrade rather than abort; the
+    # opt-in source triggers already required git in Phase 1, so only the automatic
+    # fallback lands here.
+    Write-Host ""
+    step "llama.cpp" "build skipped (git not available)" "Yellow"
+    substep "The prebuilt download failed and a source build clones llama.cpp." "Yellow"
+    substep "GGUF inference and export will not be available." "Yellow"
+    substep "Install Git from https://git-scm.com/download/win and re-run setup." "Yellow"
+    $script:LlamaCppDegraded = $true
 } elseif (-not $HasCmakeForBuild) {
     Write-Host ""
     if (-not $HasNvidiaSmi) {
@@ -4206,15 +4223,6 @@ if ($LocalLlamaCppLinked) {
     step "llama.cpp" "build skipped (cmake not available)" "Yellow"
     substep "GGUF inference and export will not be available." "Yellow"
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
-    $script:LlamaCppDegraded = $true
-} elseif (-not $HasGitForBuild) {
-    # Degrade like the cmake branch rather than abort: the opt-in source triggers
-    # already required git in Phase 1, so only the automatic fallback lands here.
-    Write-Host ""
-    step "llama.cpp" "build skipped (git not available)" "Yellow"
-    substep "The prebuilt download failed and a source build clones llama.cpp." "Yellow"
-    substep "GGUF inference and export will not be available." "Yellow"
-    substep "Install Git from https://git-scm.com/download/win and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
     # Finalize the VS generator (gate/fallback below) BEFORE Resolve-CudaToolkit,
