@@ -71,9 +71,9 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
     a JSON backslash, so the record fails to parse and its id is forgotten.
     """
     as_utf8 = _parse(raw, "utf-8")
-    # A record that reads as UTF-8 needs no second reading: both callers take that
-    # one. Re-parsing cost 2.8x on a 76 MB shard, and these reach gigabytes. Only a
-    # record, since key lookup falls through to the codepage when UTF-8 yields none.
+    # A record that reads as UTF-8 needs no second reading: re-parsing cost 2.8x on a
+    # 76 MB shard, and these reach gigabytes. Only a dict, since key lookup falls
+    # through to the codepage when UTF-8 yields none.
     if isinstance(as_utf8, dict):
         return _Reading(as_utf8, None)
     for encoding in (codepage, "latin-1", *_DOUBLE_BYTE_ENCODINGS):
@@ -101,14 +101,12 @@ class StateStore:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
-        # Small enough to read whole, and read as UTF-8 only, unlike the shards
-        # below. A checkpoint holds nothing but base64 cursors and booleans, so
-        # one an older locale-encoded release wrote is byte-identical and still
-        # reads here; a codepage retry could therefore only ever add non-ASCII.
-        # That would resume on a mojibaked cursor, which GitHub rejects with
-        # INVALID_CURSOR_ARGUMENTS, and the empty page it returns marks the
-        # stream done and skips the rest of it for good. Dropping a damaged
-        # checkpoint re-scrapes from the first page, which the writers dedup.
+        # Read whole, and UTF-8 only unlike the shards below: a checkpoint holds
+        # nothing but base64 cursors and booleans, so a codepage retry could only ever
+        # add non-ASCII. That would resume on a mojibaked cursor, which GitHub rejects
+        # with INVALID_CURSOR_ARGUMENTS, and the empty page it returns marks the stream
+        # done and skips the rest for good. Dropping a damaged checkpoint re-scrapes
+        # from the first page, which the writers dedup.
         if self.path.exists():
             try:
                 raw = self.path.read_bytes()

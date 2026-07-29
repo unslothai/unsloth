@@ -684,8 +684,7 @@ def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
         assert reading.as_utf8 == {"id": 1, "author": "Jürgen"}
         assert calls == ["utf-8"], calls
 
-        # A line UTF-8 cannot read still falls through to the codepage, which is
-        # the whole point of the second reading.
+        # A line UTF-8 cannot read still falls through to the codepage, the whole point.
         calls.clear()
         legacy = json.dumps({"id": 2, "author": "Jürgen"}, ensure_ascii = False).encode("cp1252")
         reading = module._read_line(legacy, "cp1252")
@@ -735,8 +734,8 @@ def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) 
     )
     writer = module.JsonlWriter(shard)
     try:
-        # Skipped like any other unreadable line, so the records around it still
-        # yield their dedup keys and the resume does not re-fetch them.
+        # Skipped like any other unreadable line, so its neighbours still yield the dedup
+        # keys that keep the resume from re-fetching them.
         assert writer.has("id:1") and writer.has("id:2")
     finally:
         writer.close()

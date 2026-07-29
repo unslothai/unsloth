@@ -19,10 +19,9 @@ linux_only = pytest.mark.skipif(
     reason = "the runtime flash-attn install is gated to Linux",
 )
 
-# causal-conv1d and flash-linear-attention are NOT Linux-gated: both installers
-# bail out on `sys.platform == "win32"` alone (no prebuilt wheel for Windows) and
-# run everywhere else, macOS included. Gating these on linux_only would skip cases
-# that legitimately pass off Linux.
+# causal-conv1d and flash-linear-attention are NOT Linux-gated: both installers bail out
+# on `sys.platform == "win32"` alone (no prebuilt wheel for Windows) and run everywhere
+# else, macOS included. linux_only here would skip cases that legitimately pass off Linux.
 not_on_windows = pytest.mark.skipif(
     sys.platform == "win32",
     reason = (
@@ -1635,7 +1634,6 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # The user's HIPCC_COMPILE_FLAGS_APPEND is inherited untouched.
     assert captured["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/opt/custom/gcc-13"
 
 

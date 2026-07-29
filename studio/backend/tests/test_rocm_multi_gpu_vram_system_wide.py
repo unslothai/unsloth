@@ -49,12 +49,11 @@ import pytest
 
 import utils.hardware.hardware as hw  # noqa: E402
 
-# The DRM/KFD readers below are Linux-only in production: _rocm_linux_amdgpu_cards
-# and _rocm_linux_sysfs_vram_by_pci_gb return early unless platform.system() is
-# "Linux", and _rocm_kfd_gpu_pci_ids only ever globs /sys/class/kfd. The fixtures
-# that exercise them build a fake Linux sysfs tree, which needs PCI addresses such
-# as "0000:00:02.0" as directory names and POSIX separators in the paths the
-# readers match; Windows permits neither, so the fake tree cannot be represented.
+# The DRM/KFD readers below are Linux-only in production: _rocm_linux_amdgpu_cards and
+# _rocm_linux_sysfs_vram_by_pci_gb return early unless platform.system() is "Linux", and
+# _rocm_kfd_gpu_pci_ids only ever globs /sys/class/kfd. Their fake sysfs tree needs PCI
+# addresses like "0000:00:02.0" as directory names and POSIX separators in the paths the
+# readers match; Windows permits neither, so the tree cannot be represented there.
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason = "covers Linux-only DRM/KFD sysfs parsing driven by a fake /sys tree",
@@ -460,10 +459,9 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
     ):
         monkeypatch.delenv(_var, raising = False)
     monkeypatch.setattr(hw, "IS_ROCM", True)
-    # No AMD adapter data on this host. On Windows this is the branch
-    # get_visible_gpu_utilization takes ahead of the torch fallback under test,
-    # and probing it imports torch, which the CI runner does not install. Off
-    # Windows the real function is never reached, so this changes nothing there.
+    # No AMD adapter data on this host. On Windows this branch runs ahead of the torch
+    # fallback under test, and probing it imports torch, which the CI runner does not
+    # install. Off Windows the real function is never reached, so this changes nothing.
     monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: [])
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi unavailable
@@ -493,10 +491,9 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
 def test_visible_utilization_relative_index_skips_overlay(monkeypatch):
     # UUID/MIG mask gives relative indices; the overlay matches physical index, so it must not run.
     monkeypatch.setattr(hw, "IS_ROCM", True)
-    # No AMD adapter data on this host. On Windows this is the branch
-    # get_visible_gpu_utilization takes ahead of the torch fallback under test,
-    # and probing it imports torch, which the CI runner does not install. Off
-    # Windows the real function is never reached, so this changes nothing there.
+    # No AMD adapter data on this host. On Windows this branch runs ahead of the torch
+    # fallback under test, and probing it imports torch, which the CI runner does not
+    # install. Off Windows the real function is never reached, so this changes nothing.
     monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: [])
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
