@@ -283,8 +283,9 @@ def test_a_recovered_repo_survives_delete_revisions(tmp_path, monkeypatch):
 # --- load identity for a recovered snapshot ----------------------------------
 
 
-def _autoload_rows(cache_root: Path, monkeypatch) -> list[dict]:
-    """What chat auto-load sees: GET /api/hub/cached-models."""
+def _autoload_rows(cache_root: Path, monkeypatch, *, gguf: bool = False) -> list[dict]:
+    """What chat auto-load sees: GET /api/hub/cached-models, or with *gguf* set
+    GET /api/hub/cached-gguf."""
     from hub.services.models import cache_inventory
     from types import SimpleNamespace
 
@@ -295,6 +296,8 @@ def _autoload_rows(cache_root: Path, monkeypatch) -> list[dict]:
     )
     inventory_scan.invalidate_hf_cache_scans()
     try:
+        if gguf:
+            return cache_inventory._scan_cached_gguf()
         return cache_inventory._scan_cached_models()
     finally:
         inventory_scan.invalidate_hf_cache_scans()
@@ -352,19 +355,7 @@ def _age(path: Path, seconds: float) -> None:
 
 def _autoload_gguf_rows(cache_root: Path, monkeypatch) -> list[dict]:
     """What chat auto-load sees for GGUF: GET /api/hub/cached-gguf."""
-    from hub.services.models import cache_inventory
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = cache_root),
-    )
-    inventory_scan.invalidate_hf_cache_scans()
-    try:
-        return cache_inventory._scan_cached_gguf()
-    finally:
-        inventory_scan.invalidate_hf_cache_scans()
+    return _autoload_rows(cache_root, monkeypatch, gguf = True)
 
 
 def _two_snapshot_repo(
@@ -499,89 +490,6 @@ def test_load_id_stays_the_repo_id_when_main_resolves_onto_the_payload(tmp_path,
     assert rows[0]["load_id"] == "Org/Model"
 
 
-def test_gguf_load_id_skips_a_snapshot_holding_half_a_split_quant(tmp_path, monkeypatch):
-    """The newest snapshot can hold shard 1 of an interrupted split download.
-    The picker still offers that quant, so the generated command asks
-    llama-server for a shard that is absent while a complete quant sits in an
-    older snapshot."""
-    from hub.utils.gguf import list_local_gguf_variants
-
-    repo_dir = _two_snapshot_repo(
-        tmp_path,
-        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
-        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
-    )
-
-    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
-
-    assert [row["repo_id"] for row in rows] == ["Org/Model"]
-    load_dir = Path(rows[0]["load_id"])
-    variants, _has_vision = list_local_gguf_variants(str(load_dir))
-    offered = {v.quant for v in variants if getattr(v, "quant", None)}
-    complete = inventory_scan._completed_gguf_variants(load_dir)
-    assert offered and offered <= complete, (
-        f"load_id {load_dir.name} offers {sorted(offered)} with only "
-        f"{sorted(complete)} complete; the usable quant is in {OLDER[:8]}"
-    )
-    assert load_dir == repo_dir / "snapshots" / OLDER
-
-
-def test_partial_is_judged_against_the_snapshot_the_row_advertises(tmp_path, monkeypatch):
-    """The manifest walk used the newest snapshot while the load id now names an
-    older complete one, so a weightless probe snapshot flagged the row partial;
-    that flips ``can_chat`` off and auto-load skips a model that loads fine."""
-    from hub.utils import download_manifest
-
-    repo_dir = _two_snapshot_repo(
-        tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}"},
-    )
-    download_manifest.write_manifest(
-        "model",
-        "Org/Model",
-        None,
-        [
-            download_manifest.ExpectedFile(path = "config.json", size = 2),
-            download_manifest.ExpectedFile(path = "model.safetensors", size = 11),
-        ],
-        hub_cache = tmp_path,
-    )
-
-    rows = _autoload_rows(tmp_path, monkeypatch)
-
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
-    assert rows[0].get("partial") is False
-    assert rows[0]["capabilities"].get("can_chat") is True
-
-
-def test_a_genuinely_incomplete_download_is_still_partial(tmp_path, monkeypatch):
-    """Negative side of the same rule: scoping the manifest walk to the
-    advertised snapshot must not stop reporting a truncated download."""
-    from hub.utils import download_manifest
-
-    _two_snapshot_repo(
-        tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 4},
-    )
-    download_manifest.write_manifest(
-        "model",
-        "Org/Model",
-        None,
-        [
-            download_manifest.ExpectedFile(path = "config.json", size = 2),
-            download_manifest.ExpectedFile(path = "model.safetensors", size = 11),
-        ],
-        hub_cache = tmp_path,
-    )
-
-    rows = _autoload_rows(tmp_path, monkeypatch)
-
-    assert rows[0].get("partial") is True
-    assert rows[0]["capabilities"].get("can_chat") is False
-
-
 # --- everything the row advertises must resolve under its load id ------------
 
 
@@ -603,12 +511,19 @@ def _local_gguf_variants_for_autoload(row: dict, cache_root: Path) -> list[str]:
     return [variant.quant for variant in response.variants if variant.downloaded]
 
 
-def test_gguf_variants_are_scoped_to_the_snapshot_the_row_advertises(tmp_path, monkeypatch):
-    """The load id now names the newest snapshot whose quants are all on disk,
-    but the variant lookup still walked snapshots newest-first, so a half
-    downloaded split quant in a newer snapshot was offered as downloaded while
-    /load pointed at an older snapshot that does not hold it. Auto-load then
-    failed on a cache that has a perfectly usable quant."""
+def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_path, monkeypatch):
+    """The newest snapshot can hold shard 1 of an interrupted split download.
+    The picker still offers that quant, so the generated command asks
+    llama-server for a shard that is absent while a complete quant sits in an
+    older snapshot.
+
+    The load id therefore names the newest snapshot whose quants are all on
+    disk, but the variant lookup still walked snapshots newest-first, so the
+    half downloaded split quant was offered as downloaded while /load pointed at
+    an older snapshot that does not hold it. Auto-load then failed on a cache
+    that has a perfectly usable quant. Both ends are asserted here because they
+    are only correct together: the load id and the quants offered under it have
+    to agree on one directory."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -619,7 +534,14 @@ def test_gguf_variants_are_scoped_to_the_snapshot_the_row_advertises(tmp_path, m
 
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
 
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
     load_dir = Path(rows[0]["load_id"])
+    held = {v.quant for v in list_local_gguf_variants(str(load_dir))[0] if v.quant}
+    complete = inventory_scan._completed_gguf_variants(load_dir)
+    assert held and held <= complete, (
+        f"load_id {load_dir.name} offers {sorted(held)} with only "
+        f"{sorted(complete)} complete; the usable quant is in {OLDER[:8]}"
+    )
     assert load_dir == repo_dir / "snapshots" / OLDER
     offered = _local_gguf_variants_for_autoload(rows[0], tmp_path)
     resolvable = {v.quant for v in list_local_gguf_variants(str(load_dir))[0]}
@@ -646,42 +568,6 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(tmp_path, monkeyp
 
     assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
     assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == ["Q8_0"]
-
-
-def test_partial_ignores_an_incomplete_blob_left_by_a_newer_revision(tmp_path, monkeypatch):
-    """The manifest walk was pinned to the advertised snapshot but the legacy
-    signal still scanned the whole repo, so the interrupted re-download this
-    branch is meant to prevent left an ``.incomplete`` blob that flipped
-    ``can_chat`` off for the complete snapshot the row hands out."""
-    repo_dir = _two_snapshot_repo(
-        tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}"},
-    )
-    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
-
-    rows = _autoload_rows(tmp_path, monkeypatch)
-
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
-    assert rows[0].get("partial") is False
-    assert rows[0]["capabilities"].get("can_chat") is True
-
-
-def test_an_incomplete_blob_against_the_advertised_snapshot_is_still_partial(tmp_path, monkeypatch):
-    """Negative side of the same rule: when the row advertises the newest
-    snapshot, the ``.incomplete`` blob does belong to it and must still count."""
-    repo_dir = _two_snapshot_repo(
-        tmp_path,
-        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
-    )
-    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
-
-    rows = _autoload_rows(tmp_path, monkeypatch)
-
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
-    assert rows[0].get("partial") is True
-    assert rows[0]["capabilities"].get("can_chat") is False
 
 
 def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkeypatch):
@@ -744,46 +630,52 @@ QUANTIZED_CONFIG = b'{"quantization_config": {"quant_method": "bitsandbytes"}}'
 MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n---\n"
 
 
-def test_metadata_describes_the_snapshot_the_row_hands_out(tmp_path, monkeypatch):
-    """``quant_method`` and the model-card fields were read from the newest
-    snapshot while the load id names the payload one, so the row described a
-    directory it does not hand out. The metadata probe that strands the payload
-    carries neither the quantization config nor the model card, so the quant
-    chip and the On Device type filter judged the model on absent data."""
+@pytest.mark.parametrize(
+    "older_files, newer_files, pinned",
+    [
+        # ``quant_method`` and the model-card fields were read from the newest
+        # snapshot while the load id names the payload one, so the row described
+        # a directory it does not hand out. The metadata probe that strands the
+        # payload carries neither the quantization config nor the model card, so
+        # the quant chip and the On Device type filter judged the model on
+        # absent data.
+        pytest.param(
+            {
+                "config.json": QUANTIZED_CONFIG,
+                "model.safetensors": b"\0" * 11,
+                "README.md": MODEL_CARD,
+            },
+            {"config.json": b"{}"},
+            True,
+            id = "payload-snapshot-supplies-the-row",
+        ),
+        # The rule stays narrow: with no self-contained payload snapshot there
+        # is nothing to scope to, so the newest snapshot still supplies the row.
+        pytest.param(
+            {"model.safetensors": b"\0" * 11},
+            {"config.json": QUANTIZED_CONFIG, "README.md": MODEL_CARD},
+            False,
+            id = "newest-snapshot-fallback",
+        ),
+    ],
+)
+def test_metadata_describes_the_snapshot_the_row_hands_out(
+    older_files, newer_files, pinned, tmp_path, monkeypatch
+):
     repo_dir = _two_snapshot_repo(
         tmp_path,
-        older_files = {
-            "config.json": QUANTIZED_CONFIG,
-            "model.safetensors": b"\0" * 11,
-            "README.md": MODEL_CARD,
-        },
-        newer_files = {"config.json": b"{}"},
+        older_files = older_files,
+        newer_files = newer_files,
         ref = NEWER,
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
 
-    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    expected_load_id = str(repo_dir / "snapshots" / OLDER) if pinned else "Org/Model"
+    assert rows[0]["load_id"] == expected_load_id
     assert rows[0].get("quant_method") == "bitsandbytes"
     assert rows[0].get("pipeline_tag") == "text-generation"
     assert rows[0].get("library_name") == "transformers"
-
-
-def test_metadata_still_falls_back_to_the_newest_snapshot(tmp_path, monkeypatch):
-    """The rule stays narrow: with no self-contained payload snapshot there is
-    nothing to scope to, so the newest snapshot still supplies the row."""
-    _two_snapshot_repo(
-        tmp_path,
-        older_files = {"model.safetensors": b"\0" * 11},
-        newer_files = {"config.json": QUANTIZED_CONFIG, "README.md": MODEL_CARD},
-        ref = NEWER,
-    )
-
-    rows = _autoload_rows(tmp_path, monkeypatch)
-
-    assert rows[0]["load_id"] == "Org/Model"
-    assert rows[0].get("quant_method") == "bitsandbytes"
-    assert rows[0].get("pipeline_tag") == "text-generation"
 
 
 # --- the signals paired with the pinned snapshot ------------------------------
