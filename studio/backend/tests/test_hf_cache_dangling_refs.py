@@ -1294,15 +1294,17 @@ _BACKEND = Path(__file__).resolve().parents[1]
 # name here is a new repo-wide signal and has to be argued for, which is the
 # point: eight rounds of this bug were signals collected over every revision and
 # then advertised on a row that loads out of one directory.
-_REPO_WIDE_HELPERS = frozenset({
-    "_cache_inventory_fields",
-    "_repo_gguf_last_modified",
-    "_repo_gguf_payload_snapshots",
-    "_repo_gguf_size_bytes",
-    "_repo_has_gguf_files",
-    "_repo_non_gguf_model_payload",
-    "getattr",
-})
+_REPO_WIDE_HELPERS = frozenset(
+    {
+        "_cache_inventory_fields",
+        "_repo_gguf_last_modified",
+        "_repo_gguf_payload_snapshots",
+        "_repo_gguf_size_bytes",
+        "_repo_has_gguf_files",
+        "_repo_non_gguf_model_payload",
+        "getattr",
+    }
+)
 # Only the shared ordering key may read a snapshot directory's mtime; _blob_mtime
 # reads a blob's, which orders nothing.
 _MTIME_READERS = {
@@ -1314,7 +1316,6 @@ _MTIME_READERS = {
 
 def _function_defs(path: Path) -> dict:
     import ast
-
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     return {
         node.name: node
@@ -1351,18 +1352,20 @@ def test_the_scan_loop_cannot_advertise_a_signal_it_did_not_scope(scan):
     ]
     assert revision_reads == [], f"{scan} walks every revision itself: {revision_reads}"
 
-    handed_off = sorted({
-        ast.unparse(call.func)
-        for call in ast.walk(node)
-        if isinstance(call, ast.Call)
-        and any(
-            isinstance(arg, ast.Name) and arg.id == "repo_info"
-            for arg in [*call.args, *(kw.value for kw in call.keywords)]
-        )
-    })
-    assert set(handed_off) <= _REPO_WIDE_HELPERS, (
-        f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
+    handed_off = sorted(
+        {
+            ast.unparse(call.func)
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and any(
+                isinstance(arg, ast.Name) and arg.id == "repo_info"
+                for arg in [*call.args, *(kw.value for kw in call.keywords)]
+            )
+        }
     )
+    assert (
+        set(handed_off) <= _REPO_WIDE_HELPERS
+    ), f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
 
 
 @pytest.mark.parametrize("module, allowed", sorted(_MTIME_READERS.items()))
@@ -1374,10 +1377,8 @@ def test_only_the_shared_key_orders_snapshots_by_mtime(module, allowed):
     readers = {
         name
         for name, node in _function_defs(_BACKEND / module).items()
-        if any(
-            isinstance(sub, ast.Attribute) and sub.attr == "st_mtime" for sub in ast.walk(node)
-        )
+        if any(isinstance(sub, ast.Attribute) and sub.attr == "st_mtime" for sub in ast.walk(node))
     }
-    assert readers == set(allowed), (
-        f"{module} reads a snapshot mtime outside snapshot_selection_key: {sorted(readers)}"
-    )
+    assert readers == set(
+        allowed
+    ), f"{module} reads a snapshot mtime outside snapshot_selection_key: {sorted(readers)}"
