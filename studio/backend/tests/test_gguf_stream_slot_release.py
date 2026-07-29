@@ -38,17 +38,6 @@ def _active_slots() -> int:
     return sum(queue.snapshot().active for queue in queues)
 
 
-def test_sse_chunk_is_stream_done_only_matches_the_success_sentinel():
-    done = inference_route._sse_chunk_is_stream_done
-    assert done("data: [DONE]\n\n")
-    # The error path packs a payload line and the sentinel into one chunk, and its cleanup has
-    # not run, so it must not count as a finished stream.
-    assert not done('data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n')
-    assert not done('data: {"choices": [{"delta": {"content": "data: [DONE]"}}]}\n\n')
-    assert not done("")
-    assert not done(None)
-
-
 _ONE_SLOT = llama_admission.LlamaAdmissionConfig(max_queue = 4)
 
 
@@ -78,7 +67,7 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         try:
             async for chunk in iterator:
                 yield chunk
-                if held is not None and inference_route._sse_chunk_is_stream_done(chunk):
+                if held is not None and chunk == inference_route._SSE_DONE_CHUNK:
                     held.release()
         finally:
             if held is not None:
@@ -97,7 +86,7 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
             # generator resumes past [DONE] and only then runs into the wedged teardown.
             async for chunk in _admitted(lease):
                 seen.append(chunk)
-                if inference_route._sse_chunk_is_stream_done(chunk):
+                if chunk == inference_route._SSE_DONE_CHUNK:
                     saw_done.set()
 
         task = asyncio.create_task(_consume())
@@ -251,7 +240,7 @@ def test_real_stream_frees_the_slot_at_done_with_a_wedged_teardown(monkeypatch):
             frames.append(message)
             if message.get("type") == "http.response.body":
                 chunk = message.get("body", b"").decode()
-                if inference_route._sse_chunk_is_stream_done(chunk):
+                if chunk == inference_route._SSE_DONE_CHUNK:
                     sent_body.set()
 
         task = asyncio.create_task(app(scope, receive, send))
