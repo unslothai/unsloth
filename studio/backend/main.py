@@ -601,9 +601,10 @@ async def lifespan(app: FastAPI):
         )
 
     # Last, so it never competes with the work above for the GIL: import torch
-    # (via hardware detection), then transformers and unsloth_zoo. The socket
-    # binds as soon as this returns, so the login screen is up while the ML
-    # stack loads behind it.
+    # (via hardware detection), then transformers, datasets and unsloth_zoo --
+    # everything `import main` used to pull in before the port could bind. The
+    # socket binds as soon as this returns, so the login screen is up while the
+    # ML stack loads behind it.
     start_background_warm()
 
     _lifespan_log.info(

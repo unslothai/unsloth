@@ -19,9 +19,13 @@ Contract:
   * never fatal -- every stage is isolated; a failure is logged and leaves the
     stage un-warmed, to be retried by whoever actually needs it
   * no half-initialised state -- each stage delegates to the module that owns
-    the cache (utils.hardware, model_config), all of which cache under a lock
-    and only on success, so a request racing the warm waits rather than
-    duplicating or observing a partial result
+    the cache (utils.hardware, model_config, hf_xet_fallback), all of which
+    cache under a lock and only on success, so a request racing the warm waits
+    rather than duplicating or observing a partial result
+  * same end state -- the stages import what `import main` used to import, in
+    the order it used to import them, and through the same call sites. A stage
+    that shortcuts to a bare `import x` can behave differently from the edge it
+    replaced; see _warm_unsloth_zoo.
 
 What this does NOT do: make the endpoints that need torch cheap while it runs.
 Anything reaching get_device() blocks until the hardware stage finishes, so
@@ -129,26 +133,58 @@ def _warm_transformers() -> None:
     _detection_sets()
 
 
+def _warm_datasets() -> None:
+    # utils/datasets/raw_text.py used to import this for an annotation alone,
+    # and `datasets` reaches torch through datasets.formatting.torch_formatter.
+    # Nothing depends on it being imported early, but it was, so warm it and
+    # keep the first dataset operation as cheap as it used to be. 0.3s once
+    # transformers is loaded. Ungated: datasets imports without torch.
+    importlib.import_module("datasets")
+
+
 def _warm_unsloth_zoo() -> None:
-    # Backs the download stall watchdog (utils.hf_xet_fallback). It was imported
-    # at startup before, so warming it keeps the first download's cost where it
-    # used to be. Skipped without torch: unsloth_zoo hard-requires it, and the
-    # shim already degrades to its own stubs on such a host.
+    """Prime the download stall watchdog, the way the eager import primed it.
+
+    Through utils.hf_xet_fallback rather than a bare ``import unsloth_zoo``,
+    because the edge this replaces was orchestrator.py's ``from
+    utils.hf_xet_fallback import DownloadStallError``. The shim does not just
+    import: when unsloth_zoo's GPU init raises it retries under
+    UNSLOTH_ZOO_DISABLE_GPU_INIT=1, which makes unsloth_zoo skip that init and
+    inject its triton/bitsandbytes stubs. A bare import skips the retry, so on a
+    host whose bitsandbytes wheel cannot find libcudart -- where unsloth_zoo
+    raises "CUDA Setup failed despite GPU being available" -- the warm reported
+    a failed stage for something startup used to complete. Measured on this box
+    before the fix; a bare import fails there and the shim succeeds.
+
+    Skipped without torch: unsloth_zoo hard-requires it, and the shim already
+    degrades to its own stubs on such a host.
+    """
     if not _torch_installed():
         return
-    try:
-        importlib.import_module("unsloth_zoo")
-    except BaseException:
-        # Leave nothing half-imported behind: the retry belongs to whichever
-        # request needs the watchdog next, and it must re-run __init__ against
-        # an empty cache. See purge_partial_import().
+    # Private, deliberately: this is the exact function the removed eager import
+    # drove, and the public names reach it only by resolving an attribute whose
+    # degraded fallback is indistinguishable from success.
+    from utils.hf_xet_fallback import _load_shared
+
+    if not _load_shared():
+        # _load_shared() has already logged why and left the shim on its
+        # degraded stubs, so downloads still work -- but the stage is not warm,
+        # and that has to show up in warm_status(). Leave nothing half-imported
+        # behind first: whoever imports unsloth_zoo next must re-run __init__
+        # against an empty cache. See purge_partial_import().
         purge_partial_import("unsloth_zoo")
-        raise
+        raise RuntimeError(
+            "unsloth_zoo unavailable; the download stall watchdog stays degraded"
+        )
 
 
+# Order matters: it is the order the eager imports ran in. transformers before
+# unsloth_zoo because unsloth_zoo patches transformers on import, and datasets
+# between them because that is where `import main` reached it.
 _STAGES = (
     ("hardware", _warm_hardware),
     ("transformers", _warm_transformers),
+    ("datasets", _warm_datasets),
     ("unsloth_zoo", _warm_unsloth_zoo),
 )
 

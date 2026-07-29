@@ -207,6 +207,62 @@ def test_warm_starts_once_and_honours_the_kill_switch(monkeypatch):
     assert status["stages"]["noop"]["ok"] is True
 
 
+def test_the_warm_covers_every_package_import_main_used_to_pull():
+    """Deferring an import only moves its cost if something still pays it.
+
+    One stage per package `import main` used to leave in sys.modules. Dropping
+    one does not fail any other test -- it just moves that import onto the first
+    request that needs it, silently.
+    """
+    from utils import torch_warmup
+
+    assert [name for name, _ in torch_warmup._STAGES] == [
+        "hardware",      # torch, via utils.hardware
+        "transformers",  # via model_config's registry read
+        "datasets",      # via utils/datasets/raw_text.py
+        "unsloth_zoo",   # via orchestrator's utils.hf_xet_fallback import
+    ]
+
+
+def test_the_unsloth_zoo_stage_goes_through_the_shim(monkeypatch):
+    """The warm must reproduce the eager import, not just import the package.
+
+    The edge it replaces was orchestrator.py's ``from utils.hf_xet_fallback
+    import DownloadStallError``, and the shim retries under
+    UNSLOTH_ZOO_DISABLE_GPU_INIT=1 when unsloth_zoo's GPU init raises. A bare
+    ``import unsloth_zoo`` skips that retry: on a host with a bitsandbytes wheel
+    that cannot find libcudart it raises where startup used to succeed.
+    """
+    import builtins
+
+    from utils import hf_xet_fallback, torch_warmup
+
+    monkeypatch.setattr(torch_warmup, "_torch_installed", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        hf_xet_fallback, "_load_shared", lambda: (calls.append(1), True)[1]
+    )
+
+    real_import = builtins.__import__
+
+    def no_bare_zoo(name, *args, **kwargs):
+        assert name != "unsloth_zoo", (
+            "the warm imported unsloth_zoo directly; it must go through "
+            "utils.hf_xet_fallback so the UNSLOTH_ZOO_DISABLE_GPU_INIT retry runs"
+        )
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_bare_zoo)
+    torch_warmup._warm_unsloth_zoo()
+    assert calls == [1]
+
+    # A shim that could not load leaves the watchdog degraded, and that has to
+    # surface as a failed stage rather than a silent success.
+    monkeypatch.setattr(hf_xet_fallback, "_load_shared", lambda: False)
+    with pytest.raises(RuntimeError, match = "unsloth_zoo unavailable"):
+        torch_warmup._warm_unsloth_zoo()
+
+
 def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys):
     """A broken stage must be visible in the log and must not kill the warm."""
     from utils import torch_warmup
