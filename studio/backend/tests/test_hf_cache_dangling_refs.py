@@ -1548,9 +1548,10 @@ _MTIME_READERS = {
     # The compatibility routes. Listed because leaving them out is how the two
     # snapshot selectors here kept their own mtime reads for a round after the
     # shared key landed: _repo_gguf_load_id ordered candidates by mtime alone
-    # and _resolve_hf_cache_realpath took max() over iterdir(). The four named
-    # functions rank plain directories (./models, LM Studio, Ollama) or read a
-    # repo dir's mtime for an "updated at" column; none of them picks a snapshot.
+    # and _resolve_hf_cache_realpath took max() over iterdir(). The names left
+    # here rank plain directories (./models, LM Studio, Ollama), read a repo
+    # dir's mtime for an "updated at" column, or read a blob's; none of them
+    # picks a snapshot.
     "routes/models.py": frozenset(
         {
             "_blob_mtime",
