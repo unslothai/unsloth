@@ -553,12 +553,18 @@ function findStructuralThinkClose(
         // delta may still supply either, so reading one as absent flips the
         // verdict: nothing may resume past this tag until they land (#7334).
         if (quoteAt + runAfter >= raw.length) resumable = false;
-        // Literal only when the leading quote OPENS a span: an odd count of
-        // that char since the reasoning start.
+        // A symmetric ESCAPED pair ( \"</think>\" ) is a serialized quotation,
+        // literal on its own: both quotes sit inside a string literal, so
+        // `quoteCount` excludes them and parity alone called the mention
+        // structural, leaking the rest of the thought into the answer (#7334).
+        // Mirrors the backend's _is_literal_think_close.
+        const escapedPair = quoteAt > closeEnd && isEscaped(raw, closeIndex - 1);
+        // Otherwise literal only when the leading quote OPENS a span: an odd
+        // count of that char since the reasoning start.
         literal =
           runBefore === runAfter &&
           !WORD_CHAR.test(codePointAt(raw, quoteAt + runAfter)) &&
-          quoteCount(before, closeIndex) % 2 === 1;
+          (escapedPair || quoteCount(before, closeIndex) % 2 === 1);
       }
     }
 

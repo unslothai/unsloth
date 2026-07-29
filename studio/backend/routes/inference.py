@@ -8648,7 +8648,8 @@ async def openai_chat_completions(
                         param = "tools",
                     ),
                 )
-        _reject_schema_control_markup(payload.tools)
+        if not _schema_never_reaches_template(payload):
+            _reject_schema_control_markup(payload.tools)
 
     # Reject a system-only chat before any automatic load so an invalid request
     # never swaps or reloads the resident model (as /responses and /messages
@@ -14877,6 +14878,13 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
+    # The neutralizer below preserves property keys and grammar-constrained
+    # values, so a schema /messages refuses would otherwise still be rendered by
+    # /apply-template here and return a count for a request generation rejects
+    # (#7334). Same check, same place in the order: before the switch.
+    _reject_schema_control_markup(
+        [t if isinstance(t, dict) else t.model_dump() for t in payload.tools or []]
+    )
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
@@ -16219,6 +16227,20 @@ def _reject_schema_control_markup(tools) -> None:
     detail = _schema_control_markup_error(tools)
     if detail is not None:
         raise HTTPException(status_code = 400, detail = detail)
+
+
+def _schema_never_reaches_template(payload) -> bool:
+    """True when this chat request's tool schemas are dropped before rendering.
+
+    Refusing a byte-exact marker in a catalog nothing renders would fail a
+    request that explicitly disabled tools (#7334), so mirror the gate
+    ``_build_openai_passthrough_body`` applies to tool forwarding. Every other
+    consumer drops the catalog in at least this case: the safetensors branch
+    zeroes ``tools`` for any ``tool_choice="none"``, and ``_select_request_tools``
+    only ever returns Unsloth's own built-ins plus MCP tools, which carry their
+    own check where they are appended.
+    """
+    return payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages)
 
 
 def _align_forced_tool_choice(tool_choice, tools):

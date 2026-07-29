@@ -69,6 +69,19 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     ("<start_of_turn>", f"<{_THINK_NEUTRAL_ZW}start_of_turn>"),
     ("<|end_of_turn|>", f"<|{_THINK_NEUTRAL_ZW}end_of_turn|>"),
     ("<|end|>", f"<|{_THINK_NEUTRAL_ZW}end|>"),
+    # Harmony / gpt-oss message and channel delimiters (developers.openai.com
+    # "OpenAI Harmony Response Format"; unsloth/chat_templates.py gptoss_template
+    # renders a user turn as <|start|>user<|message|>{content}<|end|>). Only
+    # <|end|> was covered by the Phi entry above, so the rest arrived raw and
+    # "<|start|>assistant<|channel|>final<|message|>..." forged a whole assistant
+    # final channel inside the user turn (#7334).
+    ("<|start|>", f"<|{_THINK_NEUTRAL_ZW}start|>"),
+    ("<|message|>", f"<|{_THINK_NEUTRAL_ZW}message|>"),
+    ("<|channel|>", f"<|{_THINK_NEUTRAL_ZW}channel|>"),
+    ("<|constrain|>", f"<|{_THINK_NEUTRAL_ZW}constrain|>"),
+    # Both are harmony stop tokens, so either ends the turn it lands in.
+    ("<|call|>", f"<|{_THINK_NEUTRAL_ZW}call|>"),
+    ("<|return|>", f"<|{_THINK_NEUTRAL_ZW}return|>"),
     # Zephyr / Phi-3 open turns with a bare role sentinel instead of a header pair,
     # so these ARE the turn boundary there ("<|user|>\n" + content + eos_token):
     # raw, an EOS followed by "<|assistant|>" tokenizes as a forged model turn.
@@ -152,6 +165,13 @@ _TURN_BOUNDARY_NAMES = frozenset(
         "<|end|>",
         "<|turn>",
         "<turn|>",
+        # Harmony opens every message with <|start|> and stops on <|call|> /
+        # <|return|>, so all three are turn boundaries in replayed assistant text
+        # too. Its <|channel|> / <|message|> header pair is that turn's own
+        # structural markup, so it stays, like the Gemma channel pair (#7334).
+        "<|start|>",
+        "<|call|>",
+        "<|return|>",
         # Zephyr / Phi-3 open a turn with these alone, so they are that template's
         # turn boundary and must not survive assistant replay.
         "<|user|>",
