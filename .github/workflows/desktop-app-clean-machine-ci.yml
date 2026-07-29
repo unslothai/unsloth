@@ -521,8 +521,12 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         shell: pwsh
         run: |
+          # Strawberry: windows-latest ships a MinGW toolchain (cmake, gcc) under
+          # C:\Strawberry\c\bin, which names none of the other fragments -- the verify
+          # step below caught it leaking. Same list the installer workflow scrubs.
           $drop = @('hostedtoolcache\windows\Python', 'WindowsApps', '\Git\', 'CMake',
-                    'Microsoft Visual Studio', 'BuildTools', 'LLVM', 'MSYS', 'mingw')
+                    'Microsoft Visual Studio', 'BuildTools', 'LLVM', 'MSYS', 'mingw',
+                    'Strawberry')
           # winget is an app-execution alias under ...\Local\Microsoft\WindowsApps, so the
           # WindowsApps fragment -- there to take the Store's python.exe alias away --
           # drops the OS package manager with it. winget is not developer tooling: every

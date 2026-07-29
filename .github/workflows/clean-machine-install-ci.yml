@@ -55,6 +55,12 @@ on:
       # (see the header). update-smoke cannot stand in: it starts from a preinstalled
       # Python and full developer tooling.
       - 'studio/backend/requirements/**'
+      # The overlay builds pyproject.toml and then reaches setup.sh / setup.ps1 through
+      # unsloth_cli/commands/studio.py (install.sh:4254, install.ps1:2801), so a change
+      # to either decides whether these legs install at all. No toolchain-equipped
+      # workflow covers that.
+      - 'pyproject.toml'
+      - 'unsloth_cli/commands/studio.py'
       - '.github/scripts/clean-machine-*.sh'
       - '.github/scripts/assert-llama-loads.sh'
       # The virgin Windows container lane lives in this workflow too.
@@ -76,6 +82,8 @@ on:
       - 'studio/prebuilt_core.py'
       - 'studio/node_prebuilt_pins.json'
       - 'studio/backend/requirements/**'
+      - 'pyproject.toml'
+      - 'unsloth_cli/commands/studio.py'
       - '.github/scripts/clean-machine-*.sh'
       - '.github/scripts/assert-llama-loads.sh'
       - '.github/scripts/virgin-windows-*.ps1'
@@ -422,12 +430,16 @@ jobs:
             nonroot: true
             no_transport: true
           # Non-apt: today this hard-fails at install.sh:2034. Expected; forces the
-          # decision on whether dnf/pacman/zypper get supported.
+          # decision on whether dnf/pacman/zypper get supported. Tolerate the install
+          # step, not the job, exactly as the no-transport row does: job-level
+          # continue-on-error would swallow the outcome assertion too, leaving it
+          # unable to fail the run.
           - label: fedora41
             image: fedora:41
             runner: ubuntu-latest
-            experimental: true
+            experimental: false
             overlay: true
+            tolerate_install_failure: true
 
     steps:
       - name: Describe the container's starting state
@@ -609,6 +621,10 @@ jobs:
       - name: Install (root)
         id: install_root
         if: ${{ !matrix.nonroot }}
+        # Only the rows whose failure is the expected outcome (fedora41). `outcome` is
+        # the pre-tolerance result, so every `install_root.outcome == 'success'` gate
+        # below is unaffected.
+        continue-on-error: ${{ matrix.tolerate_install_failure == true }}
         run: |
           set -o pipefail
           # Resolved here, not in `env:`, so it tracks the step's real working directory:
@@ -686,8 +702,8 @@ jobs:
           fi
           echo "::notice::known outcome: no transport and no way to elevate, refused with an actionable message"
 
-      # experimental, so without this a bootstrap outage or an unrelated early exit is
-      # tolerated like the intended diagnostic.
+      # The install step is tolerated, this is not: without it a bootstrap outage or an
+      # unrelated early exit passes as the intended diagnostic.
       - name: Assert the Fedora outcome is a known one
         if: always() && matrix.label == 'fedora41'
         run: |
@@ -747,6 +763,12 @@ jobs:
           [ -x "$VENV/bin/python" ] || { echo "::error::installer exited 0 but left no managed Python at $VENV/bin/python"; ls -la "$UNSLOTH_STUDIO_HOME" || true; exit 1; }
           "$VENV/bin/python" -V
           [ -x "$VENV/bin/unsloth" ] || { echo "::error::installer exited 0 but left no unsloth CLI at $VENV/bin/unsloth"; exit 1; }
+          # Present is not runnable, and the Unix installer drives setup.sh directly, so
+          # the console script is never exercised. Same check Windows and WSL run.
+          "$VENV/bin/unsloth" --version || {
+            echo "::error::the unsloth CLI is on disk but does not run"
+            exit 1
+          }
 
       - name: Assert llama.cpp came from the prebuilt bundle
         if: steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success'

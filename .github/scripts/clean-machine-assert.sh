@@ -168,13 +168,15 @@ for check in "$@"; do
         # step is invisible to it; the uv that fetched it lands in $HOME/.local/bin.
         # Both are exactly what Rosetta 2 hides: an x86_64 uv or managed CPython runs
         # green here and dies on the factory-fresh Mac this job stands in for.
+        # -L follows the interpreter symlink; -maxdepth keeps this a bin/ lookup and not
+        # a second walk of site-packages through the venv's lib64 link. Depth 4 covers
+        # <root>/unsloth_studio, the .venv_t5_* sidecars and the tauri layout's
+        # <root>/studio/unsloth_studio. Held in a variable so emptiness is its own
+        # failure: uv alone would otherwise satisfy the outside-$root guard below.
+        base_py="$(find -L "$root" -maxdepth 4 -type f -path '*/bin/python' 2>/dev/null)"
         _macho_targets() {
           find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null
-          # -L follows the interpreter symlink; -maxdepth keeps this a bin/ lookup and
-          # not a second walk of site-packages through the venv's lib64 link. Depth 4
-          # covers <root>/unsloth_studio, the .venv_t5_* sidecars and the tauri layout's
-          # <root>/studio/unsloth_studio.
-          find -L "$root" -maxdepth 4 -type f -path '*/bin/python' 2>/dev/null
+          [ -n "$base_py" ] && printf '%s\n' "$base_py"
           for _uv in "$HOME/.local/bin/uv" "$(command -v uv 2>/dev/null || true)"; do
             [ -n "$_uv" ] && [ -f "$_uv" ] && printf '%s\n' "$_uv"
           done
@@ -235,6 +237,8 @@ for check in "$@"; do
           # An empty scan reads exactly like a clean one, so a wrong root would pass
           # and prove nothing.
           fail "no Mach-O found under $root; the arch/signature assertion proved nothing"
+        elif [ -z "$base_py" ]; then
+          fail "no */bin/python found under $root, so the venv's base interpreter went unchecked"
         elif [ "$nout" = "0" ]; then
           # Same rule for the roots added above: install.sh always bootstraps uv into
           # $HOME/.local/bin, so zero hits outside $root means the extra scan matched
