@@ -351,8 +351,16 @@ def _fold_messages(conn, zone) -> _MessageFold:
             usage = usage if isinstance(usage, dict) else {}
             timing = timing if isinstance(timing, dict) else {}
 
-            prompt_tokens = _as_int(usage.get("promptTokens"))
-            completion_tokens = _as_int(usage.get("completionTokens"))
+            # llama.cpp reports its own counters under serverTimings when the
+            # provider sends no usage chunk. The response-details sheet already
+            # falls back to these, so the totals here have to as well.
+            server = metadata.get("serverTimings")
+            server = server if isinstance(server, dict) else {}
+
+            prompt_tokens = _as_int(usage.get("promptTokens")) or _as_int(server.get("prompt_n"))
+            completion_tokens = _as_int(usage.get("completionTokens")) or _as_int(
+                server.get("predicted_n")
+            )
             total_tokens = _as_int(usage.get("totalTokens"))
             if completion_tokens == 0:
                 # Local engines occasionally omit the usage chunk; the adapter's
@@ -364,7 +372,9 @@ def _fold_messages(conn, zone) -> _MessageFold:
             fold.prompt_tokens += prompt_tokens
             fold.completion_tokens += completion_tokens
             fold.total_tokens += total_tokens
-            fold.cached_tokens += _as_int(usage.get("cachedTokens"))
+            fold.cached_tokens += _as_int(usage.get("cachedTokens")) or _as_int(
+                server.get("cache_n")
+            )
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
@@ -440,16 +450,27 @@ def _superseded(prefix: str = "r.") -> str:
     claims the source the moment a resume starts, but ``final_step`` is only
     written on the first metric flush, so a continuation that fails before then
     would take the source's completed work down with it.
+
+    ``resumed_from_run_id`` records the lineage outright. Runs written before
+    that column existed fall back to matching ``output_dir``, which is weaker:
+    cancelling a continuation nulls its ``output_dir`` and breaks the match.
     """
     return f"""
         {prefix}resume_blocked = 1
-        AND {prefix}output_dir IS NOT NULL
         AND EXISTS (
             SELECT 1 FROM training_runs continuation
-            WHERE continuation.output_dir = {prefix}output_dir
-              AND continuation.started_at > {prefix}started_at
-              AND COALESCE(continuation.final_step, 0)
-                  >= COALESCE({prefix}final_step, 0)
+            WHERE (
+                continuation.resumed_from_run_id = {prefix}id
+                OR (
+                    continuation.resumed_from_run_id IS NULL
+                    AND {prefix}output_dir IS NOT NULL
+                    AND continuation.output_dir = {prefix}output_dir
+                    AND continuation.started_at > {prefix}started_at
+                )
+            )
+            AND continuation.id <> {prefix}id
+            AND COALESCE(continuation.final_step, 0)
+                >= COALESCE({prefix}final_step, 0)
         )
     """
 
@@ -573,7 +594,11 @@ def compute_profile_stats(
         streak = _streaks(set(fold.by_day.keys()), today)
         daily = _daily_series(fold, today, days)
 
-        peak_day = max(fold.by_day.items(), key = lambda item: item[1]["tokens"], default = None)
+        # The grid stops at today and the streaks ignore anything later, so the
+        # day-based headlines have to as well. A skewed client clock would
+        # otherwise name a peak day that is nowhere in the chart.
+        past_days = {day: bucket for day, bucket in fold.by_day.items() if day <= today}
+        peak_day = max(past_days.items(), key = lambda item: item[1]["tokens"], default = None)
         models = sorted(
             fold.models.values(), key = lambda item: (item["tokens"], item["messages"]), reverse = True
         )[:TOP_MODELS]
@@ -593,7 +618,7 @@ def compute_profile_stats(
                 "cachedTokens": fold.cached_tokens,
                 "toolCalls": fold.tool_calls,
                 "attachments": fold.attachments,
-                "activeDays": len(fold.by_day),
+                "activeDays": len(past_days),
                 "chatSeconds": round(fold.session_seconds),
             },
             "streak": streak,

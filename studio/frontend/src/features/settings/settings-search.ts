@@ -39,6 +39,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.nickname",
     // avatarShape lives inside the avatar edit popover, so it has no
     // always-rendered label for search to scroll to.
+    // The stats heading and highlight tiles render for every profile; the
+    // insight and training cards are conditional, so they stay out.
+    "settings.profile.stats.title",
+    "settings.profile.stats.lifetimeTokens",
+    "settings.profile.stats.peakTokens",
+    "settings.profile.stats.longestChat",
+    "settings.profile.stats.currentStreak",
+    "settings.profile.stats.longestStreak",
   ],
   appearance: [
     "settings.appearance.theme.label",

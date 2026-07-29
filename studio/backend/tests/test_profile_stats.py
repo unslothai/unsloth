@@ -1004,3 +1004,88 @@ def test_a_resume_that_never_logged_a_step_keeps_the_source_counters(stats_db):
     # The source's completed work is still the only work there is.
     assert training["steps"] == 10
     assert training["tokens"] == 1000
+
+
+def test_a_future_dated_message_cannot_become_the_peak_day(stats_db):
+    """The grid stops at today, so the headlines have to as well."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "past", "m", [(now - timedelta(days = 1), _metadata(100, 50))])
+        # A skewed client clock landed this one a week out.
+        _seed_thread(conn, "ahead", "m", [(now + timedelta(days = 7), _metadata(900, 900))])
+        conn.commit()
+    finally:
+        conn.close()
+
+    stats = compute_profile_stats(days = 30)
+
+    assert stats["peakDay"] is not None
+    assert stats["peakDay"]["date"] == (now - timedelta(days = 1)).date().isoformat()
+    # The future day is not an active day either.
+    assert stats["totals"]["activeDays"] == 1
+
+
+def test_cancelling_a_resumed_run_keeps_the_source_superseded(stats_db):
+    """mark_run_cancel_requested nulls output_dir, so lineage carries it."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
+            "'/runs/out', 1)",
+        )
+        # Resumed, then cancelled: output_dir cleared, counters still cumulative.
+        conn.execute(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked, "
+            "resumed_from_run_id) "
+            "VALUES ('cont', 'stopped', 'm', 'd', '{}', '2026-01-02T10:00:00', 20, 15, 300, "
+            "NULL, 1, 'src')",
+        )
+        conn.executemany(
+            "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
+            [("src", step, step * 100) for step in range(1, 11)]
+            + [("cont", step, step * 100) for step in range(11, 16)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    training = compute_profile_stats(days = 7)["training"]
+
+    # 15, not 10 + 15: the cancelled continuation still carries the shared work.
+    assert training["steps"] == 15
+    assert training["tokens"] == 1500
+
+
+def test_server_timings_stand_in_for_a_missing_usage_chunk(stats_db):
+    """llama.cpp reports its own counters; the details sheet already uses them."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at) "
+            "VALUES ('local', 'Local', 'base', 'm', ?, ?)",
+            (_ms(now), _ms(now)),
+        )
+        metadata = _metadata(0, 0)
+        del metadata["contextUsage"]
+        metadata["timing"]["tokenCount"] = 0
+        metadata["serverTimings"] = {"prompt_n": 400, "predicted_n": 120, "cache_n": 90}
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('local-a0', 'local', 'assistant', '[]', ?, ?)",
+            (json.dumps(metadata), _ms(now)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    totals = compute_profile_stats(days = 7)["totals"]
+
+    assert totals["promptTokens"] == 400
+    assert totals["completionTokens"] == 120
+    assert totals["totalTokens"] == 520
+    assert totals["cachedTokens"] == 90
