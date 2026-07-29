@@ -1,5 +1,16 @@
-# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Can bitsandbytes actually run a 4bit kernel here? A successful import does not say.
 
@@ -8,6 +19,9 @@ From 0.46 a wheel whose native library never loaded still imports and hands back
 `ALLOW_BITSANDBYTES` stays true and 4bit dies inside a kernel instead of falling back to
 16bit up front. A real handle is a ctypes function pointer and carries `restype`; a
 deferred failure is a plain Python function and does not. That is the whole test.
+
+Every probed handle has to be native, since the same verdict gates the module-scope binds
+in kernels/utils.py and one bad symbol there is the crash this exists to prevent.
 
 Decides the capability flags only, never importability - a CPU-only install is exactly
 this shape and its Python side works. A leaf module: imports nothing from unsloth
@@ -46,12 +60,14 @@ def bitsandbytes_symbols(device_type):
 
 
 def check_native_kernels(bnb, device_type):
-    """Raise when `bnb`'s native library is dead: no handle it offers is a real kernel.
+    """Raise unless every handle kernels/utils.py is about to bind is a real kernel.
 
-    Not "every handle resolves": a partially exporting library is alive, and
-    `ALLOW_BITSANDBYTES` gates 8bit as well as 4bit (loader.py clears both), so writing
-    it off would silently downgrade a working LLM.int8 request. Safe to repeat - ctypes
-    caches each handle on first lookup, so these are the ones bound later.
+    All of them, not just one: this same verdict gates the module-scope binds, and a
+    symbol that resolves for the probe but not for the bind gives back the AttributeError
+    this exists to prevent. Partial export costs 8bit too, since `ALLOW_BITSANDBYTES`
+    gates both (loader.py clears each), but a wheel missing a symbol is a shape no flag
+    can make safe - refusing it beats crashing on it. Safe to repeat: ctypes caches each
+    handle on first lookup, so these are the ones bound later.
     """
     if bnb is None:
         raise ImportError("Unsloth: `bitsandbytes` is not installed.")
@@ -66,16 +82,12 @@ def check_native_kernels(bnb, device_type):
         # 0.45.5, the floor in pyproject.toml, on a native-load failure.
         raise AttributeError("Unsloth: `bitsandbytes.functional.lib` is None.")
     for symbol in bitsandbytes_symbols(device_type):
-        try:
-            handle = getattr(lib, symbol)
-        except Exception:
-            continue  # not exported: a partial library, not a dead one
-        if hasattr(handle, "restype"):
-            return  # a ctypes function pointer, so the library really loaded
-    raise AttributeError(
-        "Unsloth: no `bitsandbytes.functional.lib` 4bit handle is a native function "
-        "pointer - the bitsandbytes native library did not load."
-    )
+        handle = getattr(lib, symbol)  # AttributeError here is itself a failed check
+        if not hasattr(handle, "restype"):
+            raise AttributeError(
+                f"Unsloth: `bitsandbytes.functional.lib.{symbol}` is not a native "
+                "function pointer - the bitsandbytes native library did not load."
+            )
 
 
 def native_kernels_ready(bnb, device_type):

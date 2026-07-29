@@ -100,9 +100,14 @@ def test_a_lib_that_never_loaded_is_not_ready():
     assert probe.native_kernels_ready(_fake_bnb(None), "cuda") is False
 
 
-def test_a_partially_exporting_library_stays_ready():
-    """``ALLOW_BITSANDBYTES`` gates 8bit as well as 4bit, so writing a wheel off over
-    one missing symbol would silently downgrade a working LLM.int8 request."""
+def test_a_partially_exporting_library_is_not_ready():
+    """Every probed handle has to be native, not just one.
+
+    The same verdict gates the module-scope binds, so a library that resolves one symbol
+    and not another would pass the probe and then raise `AttributeError` at the bind it
+    was meant to prevent. It costs 8bit too (`ALLOW_BITSANDBYTES` gates both), but a
+    wheel missing a symbol is a shape no flag makes safe.
+    """
 
     class _MissingOne(_RealHandleLib):
         def __getattr__(self, name):
@@ -111,7 +116,20 @@ def test_a_partially_exporting_library_stays_ready():
             return super().__getattr__(name)
 
     probe = _load_probe()
-    assert probe.native_kernels_ready(_fake_bnb(_MissingOne()), "cuda") is True
+    assert probe.native_kernels_ready(_fake_bnb(_MissingOne()), "cuda") is False
+
+
+def test_one_dead_handle_among_live_ones_is_not_ready():
+    """The realistic partial shape: the library loaded but one symbol is a closure."""
+
+    class _OneDeferred(_RealHandleLib):
+        def __getattr__(self, name):
+            if name == "cdequantize_blockwise_bf16_nf4":
+                return lambda *a, **k: None
+            return super().__getattr__(name)
+
+    probe = _load_probe()
+    assert probe.native_kernels_ready(_fake_bnb(_OneDeferred()), "cuda") is False
 
 
 def test_absent_bitsandbytes_is_not_ready():
