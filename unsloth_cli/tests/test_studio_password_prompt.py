@@ -626,6 +626,12 @@ def test_studio_default_in_venv_broken_backend_exits_before_stripping_bootstrap(
 
     # Pretend we are already inside the studio venv, with a broken backend.
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "unsloth_studio"))
+    # A built dist is not present in a fresh clone. The missing-frontend gate
+    # runs first and has its own test below; stub it so this one reaches the
+    # backend check it is actually about.
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
 
     def _boom():
         raise ImportError("cannot import backend run.py")

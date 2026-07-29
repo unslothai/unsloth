@@ -606,8 +606,8 @@ def test_studio_default_exposes_parallel_option():
     assert "--parallel" in decls
     assert "--n-parallel" in decls
     assert (
-        getattr(opt, "default", None) == 1
-    ), "studio_default --parallel must default to 1 (pre-PR); `run` is 4"
+        getattr(opt, "default", None) == studio_mod._PARALLEL_DEFAULT_PLAIN
+    ), "studio_default --parallel must use _PARALLEL_DEFAULT_PLAIN"
     assert getattr(opt, "min", None) == 1
     assert getattr(opt, "max", None) == 64
 
@@ -679,7 +679,6 @@ def test_api_only_option_is_registered():
     "extra,present",
     [
         (["--api-only"], True),
-        (["--secure", "--api-only"], True),  # secure headless path
         ([], False),
     ],
 )
@@ -689,6 +688,21 @@ def test_reexec_forwards_api_only(monkeypatch, extra, present):
     assert len(captured) == 1, result.output
     argv = captured[0]["argv"]
     assert ("--api-only" in argv) is present, argv
+
+
+def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
+    """`--secure --api-only` used to re-exec; the pre-exposure gate now refuses
+    it, because api-only has no login page and the bootstrap deadline does not
+    apply, so the seeded password could never be changed."""
+    studio_mod = _load_run_command()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
+
+    assert captured == [], captured
+    assert result.exit_code != 0
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "default admin password was never changed" in combined.lower()
 
 
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])

@@ -261,6 +261,11 @@ def test_run_in_venv_passes_secure_and_forces_host(monkeypatch, tmp_path):
 
     fake_venv = tmp_path / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    # A built dist is not present in a fresh clone, and without it the public
+    # launch gate exits before run_server is ever reached.
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
 
     from unsloth_cli import _tool_policy as _tp_mod
 
