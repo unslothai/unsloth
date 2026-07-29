@@ -690,7 +690,7 @@ def test_parallel_slots_setting_wired_end_to_end():
     signature = _read("features/model-picker/model-config/config-signature.ts")
     assert 'config.nParallel ?? "",' in signature
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}" in sidebar
+    assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
 
 
 def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
@@ -1429,9 +1429,13 @@ def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
     running with something else, which Apply then wrote back over it."""
     view = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
     assert "key={modelConfigInstanceKey( target.id, target.ggufVariant, loadedConfig, )}" in view
-    # Same key the sidebar entry uses; that parity is the point.
+    # Same key the sidebar entry uses; that parity is the point. It keys by the
+    # settings variant, which is the loader's filename label nulled out for a
+    # standalone .gguf, so both surfaces name one config per file.
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}" in sidebar
+    assert (
+        "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
+    )
 
     signature = " ".join(_read("features/model-picker/model-config/config-signature.ts").split())
     # "No live config yet" has to be its own value: that transition is exactly
@@ -1490,3 +1494,39 @@ def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
     assert (
         "self._hf_variant = _extract_quant_label(gguf_path)" in backend
     ), "the derived label this accounts for"
+
+
+def test_a_standalone_gguf_has_one_settings_identity_everywhere():
+    """A loose .gguf has no quant to choose between, but llama_cpp falls back to
+    _extract_quant_label(gguf_path) when a load names no variant, and /status
+    echoes that as gguf_variant. The sidebar took it straight from the store, so
+    an edit there landed under "<path>:Q4_K_M" while the Hub row, the picker and
+    the backfill all wrote the bare path. The auto-switch lookup reads the bare
+    path BEFORE "<path>:<file_variant>", so the sidebar's entry was never the one
+    an API load applied: the user edited settings that could not take effect."""
+    sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
+    # Nulled for the settings identity, and used for every field that keys it.
+    assert (
+        "const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;"
+        in sidebar
+    )
+    assert "ggufVariant: settingsGgufVariant," in sidebar
+    assert "ggufVariant: settingsGgufVariant ?? undefined," in sidebar
+    # The label still shows the quant; only the identity drops it.
+    assert "displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf," in sidebar
+
+    # One rule, one definition: the Hub row applies the same test.
+    identity = _read("features/hub/lib/model-identity.ts")
+    assert "export function isStandaloneGgufPath(" in identity
+    assert 'modelId.toLowerCase().endsWith(".gguf")' in identity
+    row_identity = _read("features/hub/inventory/settings-identity.ts")
+    assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
+
+    # The precedence that makes the bare path the one that wins.
+    route = (WORKDIR / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding = "utf-8",
+    )
+    assert 'f"{target_id}:{file_variant}" if file_variant else None,' in route
+    bare = route.index("\n                            target_id,\n")
+    labelled = route.index('f"{target_id}:{file_variant}"')
+    assert bare < labelled, "the bare path must be read before the filename label"

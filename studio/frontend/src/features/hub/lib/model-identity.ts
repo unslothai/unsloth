@@ -188,3 +188,13 @@ const NATIVE_FILE_LABEL_RE = /^[^/\\]+\.gguf$/i;
 export function isNativeFileLabel(modelId: string | null | undefined): boolean {
   return modelId != null && NATIVE_FILE_LABEL_RE.test(modelId);
 }
+
+// A scanned standalone .gguf, keyed by its on-disk path. Its settings identity
+// carries no variant: it has no quant to choose between, while the loader and the
+// inventory both label it from its filename, so adopting that label would key one
+// file's config two ways. settings-identity.ts applies the same rule to a Hub row.
+export function isStandaloneGgufPath(
+  modelId: string | null | undefined,
+): boolean {
+  return modelId != null && modelId.toLowerCase().endsWith(".gguf");
+}

@@ -12,6 +12,7 @@ import {
 export {
   isNativeFileLabel,
   isOllamaLinkPath,
+  isStandaloneGgufPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "@/features/hub/lib/model-identity";

@@ -3,7 +3,10 @@
 
 import { useMemo } from "react";
 import { modelConfigInstanceKey } from "../model-config/config-signature";
-import { isOllamaLinkPath } from "../model-config/model-identity";
+import {
+  isOllamaLinkPath,
+  isStandaloneGgufPath,
+} from "../model-config/model-identity";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -38,12 +41,20 @@ export function SidebarModelConfig({
   loadedConfig,
   onReload,
 }: SidebarModelConfigProps) {
+  // A standalone .gguf has no quant to choose between, but the loader labels it
+  // from its filename (llama_cpp falls back to _extract_quant_label when the load
+  // named no variant) and /status echoes that as gguf_variant. Keying settings by
+  // it would write "<path>:Q4_K_M" while the Hub row, the picker and the backfill
+  // all use the bare path, so the same file would carry two configs. The
+  // auto-switch lookup reads the bare path first, so the sidebar's entry would
+  // never be the one an API load applies. Same rule as settingsGgufVariantForRow.
+  const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;
   const target = useMemo<ModelPickTarget>(() => {
     const leaf = leafName(modelId);
     return {
       id: modelId,
       displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
-      ggufVariant,
+      ggufVariant: settingsGgufVariant,
       isGguf,
       // An Ollama blob loads through a link dir the auto-switch resolver skips,
       // so its settings must not be mirrored as if the API could load it.
@@ -51,17 +62,17 @@ export function SidebarModelConfig({
       meta: {
         source: "local",
         isLora: false,
-        ggufVariant: ggufVariant ?? undefined,
+        ggufVariant: settingsGgufVariant ?? undefined,
         isGguf,
         isDownloaded: true,
         contextLength: nativeContextLength,
       },
     };
-  }, [modelId, ggufVariant, isGguf, nativeContextLength]);
+  }, [modelId, ggufVariant, settingsGgufVariant, isGguf, nativeContextLength]);
 
   return (
     <ModelConfigPage
-      key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}
+      key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}
       target={target}
       onRun={onReload}
       loadedConfig={loadedConfig}
