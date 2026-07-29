@@ -349,6 +349,36 @@ def neutralize_control_markup_deep(
     return value
 
 
+def _neutralize_tool_entry(tool):
+    """Neutralize one tool declaration, keeping its own ``name`` byte-exact.
+
+    A tool's name is the identifier the CLIENT dispatches on, not prose: the
+    model echoes it back in the tool call and nothing maps it back before the
+    call is returned, so a rewritten ``search<tool|>`` reaches the client as
+    ``search<U+2060tool|>`` and matches no registered tool (#7334). Preserved
+    like a property key, which also hands the name to
+    :func:`schema_control_markup_conflict`, so one carrying a turn sentinel is
+    refused instead of silently renamed. Covers both spellings: OpenAI's
+    ``function.name`` and Anthropic's top-level ``name``.
+    """
+    if not isinstance(tool, dict):
+        return neutralize_control_markup_deep(tool, schema = True)
+    changed = False
+    out = {}
+    for key, item in tool.items():
+        if key == "name" and isinstance(item, str):
+            out[key] = item
+            continue
+        if key == "function" and isinstance(item, dict):
+            new_item = _neutralize_tool_entry(item)
+        else:
+            new_item = neutralize_control_markup_deep(item, schema = True)
+        if new_item is not item and new_item != item:
+            changed = True
+        out[key] = new_item
+    return out if changed else tool
+
+
 def neutralize_tools_control_markup(tools):
     """Neutralize think / ChatML control markers in client tool schemas (#7066).
 
@@ -365,11 +395,21 @@ def neutralize_tools_control_markup(tools):
     rewriting one makes the decoder emit the rewritten value and nothing maps it
     back before the call reaches the client. Prose keeps its rewrite because a
     ``</think>`` in the PROMPT is harmless anyway - the think parser reads model
-    OUTPUT - while a turn sentinel there is not (#7334).
+    OUTPUT - while a turn sentinel there is not (#7334). The tool's own name is
+    an identifier too - see :func:`_neutralize_tool_entry`.
     """
     if not tools:
         return tools
-    return neutralize_control_markup_deep(tools, schema = True)
+    if not isinstance(tools, list):
+        return neutralize_control_markup_deep(tools, schema = True)
+    changed = False
+    out = []
+    for tool in tools:
+        new_tool = _neutralize_tool_entry(tool)
+        if new_tool is not tool and new_tool != tool:
+            changed = True
+        out.append(new_tool)
+    return out if changed else tools
 
 
 # A think tag in a schema is inert (see _STRUCTURAL_MARKERS) and must not fail a
@@ -616,8 +656,11 @@ def neutralize_message_content_for_role(role: Optional[str], content):
 
 
 # Replayed thoughts: free text the template wraps in its own thinking delimiters,
-# never structural markup itself (#7066).
-_ASSISTANT_REASONING_FIELDS = ("reasoning_content", "reasoning")
+# never structural markup itself (#7066). ``thinking`` is the Harmony / gpt-oss
+# spelling, spliced between <|channel|>analysis<|message|> and <|end|>
+# (unsloth/chat_templates.py gptoss_template), and /inference/generate/stream
+# takes raw message dicts, so it reaches the renderer verbatim (#7334).
+_ASSISTANT_REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking")
 
 
 def neutralize_control_markup_in_messages(messages: list) -> list:
