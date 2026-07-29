@@ -320,6 +320,10 @@ class _MarkdownRenderer(HTMLParser):
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
         self.scope_dropped: list[int] = []
+        # Heading text per segment: role="heading", <hgroup> and linked <h1> render
+        # as ordinary prose, so ATX reparsing alone cannot keep them out of the gate.
+        self._seg_heading_texts: list[str] = []
+        self.scope_heading_prose: list[int] = []
         # Open-tag indices of headings, unwound with _hidden_marks.
         self._heading_marks: list[int] = []
 
@@ -331,6 +335,7 @@ class _MarkdownRenderer(HTMLParser):
         # A link wrapping a heading emits after the heading mark is gone, so the
         # tee is told to treat that one emit as heading output.
         self._link_had_heading: bool = False
+        self._link_heading_parts: list[str] = []
         self._emit_as_heading: bool = False
         self._replaying: bool = False
         # Text under the open <a>, credited only at </a>: an <a> left open adopts
@@ -392,6 +397,12 @@ class _MarkdownRenderer(HTMLParser):
         if frame is not None and as_heading:
             frame.heading_parts.append(text)
             frame.heading_chars += len(text.strip())
+        # Tallied for the eligibility gate, independent of any header frame. Text
+        # inside a link waits for _finish_link so the formatted form counts once.
+        if not self._replaying and (
+            (self._heading_marks and not self._in_link) or self._emit_as_heading
+        ):
+            self._seg_heading_texts.append(text)
         nested_open = self._nested_buffer_open(frame) if frame is not None else False
         # Tally once, on the emit that reaches the frame: counting text going INTO a nested buffer
         # and again when that buffer flushes doubled it, so a kept header stripped once quoted.
@@ -401,6 +412,8 @@ class _MarkdownRenderer(HTMLParser):
             return
         if self._in_link:
             self._link_text_parts.append(text)
+            if self._heading_marks:
+                self._link_heading_parts.append(text)
         elif self._in_cell:
             self._cell_parts.append(text)
         elif self._in_pre:
@@ -411,6 +424,11 @@ class _MarkdownRenderer(HTMLParser):
             self._out.append(text)
 
     # ------------------------------------------------------------------
+    def _seg_heading_prose(self) -> int:
+        """Heading characters in this segment that the gate would otherwise read as
+        body prose. ATX headings carry their own ``#`` here and so score zero."""
+        return _non_heading_chars("".join(self._seg_heading_texts))
+
     def _emit_replay(self, text: str) -> None:
         """Emit a flushed buffer's own output, which must not be teed as a heading
         a second time (the raw text was teed when it entered the buffer)."""
@@ -462,10 +480,15 @@ class _MarkdownRenderer(HTMLParser):
     # Link text helper: normalize whitespace so block content in <a> stays single-line.
     def _finish_link(self) -> None:
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
+        heading_text = re.sub(r"\s+", " ", "".join(self._link_heading_parts)).strip()
         href = self._link_href or ""
         self._in_link = False
         self._link_text_parts = []
-        self._emit_as_heading = self._link_had_heading
+        self._link_heading_parts = []
+        # An anchor wrapping a heading AND other content is furniture carrying a
+        # title: tee the title alone, or the whole nav rides out as a heading.
+        partial = bool(heading_text) and heading_text != text
+        self._emit_as_heading = self._link_had_heading and not partial
         self._link_had_heading = False
         # Recovery paths reach here without </a>, so drop the uncredited tally.
         self._link_header_chars = 0
@@ -474,6 +497,10 @@ class _MarkdownRenderer(HTMLParser):
         elif text:
             self._emit(text)
         self._emit_as_heading = False
+        if partial and self._header_stack:
+            frame = self._header_stack[-1]
+            frame.heading_parts.append(heading_text + "\n\n")
+            frame.heading_chars += len(heading_text)
 
     # ------------------------------------------------------------------
     # Tag handlers
@@ -636,6 +663,7 @@ class _MarkdownRenderer(HTMLParser):
             if self._scope_depth == 0:
                 self._scope_seg_start = len(self._out)
                 self._seg_dropped_start = self._dropped_chars
+                self._seg_heading_texts = []
             self._scope_depth += 1
         if self._hidden_marks:
             return False
@@ -672,6 +700,7 @@ class _MarkdownRenderer(HTMLParser):
             if self._scope_depth == 0 and self._scope_seg_start is not None:
                 self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
                 self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
+                self.scope_heading_prose.append(self._seg_heading_prose())
                 self._scope_seg_start = None
         return not suppressed
 
@@ -704,6 +733,7 @@ class _MarkdownRenderer(HTMLParser):
         elif tag == "a":
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
+            self._link_heading_parts = []
             self._in_link = True
             self._link_seq += 1
             self._link_header_chars = 0
@@ -939,6 +969,7 @@ class _MarkdownRenderer(HTMLParser):
         if self._scope_seg_start is not None:
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
             self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
+            self.scope_heading_prose.append(self._seg_heading_prose())
             self._scope_seg_start = None
             self._scope_depth = 0
 
@@ -948,18 +979,19 @@ def _cleanup(text: str) -> str:
     """Normalize whitespace and blank lines, preserving fenced code blocks verbatim."""
     lines = text.split("\n")
     out: list[str] = []
-    in_fence = False
+    fence = 0
     blank_run = 0
 
     for line in lines:
         stripped = line.rstrip(" \t")
-        if stripped.startswith("```"):
-            in_fence = not in_fence
+        moved = _fence_state(stripped, fence)
+        if moved != fence:
+            fence = moved
             blank_run = 0
             out.append(stripped)
             continue
 
-        if in_fence:
+        if fence:
             out.append(line)
             continue
 
@@ -1021,19 +1053,32 @@ def _line_is_boilerplate(line: str) -> bool:
     return bool(segments) and all(segment in _BOILERPLATE_NORMALIZED for segment in segments)
 
 
+def _fence_state(line: str, fence: int) -> int:
+    """Fence width after *line*, 0 outside a block. Every pass over rendered text
+    must agree with ``_fence_for``: a block opened with a longer fence is closed
+    only by a run at least as long, so a literal ``` inside it is content."""
+    stripped = line.strip()
+    if len(stripped) < 3 or stripped.count("`") != len(stripped):
+        return fence
+    if not fence:
+        return len(stripped)
+    return 0 if len(stripped) >= fence else fence
+
+
 def _strip_boilerplate_lines(text: str) -> str:
     """Drop short lines that consist entirely of known page-furniture phrases.
 
     Fenced code blocks are preserved verbatim: boilerplate never renders
     inside ``<pre>``, while READMEs legitimately quote error strings."""
     out: list[str] = []
-    in_fence = False
+    fence = 0
     for line in text.split("\n"):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
+        moved = _fence_state(line, fence)
+        if moved != fence:
+            fence = moved
             out.append(line)
             continue
-        if not in_fence and len(line) <= _BOILERPLATE_MAX_LINE_CHARS and _line_is_boilerplate(line):
+        if not fence and len(line) <= _BOILERPLATE_MAX_LINE_CHARS and _line_is_boilerplate(line):
             continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.
@@ -1070,11 +1115,13 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     gate on deleted bytes and suppress the ``<main>`` holding the real page."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
     dropped = renderer.scope_dropped
+    heading_prose = renderer.scope_heading_prose
     best_len = 0
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        if _non_heading_chars(rendered) < _MIN_MAIN_CONTENT_CHARS:
+        prose = _non_heading_chars(rendered) - heading_prose[i]
+        if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
         size = len(rendered) + dropped[i]
         if size > best_len:
@@ -1119,15 +1166,10 @@ def _non_heading_chars(text: str) -> int:
     total, fence = 0, 0
     for line in text.split("\n"):
         stripped = line.strip()
-        # Only a run of backticks at least as long as the opener closes the block,
-        # so a literal ``` line in the code cannot end it early.
-        if len(stripped) >= 3 and stripped.count("`") == len(stripped):
-            if not fence:
-                fence = len(stripped)
-                continue
-            if len(stripped) >= fence:
-                fence = 0
-                continue
+        moved = _fence_state(line, fence)
+        if moved != fence:
+            fence = moved
+            continue
         if stripped and (fence or not _is_heading_line(line)):
             total += len(line) if fence else _visible_len(line)
     return total
@@ -1161,7 +1203,12 @@ def _visible_len(line: str) -> int:
                 depth += (char == "(") - (char == ")")
                 j += 1
             if depth:
-                break
+                # Never balances, so this is not a link any reader would resolve;
+                # the bytes show as text. Count them rather than dropping the
+                # prose that follows on the same line.
+                total += 1
+                i += 1
+                continue
             i = j
             continue
         total += 1

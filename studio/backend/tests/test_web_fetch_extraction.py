@@ -1869,6 +1869,57 @@ def test_fenced_code_counts_as_retained_content():
 _FENCE = "`" * 3
 
 
+def test_post_processing_respects_the_widened_fence():
+    # _cleanup and _strip_boilerplate_lines toggled on any ``` line, so the
+    # literal one closed the block and its code was cleaned and de-boilerplated.
+    code = "<pre>%s\nskip to content\n\nreal code line   \nmore code</pre>" % _FENCE
+    body = "<article>%s<p>%s</p></article>" % (code, "Body text here. " * 20)
+    out = html_to_markdown(f"<body><main>{body}</main></body>", main_content = True)
+    assert "skip to content" in out
+    assert "skip to content\n\nreal code line" in out
+    assert "real code line   " in out
+
+
+def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
+    # /docs/(draft never balances, so it is not a link any reader resolves; the
+    # scan must not discard the prose sharing that rendered line.
+    article = '<article><p><a href="/docs/(draft">Doc</a> %s</p></article>' % (
+        "Substantial article prose continues here. " * 6,
+    )
+    sibling = "<article><p>%s</p></article>" % ("Sibling teaser text. " * 12)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "Substantial article prose continues here." in out
+    assert "Sibling teaser" not in out
+
+
+def test_structural_headings_do_not_satisfy_the_eligibility_gate():
+    # role="heading" renders as plain prose, so reparsing ATX could not see it and
+    # a header-only card cleared the gate on its title plus dropped-list credit.
+    card = '<article><header><div role="heading">%s</div><ul>%s</ul></header></article>' % (
+        "Card Title Words " * 14,
+        _interlanguage_list(300),
+    )
+    real = "<article><p>%s</p></article>" % ("The real article body text here. " * 20)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "The real article body text here." in out
+    assert "Card Title Words" not in out
+
+
+def test_anchor_wrapping_a_heading_preserves_only_the_heading():
+    # <a><h1>Title</h1>...nav...</a> is furniture carrying a title; teeing the
+    # whole anchor returned 14k of navigation ahead of the article.
+    bulk = " ".join("NavWord%04d" % i for i in range(1200))
+    body = '<main><header><a href="/home"><h1>Title</h1>%s</a><ul>%s</ul></header><p>%s</p></main>' % (
+        bulk,
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Title" in out
+    assert "NavWord0000" not in out
+    assert out.index("Article body.") < 16000
+
+
 def test_link_destination_scan_balances_parentheses():
     # A destination may legally hold parens, so stopping at the first ) scored
     # the rest of the URL as prose and handed the scope to a link-only card.
