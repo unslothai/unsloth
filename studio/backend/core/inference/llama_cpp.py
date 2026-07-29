@@ -550,15 +550,22 @@ def _hf_offline_if_unreachable():
     mid-operation and drop this request back onto the retry path.
     """
     try:
-        from utils.utils import force_hf_offline, force_hf_offline_active
+        from utils.utils import force_hf_offline, force_hf_offline_active, hf_env_offline
     except Exception:
         yield False
         return
 
     ours = force_hf_offline_active()
-    # A user-set offline var is theirs: don't probe it, don't touch it.
+    # A user-set HF_HUB_OFFLINE is theirs: don't probe it, don't touch it. Membership, not
+    # truthiness, so HF_HUB_OFFLINE=0 stays an explicit "stay online" opt-out.
     if "HF_HUB_OFFLINE" in os.environ and not ours:
         yield False
+        return
+    # TRANSFORMERS_OFFLINE alone still asks for offline, and the hub does not read it.
+    # Honour it directly: probing would put network traffic in an explicitly offline process.
+    if not ours and hf_env_offline():
+        with force_hf_offline():
+            yield True
         return
     # Already forced by an in-flight guard: reuse that verdict and hold a reference.
     if not ours and not _hf_unreachable():

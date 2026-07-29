@@ -1102,6 +1102,147 @@ class TestProxyOnlyEgress:
         assert hf_proxy_configured() is False
 
 
+class TestAllProxyIsHonoured:
+    """The Hub client (requests) honours all_proxy but urllib does not, so a proxy-only
+    setup would fail the probe's direct lookup and be called offline while real hub calls
+    succeed. Resolution must match requests' select_proxy."""
+
+    @pytest.fixture(autouse = True)
+    def _clean_proxy_env(self, monkeypatch):
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                    "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            monkeypatch.delenv(key, raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+
+    def test_all_proxy_alone_resolves(self, monkeypatch):
+        from utils.utils import hf_proxy_configured, hf_proxy_for_endpoint
+
+        monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
+        assert hf_proxy_for_endpoint() == "http://proxy.internal:3128"
+        assert hf_proxy_configured() is True
+
+    def test_scheme_specific_beats_all_proxy(self, monkeypatch):
+        from utils.utils import hf_proxy_for_endpoint
+
+        monkeypatch.setenv("ALL_PROXY", "http://catchall:3128")
+        monkeypatch.setenv("HTTPS_PROXY", "http://specific:3128")
+        assert hf_proxy_for_endpoint() == "http://specific:3128"
+
+    def test_no_proxy_wins_over_all_proxy(self, monkeypatch):
+        from utils.utils import hf_proxy_for_endpoint
+
+        monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
+        monkeypatch.setenv("NO_PROXY", "huggingface.co")
+        assert hf_proxy_for_endpoint() is None
+
+    def test_direct_egress_resolves_to_none(self):
+        from utils.utils import hf_proxy_for_endpoint
+
+        assert hf_proxy_for_endpoint() is None
+
+    def test_connect_target_follows_all_proxy(self, monkeypatch):
+        from utils.utils import hf_connect_target
+
+        monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
+        assert hf_connect_target() == ("proxy.internal", 3128)
+
+    def test_probe_opens_through_all_proxy(self, monkeypatch):
+        """The HEAD probe must be issued through the proxy, not attempted directly."""
+        import urllib.request
+
+        from utils.transformers_version import hf_endpoint_unreachable
+
+        monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
+        seen = {}
+        real_build = urllib.request.build_opener
+
+        def _spy(*handlers):
+            for h in handlers:
+                if isinstance(h, urllib.request.ProxyHandler):
+                    seen["proxies"] = dict(h.proxies)
+            opener = real_build(*handlers)
+            opener.open = lambda req, timeout = None: _Resp()  # noqa: ARG005
+            return opener
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(urllib.request, "build_opener", _spy)
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda *a, **k: pytest.fail("probe bypassed the proxy"),
+        )
+        assert hf_endpoint_unreachable(timeout = 1) is False
+        assert seen["proxies"] == {"https": "http://proxy.internal:3128"}
+
+    def test_probe_stays_direct_without_a_proxy(self, monkeypatch):
+        import urllib.request
+
+        from utils.transformers_version import hf_endpoint_unreachable
+
+        monkeypatch.setattr(
+            urllib.request, "build_opener",
+            lambda *a, **k: pytest.fail("built a proxy opener with no proxy configured"),
+        )
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+        assert hf_endpoint_unreachable(timeout = 1) is False
+
+
+class TestEnvOfflineSkipsTheProbe:
+    """An explicitly offline process must emit no network traffic. The hub reads only
+    HF_HUB_OFFLINE, so TRANSFORMERS_OFFLINE alone still has to engage the guard."""
+
+    def test_transformers_offline_engages_without_probing(self, monkeypatch):
+        llama_cpp = pytest.importorskip("core.inference.llama_cpp")
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+        monkeypatch.setattr(
+            llama_cpp, "_hf_unreachable",
+            lambda: pytest.fail("probed the network in an explicitly offline process"),
+        )
+        with llama_cpp._hf_offline_if_unreachable() as engaged:
+            assert engaged is True
+            assert hf_constants.HF_HUB_OFFLINE is True
+
+    def test_hub_offline_zero_still_opts_out(self, monkeypatch):
+        """HF_HUB_OFFLINE=0 is an explicit "stay online" and outranks TRANSFORMERS_OFFLINE."""
+        llama_cpp = pytest.importorskip("core.inference.llama_cpp")
+
+        monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+        monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+        monkeypatch.setattr(
+            llama_cpp, "_hf_unreachable", lambda: pytest.fail("probed despite an opt-out"),
+        )
+        with llama_cpp._hf_offline_if_unreachable() as engaged:
+            assert engaged is False
+
+    def test_falsey_transformers_offline_still_probes(self, monkeypatch):
+        llama_cpp = pytest.importorskip("core.inference.llama_cpp")
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
+        calls = []
+        monkeypatch.setattr(
+            llama_cpp, "_hf_unreachable", lambda: (calls.append(1), False)[1],
+        )
+        with llama_cpp._hf_offline_if_unreachable() as engaged:
+            assert engaged is False
+        assert calls == [1]
+
+
 class TestSlowLinkIsNotOffline:
     """A slow but reachable endpoint must not be quarantined: that would fail an uncached
     load that would otherwise merely be slow. A blackholed route must still be offline."""

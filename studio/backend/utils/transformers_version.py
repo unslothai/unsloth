@@ -69,12 +69,13 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
     unreachable. A clean socket timeout is resolved with a TCP connect, so a slow-but-live
     endpoint is not mistaken for no egress (a hang past the deadline still counts as
     unreachable, since the real hub calls would hang too).
-    urllib natively honors *_PROXY / NO_PROXY, so this verifies real egress
+    Egress goes through the same proxy the Hub client would use, so this verifies real egress
     (the proxy can reach HF), not just that the proxy is up. No ML imports, so it is safe to
     call before transformers version activation. Mirrors the probe in export._hf_offline."""
     import ssl
     import threading
     import urllib.error
+    import urllib.parse
     import urllib.request
 
     # Shared normaliser, so an empty or whitespace HF_ENDPOINT falls back to the default
@@ -87,12 +88,27 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
         if "://" not in endpoint:
             endpoint = "https://" + endpoint
 
+    # urllib ignores all_proxy, which the Hub client (requests) honours, so a proxy-only
+    # setup would fail this probe's direct lookup and be called offline while the real hub
+    # calls succeed. Resolve the proxy the same way and pin it to the endpoint's scheme.
+    # None means direct, including when NO_PROXY covers the host.
+    opener = None
+    try:
+        from utils.utils import hf_proxy_for_endpoint
+        proxy = hf_proxy_for_endpoint(endpoint)
+        if proxy:
+            scheme = urllib.parse.urlparse(endpoint).scheme or "https"
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
+    except Exception:
+        opener = None
+    _open = opener.open if opener is not None else urllib.request.urlopen
+
     result = {"online": False, "timed_out": False}
 
     def _probe():
         try:
             req = urllib.request.Request(endpoint, method = "HEAD")
-            with urllib.request.urlopen(req, timeout = timeout):
+            with _open(req, timeout = timeout):
                 result["online"] = True
         except urllib.error.HTTPError as exc:
             # The server/proxy answered, so we have egress. A gateway error usually means

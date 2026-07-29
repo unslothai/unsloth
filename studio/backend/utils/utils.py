@@ -52,30 +52,40 @@ def hf_endpoint_host() -> str:
         return "huggingface.co"
 
 
+def hf_proxy_for_endpoint(endpoint: Optional[str] = None) -> Optional[str]:
+    """Proxy URL that applies to the endpoint, or None for direct egress.
+
+    Resolves like requests' select_proxy (the Hub client): scheme-specific first, then the
+    all_proxy catch-all, and None when NO_PROXY covers the host. urllib only honours the
+    scheme-specific ones, so callers must apply this rather than rely on urlopen's default.
+    """
+    try:
+        import urllib.request
+        from urllib.parse import urlparse
+
+        parsed = urlparse(endpoint or hf_endpoint_url())
+        proxies = urllib.request.getproxies()
+        proxy = proxies.get(parsed.scheme or "https") or proxies.get("all")
+        if not proxy:
+            return None
+        host = parsed.hostname or ""
+        try:
+            if host and urllib.request.proxy_bypass(host):
+                return None
+        except Exception:
+            pass
+        return proxy
+    except Exception:
+        return None
+
+
 def hf_proxy_configured() -> bool:
     """True when egress to the endpoint goes through a proxy.
 
     The proxy resolves the hub host, so local DNS proves nothing about reachability and
     must not be used to declare the hub offline.
     """
-    try:
-        import urllib.request
-        from urllib.parse import urlparse
-
-        url = hf_endpoint_url()
-        proxies = urllib.request.getproxies()
-        scheme = urlparse(url).scheme or "https"
-        if scheme not in proxies and "all" not in proxies:
-            return False
-        host = urlparse(url).hostname or ""
-        try:
-            if host and urllib.request.proxy_bypass(host):
-                return False
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
+    return hf_proxy_for_endpoint() is not None
 
 
 def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
@@ -110,12 +120,8 @@ def hf_connect_target(endpoint: Optional[str] = None):
     parsed = urlparse(url)
     default_port = 443 if parsed.scheme == "https" else 80
     try:
-        import urllib.request
-
-        proxies = urllib.request.getproxies()
-        proxy = proxies.get(parsed.scheme) or proxies.get("all")
-        host = parsed.hostname or ""
-        if proxy and not (host and urllib.request.proxy_bypass(host)):
+        proxy = hf_proxy_for_endpoint(url)
+        if proxy:
             p = urlparse(proxy if "://" in proxy else "http://" + proxy)
             return p.hostname, p.port or 80
     except Exception:
