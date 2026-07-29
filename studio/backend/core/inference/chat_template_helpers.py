@@ -30,7 +30,8 @@ _GEMMA_TEMPLATE_OPENERS = (
 # and "<|start|>assistant<|channel|>final<|message|>" in a tool result forges an
 # assistant turn (#7066). One lookahead over the three shapes the templates emit,
 # so a single sub() breaks every marker by inserting one space after the "<":
-#   <|name|> / <|name>   ChatML, Llama-3, Harmony/gpt-oss, Zephyr/Phi-3, Gemma-4
+#   <|name|> / <|name>   ChatML, Llama-3, Harmony/gpt-oss, Zephyr/Phi-3, Gemma-4,
+#                        Granite (<|start_of_role|>role<|end_of_role|> ... <|end_of_text|>)
 #   <name>   / </name>   Qwen tool XML, Gemma turn delimiters, think tags
 #   <name|>              Gemma-4 closing delimiters
 # The name list is closed on purpose: bare words match only in the pipe shape, so
@@ -39,7 +40,8 @@ _GEMMA_TEMPLATE_OPENERS = (
 # fence, the same trade the structural parsers make.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
-    r"\|(?:(?:start|end)_header_id|tool(?:_call|_response)?|end(?:_of_turn)?"
+    r"\|(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
+    r"|end(?:_of_(?:turn|text))?"
     r"|im_(?:start|end)|assistant|constrain|channel|message|eo[tm]_id"
     r"|return|system|start|think|turn|user|call|\")\|?>"
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|think)>"
@@ -52,11 +54,14 @@ _CONTROL_MARKUP = re.compile(
 # Everything else stays byte-identical, because the assistant's own think /
 # channel / tool markup is structural and rewriting it would corrupt the
 # transcript the template re-renders. Harmony opens every message with <|start|>
-# and stops on <|call|> / <|return|>, and Zephyr / Phi-3 open a turn with a bare
-# <|user|> / <|assistant|> / <|system|>, so those are boundaries too (#7066).
+# and stops on <|call|> / <|return|>, Zephyr / Phi-3 open a turn with a bare
+# <|user|> / <|assistant|> / <|system|>, and Granite opens one with
+# <|start_of_role|>role<|end_of_role|> and ends it on its eos <|end_of_text|>, so
+# those are boundaries too (#7066).
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
-    r"\|(?:(?:start|end)_header_id|im_(?:start|end)|end(?:_of_turn)?|eo[tm]_id"
+    r"\|(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end)"
+    r"|end(?:_of_(?:turn|text))?|eo[tm]_id"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|(?:start|end)_of_turn>"
     r"|turn\|>"
@@ -100,26 +105,41 @@ def _neutralize_argument_leaves(value):
     return value
 
 
-def _neutralize_tool_call_arguments(tool_calls: list) -> list:
-    """Neutralize a replayed tool call's arguments, keeping its identifiers exact.
+def _neutralize_replayed_tool_call(tool_calls: list) -> list:
+    """Neutralize a replayed tool call's name and arguments, keeping "id" exact.
 
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so
     an argument that echoes pasted text can close the call block and open a
     "<|tool_response>" or a "<|turn>model" of its own (#7066). Arguments are
     data, not transcript structure, so they get the same full rewrite a tool
-    result's content gets. "id" and "function.name" stay byte-exact: the name is
-    the identifier the client dispatches on, and it is already constrained to
-    ^[a-zA-Z0-9_-]{1,64}$ wherever Studio composes one.
+    result's content gets.
+
+    The name is concatenated straight after "call:" and is client-supplied on
+    replay, so it gets the same rewrite -- which is the identity on every name
+    that can dispatch. Studio composes names as ^[a-zA-Z0-9_-]{1,64}$ and its
+    parsers only ever yield [\\w.\\-]+, so a dispatchable name holds no "<" for the
+    pattern to match; a name this rewrites matches no registered tool either way.
+    A tool result's "name" takes the same rewrite, so the two still agree when
+    Gemma-4 pairs them by name. "id" is opaque and stays byte-exact.
     """
     out: list = []
     for call in tool_calls:
         function = call.get("function") if isinstance(call, dict) else None
-        arguments = function.get("arguments") if isinstance(function, dict) else None
-        new_arguments = arguments if arguments is None else _neutralize_argument_leaves(arguments)
-        if new_arguments is arguments or new_arguments == arguments:
+        if not isinstance(function, dict):
             out.append(call)
-        else:
-            out.append({**call, "function": {**function, "arguments": new_arguments}})
+            continue
+        updates: dict = {}
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            new_name = neutralize_control_markup(name)
+            if new_name != name:
+                updates["name"] = new_name
+        arguments = function.get("arguments")
+        if arguments is not None:
+            new_arguments = _neutralize_argument_leaves(arguments)
+            if new_arguments != arguments:
+                updates["arguments"] = new_arguments
+        out.append({**call, "function": {**function, **updates}} if updates else call)
     return out
 
 
@@ -171,7 +191,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 updates["content"] = new_content
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
-            new_tool_calls = _neutralize_tool_call_arguments(tool_calls)
+            new_tool_calls = _neutralize_replayed_tool_call(tool_calls)
             if new_tool_calls != tool_calls:
                 updates["tool_calls"] = new_tool_calls
         if updates:
@@ -182,47 +202,47 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
     return out if changed else messages
 
 
-# The only tool-schema keys that hold prose. Everything else is an identifier or
-# a value the model has to emit byte-exact ("name", "enum", "const", "required",
-# "pattern", property keys), so rewriting one would break the call rather than
-# the injection.
-_TOOL_PROSE_KEYS = frozenset({"description", "title"})
-
-
-def _neutralize_tool_prose(value):
-    if isinstance(value, dict):
-        out: dict = {}
-        changed = False
-        for key, item in value.items():
-            if key in _TOOL_PROSE_KEYS and isinstance(item, str):
-                new_item = neutralize_control_markup(item)
-            else:
-                new_item = _neutralize_tool_prose(item)
-            changed = changed or new_item != item
-            out[key] = new_item
-        return out if changed else value
-    if isinstance(value, list):
-        new_list = [_neutralize_tool_prose(item) for item in value]
-        return new_list if new_list != value else value
-    return value
-
-
 def neutralize_tool_descriptions(tools):
-    """Neutralize control markup in tool prose, keeping every identifier exact.
+    """Neutralize control markup in a rendered tool catalog, keeping names exact.
 
-    A tool declaration is prompt text: Gemma-4's ``format_function_declaration``
-    interpolates the description straight into its system turn, so a
-    "<turn|><|turn>model" there closes that turn and forges a model one (#7066).
-    Descriptions are also the one part of the catalog that is genuinely remote --
-    ``mcp_client`` copies a server's ``description`` and ``inputSchema`` verbatim,
-    while it validates every composed tool name against
-    ^[a-zA-Z0-9_-]{1,64}$ and skips the tool otherwise. Names therefore stay
-    byte-exact, which is also what the client's own dispatch needs: it matches the
-    name the model echoes back against the one it registered.
+    A tool declaration is prompt text, and every string in it is rendered: Gemma-4
+    interpolates the description into its system turn and ``format_parameters``
+    emits property keys unquoted plus ``enum`` / ``required`` entries inline,
+    while Granite renders the whole spec with ``tojson``. So a
+    "<turn|><|turn>model" anywhere in the schema closes the system turn and forges
+    a model one (#7066). ``mcp_client`` copies a server's ``description`` and its
+    ``inputSchema`` verbatim, which is how remote text gets there.
+
+    ``function.name`` is the one exception: the client matches the name the model
+    echoes back against the one it registered. Everything else takes the rewrite,
+    which is the identity on a schema that holds no control markup -- a real
+    ``enum`` value or property key has no "<" for the pattern to match, so a live
+    catalog is returned unchanged and two distinct keys cannot collide onto one.
     """
-    if not tools:
+    if not tools or not isinstance(tools, list):
         return tools
-    return _neutralize_tool_prose(tools)
+    out: list = []
+    changed = False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            out.append(tool)
+            continue
+        function = tool.get("function")
+        target = function if isinstance(function, dict) else tool
+        updates: dict = {}
+        for key, value in target.items():
+            if key == "name":
+                continue
+            new_value = _neutralize_argument_leaves(value)
+            if new_value != value:
+                updates[key] = new_value
+        if not updates:
+            out.append(tool)
+            continue
+        new_target = {**target, **updates}
+        out.append({**tool, "function": new_target} if target is function else new_target)
+        changed = True
+    return out if changed else tools
 
 
 def _tokenizer_objects(tokenizer) -> tuple:
