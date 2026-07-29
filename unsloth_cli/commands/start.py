@@ -2803,7 +2803,19 @@ def _temporary_agent_config(prefix: str):
     # locked session helper: a wrapper killed before its finally runs leaves a home that
     # the next launch reclaims, and the lock keeps a live session from being swept.
     temp_root = _agents_config_root() / ".tmp"
-    temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    try:
+        temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    except OSError:
+        # Attaching to a remote or already-running Studio does not need a local auth tree,
+        # so it may be absent or read-only; the key cache degrades the same way. Fall back
+        # to the system temp dir, which is where these homes lived before. No reclamation
+        # there, but the OS prunes it.
+        path = Path(tempfile.mkdtemp(prefix = prefix))
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path, ignore_errors = True)
+        return
     with _short_ephemeral_session(temp_root, prefix) as path:
         yield path
 

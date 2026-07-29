@@ -5219,6 +5219,19 @@ def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
     assert start._ephemeral_session_prefix("claude", None) == "unsloth-claude-"
 
 
+def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
+    # Attaching to a remote or already-running Studio does not need a local auth tree, so
+    # an absent or read-only one must not stop the launch.
+    readonly = tmp_path / "readonly"
+    readonly.mkdir(mode = 0o500)
+    monkeypatch.setattr(start, "_agents_config_root", lambda: readonly / "agents")
+
+    with start._session_config("claude", launch = True) as home:
+        assert home.exists()
+        assert readonly not in home.parents
+    assert not home.exists()
+
+
 def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
     # These homes sit under Studio's auth tree, which nothing else prunes, so a wrapper
     # killed before its finally runs must be reclaimed by the next launch.
