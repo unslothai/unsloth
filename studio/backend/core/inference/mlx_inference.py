@@ -12,6 +12,7 @@ import json
 import os
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
@@ -190,7 +191,86 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
-def _render_registered_vlm_prompt(processor, model, messages, num_images):
+def _flatten_registered_vlm_content(processor, content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return content_to_text(content)
+
+    def _token(name, default):
+        for target in (processor, getattr(processor, "tokenizer", None)):
+            value = getattr(target, name, None)
+            if isinstance(value, str) and value:
+                return value
+        return default
+
+    image_token = _token("image_token", "<image>")
+    audio_token = _token("audio_token", "<audio>")
+    video_token = _token("video_token", "<video>")
+    markers = {image_token, audio_token, video_token}
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            if item is not None:
+                parts.append(str(item))
+            continue
+        item_type = str(item.get("type", "")).lower()
+        if item_type in ("image", "image_url", "input_image"):
+            parts.append(image_token)
+        elif item_type in ("audio", "input_audio"):
+            parts.append(audio_token)
+        elif item_type in ("video", "input_video", "video_url"):
+            parts.append(video_token)
+        else:
+            text = item.get("text", "") or item.get("content", "")
+            if text:
+                parts.append(str(text))
+
+    flattened = []
+    previous_was_marker = False
+    for part in parts:
+        if not part:
+            continue
+        is_marker = part in markers
+        if previous_was_marker and not is_marker and not part[0].isspace():
+            flattened.append(" ")
+        flattened.append(part)
+        previous_was_marker = is_marker
+    return "".join(flattened).strip()
+
+
+class _VLMProcessorWithoutImagePadding:
+    def __init__(self, processor):
+        self._processor = processor
+
+    def __getattr__(self, name):
+        return getattr(self._processor, name)
+
+    def process(self, text, images = None, return_tensors = "mlx", **kwargs):
+        kwargs.pop("padding", None)
+        return self._processor(
+            text = text,
+            images = images,
+            return_tensors = return_tensors,
+            **kwargs,
+        )
+
+
+def _vlm_rejects_image_padding(error):
+    message = str(error)
+    return "ImagesKwargs" in message and "unexpected keyword argument 'padding'" in message
+
+
+def _render_registered_vlm_prompt(
+    processor,
+    model,
+    messages,
+    num_images,
+    *,
+    enable_thinking = None,
+    reasoning_effort = None,
+    preserve_thinking = None,
+):
     """Render through mlx-vlm when it declares a formatter for this model."""
     from mlx_vlm import prompt_utils
 
@@ -200,14 +280,87 @@ def _render_registered_vlm_prompt(processor, model, messages, num_images):
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
-    rendered = prompt_utils.apply_chat_template(
-        processor,
-        config,
-        messages,
-        add_generation_prompt = True,
-        num_images = num_images,
+    kwargs = {
+        name: value
+        for name, value in (
+            ("enable_thinking", enable_thinking),
+            ("reasoning_effort", reasoning_effort),
+            ("preserve_thinking", preserve_thinking),
+        )
+        if value is not None
+    }
+
+    first_user = next(
+        (
+            index
+            for index, message in enumerate(messages)
+            if isinstance(message, dict) and str(message.get("role", "")).lower() == "user"
+        ),
+        None,
     )
-    if isinstance(rendered, str) and rendered.strip():
+    media_owner = next(
+        (
+            index
+            for index, message in enumerate(messages)
+            if isinstance(message, dict) and _count_vlm_images(message.get("content")) > 0
+        ),
+        None,
+    )
+    if first_user is None or media_owner != first_user:
+        raise RuntimeError("Model-aware image recovery requires media on the first user turn.")
+
+    extract_text = getattr(prompt_utils, "extract_text_from_content", content_to_text)
+    text_messages = [
+        (
+            {**message, "content": extract_text(message.get("content"))}
+            if isinstance(message, dict)
+            else message
+        )
+        for message in messages
+    ]
+    normalized_messages = []
+    for index, source_message in enumerate(text_messages):
+        model_messages = prompt_utils.apply_chat_template(
+            processor,
+            config,
+            source_message,
+            add_generation_prompt = True,
+            return_messages = True,
+            num_images = num_images if index == media_owner else 0,
+            **kwargs,
+        )
+        if not isinstance(model_messages, list):
+            raise RuntimeError("mlx-vlm's registered renderer returned invalid messages.")
+        source_role = (
+            source_message.get("role", "user")
+            if isinstance(source_message, dict)
+            else "user"
+        )
+        for message in model_messages:
+            if isinstance(message, dict):
+                normalized_messages.append(
+                    {
+                        **message,
+                        "content": _flatten_registered_vlm_content(
+                            processor, message.get("content")
+                        ),
+                    }
+                )
+            elif isinstance(message, str):
+                normalized_messages.append({"role": source_role, "content": message})
+            else:
+                raise RuntimeError("mlx-vlm's registered renderer returned invalid messages.")
+    rendered = prompt_utils.get_chat_template(
+        processor,
+        normalized_messages,
+        True,
+        **kwargs,
+    )
+    if (
+        isinstance(rendered, str)
+        and rendered.strip()
+        and not _prompt_serializes_vlm_media(rendered, messages)
+    ):
         return rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
 
@@ -503,6 +656,23 @@ def _mlx_vlm_prompt_cache_api(model = None):
         return None
     _, model_type = _mlx_vlm_model_config(model)
     if model_type in _NONEXACT_MLX_VLM_CACHE_TYPES:
+        return None
+    try:
+        configs = (getattr(model, "config", None), getattr(model, "_config", None))
+        for config in configs:
+            text_config = (
+                config.get("text_config")
+                if isinstance(config, Mapping)
+                else getattr(config, "text_config", None)
+            )
+            cross_attention_layers = (
+                text_config.get("cross_attention_layers")
+                if isinstance(text_config, Mapping)
+                else getattr(text_config, "cross_attention_layers", None)
+            )
+            if cross_attention_layers:
+                return None
+    except Exception:
         return None
     try:
         cache_mode = model_apc_mode(language_model)
@@ -1786,15 +1956,12 @@ class MLXInferenceBackend:
             ) from prompt_error
 
         if images is not None and prompt_issue:
-            if tools or any(
-                value is not None
-                for value in (enable_thinking, reasoning_effort, preserve_thinking)
-            ):
+            if tools:
                 if prompt_error is not None:
                     raise prompt_error
                 raise RuntimeError(
                     f"VLM chat template returned {prompt_issue} and cannot be recovered "
-                    "without dropping requested tools or reasoning controls."
+                    "without dropping requested tools."
                 )
             try:
                 recovered_prompt = _render_registered_vlm_prompt(
@@ -1802,6 +1969,9 @@ class MLXInferenceBackend:
                     self._model,
                     messages,
                     len(images),
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
                 )
             except Exception as recovery_error:
                 if prompt_error is not None:
@@ -1891,6 +2061,7 @@ class MLXInferenceBackend:
                 final_response = None
                 cached_n = 0
                 completed = False
+                cache_abandoned = False
                 try:
                     # Emit any prefilled <think> block before the first token so the
                     # UI renders it during prefill, matching _generate_text. Done
@@ -1900,13 +2071,42 @@ class MLXInferenceBackend:
                         yield cumulative
                     reuse_state = cache_state if cache_state is not None else exact_manager
                     with _temporary_mlx_vlm_rope_suppression(self._model, reuse_state):
-                        for response in vlm_stream(
-                            self._model,
-                            self._processor,
-                            prompt,
-                            images,
-                            **request_kwargs,
-                        ):
+
+                        def _responses():
+                            nonlocal cache_abandoned
+                            yielded = False
+                            try:
+                                for response in vlm_stream(
+                                    self._model,
+                                    self._processor,
+                                    prompt,
+                                    images,
+                                    **request_kwargs,
+                                ):
+                                    yielded = True
+                                    yield response
+                            except ValueError as error:
+                                if yielded or not _vlm_rejects_image_padding(error):
+                                    raise
+                                cache_abandoned = True
+                                self._vlm_prompt_cache_history = None
+                                self._vlm_prompt_cache_unavailable = True
+                                cold_request_kwargs = dict(request_kwargs)
+                                for name in (
+                                    "prompt_cache_state",
+                                    "apc_manager",
+                                    "prefill_step_size",
+                                ):
+                                    cold_request_kwargs.pop(name, None)
+                                yield from vlm_stream(
+                                    self._model,
+                                    _VLMProcessorWithoutImagePadding(self._processor),
+                                    prompt,
+                                    images,
+                                    **cold_request_kwargs,
+                                )
+
+                        for response in _responses():
                             final_response = response
                             exposed_cached_n = getattr(response, "cached_tokens", None)
                             if exposed_cached_n is not None:
@@ -1924,6 +2124,7 @@ class MLXInferenceBackend:
                     if (
                         completed
                         and not cancelled
+                        and not cache_abandoned
                         and cache_state is not None
                         and cache_commit is not None
                         and final_response is not None
@@ -1947,7 +2148,12 @@ class MLXInferenceBackend:
                                 )
                             except Exception as exc:
                                 logger.debug("MLX VLM prompt cache insert failed: %s", exc)
-                    if completed and not cancelled and exact_manager is not None:
+                    if (
+                        completed
+                        and not cancelled
+                        and not cache_abandoned
+                        and exact_manager is not None
+                    ):
                         try:
                             exact_manager.commit()
                         except Exception as exc:

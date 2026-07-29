@@ -622,7 +622,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
-    calls = {"generic": [], "model": [], "stream": []}
+    calls = {name: [] for name in ("generic", "model", "model_messages", "template_messages", "stream")}
     adapter_events = []
     adapter_active = {"value": False}
 
@@ -639,11 +639,33 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
     state = {"generic": "serialized", "model": "<image> model-aware"}
+
+    def model_render(_processor, _config, messages, **kwargs):
+        calls["model"].append(kwargs)
+        calls["model_messages"].append(messages)
+        assert kwargs.get("return_messages")
+        if state["model"] == "return messages":
+            if messages["role"] == "assistant":
+                return ["Seen."]
+            content = [{"type": "text", "text": messages["content"]}]
+            if kwargs["num_images"]:
+                content[:0] = [{"type": "image"}, ""]
+            return [{"role": messages["role"], "content": content}]
+        return [{"role": messages["role"], "content": messages["content"]}]
+
+    def model_template(_processor, messages, *_args, **kwargs):
+        calls["template_messages"].append((messages, kwargs))
+        if state["model"] == "return messages":
+            return "<image> recovered"
+        if state["model"] == "reject structured":
+            return "<image> flattened model-aware"
+        return state["model"]
+
     prompt_utils = SimpleNamespace(
         MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_args, **kwargs: (
-            calls["model"].append(kwargs) or state["model"]
-        ),
+        apply_chat_template = model_render,
+        extract_text_from_content = lambda content: content if isinstance(content, str) else " ".join(item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") in ("text", "input_text")),
+        get_chat_template = model_template,
     )
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.prompt_utils = prompt_utils
@@ -660,8 +682,9 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         calls["generic"].append(kwargs)
         if isinstance(state["generic"], Exception):
             raise state["generic"]
-        if state["generic"] == "serialized":
-            return f"User: {_messages[0]['content']}"
+        if state["generic"].startswith("serialized"):
+            index = -1 if state["generic"] == "serialized_last" else 0
+            return f"User: {_messages[index]['content']}"
         return state["generic"]
 
     monkeypatch.setattr(
@@ -682,10 +705,31 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert calls["stream"][0][0][2] == "<image> model-aware"
     with pytest.raises(RuntimeError, match = "dropping requested tools"):
         list(backend._generate_vlm(*args, tools = tools))
-    with pytest.raises(RuntimeError, match = "dropping requested tools or reasoning"):
-        list(backend._generate_vlm(*args, enable_thinking = False))
+    assert list(backend._generate_vlm(*args, enable_thinking = False)) == ["ok"]
+    assert calls["model"][-1]["enable_thinking"] is False
+    state["generic"] = ValueError("generic rendering failed")
+    state["model"] = "return messages"
+    multi_turn = [
+        {"role": "user", "content": [{"type": "input_image"}, {"type": "input_text", "text": "Read."}, {"type": "input_text", "text": "Now."}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Seen."}]},
+        {"role": "user", "content": [{"type": "text", "text": "Again."}]},
+    ]
+    recovered = backend._generate_vlm(*((multi_turn,) + args[1:]), enable_thinking=True, reasoning_effort="high", preserve_thinking=False)
+    assert list(recovered) == ["ok"]
+    assert [message["content"] for message in calls["model_messages"][-3:]] == ["Read. Now.", "Seen.", "Again."]
+    assert [call["num_images"] for call in calls["model"][-3:]] == [1, 0, 0]
+    roles_and_content = [(message["role"], message["content"]) for message in calls["template_messages"][-1][0]]
+    assert roles_and_content == [("user", "<image> Read. Now."), ("assistant", "Seen."), ("user", "Again.")]
+    reasoning_kwargs = {"enable_thinking": True, "reasoning_effort": "high", "preserve_thinking": False}
+    assert all(calls["model"][-1][name] == value for name, value in reasoning_kwargs.items())
+    assert calls["template_messages"][-1][1] == reasoning_kwargs
+    state["generic"] = "serialized_last"
+    later_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": "Seen."}, {"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "Again."}]}]
+    with pytest.raises(RuntimeError, match="first user turn"):
+        list(backend._generate_vlm(*((later_image,) + args[1:])))
     backend._processor = SimpleNamespace(chat_template = "template")
     state["generic"] = "<image> healthy generic"
+    state["model"] = "<image> model-aware"
     assert list(backend._generate_vlm(*args, tools = tools, enable_thinking = False)) == ["ok"]
     assert calls["generic"][-1]["enable_thinking"] is False
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
@@ -697,6 +741,27 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
     with pytest.raises(RuntimeError, match = "2 structured image item"):
         list(backend._generate_vlm(*((two_images,) + args[1:]), tools = tools))
+    padding_attempts = []
+
+    def padding_stream(*stream_args, **stream_kwargs):
+        padding_attempts.append((stream_args, stream_kwargs))
+        if len(padding_attempts) == 1:
+            raise ValueError("Failed to process inputs with error: ImagesKwargs.__init__() got an unexpected keyword argument 'padding'")
+        yield SimpleNamespace(text="ok", prompt_tokens=3, generation_tokens=1)
+
+    mlx_vlm.stream_generate = padding_stream
+    state["generic"] = "<image> healthy generic"
+    processor_calls, exact_commits = [], []
+    backend._processor = lambda **kwargs: processor_calls.append(kwargs)
+    backend._vlm_prompt_cache_history = SimpleNamespace(insert = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("inserted abandoned block state")))
+    backend._prepare_vlm_prompt_cache = lambda *_args: (SimpleNamespace(), ("scope", "prompt", None), [], SimpleNamespace(commit = lambda: exact_commits.append(True)))
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert len(padding_attempts) == 2 and {"prompt_cache_state", "apc_manager"} <= padding_attempts[0][1].keys()
+    assert {"prompt_cache_state", "apc_manager", "prefill_step_size"}.isdisjoint(padding_attempts[1][1])
+    padding_attempts[1][0][1].process("prompt", images=["image"], padding=True)
+    assert processor_calls == [{"text": "prompt", "images": ["image"], "return_tensors": "mlx"}]
+    assert isinstance(padding_attempts[1][0][1], mlx_inference._VLMProcessorWithoutImagePadding) and not exact_commits
+    assert backend._vlm_prompt_cache_unavailable and backend._vlm_prompt_cache_history is None
     state["generic"] = "serialized"
     tool_history = args[0] + [{"role": "assistant", "tool_calls": [{"id": "call-1"}]}]
     with pytest.raises(RuntimeError, match = "tool-call history"):
@@ -1080,6 +1145,7 @@ def _fake_vlm_cache_backend(monkeypatch):
         control["seeded"] = list(getattr(state, "token_ids", None) or ())
         ids = [ord(character) for character in prompt]
         manager = kwargs.get("apc_manager")
+        control["manager"] = manager
         if manager is not None:
             cache, prefix = manager.lookup_exact_cache(ids)
             control["returned"] = prefix
@@ -1264,7 +1330,21 @@ def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatc
     package = sys.modules["mlx_vlm"]
     package.__version__ = "0.6.7"
     assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+    assert control["state"] is control["manager"] is None
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
     package.__version__ = "0.6.8"
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is not None
+    backend._model.config = SimpleNamespace(
+        model_type = "supported",
+        text_config = SimpleNamespace(cross_attention_layers = [3, 8]),
+    )
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    backend._model.config.text_config.cross_attention_layers = []
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is not None
+    backend._model._config = {"text_config": {"cross_attention_layers": [3, 8]}}
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    del backend._model._config
     for config in (
         SimpleNamespace(model_type = "idefics2"),
         {"model_type": "kimi_vl"},
