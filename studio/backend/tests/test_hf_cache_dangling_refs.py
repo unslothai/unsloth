@@ -283,7 +283,12 @@ def test_a_recovered_repo_survives_delete_revisions(tmp_path, monkeypatch):
 # --- load identity for a recovered snapshot ----------------------------------
 
 
-def _autoload_rows(cache_root: Path, monkeypatch, *, gguf: bool = False) -> list[dict]:
+def _autoload_rows(
+    cache_root: Path,
+    monkeypatch,
+    *,
+    gguf: bool = False,
+) -> list[dict]:
     """What chat auto-load sees: GET /api/hub/cached-models, or with *gguf* set
     GET /api/hub/cached-gguf."""
     from hub.services.models import cache_inventory
