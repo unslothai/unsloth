@@ -11726,8 +11726,8 @@ class LlamaCppBackend:
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
-                # An MCP server's tool description is remote prose that the
-                # template renders into the system turn (#7066).
+                # An MCP server's description and inputSchema are remote text that
+                # the template renders into the system turn (#7066).
                 "tools": neutralize_tool_descriptions(active_tools),
                 "tool_choice": "auto",
             }
