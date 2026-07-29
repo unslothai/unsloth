@@ -254,7 +254,11 @@ def _env_offline() -> bool:
 
 
 def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
-    from hub.utils.hf_cache_state import iter_active_repo_cache_dirs, iter_repo_cache_dirs
+    from hub.utils.hf_cache_state import (
+        iter_active_repo_cache_dirs,
+        iter_repo_cache_dirs,
+        snapshot_selection_key,
+    )
 
     snapshots: list[Path] = []
     repo_dirs = (
@@ -271,13 +275,9 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
         except OSError:
             continue
 
-    def _mtime(path: Path) -> float:
-        try:
-            return path.stat().st_mtime
-        except OSError:
-            return 0.0
-
-    snapshots.sort(key = _mtime, reverse = True)
+    # Same key the inventory row selects with, so the snapshot this walk reports
+    # variants from is the snapshot the row describes even when mtimes tie.
+    snapshots.sort(key = snapshot_selection_key, reverse = True)
     yield from snapshots
 
 

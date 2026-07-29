@@ -19,6 +19,7 @@ from loggers import get_logger
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_registry
+from hub.utils.hf_cache_state import snapshot_selection_key
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
     snapshot_download_size,
@@ -511,27 +512,22 @@ _PAYLOAD_FLAGS = (
 
 
 def _newest_snapshot_dir(candidates) -> Optional[Path]:
-    """Newest of *candidates* by directory mtime, or None when there are none.
+    """Newest of *candidates*, or None when there are none.
 
-    Ordering and resolution match ``_cached_model_snapshot_path`` and
-    ``iter_hf_cache_snapshots`` so every consumer names the same directory by
-    the same string.
+    Ordering and resolution come from ``snapshot_selection_key``, the same key
+    ``latest_snapshot_dir`` and ``iter_hf_cache_snapshots`` sort by, so every
+    consumer names the same directory by the same string. *candidates* arrive out
+    of a ``frozenset`` of revisions, so picking on mtime alone left equal mtimes
+    to iteration order and the picker could land on the other snapshot.
     """
-    best: Optional[tuple[float, Path]] = None
-    for candidate in candidates:
-        path = Path(candidate)
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        if best is None or mtime > best[0]:
-            best = (mtime, path)
-    if best is None:
+    paths = [Path(candidate) for candidate in candidates]
+    if not paths:
         return None
+    best = max(paths, key = snapshot_selection_key)
     try:
-        return best[1].resolve()
+        return best.resolve()
     except OSError:
-        return best[1]
+        return best
 
 
 def _resolved_snapshot_ids(candidates) -> frozenset[str]:

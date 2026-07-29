@@ -1186,3 +1186,55 @@ def test_a_marker_for_another_quant_still_leaves_the_pinned_one_chattable(tmp_pa
     assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
     assert rows[0].get("partial") is False
     assert rows[0]["capabilities"].get("can_chat") is True
+
+
+# --- one snapshot ordering, so the row and the picker cannot disagree ---------
+
+
+def test_equal_mtime_snapshots_order_the_same_way_whatever_the_iteration_order(tmp_path):
+    """Selection ran off directory mtime alone, which is not an order.
+
+    Candidates reach the row through a ``frozenset`` of revisions and the variant
+    walk through ``iterdir()``, so on equal mtimes each kept whatever it saw
+    first and the two picked different directories."""
+    from hub.services.models import cache_inventory
+
+    first = tmp_path / "snapshots" / OLDER
+    second = tmp_path / "snapshots" / NEWER
+    for snapshot in (first, second):
+        snapshot.mkdir(parents = True)
+        os.utime(snapshot, (1_700_000_000, 1_700_000_000))
+
+    forward = cache_inventory._newest_snapshot_dir([first, second])
+    backward = cache_inventory._newest_snapshot_dir([second, first])
+
+    assert forward == backward, "the pick moved with the order the candidates arrived in"
+    assert forward == second.resolve()
+
+
+def test_the_row_and_the_picker_agree_on_equal_mtime_snapshots(tmp_path, monkeypatch):
+    """End to end at the tie: whichever snapshot wins, the quants offered as
+    downloaded must resolve under the load id the row hands out. A coarse
+    timestamp filesystem or a restored cache produces the tie, and the row then
+    pinned one snapshot while the picker offered the other one's quant."""
+    from hub.utils.gguf import iter_hf_cache_snapshots, list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"Model-Q8_0.gguf": b"\0" * 64},
+    )
+    for commit in (OLDER, NEWER):
+        os.utime(repo_dir / "snapshots" / commit, (1_700_000_000, 1_700_000_000))
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    load_dir = Path(rows[0]["load_id"])
+    offered = _local_gguf_variants_for_autoload(rows[0], tmp_path)
+    resolvable = {v.quant for v in list_local_gguf_variants(str(load_dir))[0] if v.quant}
+    assert set(offered) <= resolvable, (
+        f"auto-load is offered {sorted(offered)} but load_id {load_dir.name[:8]} "
+        f"resolves only {sorted(resolvable)}"
+    )
+    # Both selectors head the same list, so the tie cannot split them again.
+    assert load_dir == next(iter(iter_hf_cache_snapshots("Org/Model", root = tmp_path)))
