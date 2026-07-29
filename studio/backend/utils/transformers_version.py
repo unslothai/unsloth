@@ -131,7 +131,12 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
         # A slow server still completes the TCP handshake; a blackholed route does not.
         # Bounded separately so the whole probe stays within a predictable deadline.
         try:
-            from utils.utils import hf_tcp_reachable
+            from utils.utils import hf_proxy_configured, hf_tcp_reachable
+            if hf_proxy_configured():
+                # Through a proxy the handshake only proves the proxy is up, not that it
+                # can reach the hub, so a timeout stays unreachable rather than being
+                # excused by a live proxy with a dead upstream.
+                return True
             return not hf_tcp_reachable(min(timeout, 2.0), endpoint)
         except Exception:
             return True

@@ -1146,6 +1146,88 @@ class TestSlowLinkIsNotOffline:
         assert hf_tcp_reachable(1, "http://127.0.0.1:9") is True
 
 
+class TestConcurrentGuardsHoldTheirOwnReference:
+    """Overlapping requests must each hold a reference. If a later guard no-ops because an
+    earlier one already set HF_HUB_OFFLINE, the earlier guard's exit restores the network
+    while the later request is still resolving hub files."""
+
+    def test_second_guard_engages_and_offline_survives_first_exit(
+        self, monkeypatch, clean_offline_env
+    ):
+        import threading
+
+        import core.inference.llama_cpp as lc
+
+        monkeypatch.setattr(lc, "_hf_unreachable", lambda: True)
+
+        a_in, b_in, a_done = threading.Event(), threading.Event(), threading.Event()
+        seen: dict = {}
+
+        def worker_a():
+            with lc._hf_offline_if_unreachable():
+                a_in.set()
+                b_in.wait(5)
+            a_done.set()
+
+        def worker_b():
+            a_in.wait(5)
+            with lc._hf_offline_if_unreachable() as engaged:
+                seen["engaged"] = engaged
+                b_in.set()
+                a_done.wait(5)
+                seen["offline_after_a_exit"] = hf_constants.HF_HUB_OFFLINE
+                seen["env_after_a_exit"] = os.environ.get("HF_HUB_OFFLINE")
+
+        ta, tb = threading.Thread(target = worker_a), threading.Thread(target = worker_b)
+        ta.start(); tb.start(); ta.join(20); tb.join(20)
+
+        assert seen.get("engaged") is True, "second guard no-opped instead of taking a reference"
+        assert seen.get("offline_after_a_exit") is True
+        assert seen.get("env_after_a_exit") == "1"
+        # Both windows closed -> fully restored.
+        assert hf_constants.HF_HUB_OFFLINE is False
+        assert "HF_HUB_OFFLINE" not in os.environ
+
+    def test_user_set_offline_is_still_a_noop(self, monkeypatch, clean_offline_env):
+        import core.inference.llama_cpp as lc
+
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        monkeypatch.setattr(lc, "_hf_unreachable", lambda: True)
+        with lc._hf_offline_if_unreachable() as engaged:
+            assert engaged is False
+        assert os.environ["HF_HUB_OFFLINE"] == "1"
+
+
+class TestProxyTimeoutIsNotExcused:
+    """A live proxy proves the proxy is up, not that it can reach the hub."""
+
+    def _probe_timing_out(self, monkeypatch):
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError(TimeoutError("slow"))),
+        )
+        from utils.transformers_version import hf_endpoint_unreachable
+
+        return hf_endpoint_unreachable
+
+    def test_timeout_through_a_proxy_stays_unreachable(self, monkeypatch):
+        probe = self._probe_timing_out(monkeypatch)
+        monkeypatch.setattr("utils.utils.hf_proxy_configured", lambda: True)
+        # Even if the proxy itself accepts TCP, the hub behind it may be blackholed.
+        monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: True)
+        assert probe(timeout = 1) is True
+
+    def test_timeout_without_a_proxy_still_uses_tcp(self, monkeypatch):
+        probe = self._probe_timing_out(monkeypatch)
+        monkeypatch.setattr("utils.utils.hf_proxy_configured", lambda: False)
+        monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: True)
+        assert probe(timeout = 1) is False
+
+
 class TestEndpointNormalisation:
     """An empty or whitespace HF_ENDPOINT must fall back to the default hub in BOTH the
     DNS shortcut and the HTTP probe, or the two stages disagree."""

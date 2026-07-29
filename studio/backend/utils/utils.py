@@ -247,6 +247,17 @@ _OFFLINE_CONSTANTS = (
 )
 
 
+def force_hf_offline_active() -> bool:
+    """True while a force_hf_offline window is open anywhere in this process.
+
+    Lets a concurrent caller tell our own forced offline apart from one the user set, so
+    it can hold its own reference instead of no-opping and losing offline when the first
+    window exits.
+    """
+    with _force_offline_lock:
+        return _force_offline_depth > 0
+
+
 @contextmanager
 def force_hf_offline():
     """Force HF offline for this block, in-process.

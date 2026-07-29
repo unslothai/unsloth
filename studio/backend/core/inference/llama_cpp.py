@@ -540,45 +540,35 @@ def _hf_unreachable() -> bool:
 
 @contextlib.contextmanager
 def _hf_offline_if_unreachable():
-    """Set HF_HUB_OFFLINE for this block only when the Hub is unreachable;
-    restores env on exit so a transient hiccup can't quarantine the process.
-    No-op if the user already set it."""
-    if "HF_HUB_OFFLINE" in os.environ:
-        yield False
-        return
-    if not _hf_unreachable():
-        yield False
-        return
+    """Force HF offline for this block only when the Hub is unreachable; restores on exit
+    so a transient hiccup can't quarantine the process. No-op if the USER set the env var.
 
-    logger.warning("Hugging Face endpoint unreachable; using local HF cache for this load.")
-
-    # Env vars alone do not take effect mid-process: huggingface_hub and transformers read
-    # their offline constants at import, so the calls below would still retry.
-    force_ctx = None
+    Env vars alone do not take effect mid-process (huggingface_hub and transformers read
+    their offline constants at import), so this holds a refcounted force_hf_offline
+    window. Overlapping requests each take their own reference: no-opping because another
+    guard already set HF_HUB_OFFLINE would let that guard's exit restore the network
+    mid-operation and drop this request back onto the retry path.
+    """
     try:
-        from utils.utils import force_hf_offline
-        force_ctx = force_hf_offline()
-        force_ctx.__enter__()
+        from utils.utils import force_hf_offline, force_hf_offline_active
     except Exception:
-        force_ctx = None
+        yield False
+        return
 
-    transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
-    if force_ctx is None:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        if not transformers_was_set:
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    try:
+    ours = force_hf_offline_active()
+    # A user-set offline var is theirs: don't probe it, don't touch it.
+    if "HF_HUB_OFFLINE" in os.environ and not ours:
+        yield False
+        return
+    # Already forced by an in-flight guard: reuse that verdict and hold a reference.
+    if not ours and not _hf_unreachable():
+        yield False
+        return
+
+    if not ours:
+        logger.warning("Hugging Face endpoint unreachable; using local HF cache for this load.")
+    with force_hf_offline():
         yield True
-    finally:
-        if force_ctx is not None:
-            try:
-                force_ctx.__exit__(None, None, None)
-            except Exception:
-                pass
-        else:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-            if not transformers_was_set:
-                os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
 
 def _hf_offline_if_unreachable_for(model_name):
