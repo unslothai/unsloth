@@ -15541,15 +15541,24 @@ def _build_passthrough_payload(
     seed = None,
     stream_options = None,
 ):
+    from core.inference.chat_template_helpers import (
+        neutralize_control_markup_in_messages,
+        neutralize_tool_descriptions,
+    )
+
+    # Every passthrough body ends up here, and llama-server applies the chat
+    # template itself, so this is the one place a client-tool request can be
+    # broken: /v1/messages builds its streaming and non-streaming bodies straight
+    # from here and never touches the OpenAI builder below (#7066).
     body = {
-        "messages": openai_messages,
+        "messages": neutralize_control_markup_in_messages(openai_messages),
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
         "stream": stream,
     }
     if openai_tools:
-        body["tools"] = _llama_compatible_tools(openai_tools)
+        body["tools"] = _llama_compatible_tools(neutralize_tool_descriptions(openai_tools))
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:
@@ -16365,14 +16374,11 @@ def _build_openai_passthrough_body(
     extensions (``enable_tools``, ``enabled_tools``, ``session_id``, ...) never
     leak to the backend.
     """
-    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
-
     messages = _openai_messages_for_passthrough(payload)
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
-    # Goes straight to llama-server's /v1/chat/completions, which applies the chat
-    # template itself, so it never reaches the choke point (#7066).
-    messages = neutralize_control_markup_in_messages(messages)
+    # Control markup is broken in _build_passthrough_payload below, shared with
+    # the two /v1/messages passthroughs (#7066).
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
     tools = payload.tools
     if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):

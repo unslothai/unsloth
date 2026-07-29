@@ -2113,6 +2113,13 @@ class InferenceBackend:
             logger.debug("Removing final assistant message to ensure proper alternation")
             chat_messages.pop()
 
+        # This renders with the tokenizer directly, so it is another path around
+        # the choke point: a text-only request to a vision model comes straight
+        # here, and the text path falls back here when the template raises. The
+        # user sub above only strips user turns, so system_prompt and replayed
+        # assistant text would still reach the template as markup (#7066).
+        chat_messages = neutralize_control_markup_in_messages(chat_messages)
+
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
             logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")

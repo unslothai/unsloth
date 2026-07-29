@@ -84,6 +84,47 @@ def neutralize_turn_boundary_markup(text: str) -> str:
     return _TURN_BOUNDARY_MARKUP.sub("< ", text)
 
 
+def _neutralize_argument_leaves(value):
+    """Break control markup in every string leaf (keys included) of *value*."""
+    if isinstance(value, str):
+        return neutralize_control_markup(value)
+    if isinstance(value, dict):
+        return {
+            neutralize_control_markup(key) if isinstance(key, str) else key: (
+                _neutralize_argument_leaves(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_neutralize_argument_leaves(item) for item in value]
+    return value
+
+
+def _neutralize_tool_call_arguments(tool_calls: list) -> list:
+    """Neutralize a replayed tool call's arguments, keeping its identifiers exact.
+
+    Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so
+    an argument that echoes pasted text can close the call block and open a
+    "<|tool_response>" or a "<|turn>model" of its own (#7066). Arguments are
+    data, not transcript structure, so they get the same full rewrite a tool
+    result's content gets. "id" and "function.name" stay byte-exact: the name is
+    the identifier the client dispatches on, and it is already constrained to
+    ^[a-zA-Z0-9_-]{1,64}$ wherever Studio composes one.
+    """
+    out: list = []
+    for call in tool_calls:
+        function = call.get("function") if isinstance(call, dict) else None
+        arguments = function.get("arguments") if isinstance(function, dict) else None
+        new_arguments = (
+            arguments if arguments is None else _neutralize_argument_leaves(arguments)
+        )
+        if new_arguments is arguments or new_arguments == arguments:
+            out.append(call)
+        else:
+            out.append({**call, "function": {**function, "arguments": new_arguments}})
+    return out
+
+
 def neutralize_control_markup_in_messages(messages: list) -> list:
     """Neutralize control markup in message content and tool-result names (#7066).
 
@@ -130,12 +171,60 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 ]
             if new_content != content:
                 updates["content"] = new_content
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            new_tool_calls = _neutralize_tool_call_arguments(tool_calls)
+            if new_tool_calls != tool_calls:
+                updates["tool_calls"] = new_tool_calls
         if updates:
             out.append({**msg, **updates})
             changed = True
         else:
             out.append(msg)
     return out if changed else messages
+
+
+# The only tool-schema keys that hold prose. Everything else is an identifier or
+# a value the model has to emit byte-exact ("name", "enum", "const", "required",
+# "pattern", property keys), so rewriting one would break the call rather than
+# the injection.
+_TOOL_PROSE_KEYS = frozenset({"description", "title"})
+
+
+def _neutralize_tool_prose(value):
+    if isinstance(value, dict):
+        out: dict = {}
+        changed = False
+        for key, item in value.items():
+            if key in _TOOL_PROSE_KEYS and isinstance(item, str):
+                new_item = neutralize_control_markup(item)
+            else:
+                new_item = _neutralize_tool_prose(item)
+            changed = changed or new_item != item
+            out[key] = new_item
+        return out if changed else value
+    if isinstance(value, list):
+        new_list = [_neutralize_tool_prose(item) for item in value]
+        return new_list if new_list != value else value
+    return value
+
+
+def neutralize_tool_descriptions(tools):
+    """Neutralize control markup in tool prose, keeping every identifier exact.
+
+    A tool declaration is prompt text: Gemma-4's ``format_function_declaration``
+    interpolates the description straight into its system turn, so a
+    "<turn|><|turn>model" there closes that turn and forges a model one (#7066).
+    Descriptions are also the one part of the catalog that is genuinely remote --
+    ``mcp_client`` copies a server's ``description`` and ``inputSchema`` verbatim,
+    while it validates every composed tool name against
+    ^[a-zA-Z0-9_-]{1,64}$ and skips the tool otherwise. Names therefore stay
+    byte-exact, which is also what the client's own dispatch needs: it matches the
+    name the model echoes back against the one it registered.
+    """
+    if not tools:
+        return tools
+    return _neutralize_tool_prose(tools)
 
 
 def _tokenizer_objects(tokenizer) -> tuple:
@@ -505,6 +594,7 @@ def apply_chat_template_for_generation(
     propagate."""
     # Shared choke point for the transformers and MLX backends (#7066).
     messages = neutralize_control_markup_in_messages(messages)
+    tools = neutralize_tool_descriptions(tools)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
