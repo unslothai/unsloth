@@ -323,3 +323,28 @@ def test_reasoning_after_the_last_user_turn_still_counts():
     assert routes_mod._estimate_messages_tokens(msgs) == sum(
         _estimate_message_tokens(m) for m in msgs
     )
+
+
+def test_preserve_thinking_override_makes_all_reasoning_count():
+    # gemma-4 gates on `(loop.index0 > last_user_idx) or preserve_thinking`, so an explicit
+    # override renders every prior trace and the estimator must stop discounting them.
+    msgs = _conversation_with_unrendered_reasoning()
+    default = routes_mod._estimate_messages_tokens(msgs)
+    preserved = routes_mod._estimate_messages_tokens(msgs, True)
+    assert preserved > 3 * default
+    assert preserved == sum(_estimate_message_tokens(m) for m in msgs)
+
+
+def test_preserve_thinking_override_is_read_from_the_body():
+    body = {"chat_template_kwargs": {"preserve_thinking": True}}
+    assert routes_mod._body_preserves_thinking(body) is True
+    for absent in ({}, {"chat_template_kwargs": None}, {"chat_template_kwargs": {}}):
+        assert routes_mod._body_preserves_thinking(absent) is False
+
+
+def test_preserved_trace_is_not_discounted_during_truncation():
+    # Under-counting is the worse failure: the retry would still exceed n_ctx.
+    msgs = _conversation_with_unrendered_reasoning()
+    _, dropped_default = _truncate_middle_messages(list(msgs), 0.6)
+    _, dropped_preserved = _truncate_middle_messages(list(msgs), 0.6, True)
+    assert dropped_preserved > dropped_default
