@@ -876,23 +876,32 @@ class TestDetectGgufModelRemoteOffline:
 
 
 class _DnsState:
-    """Tiny helper that toggles ``socket.gethostbyname`` failure mode."""
+    """Toggles resolver failure. The probe uses ``getaddrinfo`` (IPv4 + IPv6), so patch
+    both entry points."""
 
     def __init__(self, monkeypatch):
         self._mp = monkeypatch
         self._real = socket.gethostbyname
+        self._real_addr = socket.getaddrinfo
 
     def fail(self):
         def _fail(*a, **k):
             raise socket.gaierror(-2, "Name or service not known")
 
         self._mp.setattr(socket, "gethostbyname", _fail)
+        self._mp.setattr(socket, "getaddrinfo", _fail)
 
     def ok(self):
         self._mp.setattr(socket, "gethostbyname", lambda *a, **k: "127.0.0.1")
+        self._mp.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+        )
 
     def restore(self):
         self._mp.setattr(socket, "gethostbyname", self._real)
+        self._mp.setattr(socket, "getaddrinfo", self._real_addr)
 
 
 @pytest.fixture
@@ -1018,14 +1027,18 @@ class TestEndpointAwareOfflineDetection:
 
     @pytest.fixture
     def no_upstream_dns(self, monkeypatch):
-        real_host = socket.gethostbyname
-
         def _host(h, *a, **k):
             if "huggingface.co" in str(h):
                 raise socket.gaierror(-2, "Name or service not known")
             return "127.0.0.1"
 
+        def _addr(h, *a, **k):
+            if "huggingface.co" in str(h):
+                raise socket.gaierror(-2, "Name or service not known")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
         monkeypatch.setattr(socket, "gethostbyname", _host)
+        monkeypatch.setattr(socket, "getaddrinfo", _addr)
 
     @pytest.mark.parametrize(
         "endpoint,expected",
@@ -1061,6 +1074,7 @@ class TestProxyOnlyEgress:
             raise socket.gaierror(-2, "Name or service not known")
 
         monkeypatch.setattr(socket, "gethostbyname", _fail)
+        monkeypatch.setattr(socket, "getaddrinfo", _fail)
 
     def test_dns_shortcut_stands_down_when_proxy_configured(self, monkeypatch, dns_all_dead):
         from utils.utils import hf_dns_dead
@@ -1086,6 +1100,93 @@ class TestProxyOnlyEgress:
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
         monkeypatch.setenv("NO_PROXY", "huggingface.co")
         assert hf_proxy_configured() is False
+
+
+class TestSlowLinkIsNotOffline:
+    """A slow but reachable endpoint must not be quarantined: that would fail an uncached
+    load that would otherwise merely be slow. A blackholed route must still be offline."""
+
+    def _probe_raising(self, monkeypatch, exc):
+        import urllib.request
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(exc))
+        from utils.transformers_version import hf_endpoint_unreachable
+
+        return hf_endpoint_unreachable
+
+    def test_timeout_with_tcp_egress_is_reachable(self, monkeypatch):
+        import urllib.error
+
+        probe = self._probe_raising(monkeypatch, urllib.error.URLError(TimeoutError("slow")))
+        monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: True)
+        assert probe(timeout = 1) is False
+
+    def test_timeout_without_tcp_egress_is_offline(self, monkeypatch):
+        import urllib.error
+
+        probe = self._probe_raising(monkeypatch, urllib.error.URLError(TimeoutError("dead")))
+        monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: False)
+        assert probe(timeout = 1) is True
+
+    def test_bare_timeout_error_takes_the_same_path(self, monkeypatch):
+        probe = self._probe_raising(monkeypatch, TimeoutError("slow"))
+        monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: True)
+        assert probe(timeout = 1) is False
+
+    def test_refused_connection_counts_as_egress(self, monkeypatch):
+        """Something answered, so the network works even though nothing is listening."""
+        import socket as _socket
+
+        from utils.utils import hf_tcp_reachable
+
+        def _refuse(*a, **k):
+            raise ConnectionRefusedError()
+
+        monkeypatch.setattr(_socket, "create_connection", _refuse)
+        assert hf_tcp_reachable(1, "http://127.0.0.1:9") is True
+
+
+class TestEndpointNormalisation:
+    """An empty or whitespace HF_ENDPOINT must fall back to the default hub in BOTH the
+    DNS shortcut and the HTTP probe, or the two stages disagree."""
+
+    @pytest.mark.parametrize("value", ["", "   ", "\t"])
+    def test_blank_endpoint_falls_back(self, monkeypatch, value):
+        from utils.utils import hf_endpoint_host, hf_endpoint_url
+
+        monkeypatch.setenv("HF_ENDPOINT", value)
+        assert hf_endpoint_host() == "huggingface.co"
+        assert hf_endpoint_url() == "https://huggingface.co"
+
+    def test_probe_uses_the_same_normalised_url(self, monkeypatch):
+        seen: list = []
+        import urllib.request
+
+        def _capture(req, *a, **k):
+            seen.append(req.full_url)
+            raise urllib.error.URLError("stop")
+
+        import urllib.error
+
+        monkeypatch.setenv("HF_ENDPOINT", "   ")
+        monkeypatch.setattr(urllib.request, "urlopen", _capture)
+        from utils.transformers_version import hf_endpoint_unreachable
+
+        hf_endpoint_unreachable(timeout = 1)
+        assert seen and seen[0].startswith("https://huggingface.co"), seen
+
+
+class TestIpv6Endpoint:
+    def test_ipv6_literal_resolves(self):
+        """gethostbyname is IPv4-only and would call an AAAA-only mirror dead."""
+        from utils.utils import dns_host_dead
+
+        assert dns_host_dead("::1", timeout = 2.0) is False
+
+    def test_unresolvable_host_still_dead(self):
+        from utils.utils import dns_host_dead
+
+        assert dns_host_dead("no-such-host.invalid", timeout = 2.0) is True
 
 
 class TestGuardSkipsLocalPaths:

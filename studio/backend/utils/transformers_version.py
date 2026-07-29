@@ -66,7 +66,10 @@ def _env_offline() -> bool:
 def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = True) -> bool:
     """Bounded reachability probe to the HF endpoint. A HEAD request runs in a daemon thread
     joined with a deadline, so a resolver blackhole cannot block past ~timeout+1s. True if
-    unreachable. urllib natively honors *_PROXY / NO_PROXY, so this verifies real egress
+    unreachable. A clean socket timeout is resolved with a TCP connect, so a slow-but-live
+    endpoint is not mistaken for no egress (a hang past the deadline still counts as
+    unreachable, since the real hub calls would hang too).
+    urllib natively honors *_PROXY / NO_PROXY, so this verifies real egress
     (the proxy can reach HF), not just that the proxy is up. No ML imports, so it is safe to
     call before transformers version activation. Mirrors the probe in export._hf_offline."""
     import ssl
@@ -74,11 +77,18 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
     import urllib.error
     import urllib.request
 
-    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
-    if "://" not in endpoint:
-        endpoint = "https://" + endpoint
+    # Shared normaliser, so an empty or whitespace HF_ENDPOINT falls back to the default
+    # hub here exactly as it does in the DNS shortcut, instead of probing "https://".
+    try:
+        from utils.utils import hf_endpoint_url
 
-    result = {"online": False}
+        endpoint = hf_endpoint_url()
+    except Exception:
+        endpoint = (os.environ.get("HF_ENDPOINT") or "").strip() or "https://huggingface.co"
+        if "://" not in endpoint:
+            endpoint = "https://" + endpoint
+
+    result = {"online": False, "timed_out": False}
 
     def _probe():
         try:
@@ -96,16 +106,38 @@ def hf_endpoint_unreachable(timeout: int = 3, *, gateway_errors_offline: bool = 
         except urllib.error.URLError as exc:
             # A TLS/cert failure means we DID reach the server; treat as reachable so the real
             # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
-            result["online"] = isinstance(exc.reason, ssl.SSLError)
+            if isinstance(exc.reason, ssl.SSLError):
+                result["online"] = True
+            elif isinstance(exc.reason, TimeoutError):
+                # Resolved below, off-thread, so the extra probe cannot outrun the join.
+                result["timed_out"] = True
+            else:
+                result["online"] = False
         except ssl.SSLError:
             result["online"] = True
+        except TimeoutError:
+            result["timed_out"] = True
         except Exception:
             result["online"] = False
 
     t = threading.Thread(target = _probe, daemon = True)
     t.start()
     t.join(timeout + 1)
-    return t.is_alive() or not result["online"]
+    if t.is_alive():
+        # Hung past its own timeout (wedged resolver): the real hub calls would hang the
+        # same way, so cache-only is the useful answer. Distinct from the slow-answer case
+        # below, where the socket timed out cleanly.
+        return True
+    if result["timed_out"]:
+        # A slow server still completes the TCP handshake; a blackholed route does not.
+        # Bounded separately so the whole probe stays within a predictable deadline.
+        try:
+            from utils.utils import hf_tcp_reachable
+
+            return not hf_tcp_reachable(min(timeout, 2.0), endpoint)
+        except Exception:
+            return True
+    return not result["online"]
 
 
 def _safe_is_file(p: Path) -> bool:

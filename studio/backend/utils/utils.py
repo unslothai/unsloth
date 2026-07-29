@@ -80,13 +80,17 @@ def hf_proxy_configured() -> bool:
 
 def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
     """True when host does not resolve. Runs on a daemon thread so a wedged resolver
-    cannot block past the deadline and so socket.setdefaulttimeout is left alone."""
+    cannot block past the deadline and so socket.setdefaulttimeout is left alone.
+
+    Uses getaddrinfo, not gethostbyname: the latter is IPv4-only and would call an
+    AAAA-only mirror or an IPv6 literal dead.
+    """
     result: list = [None]
 
     def _probe() -> None:
         import socket as _socket
         try:
-            _socket.gethostbyname(host)
+            _socket.getaddrinfo(host, None)
             result[0] = False
         except Exception:
             result[0] = True
@@ -96,6 +100,48 @@ def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
     t.join(timeout)
     # Still running -> resolver wedged -> treat as dead.
     return True if result[0] is None else result[0]
+
+
+def hf_connect_target(endpoint: Optional[str] = None):
+    """(host, port) egress actually has to reach: the proxy when one applies, else the endpoint."""
+    from urllib.parse import urlparse
+
+    url = endpoint or hf_endpoint_url()
+    parsed = urlparse(url)
+    default_port = 443 if parsed.scheme == "https" else 80
+    try:
+        import urllib.request
+
+        proxies = urllib.request.getproxies()
+        proxy = proxies.get(parsed.scheme) or proxies.get("all")
+        host = parsed.hostname or ""
+        if proxy and not (host and urllib.request.proxy_bypass(host)):
+            p = urlparse(proxy if "://" in proxy else "http://" + proxy)
+            return p.hostname, p.port or 80
+    except Exception:
+        pass
+    return parsed.hostname, parsed.port or default_port
+
+
+def hf_tcp_reachable(timeout: float = 3.0, endpoint: Optional[str] = None) -> bool:
+    """True when a TCP connection to the hub (or its proxy) can be established.
+
+    Separates "no egress" from "slow to answer": a loaded server still completes the
+    handshake promptly, whereas a blackholed route times out. A refused connection also
+    counts as reachable, since something answered.
+    """
+    import socket as _socket
+
+    host, port = hf_connect_target(endpoint)
+    if not host:
+        return False
+    try:
+        with _socket.create_connection((host, port), timeout = timeout):
+            return True
+    except ConnectionRefusedError:
+        return True
+    except Exception:
+        return False
 
 
 def hf_dns_dead(timeout: float = 2.0) -> bool:
