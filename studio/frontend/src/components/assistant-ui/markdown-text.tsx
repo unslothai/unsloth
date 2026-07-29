@@ -371,6 +371,9 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
 
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
+  // Parts are keyed by index, so switching conversations hands this instance a different
+  // message, and Streamdown only extends its parsed blocks: key it per message instead.
+  const messageId = useAuiState(({ message }) => message.id);
   const displayText = useRafCoalescedText(text, status.type === "running");
   const processedText = useMemo(
     () => preprocessLaTeX(displayText),
@@ -385,6 +388,7 @@ const MarkdownTextImpl = () => {
   return (
     <div data-status={status.type} className="min-w-0 max-w-full">
       <Streamdown
+        key={messageId}
         mode="streaming"
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}

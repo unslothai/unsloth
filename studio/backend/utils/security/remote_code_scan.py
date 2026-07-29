@@ -454,7 +454,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 p = root / name
                 if p.is_file():
                     try:
-                        ext_refs |= _auto_map_refs(json.loads(p.read_text(encoding = "utf-8")))
+                        ext_refs |= _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
                     except Exception:
                         pass
             if not _add_external_refs(files, ext_refs, hf_token, model_name):
@@ -483,7 +483,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                     f"{model_name}: config {cfg_name} could not be fetched ({exc})"
                 ) from exc
             try:
-                refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8")))
+                refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
             except Exception:
                 pass
         own_refs = {fn for repo, fn in refs if repo is None}
@@ -616,7 +616,7 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
                 if not p.is_file():
                     continue
                 try:
-                    refs = _auto_map_refs(json.loads(p.read_text(encoding = "utf-8")))
+                    refs = _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
                 except Exception:
                     continue
                 repos.update(repo for repo, _fn in refs if repo)
@@ -638,7 +638,7 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
             except Exception:
                 continue
             try:
-                refs = _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8")))
+                refs = _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
             except Exception:
                 continue
             repos.update(repo for repo, _fn in refs if repo)

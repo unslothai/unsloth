@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -17,6 +18,14 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+
+# Opt-in startup kill switch for Studio's in-memory API monitor.
+_DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _api_monitor_disabled() -> bool:
+    return os.environ.get(_DISABLE_ENV, "").strip().lower() in _TRUE_VALUES
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -104,10 +113,22 @@ class ApiMonitorEntry:
 
 
 class ApiMonitor:
-    def __init__(self, max_entries: int = _MAX_ENTRIES):
+    def __init__(
+        self,
+        max_entries: int = _MAX_ENTRIES,
+        *,
+        enabled: bool = True,
+    ):
         self._entries: deque[ApiMonitorEntry] = deque()
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self._enabled = enabled
+
+    @property
+    def enabled(self) -> bool:
+        """Whether rows are being recorded. Read-only: the kill switch is a
+        startup env var, so nothing may flip it on a live monitor."""
+        return self._enabled
 
     def start(
         self,
@@ -119,6 +140,8 @@ class ApiMonitor:
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
     ) -> str:
+        if not self._enabled:
+            return ""
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apireq_{uuid.uuid4().hex[:12]}",
@@ -152,6 +175,8 @@ class ApiMonitor:
         :meth:`fail`; an unload is terminal on arrival. Rows are shared (visible to
         every subject) and share the request retention budget.
         """
+        if not self._enabled:
+            return ""
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apievt_{uuid.uuid4().hex[:12]}",
@@ -392,4 +417,4 @@ class ApiMonitor:
         self._entries = kept
 
 
-api_monitor = ApiMonitor()
+api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())

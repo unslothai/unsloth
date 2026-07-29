@@ -971,7 +971,12 @@ def _call_stdio_tool(
                     raise RuntimeError("MCP server connection is not available")
             else:
                 rem = _remaining()
-                coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
+                # raise_on_error=False for the same reason as the one-shot path.
+                coro = _race_tool_call(
+                    session.client.call_tool(name, args, raise_on_error = False),
+                    rem,
+                    cancel_event,
+                )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
             # _race_tool_call cancels the pending call but cancellation is
