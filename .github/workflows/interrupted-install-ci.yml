@@ -215,6 +215,18 @@ jobs:
           rc=0
           bash install.sh --tauri --local < /dev/null 2>&1 | tee logs/repair.log || rc=$?
           echo "repair exit: $rc"
+          # The installer's own verdict counts, not just the probe's. setup.sh runs fallible
+          # sidecar and GPU setup AFTER install_python_stack.py writes the manifest, so a
+          # repair can fail there and still leave a CLI that probes HEALTHY. The desktop
+          # returns the repair error and never starts the backend (commands.rs:615-630).
+          # 26 of 26 POSIX repairs across staging runs 30424366953, 30426699078 and
+          # 30427378808 exited 0, so this gate is one a real failure has to trip.
+          if [ "$rc" != "0" ]; then
+            echo "::error::the repair installer exited $rc, so the re-run did NOT repair"
+            echo "::error::the install however healthy the venv looks afterwards."
+            tail -30 logs/repair.log || true
+            exit 1
+          fi
           BIN="$HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
           [ -x "$BIN" ] || BIN="$HOME/.unsloth/studio/bin/unsloth"
           # No verdict.json when the bin is missing, so check here or json.load crashes.
@@ -367,6 +379,16 @@ jobs:
           powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden `
             -ExecutionPolicy Bypass -File install.ps1 ${{ matrix.installArgs }} *>&1 |
             Tee-Object -FilePath logs/repair.log
+          # Same gate as the POSIX leg, and this side ignored the status entirely:
+          # Tee-Object is a cmdlet, so $LASTEXITCODE still carries powershell.exe's code.
+          $rc = $LASTEXITCODE
+          Write-Host "repair exit: $rc"
+          if ($rc -ne 0) {
+            Write-Host "::error::the repair installer exited $rc, so the re-run did NOT repair"
+            Write-Host '::error::the install however healthy the venv looks afterwards.'
+            Get-Content logs/repair.log -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+          }
           $bin = Join-Path $env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\unsloth.exe'
           if (-not (Test-Path $bin)) {
             Write-Host "::error::after a full re-run there is still no unsloth CLI at $bin"

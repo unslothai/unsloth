@@ -76,7 +76,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("bin", help = "path to the unsloth CLI")
     ap.add_argument("--port", type = int, default = 0, help = "0 picks a free port")
     ap.add_argument("--out", default = "probe", help = "directory for probe artefacts")
-    ap.add_argument("--boot-timeout", type = int, default = 120)
+    # The desktop's own startup grace, BACKEND_STARTUP_GRACE_PERIOD = 5 min
+    # (commands.rs:9): a shorter one here fails a leg the app would have waited out. It
+    # cannot mask the bug -- a missing import kills the backend, and the loop below breaks
+    # on proc.poll() the moment it exits, so this deadline only ever bounds a LIVE backend.
+    ap.add_argument("--boot-timeout", type = int, default = 300)
     a = ap.parse_args(argv)
 
     binp = a.bin
