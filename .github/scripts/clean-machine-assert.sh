@@ -36,7 +36,10 @@ for check in "$@"; do
       else
         ok "xcode-select -p fails (the gate a virgin Mac hits)"
       fi
-      for tool in git cc clang cmake; do
+      # The whole set clean-machine-env.sh moves aside, not the four it used to check: that
+      # helper warns and carries on when a move fails, so a surviving gcc -- which
+      # install.sh probes to decide build-essential is available -- passed unnoticed.
+      for tool in git cc clang cmake gcc g++ make ninja cargo rustc; do
         command -v "$tool" >/dev/null 2>&1 || { ok "$tool not on PATH"; continue; }
         if "$tool" --version >/dev/null 2>&1; then
           # Intel runners' /usr/bin/git is not CLT-provided, so masking cannot take it

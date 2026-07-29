@@ -100,12 +100,17 @@ if [ "$MODE" = "mask" ]; then
     # Best effort, each step independent and recorded in restore.sh so an `if: always()`
     # step can put the runner back. `xcode-select -p` reads xcode_select_link, so
     # removing it reproduces a virgin Mac's gate; `--reset` can reselect Xcode.app.
+    # Captured now, re-selected LAST: restore.sh runs in order, and a --switch emitted here
+    # would name a directory the later lines have not moved back yet, fail, and be
+    # swallowed, leaving the link unrestored while the step reported success.
+    _orig_dev=""
     if [ -e /var/db/xcode_select_link ]; then
+      _orig_dev="$(xcode-select -p 2>/dev/null || true)"
       if sudo rm -f /var/db/xcode_select_link 2>/dev/null; then
-        note "removed /var/db/xcode_select_link"
-        echo "sudo xcode-select --switch /Library/Developer/CommandLineTools 2>/dev/null || true" >> "$RESTORE"
+        note "removed /var/db/xcode_select_link (was: ${_orig_dev:-unset})"
       else
         note "WARN could not remove /var/db/xcode_select_link"
+        _orig_dev=""
       fi
     fi
     # Moving the CLT dir aside turns /usr/bin/{cc,clang,git} into dead shims, proving
@@ -130,6 +135,12 @@ if [ "$MODE" = "mask" ]; then
         note "WARN could not move $app"
       fi
     done
+    # After both directory restores above, so the path it names is back. Still `|| true`:
+    # the runner is ephemeral and a failed re-selection must not fail an otherwise green
+    # job, but it can no longer fail for the trivial reason of running too early.
+    if [ -n "$_orig_dev" ]; then
+      echo "sudo xcode-select --switch '$_orig_dev' 2>/dev/null || true" >> "$RESTORE"
+    fi
     # /usr/local EXISTS on a factory-fresh Mac (a SIP-exempt firmlink) but is empty, so
     # empty it rather than remove it. Before the Homebrew block, so /usr/local/Homebrew
     # is stashed once, with one restore line, in the right order.
