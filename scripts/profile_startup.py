@@ -99,6 +99,21 @@ def profile_imports(python: str, top: int = 15) -> dict:
         }
 
     by_cum = sorted(rows, key = lambda r: -r[1])
+    # The total has to come from the row named `main`, not from the largest row.
+    # -X importtime also prints the interpreter's own startup graph (`site`,
+    # `encodings`, and anything a venv's sitecustomize drags in), which is not
+    # part of `import main`. Today main dwarfs those, but the two are not ordered
+    # by construction: with a trivial main this file's old `by_cum[0]` reported
+    # `site`'s 0.027s as `import main` while main actually cost 0.000249s. Read
+    # the labelled row so the headline number cannot silently become a different
+    # module's cost as backend imports get optimized.
+    main_row = next((r for r in reversed(rows) if r[2] == "main"), None)
+    if main_row is None:
+        return {
+            "ok": False,
+            "error": "no `import main` row in -X importtime output\n"
+                     + (proc.stderr or proc.stdout)[-2000:],
+        }
     self_by_pkg: dict[str, int] = {}
     for self_us, _cum, name in rows:
         pkg = name.split(".")[0]
@@ -106,8 +121,7 @@ def profile_imports(python: str, top: int = 15) -> dict:
 
     return {
         "ok": True,
-        # The largest cumulative figure is the whole graph: `import main` itself.
-        "total_seconds": round(by_cum[0][1] / 1e6, 3),
+        "total_seconds": round(main_row[1] / 1e6, 3),
         "top_cumulative": [
             {"module": n, "seconds": round(c / 1e6, 3)} for _s, c, n in by_cum[:top]
         ],
@@ -115,6 +129,35 @@ def profile_imports(python: str, top: int = 15) -> dict:
             k: round(v / 1000) for k, v in sorted(self_by_pkg.items(), key = lambda x: -x[1])[:top]
         },
     }
+
+
+def _terminate_tree(proc: subprocess.Popen) -> None:
+    """Stop the server AND its children, which on Windows are a separate process.
+
+    CI profiles `Scripts/unsloth.exe`, and a pip console-script .exe is a distlib
+    launcher stub: it parses its own shebang, CreateProcess's the venv python on
+    the zip appended to itself, and just waits. terminate() therefore reaps the
+    stub only, leaving the real backend holding the inherited stdout handle -- so
+    the reader thread never sees EOF and burns the full reader.join(timeout=10),
+    and with --repeats every iteration strands another server on the shared
+    UNSLOTH_STUDIO_HOME. taskkill /T walks the tree, matching the cleanup already
+    used in unsloth_cli/commands/start.py and unsloth/dataprep/synthetic.py.
+    """
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output = True,
+                timeout = 30,
+                check = False,
+            )
+            return
+        except Exception:
+            # taskkill missing or timed out; fall through so the stub still dies.
+            pass
+    proc.terminate()
 
 
 def profile_launch(
@@ -170,7 +213,7 @@ def profile_launch(
                 break
             time.sleep(0.25)
     finally:
-        proc.terminate()
+        _terminate_tree(proc)
         try:
             # Safe to wait() rather than communicate(): the reader thread is
             # already draining the pipe, so the child cannot block on write().
