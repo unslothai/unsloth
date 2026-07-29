@@ -8,6 +8,7 @@ import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "./model-identity";
+import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -15,16 +16,18 @@ export interface PerModelConfig {
   kvCacheDtype: string | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
+  nParallel: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
-  // parse. null selectedGpuIds (all GPUs) is distinct from absent. The --tensor-split
-  // ratio is deliberately not remembered: it is positionally bound to the exact
-  // GPU set/order and unvalidated.
+  // parse. null or absent selectedGpuIds means automatic placement; an array is
+  // an explicit candidate pool. The --tensor-split ratio is deliberately not
+  // remembered because it is bound to the exact GPU set and order.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
+  selectedGpuIndexKind?: GpuIndexKind | null;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -33,9 +36,15 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   kvCacheDtype: null,
   speculativeType: null,
   specDraftNMax: null,
+  nParallel: null,
   tensorParallel: false,
   chatTemplateOverride: null,
 };
+
+// Mirrors llama_server_args.py PARALLEL_MIN/MAX (LoadRequest.n_parallel
+// bounds). null = follow the server-wide default.
+export const N_PARALLEL_MIN = 1;
+export const N_PARALLEL_MAX = 64;
 
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
@@ -92,12 +101,14 @@ const STORED_CONFIG_FIELDS = new Set([
   "kvCacheDtype",
   "speculativeType",
   "specDraftNMax",
+  "nParallel",
   "tensorParallel",
   "chatTemplateOverride",
   "gpuMemoryMode",
   "gpuLayers",
   "nCpuMoe",
   "selectedGpuIds",
+  "selectedGpuIndexKind",
 ]);
 
 function normalizeGpuFields(partial: RawConfig): {
@@ -105,12 +116,14 @@ function normalizeGpuFields(partial: RawConfig): {
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
+  selectedGpuIndexKind?: GpuIndexKind | null;
 } {
   const out: {
     gpuMemoryMode?: "auto" | "manual";
     gpuLayers?: number;
     nCpuMoe?: number;
     selectedGpuIds?: number[] | null;
+    selectedGpuIndexKind?: GpuIndexKind | null;
   } = {};
   // Only "manual" is a real override; persisting "auto" would pin the model and
   // stop it following later changes to the global GPU Memory preference.
@@ -139,6 +152,13 @@ function normalizeGpuFields(partial: RawConfig): {
     )
   ) {
     out.selectedGpuIds = partial.selectedGpuIds.map((n) => Math.trunc(n));
+  }
+  if (
+    partial.selectedGpuIndexKind === "physical" ||
+    partial.selectedGpuIndexKind === "vulkan" ||
+    partial.selectedGpuIndexKind === null
+  ) {
+    out.selectedGpuIndexKind = partial.selectedGpuIndexKind;
   }
   return out;
 }
@@ -292,6 +312,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
       typeof raw.speculativeType === "string" ? raw.speculativeType : null,
     specDraftNMax:
       typeof raw.specDraftNMax === "number" ? raw.specDraftNMax : null,
+    // Legacy blobs predate the parallel-slots knob.
+    nParallel: null,
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     chatTemplateOverride: null,
@@ -459,6 +481,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     speculativeType,
     specDraftNMax,
+    nParallel:
+      typeof partial.nParallel === "number" && Number.isFinite(partial.nParallel)
+        ? Math.max(N_PARALLEL_MIN, Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)))
+        : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -597,6 +623,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
+    config.nParallel == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     (config.chatTemplateOverride ?? null) === null &&

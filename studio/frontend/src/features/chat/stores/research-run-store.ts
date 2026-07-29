@@ -194,9 +194,11 @@ function reduceActivity(
     const title =
       phase === "planning"
         ? "Planning an approach"
-        : phase === "synthesis"
-          ? "Connecting the findings"
-          : "Choosing the next step";
+        : phase === "synthesis_audit"
+          ? "Checking the evidence"
+          : phase === "synthesis" || phase === "synthesis_recovery"
+            ? "Connecting the findings"
+            : "Choosing the next step";
     if (existingIndex >= 0) {
       const existing = next[existingIndex];
       next[existingIndex] = {

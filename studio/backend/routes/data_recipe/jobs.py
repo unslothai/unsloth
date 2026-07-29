@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_credential, get_current_subject
+from auth.storage import CredentialRotated
 
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
@@ -265,7 +266,11 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
-def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
+def _inject_local_providers(
+    recipe: dict[str, Any],
+    request: Request,
+    expect_gen: Optional[str] = None,
+) -> Optional[int]:
     """Mutate recipe in-place: point is_local providers at this server and mint
     a short-lived internal sk-unsloth-* key for workflow auth.
 
@@ -321,6 +326,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
+            expect_gen = expect_gen,
         )
         internal_key_id = int(row["id"])
 
@@ -386,8 +392,9 @@ def _normalize_run_name(value: Any) -> str | None:
 def create_job(
     payload: RecipePayload,
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
 ):
+    current_subject = credential[0]
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
@@ -418,7 +425,11 @@ def create_job(
             ) from exc
 
     try:
-        internal_api_key_id = _inject_local_providers(recipe, request)
+        internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+    except CredentialRotated as exc:
+        # A reset-password landed after this request authenticated; the workflow key
+        # is refused, so answer like any other revoked credential rather than 500.
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
