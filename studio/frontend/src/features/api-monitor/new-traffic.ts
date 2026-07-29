@@ -26,10 +26,17 @@ export interface ApiMonitorWatch {
   /** performance.now() when this watch began; monotonic, so a client clock step
    * mid-session cannot move it. */
   watchStartedAt: number;
+  /** This seed follows a stay on the full page rather than starting a session. */
+  resumed: boolean;
 }
 
 export function createWatch(nowMs: number): ApiMonitorWatch {
-  return { seeded: false, seenIds: new Set(), watchStartedAt: nowMs };
+  return {
+    seeded: false,
+    seenIds: new Set(),
+    watchStartedAt: nowMs,
+    resumed: false,
+  };
 }
 
 /**
@@ -47,6 +54,7 @@ export function startWatching(watch: ApiMonitorWatch, nowMs: number): void {
 /** The full page took over; what it showed is not new traffic on the way back. */
 export function rearmWatch(watch: ApiMonitorWatch): void {
   watch.seeded = false;
+  watch.resumed = true;
 }
 
 /**
@@ -96,9 +104,19 @@ export function observeResponse(
   const { entries } = response;
   if (!watch.seeded) {
     watch.seeded = true;
+    const { resumed } = watch;
+    watch.resumed = false;
     const cutoff = historyCutoff(watch, response, nowMs);
+    // A rearm is not a fresh watch. isHistory holds a running row back on
+    // purpose: at a session's first snapshot it started while Studio was still
+    // loading and nobody has seen it. On the way off the full page the opposite
+    // is true -- that page was showing this same feed, running rows included --
+    // so seeding from isHistory alone reopens the overlay on the request the
+    // user was reading when they left. Everything the page could show is read.
     watch.seenIds = new Set(
-      entries.filter((entry) => isHistory(entry, cutoff)).map((e) => e.id),
+      entries
+        .filter((entry) => resumed || isHistory(entry, cutoff))
+        .map((e) => e.id),
     );
   }
   const seen = watch.seenIds;

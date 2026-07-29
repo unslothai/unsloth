@@ -387,9 +387,11 @@ export function ModelsPage() {
 
   // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
-  const refreshResidentModelStatus = useCallback(() => {
+  // Returns the read so a caller that needs the answer before it decides
+  // anything can wait for it; fire-and-forget callers just drop it.
+  const refreshResidentModelStatus = useCallback((): Promise<void> => {
     const seq = ++residentStatusSeq.current;
-    void getInferenceStatus()
+    return getInferenceStatus()
       .then((status) => {
         if (seq !== residentStatusSeq.current) return;
         const store = useChatRuntimeStore.getState();
@@ -437,7 +439,7 @@ export function ModelsPage() {
   // external selection and for a load this tab started, so a refresh never fights
   // the model the user is switching to.
   useEffect(() => {
-    refreshResidentModelStatus();
+    void refreshResidentModelStatus();
     const unsubscribe = subscribeResidentStatusRefresh(
       refreshResidentModelStatus,
     );
@@ -1305,8 +1307,12 @@ export function ModelsPage() {
   // is seeded once, from saved/default values when the store says this model is
   // not the resident one, and Apply reloads with them. Reading status here covers
   // a switch that landed while this window kept focus the whole time.
+  //
+  // It cannot cover the resolution of the target itself, though: a target has to
+  // exist before this runs. openModelSettings therefore does its own read; this
+  // one is for the handlers that hand the target over ready-made.
   useEffect(() => {
-    if (settingsTarget) refreshResidentModelStatus();
+    if (settingsTarget) void refreshResidentModelStatus();
   }, [settingsTarget, refreshResidentModelStatus]);
   // Bumped per open so a slow variant lookup for an abandoned row cannot land
   // on top of the row actually chosen.
@@ -1332,17 +1338,27 @@ export function ModelsPage() {
         const repoId = row.kind === "cache" ? row.repoId : (row.repoId ?? null);
         if (repoId) {
           try {
-            const res = await listGgufVariants(repoId, hfApiToken(hfToken), {
-              preferLocalCache: true,
-              localPath:
-                row.kind === "local" ? row.path : (row.cachePath ?? null),
-            });
+            const [res] = await Promise.all([
+              listGgufVariants(repoId, hfApiToken(hfToken), {
+                preferLocalCache: true,
+                localPath:
+                  row.kind === "local" ? row.path : (row.cachePath ?? null),
+              }),
+              // Read status as part of this click. The effect above cannot help
+              // here, because it does not run until the target it watches exists,
+              // and the Hub has no polling timer: it re-reads on focus and
+              // visibility only. So a window that has kept focus since the last
+              // read holds a checkpoint from before any API-driven switch, for
+              // however long the user has been sitting on the page. Alongside the
+              // variant lookup rather than before it, since that one usually hits
+              // the network while this is a loopback call.
+              refreshResidentModelStatus(),
+            ]);
             const downloaded = res.variants.filter((v) => v.downloaded);
-            // Re-read residency after the await. Opening settings also kicks a
-            // status refresh, and this request usually hits the network, so the
-            // refresh routinely lands first; the values closed over above then
-            // describe whichever model was resident BEFORE an API-driven switch,
-            // and the loaded-quant branch would silently pick the wrong one.
+            // Read residency after the awaits, never from the values closed over
+            // above: the status read that just settled is what knows which model
+            // is resident now, and the loaded-quant branch below would otherwise
+            // silently pick the quant of whichever model it displaced.
             const settled = useChatRuntimeStore.getState();
             const settledCheckpoint =
               settled.params.checkpoint &&
@@ -1413,7 +1429,7 @@ export function ModelsPage() {
         },
       });
     },
-    [activeCheckpoint, activeGgufVariant, hfToken],
+    [activeCheckpoint, activeGgufVariant, hfToken, refreshResidentModelStatus],
   );
   // Applying loads the model with exactly these settings. ModelConfigPage has
   // already persisted them locally and, when "remember" is on, to the server, so

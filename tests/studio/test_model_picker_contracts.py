@@ -1541,3 +1541,20 @@ def test_monitor_unload_clears_only_the_model_it_freed():
     assert "!isExternalModelId(selected)" in page
     assert "unloadedAliases.some((alias) => modelIdsMatch(selected, alias))" in page
     assert "store.clearCheckpoint();" in page
+
+
+def test_settings_open_reads_status_before_resolving_the_quant():
+    """A cache row carries no quant, so opening its settings resolves one from
+    the store's active variant. The effect that re-reads /status watches
+    settingsTarget and so cannot run until the target already exists, and the
+    Hub has no polling timer: it re-reads on focus and visibility only. Without
+    a read of its own the resolution therefore sees a checkpoint from before any
+    API-driven switch, for as long as the window has kept focus, and opens the
+    editor on the quant of whichever model that switch displaced."""
+    page = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert (
+        "const refreshResidentModelStatus = useCallback((): Promise<void> => {"
+        in page
+    )
+    assert "const [res] = await Promise.all([ listGgufVariants(" in page
+    assert "refreshResidentModelStatus(), ]);" in page

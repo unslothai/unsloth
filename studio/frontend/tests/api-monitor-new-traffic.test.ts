@@ -138,3 +138,50 @@ test("coming back from the full page does not replay the rows it showed", () => 
   );
   assert.equal(opened, false);
 });
+
+test("a request still running when the full page is left does not reopen the overlay", () => {
+  // The user opened /api-monitor to watch a long generation, then went back to
+  // chat while it was still running. That row was on screen the whole time.
+  const watch = watchFrom(WATCH_AT);
+  const live = entry("apireq_live", "running", SERVER_NOW - 5);
+  observeResponse(watch, snapshot([live]), WATCH_AT + 10);
+  rearmWatch(watch);
+  startWatching(watch, WATCH_AT + 60_000);
+  const opened = observeResponse(
+    watch,
+    snapshot([live], SERVER_NOW + 60),
+    WATCH_AT + 60_010,
+  );
+  assert.equal(opened, false);
+});
+
+test("a rearm writes off only the snapshot it comes back to", () => {
+  // The write-off is one seed, not a mode: a call that arrives after the return
+  // is still new traffic.
+  const watch = watchFrom(WATCH_AT);
+  const live = entry("apireq_live", "running", SERVER_NOW - 5);
+  observeResponse(watch, snapshot([live]), WATCH_AT + 10);
+  rearmWatch(watch);
+  startWatching(watch, WATCH_AT + 60_000);
+  observeResponse(watch, snapshot([live], SERVER_NOW + 60), WATCH_AT + 60_010);
+  const opened = observeResponse(
+    watch,
+    snapshot(
+      [entry("apireq_next", "running", SERVER_NOW + 61), live],
+      SERVER_NOW + 62,
+    ),
+    WATCH_AT + 62_010,
+  );
+  assert.equal(opened, true);
+});
+
+test("a fresh watch still reports a request that was already running", () => {
+  // The rearm write-off must not become the default seed for a session that
+  // never saw the full page.
+  const opened = observeResponse(
+    watchFrom(WATCH_AT),
+    snapshot([entry("apireq_live", "running", SERVER_NOW - 90)]),
+    WATCH_AT + 10,
+  );
+  assert.equal(opened, true);
+});
