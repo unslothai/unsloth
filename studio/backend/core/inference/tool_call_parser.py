@@ -183,6 +183,9 @@ INTENT_SIGNAL = re.compile(
 # times since #5620); safetensors and MLX inherit the same cap from here.
 MAX_ACT_REPROMPTS = 3
 REPROMPT_MAX_CHARS = 2000
+# Composer badge while a hidden re-prompted turn regenerates, else the UI looks
+# hung. Matched exactly by the frontend (utils/tool-status.ts); keep in sync.
+NUDGE_TOOL_CALLS_STATUS = "Nudging tool calls"
 
 
 def is_short_intent_without_action(text: str) -> bool:
