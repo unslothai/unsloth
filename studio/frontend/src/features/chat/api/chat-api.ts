@@ -220,6 +220,7 @@ export async function fetchGgufStagedMetadata(payload: {
   contextLength: number | null;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isDiffusion: boolean;
 }> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
@@ -229,7 +230,12 @@ export async function fetchGgufStagedMetadata(payload: {
       ).nativePathLease;
     } catch {
       // Lease expired / revoked: degrade to no metadata (the load can re-mint).
-      return { contextLength: null, layerCount: null, moeLayerCount: null };
+      return {
+        contextLength: null,
+        layerCount: null,
+        moeLayerCount: null,
+        isDiffusion: false,
+      };
     }
   }
   const response = await authFetch("/api/inference/validate", {
@@ -248,6 +254,7 @@ export async function fetchGgufStagedMetadata(payload: {
     contextLength: res.context_length ?? null,
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
+    isDiffusion: res.is_diffusion ?? false,
   };
 }
 

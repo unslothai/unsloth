@@ -9,6 +9,7 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
   primeNativeNotificationPermission,
@@ -21,6 +22,7 @@ import {
   getGgufDownloadProgress,
   getInferenceStatus,
   getLoadProgress,
+  fetchGgufStagedMetadata,
   listLoras,
   listModels,
   loadModel,
@@ -89,6 +91,8 @@ export type SelectedModelInput = {
   /** Direct local .gguf file (no HF variant / native token) — still a GGUF
    *  source, so the staging flow treats it as one. */
   isGguf?: boolean;
+  /** Staged metadata confirmed the separate DiffusionGemma runner. */
+  isDiffusion?: boolean;
   throwOnError?: boolean;
   /** Keep the current speculative-decoding choice across the model switch
    *  instead of resetting it to the standing preference. */
@@ -496,15 +500,23 @@ export function useChatModelRuntime() {
           : selection.nativePathExpiresAtMs ?? null;
       const explicitIsGguf =
         typeof selection === "string" ? undefined : selection.isGguf;
+      let isDiffusion =
+        typeof selection === "string" ? undefined : selection.isDiffusion;
+      const restorePreviousConfig = () => {
+        if (typeof selection !== "string" && selection.previousConfig) {
+          applyPerModelConfigToRuntime(selection.previousConfig, {
+            isDiffusion:
+              useChatRuntimeStore.getState().loadedIsDiffusion,
+          });
+        }
+      };
       const throwOnError =
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
-        }
+        restorePreviousConfig();
         return;
       }
       // A load is already in flight. If it's this exact pick (id + variant + token),
@@ -518,9 +530,9 @@ export function useChatModelRuntime() {
           loadingModelRef.current ??
           useChatRuntimeStore.getState().loadingModelPick;
         if (!inFlightLoad) return false;
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
-        }
+        // The helper form, not an inline apply: it also carries the loaded
+        // diffusion flag, which the restored config needs to stay correct.
+        restorePreviousConfig();
         const loadingSamePick =
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
@@ -675,12 +687,38 @@ export function useChatModelRuntime() {
           // default), which the resolved baseline cannot express. previousConfig
           // is the snapshot the picker took before pre-applying the target's
           // config, so the live control is only the outgoing one without it.
+          // Read before the staged-metadata await below so an in-flight change
+          // cannot perturb the outgoing snapshot.
           const previousNParallel =
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          if (isGguf && isDiffusion === undefined) {
+            // Prepare the token exactly as validateModel/loadModel do (and as
+            // the compare path does): the Hub rejects an invalid Authorization
+            // header with 401 even for a public repo, so sending the raw stored
+            // token here would abort the load before the existing "continue
+            // anonymously / replace token" recovery flow could run.
+            const preparedToken = await prepareHfTokenForUse(
+              useChatRuntimeStore.getState().hfToken || null,
+            );
+            if (!preparedToken.proceed) {
+              throw new Error("Model load cancelled.");
+            }
+            isDiffusion = (
+              await fetchGgufStagedMetadata({
+                model_path: modelId,
+                gguf_variant: ggufVariant ?? null,
+                hf_token: preparedToken.token,
+                nativePathToken: nativePathToken ?? null,
+              })
+            ).isDiffusion;
+          }
+          const targetIsDiffusion = isDiffusion === true;
           if (pendingLoadConfig) {
-            applyPerModelConfigToRuntime(pendingLoadConfig);
+            applyPerModelConfigToRuntime(pendingLoadConfig, {
+              isDiffusion: targetIsDiffusion,
+            });
           }
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
@@ -739,8 +777,10 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
           const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
-          const loadTensorParallel =
-            pendingLoadConfig?.tensorParallel ?? stateBeforeUnload.tensorParallel;
+          const loadTensorParallel = targetIsDiffusion
+            ? false
+            : (pendingLoadConfig?.tensorParallel ??
+              stateBeforeUnload.tensorParallel);
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
@@ -763,8 +803,16 @@ export function useChatModelRuntime() {
           }
           let loadSelectedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
-              ? reconcilePersistedGpuIds(pendingLoadConfig.selectedGpuIds)
-              : reconcilePersistedGpuIds(stateBeforeUnload.selectedGpuIds);
+              ? reconcilePersistedGpuIds(
+                  pendingLoadConfig.selectedGpuIds,
+                  pendingLoadConfig.selectedGpuIndexKind,
+                  targetIsDiffusion,
+                )
+              : reconcilePersistedGpuIds(
+                  stateBeforeUnload.selectedGpuIds,
+                  stateBeforeUnload.selectedGpuIndexKind,
+                  targetIsDiffusion,
+                );
           let loadSpeculativeType =
             pendingLoadConfig?.speculativeType != null
               ? normalizeSpeculativeType(pendingLoadConfig.speculativeType)
@@ -931,6 +979,7 @@ export function useChatModelRuntime() {
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
+                selectedGpuIndexKind: null,
                 gpuLayers: GPU_LAYERS_AUTO,
                 nCpuMoe: 0,
                 splitRatio: null,
@@ -952,7 +1001,11 @@ export function useChatModelRuntime() {
                 pendingLoadConfig?.customContextLength ?? null;
               loadSelectedGpuIds =
                 pendingLoadConfig?.selectedGpuIds !== undefined
-                  ? reconcilePersistedGpuIds(pendingLoadConfig.selectedGpuIds)
+                  ? reconcilePersistedGpuIds(
+                      pendingLoadConfig.selectedGpuIds,
+                      pendingLoadConfig.selectedGpuIndexKind,
+                      targetIsDiffusion,
+                    )
                   : null;
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
               loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
@@ -1629,9 +1682,7 @@ export function useChatModelRuntime() {
           resetLoadingUi();
         }
       } catch (error) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
-        }
+        restorePreviousConfig();
         if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
         resetLoadingUi();
         const message =

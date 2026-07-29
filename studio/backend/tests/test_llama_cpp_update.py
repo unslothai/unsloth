@@ -499,7 +499,7 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
         time.sleep(0.05)
     assert job["state"] == "success", job
     assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
-    assert popen_kwargs["env"]["UNSLOTH_LLAMA_BACKEND"] == "vulkan"
+    assert popen_kwargs["env"]["UNSLOTH_LLAMA_CPP_BACKEND"] == "vulkan"
     assert "--llama-backend" in captured["cmd"] and "vulkan" in captured["cmd"]
 
 

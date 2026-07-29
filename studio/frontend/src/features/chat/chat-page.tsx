@@ -494,6 +494,7 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  isDiffusion?: boolean;
   config?: PerModelConfig;
 };
 
@@ -842,6 +843,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const globalIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const active = useChatActive();
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
@@ -850,6 +852,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: globalCheckpoint || "",
     isLora: false,
     ggufVariant: globalGgufVariant ?? undefined,
+    isDiffusion: globalIsDiffusion,
   });
   const [model2, setModel2] = useState<CompareModelSelection>({
     id: "",
@@ -935,6 +938,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  isDiffusion: meta.isDiffusion,
                   config: meta.config,
                 })
               }
@@ -965,6 +969,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  isDiffusion: meta.isDiffusion,
                   config: meta.config,
                 })
               }
@@ -2016,6 +2021,9 @@ export function ChatPage({
   } = useActiveModelConfig();
   const activeModelIsGguf =
     runtimeCheckpoint != null && !isExternalModel && runtimeModelIsGguf;
+  const activeModelIsDiffusion = useChatRuntimeStore(
+    (s) => s.loadedIsDiffusion,
+  );
   const activeModelIsLora = useMemo(() => {
     const checkpoint = inferenceParams.checkpoint;
     if (!checkpoint || isExternalModel) return false;
@@ -2416,12 +2424,11 @@ export function ChatPage({
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
-      const hasAppliedConfig = applyModelLoadConfigToRuntime(
-        selection.config ?? rememberedConfigFor(selection),
-      );
+      const loadConfig =
+        selection.config ?? rememberedConfigFor(selection);
       await selectModel({
         ...selection,
-        ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
+        ...(loadConfig ? { config: loadConfig, keepSpeculative: true } : {}),
         previousConfig,
       });
     },
@@ -2758,6 +2765,7 @@ export function ChatPage({
           isDownloaded: meta?.isDownloaded || isSameLoadedModel,
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
+          isDiffusion: meta?.isDiffusion,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
@@ -2800,6 +2808,7 @@ export function ChatPage({
         nativePathToken: nativeToken ?? undefined,
         nativePathExpiresAtMs: nativeExpiry,
         isGguf: activeModelIsGguf,
+        isDiffusion: activeModelIsDiffusion,
         isDownloaded: true,
         config,
         forceReload: true,
@@ -2810,6 +2819,7 @@ export function ChatPage({
       activeGgufVariant,
       activeModelIsLora,
       activeModelIsGguf,
+      activeModelIsDiffusion,
       handleCheckpointChange,
     ],
   );
@@ -3495,6 +3505,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isDiffusion={activeModelIsDiffusion}
               nativeContextLength={ggufNativeContextLength}
               loadedContextLength={ggufContextLength}
               loadedConfig={activeModelConfig}
