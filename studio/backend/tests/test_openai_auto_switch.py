@@ -3366,9 +3366,9 @@ def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch
             raise
         total = None
 
-    assert total is None, (
-        "a total counted across a model change must not be published as either model's"
-    )
+    assert (
+        total is None
+    ), "a total counted across a model change must not be published as either model's"
     assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
 
 

@@ -615,7 +615,7 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     # None means the reply names the model this client already holds, so it is published.
     expected_total = 12 + 25 * expected_sent if counted_model is None else None
     counted_model_setup = (
-        "" if counted_model is None else f'world.countedModel = {json.dumps(counted_model)};'
+        "" if counted_model is None else f"world.countedModel = {json.dumps(counted_model)};"
     )
     out = _run(
         textwrap.dedent(
@@ -646,12 +646,12 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     )
     assert out["counts"] == 1
     assert len(out["sent"]) == expected_sent, "the branch the request would send must be priced"
-    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
-        "a total from another model's tokenizer must not reach the bar"
-    )
-    assert (out["cached"] or {}).get("totalTokens") == expected_total, (
-        "nor the per-thread cache setActiveThreadId restores from"
-    )
+    assert (out["contextUsage"] or {}).get(
+        "totalTokens"
+    ) == expected_total, "a total from another model's tokenizer must not reach the bar"
+    assert (out["cached"] or {}).get(
+        "totalTokens"
+    ) == expected_total, "nor the per-thread cache setActiveThreadId restores from"
     if expected_total is not None:
         assert out["cached"] is not None, "the recount must reach the per-thread cache"
 
