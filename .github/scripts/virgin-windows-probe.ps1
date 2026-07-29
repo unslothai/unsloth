@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs INSIDE a Windows container. Proves the environment is genuinely virgin
-# BEFORE anything is installed into it.
-#
-# This script is the entire point of the container lane. The hosted-runner Windows
-# legs of clean-machine-install-ci.yml simulate absence (rename the toolcache Python
-# directory, scrub the Machine and User registry PATH); this one asserts real
-# absence on an OS image that never had a toolchain. If these assertions do not
-# run, the lane proves nothing that the masked legs did not already prove.
+# Runs INSIDE a Windows container, proving the environment is genuinely virgin BEFORE
+# anything is installed into it. This is the entire point of the container lane: the
+# hosted-runner Windows legs of clean-machine-install-ci.yml only simulate absence
+# (rename the toolcache Python dir, scrub the Machine and User registry PATH), while
+# this asserts real absence on an image that never had a toolchain. Without it the lane
+# proves nothing the masked legs did not already prove.
 
 $ErrorActionPreference = 'Continue'
 $failures = @()
@@ -45,10 +43,9 @@ Write-Host "USERPROFILE    : $env:USERPROFILE"
 Write-Host "LOCALAPPDATA   : $env:LOCALAPPDATA"
 Write-Host "PROCESSOR_ARCH : $env:PROCESSOR_ARCHITECTURE"
 
-# install.ps1 line 254/258 does Join-Path $env:USERPROFILE ".unsloth\studio" with no
-# null guard, so an unset USERPROFILE aborts under ErrorActionPreference=Stop.
-# The lane sets UNSLOTH_STUDIO_HOME, but record whether a bare container would have
-# survived without it.
+# install.ps1:254/258 does Join-Path $env:USERPROFILE ".unsloth\studio" with no null
+# guard, so an unset USERPROFILE aborts under ErrorActionPreference=Stop. The lane sets
+# UNSLOTH_STUDIO_HOME, but record whether a bare container would have survived without.
 if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
     Write-Host "::warning::USERPROFILE is unset in this container; install.ps1's default install root would abort"
 }
@@ -66,27 +63,26 @@ foreach ($t in $mustBeAbsent) {
 }
 
 Section 'informational: present but not a developer toolchain'
-# These are OS components, not a toolchain. curl.exe and tar.exe ship in System32 on
-# Server 2022 and are the only transport into a container with no git; naming them
-# keeps the premise honest rather than silently relying on them.
+# OS components, not a toolchain. curl.exe and tar.exe ship in System32 on Server 2022
+# and are the only transport into a container with no git; naming them keeps the
+# premise honest rather than silently relying on them.
 foreach ($t in 'cmd', 'powershell', 'curl', 'tar', 'certutil', 'msiexec', 'reg', 'where', 'pwsh', 'node', 'npm', 'msbuild', 'dotnet', 'gcc') {
     $c = Get-Command $t -ErrorAction SilentlyContinue
     Write-Host ("  {0,-10} {1}" -f $t, $(if ($c) { $c.Source } else { 'ABSENT' }))
 }
 
 Section 'virginity: no toolchain on disk either'
-# A binary can be absent from PATH and still be found by uv's own interpreter
-# discovery or by py.exe's registry view -- that is exactly how the hosted Windows
-# leg once reported `python ABSENT` and then installed with the runner's 3.13.14.
-# Check the disk and the registry, not just PATH.
+# A binary can be off PATH and still be found by uv's interpreter discovery or py.exe's
+# registry view -- exactly how the hosted Windows leg once reported `python ABSENT` and
+# then installed with the runner's 3.13.14. So check disk and registry too.
 $badPaths = @(
     'C:\Python27', 'C:\Python3*', 'C:\Program Files\Python*', 'C:\Program Files (x86)\Python*',
     'C:\Program Files\Git', 'C:\Program Files\CMake', 'C:\Program Files\Microsoft Visual Studio',
     'C:\Program Files (x86)\Microsoft Visual Studio', 'C:\hostedtoolcache', 'C:\ProgramData\chocolatey'
 )
 foreach ($p in $badPaths) {
-    # Wildcards can match several directories; take the first so the message names a
-    # real path instead of stringifying an array.
+    # Wildcards can match several dirs; take the first so the message names a real
+    # path instead of stringifying an array.
     $hit = @(Get-Item -Path $p -ErrorAction SilentlyContinue) | Select-Object -First 1
     if ($hit) {
         Write-Host "  PRESENT  $($hit.FullName)"
@@ -115,12 +111,12 @@ foreach ($scope in 'Machine', 'User') {
 
 # ── The VC++ runtime question the hosted leg cannot answer ────────────────────
 Section 'VC++ runtime (honest measurement)'
-# clean-machine-install-ci.yml carries an explicit HONESTY NOTE that the hosted image
-# ships the VC++ 2015-2022 runtime in System32 and it cannot be removed without
-# breaking the runner, so `import torch` succeeding there does NOT prove a no-winget
-# machine has the runtime. This container is the only environment in CI that can
-# answer it, so their absence is asserted, not merely recorded: if a future base image
-# starts shipping them the lane silently degrades into another masked leg.
+# The hosted image ships the VC++ 2015-2022 runtime in System32 and cannot lose it
+# without breaking the runner (see the HONESTY NOTE in clean-machine-install-ci.yml),
+# so `import torch` succeeding there does NOT prove a no-winget machine has the
+# runtime. This container is the only environment in CI that can answer it, so their
+# absence is asserted, not merely recorded: if a future base image starts shipping
+# them the lane silently degrades into another masked leg.
 foreach ($dll in 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') {
     $p = Join-Path $env:WINDIR "System32\$dll"
     $present = Test-Path $p
@@ -135,9 +131,9 @@ foreach ($k in 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
 
 # ── Can the installer's transport work at all here? ───────────────────────────
 Section 'outbound HTTPS and TLS'
-# install.ps1 never sets [Net.ServicePointManager]::SecurityProtocol, so it inherits
-# the .NET Framework default. Test the DEFAULT first: if that fails and Tls12 works,
-# the installer has a real portability bug on hardened images, not a container quirk.
+# install.ps1 never sets [Net.ServicePointManager]::SecurityProtocol, so it inherits the
+# .NET Framework default. Test the DEFAULT first: if that fails and Tls12 works, the
+# installer has a real portability bug on hardened images, not a container quirk.
 Write-Host "default SecurityProtocol: $([Net.ServicePointManager]::SecurityProtocol)"
 $probeUrls = @(
     'https://www.python.org/ftp/python/',

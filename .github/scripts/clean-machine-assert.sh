@@ -5,13 +5,12 @@
 # Assert the clean-machine contract after an install attempt.
 #
 #   absent   The toolchain really was absent for the whole run. Catches a leg that
-#            "passed" only because masking silently failed, or because the installer
+#            "passed" because masking silently failed, or because the installer
 #            quietly installed Xcode CLT behind our back.
 #   notools  The trace recorded no compiler/git/brew invocation (trace mode).
-#   nobuild  The wheels-only contract: no "Building wheel" from pip, no
-#            "Building <pkg>==<ver>" from uv. Needs UNSLOTH_VERBOSE=1, or
-#            run_install_cmd (install.sh:193-243) discards uv's output on success
-#            and there is nothing to read.
+#   nobuild  Wheels-only: no "Building wheel" from pip, no "Building <pkg>==<ver>"
+#            from uv. Needs UNSLOTH_VERBOSE=1, or run_install_cmd
+#            (install.sh:193-243) discards uv's output on success.
 #   macho    Every Mach-O under $MACHO_ROOT is the host architecture, and every
 #            Mach-O MAIN EXECUTABLE is signed. Closes the Rosetta 2 gap, the one
 #            divergence masking cannot reproduce.
@@ -40,9 +39,9 @@ for check in "$@"; do
       for tool in git cc clang cmake; do
         command -v "$tool" >/dev/null 2>&1 || { ok "$tool not on PATH"; continue; }
         if "$tool" --version >/dev/null 2>&1; then
-          # On Intel runners /usr/bin/git is not CLT-provided and survives their
-          # removal, so no masking can take it away. cc and clang do become stubs and
-          # the macOS consumer path needs no git, so report rather than fail.
+          # On Intel runners /usr/bin/git is not CLT-provided, so no masking can take
+          # it away. cc and clang do become stubs and the macOS consumer path needs
+          # no git, so report rather than fail.
           case " ${UNSLOTH_CLEAN_ALLOW_WORKING:-} " in
             *" $tool "*)
               echo "[assert] NOTE $tool still works ($(command -v "$tool")); allowed on this runner"
@@ -74,7 +73,7 @@ for check in "$@"; do
           [ -n "$tool" ] || continue
           case " $allow " in *" $tool "*) continue ;; esac
           # `xcode-select -p` only ASKS whether a toolchain is selected, and the fix
-          # is that the installer carries on without one, so the question is not USE.
+          # is that the installer carries on without one, so it is not USE.
           # `--install`, which pops the CLT installer, stays a hit.
           if [ "$tool" = "xcode-select" ]; then
             case "$rest" in
@@ -93,17 +92,16 @@ for check in "$@"; do
       ;;
 
     nobuild)
-      # "Built an sdist" is NOT "needed a compiler". Every name below was checked
+      # "Built an sdist" is NOT "needed a compiler". Every name below was verified
       # against its own sdist: setuptools.build_meta backend, no ext_modules, no
       # .c/.cpp/.pyx/.rs file, so its PEP 517 build is a pure-Python copy step.
       #   openai-whisper, argbind, randomname  -- no version ever ships a wheel
       #   antlr4-python3-runtime==4.9.3        -- pinned below the 4.13.2 wheel
-      #   triton-kernels  -- requirements/triton-kernels.txt pins a git URL under
-      #     the triton repo's python/triton_kernels subdirectory: 75 Python files,
-      #     a four-line pyproject.toml, no setup.py, kernels compiled at runtime.
-      #     A direct URL the installer names itself, not something resolution
-      #     chose, and only the Linux legs reach it (install_python_stack.py skips
-      #     the step on Windows and macOS).
+      #   triton-kernels  -- requirements/triton-kernels.txt pins a git URL under the
+      #     triton repo's python/triton_kernels subdir: 75 Python files, a four-line
+      #     pyproject.toml, no setup.py, kernels compiled at runtime. A direct URL the
+      #     installer names itself, not something resolution chose, and only the Linux
+      #     legs reach it (install_python_stack.py skips it on Windows and macOS).
       # UNSLOTH_ALLOW_SDIST extends the allowlist.
       #
       # Lowercased and underscore-folded on both sides: a distribution name and the
@@ -116,10 +114,10 @@ for check in "$@"; do
         # <name>` (astral-sh/uv#11165), so match both; the `==` or ` @ ` requirement
         # keeps this off the installer's own lowercase "building frontend..." text, and
         # ANSI is stripped first so a coloured run (FORCE_COLOR) parses.
-        # `Building <name> @ file://...` is dropped: a local-path build is something the
-        # caller pointed at (--local, or the editable overlay), never something
-        # resolution chose. Index dependencies always print `<name>==<version>`, so a
-        # genuine PyPI sdist is still caught, including one named unsloth.
+        # `Building <name> @ file://...` is dropped: a local-path build is one the
+        # caller pointed at (--local, or the editable overlay), never one resolution
+        # chose. Index dependencies always print `<name>==<version>`, so a genuine
+        # PyPI sdist is still caught, including one named unsloth.
         _esc=$(printf '\033')
         _built="$(sed -E "s/${_esc}\[[0-9;]*[A-Za-z]//g" "$LOG" 2>/dev/null \
                   | grep -viE "building [a-z0-9._-]+ @ file://" \
@@ -154,10 +152,10 @@ for check in "$@"; do
       # xcrun shim and gone after masking, so read `file -b`, keyed off `uname -m`
       # (macos-15-intel is x86_64).
       #
-      # SCOPE: all of $MACHO_ROOT, including the .venv_t5_510/_530/_550 sidecars.
-      # Those are payload, not scratch: setup.sh:579-581 creates them during a
-      # normal install and transformers_version.py:338-348 puts them on sys.path.
-      # Any exclusion must be a named path rule, never a narrowed find.
+      # SCOPE: all of $MACHO_ROOT, .venv_t5_510/_530/_550 sidecars included. Those are
+      # payload, not scratch: setup.sh:579-581 creates them during a normal install and
+      # transformers_version.py:338-348 puts them on sys.path. Any exclusion must be a
+      # named path rule, never a narrowed find.
       root="${MACHO_ROOT:-${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth}}"
       want="$(uname -m)"
       [ "$want" = "aarch64" ] && want=arm64
@@ -165,18 +163,17 @@ for check in "$@"; do
         fail "macho requested but $root does not exist"
       else
         # SCOPE, part 2: the two payloads the install RUNS ON live outside $root.
-        # `uv venv` links <venv>/bin/python at its base interpreter rather than
-        # copying it, and the find below has no -L, so the interpreter that executed
-        # every install step is invisible to it; the uv that fetched it lands in
-        # $HOME/.local/bin. Both are exactly what Rosetta 2 hides -- an x86_64 uv or
-        # managed CPython runs green here and dies on the factory-fresh Mac this job
-        # stands in for.
+        # `uv venv` links <venv>/bin/python at its base interpreter rather than copying
+        # it, and the find below has no -L, so the interpreter that ran every install
+        # step is invisible to it; the uv that fetched it lands in $HOME/.local/bin.
+        # Both are exactly what Rosetta 2 hides: an x86_64 uv or managed CPython runs
+        # green here and dies on the factory-fresh Mac this job stands in for.
         _macho_targets() {
           find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null
           # -L follows the interpreter symlink; -maxdepth keeps this a bin/ lookup and
           # not a second walk of site-packages through the venv's lib64 link. Depth 4
-          # covers <root>/unsloth_studio, the .venv_t5_* sidecars and the tauri
-          # layout's <root>/studio/unsloth_studio.
+          # covers <root>/unsloth_studio, the .venv_t5_* sidecars and the tauri layout's
+          # <root>/studio/unsloth_studio.
           find -L "$root" -maxdepth 4 -type f -path '*/bin/python' 2>/dev/null
           for _uv in "$HOME/.local/bin/uv" "$(command -v uv 2>/dev/null || true)"; do
             [ -n "$_uv" ] && [ -f "$_uv" ] && printf '%s\n' "$_uv"
@@ -195,11 +192,11 @@ for check in "$@"; do
             *) bad_arch="$bad_arch $f [$desc]" ;;
           esac
 
-          # Signature: MAIN EXECUTABLES ONLY. Asserting it for every Mach-O failed the
+          # Signature: MAIN EXECUTABLES ONLY. Asserting it on every Mach-O failed the
           # mask/pipe leg on 29 ordinary PyPI extension modules plus libportaudio.dylib:
-          # those are MH_BUNDLE/MH_DYLIB images dlopen'd without library validation and
-          # ship unsigned, and that run had already imported them with the installer
-          # exiting 0. macOS enforces on main executables and gatekept .app bundles.
+          # MH_BUNDLE/MH_DYLIB images dlopen'd without library validation, shipped
+          # unsigned, and that run had already imported them with the installer exiting
+          # 0. macOS enforces on main executables and gatekept .app bundles.
           #
           # Key off the filetype `file` reports, not the path: a .so may be a bundle or a
           # dylib, and an executable may have no extension. The library veto is second so
@@ -218,14 +215,14 @@ for check in "$@"; do
           # ("Killed: 9"), while x86_64 execs it happily, so an unsigned x86_64
           # payload is not the same defect.
           if [ "$want" = "arm64" ] && [ "$_is_exe" = 1 ]; then
-            # Ad-hoc counts as signed: arm64 linkers seal ad-hoc by default, so the
-            # test is "has a seal that verifies", not "has an identity". `spctl` and
+            # Ad-hoc counts as signed: arm64 linkers seal ad-hoc by default, so the test
+            # is "has a seal that verifies", not "has an identity". `spctl` and
             # `--strict` would demand an authority and reject ad-hoc.
             if ! codesign -v "$f" >/dev/null 2>&1; then
               # Nothing to verify and a seal that does not match mean different things.
               # Captured, not piped into grep: `codesign -dvv` exits non-zero on an
-              # unsigned file, and under `pipefail` that status is what the pipeline
-              # returns even on a match.
+              # unsigned file, and under `pipefail` that is the pipeline's status even
+              # on a match.
               _sig="$(codesign -dvv "$f" 2>&1 || true)"
               case "$_sig" in
                 *"not signed at all"*) unsigned="$unsigned $f" ;;
@@ -235,8 +232,8 @@ for check in "$@"; do
           fi
         done < <(_macho_targets | sort -u)
         if [ "$n" = "0" ]; then
-          # An empty scan reads exactly like a clean one, so the check would pass on a
-          # wrong root and prove nothing.
+          # An empty scan reads exactly like a clean one, so a wrong root would pass
+          # and prove nothing.
           fail "no Mach-O found under $root; the arch/signature assertion proved nothing"
         elif [ "$nout" = "0" ]; then
           # Same rule for the roots added above: install.sh always bootstraps uv into

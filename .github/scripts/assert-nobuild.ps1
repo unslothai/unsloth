@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The `nobuild` contract from clean-machine-assert.sh, for Windows.
-#
-# A port and not `shell: bash`: the clean-machine scrub drops every `*\Git\*` PATH
-# entry, and the bash version needs sed/grep/tr/sort out of Git's usr/bin. It also runs
-# inside the servercore container, which has no bash at all. Both Windows lanes call
-# this one file so the sdist allowlist cannot drift.
+# The `nobuild` contract from clean-machine-assert.sh, for Windows. A port and not
+# `shell: bash`: the scrub drops every `*\Git\*` PATH entry and the bash version needs
+# sed/grep/tr/sort out of Git's usr/bin, and it also runs inside the servercore
+# container, which has no bash. Both Windows lanes call this one file so the sdist
+# allowlist cannot drift.
 #
 # Usage: assert-nobuild.ps1 -LogPath logs/install.log   (exit 1 = a source build)
 [CmdletBinding()]
@@ -17,9 +16,10 @@ if (-not (Test-Path -LiteralPath $LogPath)) {
     exit 1
 }
 
-# "Built an sdist" is NOT "needed a compiler": every name here has a
-# setuptools.build_meta backend, no ext_modules and no .c/.cpp/.pyx/.rs file, so its
-# PEP 517 build is a pure-Python copy step. Identical to clean-machine-assert.sh.
+# "Built an sdist" is NOT "needed a compiler": every name here was verified against its
+# own sdist -- setuptools.build_meta backend, no ext_modules, no .c/.cpp/.pyx/.rs file
+# -- so its PEP 517 build is a pure-Python copy step. Identical to
+# clean-machine-assert.sh, which carries the per-name rationale.
 $allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'triton-kernels')
 if ($env:UNSLOTH_ALLOW_SDIST) {
     $allow += ($env:UNSLOTH_ALLOW_SDIST -split '\s+' | Where-Object { $_ })
@@ -34,8 +34,8 @@ $esc = [char]27
 $text = (Get-Content -LiteralPath $LogPath -Raw) -replace "$esc\[[0-9;]*[A-Za-z]", ''
 $built = @()
 foreach ($line in ($text -split "`r?`n")) {
-    # A local-path build is something the caller pointed at (the CI source overlay),
-    # never something resolution chose; index dependencies always print `==<version>`.
+    # A local-path build is one the caller pointed at (the CI source overlay), never
+    # one resolution chose; index dependencies always print `==<version>`.
     if ($line -imatch 'building [a-z0-9._-]+ @ file://') { continue }
     # pip prints `Building wheel for <pkg>`, uv prints `Building <pkg>==<ver>`
     # (astral-sh/uv#11165); the `==` or ` @ ` requirement keeps this off the

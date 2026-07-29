@@ -98,8 +98,8 @@ if [ "$MODE" = "mask" ]; then
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Darwin" ]; then
     # Best effort, each step independent and recorded in restore.sh so an
-    # `if: always()` step can put the runner back. xcode_select_link is what
-    # `xcode-select -p` reads, so removing it reproduces a virgin Mac's gate;
+    # `if: always()` step can put the runner back. `xcode-select -p` reads
+    # xcode_select_link, so removing it reproduces a virgin Mac's gate;
     # `xcode-select --reset` is NOT enough, it can reselect a full Xcode.app.
     if [ -e /var/db/xcode_select_link ]; then
       if sudo rm -f /var/db/xcode_select_link 2>/dev/null; then
@@ -120,9 +120,9 @@ if [ "$MODE" = "mask" ]; then
       fi
     fi
     # Xcode.app must go too: with the link removed AND CommandLineTools moved,
-    # `xcode-select -p` still does not fail, it falls through to the image's Xcode
-    # bundle (observed: /Applications/Xcode_16.4.app/Contents/Developer), which
-    # re-arms /usr/bin/{git,cc}. A rename is instant whatever the bundle size.
+    # `xcode-select -p` still succeeds, falling through to the image's Xcode bundle
+    # (observed: /Applications/Xcode_16.4.app/Contents/Developer), which re-arms
+    # /usr/bin/{git,cc}. A rename is instant whatever the bundle size.
     for app in /Applications/Xcode*.app; do
       [ -d "$app" ] || continue
       if sudo mv "$app" "${app}.masked" 2>/dev/null; then
@@ -133,9 +133,9 @@ if [ "$MODE" = "mask" ]; then
       fi
     done
     # /usr/local EXISTS on a factory-fresh Mac: a SIP-exempt firmlink, and empty. What
-    # is absent is its CONTENTS, /usr/local/bin included. So empty it rather than
-    # remove it. Runs before the Homebrew block below so /usr/local/Homebrew is stashed
-    # once, with one restore line, in the right order.
+    # is absent is its CONTENTS, /usr/local/bin included, so empty it rather than remove
+    # it. Before the Homebrew block below, so /usr/local/Homebrew is stashed once, with
+    # one restore line, in the right order.
     if [ -d /usr/local ]; then
       STASH="$WORK/usr-local"
       mkdir -p "$STASH"
@@ -175,9 +175,9 @@ if [ "$MODE" = "mask" ]; then
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Linux" ]; then
     # A hosted Linux runner keeps git, gcc, cmake and make in /usr/bin, which the PATH
-    # scrub has to keep, so absence must be made real: move the resolved binaries
-    # aside (recorded in restore.sh). Versioned siblings like gcc-11 survive, but a
-    # consumer install invokes the unsuffixed names, which is what `absent` checks.
+    # scrub has to keep, so absence must be made real: move the resolved binaries aside
+    # (recorded in restore.sh). Versioned siblings like gcc-11 survive, but a consumer
+    # install invokes the unsuffixed names, which is what `absent` checks.
     for tool in $TOOLS; do
       # Repeat per tool: a runner can carry the same name in /usr/bin and
       # /usr/local/bin, and moving only the first leaves the second on PATH.

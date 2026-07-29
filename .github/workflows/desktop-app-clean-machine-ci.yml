@@ -13,15 +13,15 @@
 # installs, the binary is present, of the right architecture, and clears the gatekeeper
 # checks a user hits (macOS quarantine + codesign, Windows installer exit); the process
 # STAYS UP past its preflight, where an unhappy app dies; and it writes tauri.log with a
-# preflight disposition, the field that read `ManagedReady` over an unbootable venv in
-# the bug report. Linux gets the strongest check: a real webview under Xvfb.
+# preflight disposition, the field that read `ManagedReady` over an unbootable venv in the
+# bug report. Linux gets the strongest check: a real webview under Xvfb.
 
 name: Desktop app clean machine
 
 on:
-  # Also on PRs touching this job or the stripping scripts: dispatch resolves the
-  # workflow from the DEFAULT branch, so a new or edited file on a feature branch can
-  # never be dispatched and would first run only after merging blind.
+  # Also on PRs touching this job or the stripping scripts: dispatch resolves the workflow
+  # from the DEFAULT branch, so a new or edited file on a feature branch can never be
+  # dispatched and would first run only after merging blind.
   pull_request:
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
@@ -50,21 +50,21 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  # Drafts are listed only to a token with push access, and every desktop-v* release in
-  # this repo is a draft, so `contents: read` cannot see the bundle under test at all.
+  # Drafts are listed only to a token with push access, and every desktop-v* release here
+  # is a draft, so `contents: read` cannot see the bundle under test at all.
   contents: write
 
 env:
-  # release-desktop.yml publishes into github.repository, so a nightly aimed anywhere
-  # else goes green over a broken production bundle. unsloth-test/unsloth-test holds
-  # one frozen release, so the schedule was re-testing the same fixture forever.
+  # release-desktop.yml publishes into github.repository, so a nightly aimed anywhere else
+  # goes green over a broken production bundle. unsloth-test/unsloth-test holds one frozen
+  # release, so the schedule was re-testing the same fixture forever.
   REL_REPO: ${{ inputs.release_repo || github.repository }}
-  # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against
-  # it could never catch a newly published broken bundle. Each download step then
-  # resolves the newest desktop-v* release, drafts included -- every desktop-v* release
-  # here is cut as a draft, so --exclude-drafts matched nothing and every leg died
-  # resolving. releases/tags/<tag> 404s for a draft, but gh looks drafts up over GraphQL,
-  # so `gh release download <tag>` still fetches their assets.
+  # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against it
+  # could never catch a newly published broken bundle. Each download step then resolves
+  # the newest desktop-v* release, drafts included -- every desktop-v* release here is cut
+  # as a draft, so --exclude-drafts matched nothing and every leg died resolving.
+  # releases/tags/<tag> 404s for a draft, but gh looks drafts up over GraphQL, so `gh
+  # release download <tag>` still fetches their assets.
   REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
@@ -73,8 +73,8 @@ jobs:
   # ── macOS: .dmg, Apple Silicon ────────────────────────────────────────────
   macos:
     # A fork PR's token is read-only however this workflow declares permissions, so it
-    # cannot list the draft releases every desktop-v* bundle is published as. Skip
-    # rather than fail: it is a property of the trigger, not a broken release.
+    # cannot list the draft releases every desktop-v* bundle is published as. Skip rather
+    # than fail: a property of the trigger, not a broken release.
     if: github.event.pull_request.head.repo.fork != true
     name: desktop macOS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -98,8 +98,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so
-          # the newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
+          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so the
+          # newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
           if [ -z "$REL_TAG" ]; then
             REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
               --json tagName,createdAt \
@@ -118,10 +118,9 @@ jobs:
           ls -la dl
 
       - name: Strip the developer toolchain
-        # `inputs` exists only for workflow_dispatch, so elsewhere strip_toolchain is
-        # '' -- and loose equality coerces both '' and false to 0, making `!= false`
-        # FALSE, so automatic runs would keep the very toolchain this removes. Gate on
-        # the event instead.
+        # `inputs` exists only for workflow_dispatch, so elsewhere strip_toolchain is '' --
+        # and loose equality coerces both '' and false to 0, making `!= false` FALSE, so
+        # automatic runs would keep the very toolchain this removes. Gate on the event.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
@@ -131,8 +130,8 @@ jobs:
       - name: Mount and install
         run: |
           DMG="$(ls dl/*.dmg | head -1)"
-          # A real download is quarantined, and Gatekeeper treats that differently
-          # from a locally built bundle: a genuine failure mode.
+          # A real download is quarantined, and Gatekeeper treats that differently from a
+          # locally built bundle: a genuine failure mode.
           xattr -w com.apple.quarantine \
             "0081;$(printf %x $(date +%s));Safari;" "$DMG" 2>/dev/null || true
           hdiutil attach "$DMG" -nobrowse -quiet -mountpoint /Volumes/UnslothCI
@@ -148,8 +147,8 @@ jobs:
           BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
           file "$BIN"
           # `lipo -archs` prints and exits 0 for a thin x86_64 binary, and `|| true`
-          # swallowed even that, so architecture was never asserted. lipo is an xcrun
-          # shim, gone once the strip moved CommandLineTools aside; file is base system.
+          # swallowed even that, so architecture was never asserted. lipo is an xcrun shim,
+          # gone once the strip moved CommandLineTools aside; file is base system.
           ARCHS="$(lipo -archs "$BIN" 2>/dev/null || true)"
           [ -n "$ARCHS" ] || ARCHS="$(file -b "$BIN")"
           echo "architectures: $ARCHS"
@@ -157,14 +156,14 @@ jobs:
             *arm64*|*aarch64*) ;;
             *) echo "::error::the aarch64 .dmg carries no arm64 binary ($ARCHS)"; exit 1 ;;
           esac
-          # Report rather than gate: an unnotarised beta is expected to fail
-          # assessment, but a user WILL hit this, so it must be visible.
+          # Report rather than gate: an unnotarised beta is expected to fail assessment, but
+          # a user WILL hit this, so it must be visible.
           codesign -dv --verbose=2 "$APP" 2>&1 | head -20 || true
           spctl -a -vvv -t install "$APP" 2>&1 | head -5 || \
             echo "::warning::Gatekeeper assessment failed -- users see 'cannot be opened' unless notarised"
-          # The bundled installer is what actually failed for users, and `::error::` is
-          # only an annotation that `echo` exits 0 from, so `|| echo` let a bundle with
-          # no installer pass.
+          # The bundled installer is what actually failed for users, and `::error::` is only
+          # an annotation that `echo` exits 0 from, so `|| echo` let a bundle with no
+          # installer pass.
           if [ -f "$APP/Contents/Resources/install.sh" ]; then
             echo "bundled install.sh present"
           else
@@ -179,15 +178,15 @@ jobs:
           APP="$(ls -d /Applications/*Unsloth*.app | head -1)"
           # A headless runner never clicks Install: preflight sets `not_installed` and
           # returns (use-tauri-backend.ts:252-254) while startup-screen.tsx:388-389 waits
-          # for the button, so launching alone sits there for 90s without ever running
-          # the bundled installer. Invoke it as src-tauri/src/install.rs does: --tauri,
-          # stdin closed, no tty. --tauri rejects a custom studio home
-          # (install.sh:102-114), so drop the override.
-          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547.
-          # REL_TAG predates #7547, so the bundle's own install.sh still hard-exits on
-          # the Xcode CLT gate that #7547 replaced with a warning. No change to this PR
-          # can move that; only a new release can. _check_macos_deps is the function
-          # #7547 added, so finding it means the release caught up and this pin must go.
+          # for the button, so launching alone sits there for 90s without ever running the
+          # bundled installer. Invoke it as src-tauri/src/install.rs does: --tauri, stdin
+          # closed, no tty. --tauri rejects a custom studio home (install.sh:102-114), so
+          # drop the override.
+          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547. REL_TAG
+          # predates #7547, so the bundle's own install.sh still hard-exits on the Xcode
+          # CLT gate that #7547 replaced with a warning. Only a new release can move that,
+          # not this PR. _check_macos_deps is the function #7547 added, so finding it means
+          # the release caught up and this pin must go.
           SH="$APP/Contents/Resources/install.sh"
           if grep -q '_check_macos_deps' "$SH"; then
             echo "::error::the bundled install.sh now carries #7547; delete this pin block and let the venv + torch assertions below run unconditionally"
@@ -210,8 +209,8 @@ jobs:
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
           [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
           "$PY" -V
-          # install.rs passes only --tauri, so torch is part of first launch: without
-          # this the venv check passes a bundle whose only failure is the torch install.
+          # install.rs passes only --tauri, so torch is part of first launch: without this
+          # the venv check passes a bundle whose only failure is the torch install.
           "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch and prove it stays up
@@ -251,18 +250,18 @@ jobs:
           done
           # Everything above is `|| true`, so this step could not fail while the header
           # sells the tauri.log disposition as an acceptance criterion. setup_logging
-          # (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally at process
-          # start, so no log means the binary never got that far, and the disposition
-          # line is the field the bug report turned on: a process that hangs before
-          # preflight must not pass.
+          # (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally at process start,
+          # so no log means the binary never got that far, and the disposition line is the
+          # field the bug report turned on: a process that hangs before preflight must not
+          # pass.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
           [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
 
       - name: Restore the runner
         if: always()
-        # `|| true` swallowed everything, including a restore that genuinely broke. The
-        # file only exists once the strip step ran, and an earlier step can fail before
-        # that, so skip explicitly when it is absent and let a real failure surface.
+        # `|| true` swallowed everything, a genuinely broken restore included. The file
+        # only exists once the strip step ran, and an earlier step can fail before that,
+        # so skip explicitly when it is absent and let a real failure surface.
         run: |
           if [ -f .clean-machine/restore.sh ]; then
             bash .clean-machine/restore.sh
@@ -281,9 +280,7 @@ jobs:
 
   # ── Linux: .deb and .AppImage, with a real webview under Xvfb ────────────
   linux:
-    # A fork PR's token is read-only however this workflow declares permissions, so it
-    # cannot list the draft releases every desktop-v* bundle is published as. Skip
-    # rather than fail: it is a property of the trigger, not a broken release.
+    # See the macOS job: a fork PR's token cannot list drafts, so skip rather than fail.
     if: github.event.pull_request.head.repo.fork != true
     name: desktop linux ${{ matrix.kind }}
     runs-on: ubuntu-22.04
@@ -306,14 +303,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so
-          # the newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
+          # See the macOS job. Loud on purpose: no bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
             REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
               --json tagName,createdAt \
               --jq '[.[] | select(.tagName | startswith("desktop-v"))]
                     | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            # Loud on purpose: there is no bundle to test, so passing would prove nothing.
             [ -n "$REL_TAG" ] || {
               echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
               exit 1
@@ -326,14 +321,14 @@ jobs:
           ls -la dl
 
       - name: Strip the developer toolchain
-        # Same gate as macOS: without it the Linux rows ignored strip_toolchain and ran
-        # the bundled installer with the runner's git, gcc, cmake and make in /usr/bin.
+        # Same gate as macOS: without it the Linux rows ignored strip_toolchain and ran the
+        # bundled installer with the runner's git, gcc, cmake and make in /usr/bin.
         #
         # BEFORE the bundle install, as macOS and Windows already do: dpkg runs the
         # package's own maintainer scripts, so installing first let them see the hosted
         # image's toolchain. Nothing in that install needs a masked tool --
-        # clean-machine-env.sh moves aside only $TOOLS, leaving the package manager
-        # itself -- and the current bundle ships a postrm and no install-time script.
+        # clean-machine-env.sh moves aside only $TOOLS, leaving the package manager itself
+        # -- and the current bundle ships a postrm and no install-time script.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
@@ -342,9 +337,9 @@ jobs:
 
       - name: Install with NO dev tooling, only runtime libs
         run: |
-          # Deliberately not build-essential/cmake/git: a user installing a .deb has
-          # none of that. Xvfb and WebKit are runtime requirements, and apt pulls the
-          # .deb's declared deps, so a wrong dependency list fails here.
+          # Deliberately not build-essential/cmake/git: a user installing a .deb has none
+          # of that. Xvfb and WebKit are runtime requirements, and apt pulls the .deb's
+          # declared deps, so a wrong dependency list fails here.
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends xvfb
           if [ "${{ matrix.kind }}" = "deb" ]; then
@@ -362,12 +357,12 @@ jobs:
           echo "BIN=$BIN" >> "$GITHUB_ENV"
           echo "binary: $BIN"
 
-      # The strip runs before this, but `apt-get install ./dl/*.deb` then pulls the
-      # bundle's DECLARED dependencies, so a release that adds git, cmake or a compiler
-      # to that list puts one back in /usr/bin and both required Linux rows still pass.
-      # `absent` ran only beforehand, so re-run it here, before the bundled installer.
-      # The current dependency closure is 65 packages of runtime libs and no toolchain,
-      # so this is green today and only a new dependency can turn it red.
+      # The strip runs before this, but `apt-get install ./dl/*.deb` then pulls the bundle's
+      # DECLARED dependencies, so a release that adds git, cmake or a compiler to that list
+      # puts one back in /usr/bin and both required Linux rows still pass. `absent` ran only
+      # beforehand, so re-run it here, before the bundled installer. The current dependency
+      # closure is 65 packages of runtime libs and no toolchain, so this is green today and
+      # only a new dependency can turn it red.
       - name: Re-assert the toolchain is still absent after the package install
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         run: |
@@ -379,39 +374,39 @@ jobs:
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           set -o pipefail
           # The launch step below only proves the process stayed alive: on a fresh home
-          # preflight reports not_installed and the app waits on the install screen for
-          # a click (use-tauri-backend.ts:252-254, startup-screen.tsx:388-389), so a
-          # bundle whose embedded install.sh was missing or broken passed both Linux
-          # rows. tauri.conf.json:56-59 ships it as a bundle resource, so find it there
-          # and run it as install.rs does.
+          # preflight reports not_installed and the app waits on the install screen for a
+          # click (use-tauri-backend.ts:252-254, startup-screen.tsx:388-389), so a bundle
+          # whose embedded install.sh was missing or broken passed both Linux rows.
+          # tauri.conf.json:56-59 ships it as a bundle resource, so find it there and run
+          # it as install.rs does.
           if [ "${{ matrix.kind }}" = "deb" ]; then
             SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1)"
           else
-            # ls returns a bare filename here, and a command word with no slash is
-            # resolved through PATH, not the cwd, so this needs the ./ prefix.
+            # ls returns a bare filename here, and a command word with no slash resolves
+            # through PATH, not the cwd, so this needs the ./ prefix.
             (cd dl && "./$(ls *.AppImage | head -1)" --appimage-extract >/dev/null)
             SH="$(find dl/squashfs-root -name install.sh -type f | head -1)"
           fi
           [ -n "$SH" ] && [ -f "$SH" ] || { echo "::error::the bundle ships no install.sh resource"; exit 1; }
           echo "bundled installer: $SH"
-          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547.
-          # The bundle carries its own install.sh, and REL_TAG predates #7547, so on a
-          # stripped runner it still exits 2 at the NEED_SUDO handshake for the optional
-          # set instead of falling through to prebuilt llama.cpp. No change to this PR
-          # can move that; only a new release can. _SMART_APT_OPTIONAL is the guard #7547
-          # added, so finding it means the release caught up and this pin must go.
+          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547. The
+          # bundle carries its own install.sh and REL_TAG predates #7547, so on a stripped
+          # runner it still exits 2 at the NEED_SUDO handshake for the optional set instead
+          # of falling through to prebuilt llama.cpp. Only a new release can move that, not
+          # this PR. _SMART_APT_OPTIONAL is the guard #7547 added, so finding it means the
+          # release caught up and this pin must go.
           if grep -q '_SMART_APT_OPTIONAL' "$SH"; then
             echo "::error::the bundled install.sh now carries #7547; delete this pin block and let the venv + torch assertions below run unconditionally"
             exit 1
           fi
           # --tauri rejects a custom studio home (install.sh:102-114), so drop the
-          # workspace-scoped override, and close stdin as install.rs does.
+          # workspace-scoped override; close stdin as install.rs does.
           rc=0
           env -u UNSLOTH_STUDIO_HOME \
             bash "$SH" --tauri < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
           echo "bundled installer exit code: $rc"
-          # Exit code AND the exact optional set, so a different NEED_SUDO list or any
-          # other non-zero exit is still a failure.
+          # Exit code AND the exact optional set, so a different NEED_SUDO list or any other
+          # non-zero exit is still a failure.
           if [ "$rc" -eq 2 ] && grep -qE '^\[TAURI:NEED_SUDO\] cmake git build-essential libcurl4-openssl-dev[[:space:]]*$' logs/bundled-install.log; then
             echo "::notice::known pre-#7547 outcome: the shipped bundle's install.sh asked to elevate for the optional set and exited 2. Not a regression here; the next desktop release retires this pin."
             exit 0
@@ -429,9 +424,9 @@ jobs:
       - name: Launch under Xvfb and prove it stays up
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
-          # Linux is the one platform where a hosted runner can give the app a real
-          # display, so this is the strongest "does the UI come up" check available
-          # without self-hosted hardware.
+          # Linux is the one platform where a hosted runner can give the app a real display,
+          # so this is the strongest "does the UI come up" check available without
+          # self-hosted hardware.
           xvfb-run -a --server-args="-screen 0 1440x900x24" \
             "$BIN" > logs/app-stdout.log 2>&1 &
           APP_PID=$!
@@ -459,20 +454,15 @@ jobs:
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
           done
-          # Same acceptance criterion the macOS rows enforce. Everything above is
-          # `|| true` and the loop skips a missing log, so without these two lines the
-          # step could not fail. setup_logging (src-tauri/src/main.rs:50-67) opens
-          # tauri.log at process start, so no log means the binary never got that far,
-          # and the launch step only proves liveness: an app hanging before preflight
-          # completes would otherwise pass both Linux rows.
+          # Same acceptance criterion the macOS rows enforce, and for the same reason:
+          # everything above is `|| true` and the loop skips a missing log, so without
+          # these two lines the step could not fail.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
           [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
 
       - name: Restore the runner
         if: always()
-        # `|| true` swallowed everything, including a restore that genuinely broke. The
-        # file only exists once the strip step ran, and an earlier step can fail before
-        # that, so skip explicitly when it is absent and let a real failure surface.
+        # See the macOS job: `|| true` would swallow a genuinely broken restore.
         run: |
           if [ -f .clean-machine/restore.sh ]; then
             bash .clean-machine/restore.sh
@@ -491,9 +481,7 @@ jobs:
 
   # ── Windows: NSIS setup.exe, silent install ──────────────────────────────
   windows:
-    # A fork PR's token is read-only however this workflow declares permissions, so it
-    # cannot list the draft releases every desktop-v* bundle is published as. Skip
-    # rather than fail: it is a property of the trigger, not a broken release.
+    # See the macOS job: a fork PR's token cannot list drafts, so skip rather than fail.
     if: github.event.pull_request.head.repo.fork != true
     name: desktop windows
     runs-on: windows-latest
@@ -512,14 +500,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so
-          # the newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
+          # See the macOS job. Loud on purpose: no bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
             REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
               --json tagName,createdAt \
               --jq '[.[] | select(.tagName | startswith("desktop-v"))]
                     | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            # Loud on purpose: there is no bundle to test, so passing would prove nothing.
             [ -n "$REL_TAG" ] || {
               echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
               exit 1
@@ -531,24 +517,21 @@ jobs:
           ls -la dl
 
       - name: Strip the developer toolchain
-        # `inputs` exists only for workflow_dispatch, so on pull_request and schedule
-        # `inputs.strip_toolchain` is '' -- and loose equality coerces both '' and
-        # false to 0, making `!= false` FALSE, so automatic runs would keep the hosted
-        # toolchain this workflow exists to remove. Gate on the event instead.
+        # Same gate as macOS, for the same `inputs`-coercion reason.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         shell: pwsh
         run: |
           $drop = @('hostedtoolcache\windows\Python', 'WindowsApps', '\Git\', 'CMake',
                     'Microsoft Visual Studio', 'BuildTools', 'LLVM', 'MSYS', 'mingw')
-          # winget is an app-execution alias under ...\Local\Microsoft\WindowsApps, so
-          # the WindowsApps fragment -- there to take the Store's python.exe alias away
-          # -- drops the OS package manager with it. winget is not developer tooling;
-          # every consumer Windows machine this bundle ships to has it, and the bundled
+          # winget is an app-execution alias under ...\Local\Microsoft\WindowsApps, so the
+          # WindowsApps fragment -- there to take the Store's python.exe alias away --
+          # drops the OS package manager with it. winget is not developer tooling: every
+          # consumer Windows machine this bundle ships to has it, and the bundled
           # install.ps1 reaches for it for the git that studio/setup.ps1:1657-1669 still
-          # gates on unconditionally. Without it this lane only re-runs the no-winget
-          # fallback that clean-machine-install-ci.yml already covers and pins on its
-          # winget=masked row, and it does so as a hard failure. Resolve winget before
-          # the scrub and hand it back through a shim, exactly as that workflow does.
+          # gates on unconditionally. Without it this lane only re-runs, as a hard failure,
+          # the no-winget fallback clean-machine-install-ci.yml already covers and pins on
+          # its winget=masked row. Resolve winget before the scrub and hand it back through
+          # a shim, exactly as that workflow does.
           $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
           if (-not $wingetCmd) {
             Write-Host '::error::winget was not on PATH before the strip; this image ships it and the bundled installer needs it'
@@ -564,9 +547,8 @@ jobs:
           }
           "PATH=$shim;$((& $scrub ($env:PATH -split ';')) -join ';')" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          # Take the toolcache Python off disk, not just off PATH: py.exe lives in
-          # C:\Windows (which must stay) and uv does its own interpreter discovery,
-          # so both reach the toolcache whatever PATH says.
+          # Off disk, not just off PATH: py.exe lives in C:\Windows (which must stay) and
+          # uv does its own discovery, so both reach the toolcache whatever PATH says.
           foreach ($tc in @("$env:AGENT_TOOLSDIRECTORY\Python", 'C:\hostedtoolcache\windows\Python')) {
             if ($tc -and (Test-Path $tc)) {
               try { Rename-Item -LiteralPath $tc -NewName 'Python.masked' -ErrorAction Stop
@@ -574,13 +556,12 @@ jobs:
               catch { Write-Host "::error::could not mask $tc ($($_.Exception.Message)); the job would not be clean"; exit 1 }
             }
           }
-          # The bundled install.ps1 this job runs calls Refresh-SessionPath (318-337),
-          # which merges the Machine and User registry PATHs back into $env:Path, so a
-          # process-only scrub lasts until the first refresh and Git/CMake/VS/LLVM come
-          # back from the registry. The runner is ephemeral, so rewrite the registry
-          # copies too. (A merge keeps what the process already had, which is why the
-          # winget shim above survives.) Expand
-          # first: SetEnvironmentVariable rewrites REG_EXPAND_SZ as REG_SZ
+          # The bundled install.ps1 this job runs calls Refresh-SessionPath (318-337), which
+          # merges the Machine and User registry PATHs back into $env:Path, so a
+          # process-only scrub lasts until the first refresh and Git/CMake/VS/LLVM come back
+          # from the registry. The runner is ephemeral, so rewrite the registry copies too.
+          # (A merge keeps what the process already had, which is why the winget shim above
+          # survives.) Expand first: SetEnvironmentVariable rewrites REG_EXPAND_SZ as REG_SZ
           # (dotnet/runtime#1442).
           foreach ($scope in 'Machine','User') {
             $raw = [System.Environment]::GetEnvironmentVariable('Path', $scope)
@@ -599,11 +580,11 @@ jobs:
           exit 0
 
       - name: Verify the strip took effect
-        # PATH written to $GITHUB_ENV only applies to LATER steps, so the scrub can
-        # only be checked from here. The drop list above is heuristic path-fragment
-        # matching: if a runner image moves any of these tools outside those fragments,
-        # the bundled install.ps1 reuses the survivor and this job still calls itself
-        # clean. Same assertion the installer workflow runs, same reason.
+        # PATH written to $GITHUB_ENV only applies to LATER steps, so the scrub can only be
+        # checked from here. The drop list above is heuristic path-fragment matching: if a
+        # runner image moves any of these tools outside those fragments, the bundled
+        # install.ps1 reuses the survivor and this job still calls itself clean. Same
+        # assertion the installer workflow runs, same reason.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         shell: pwsh
         run: |
@@ -615,8 +596,8 @@ jobs:
           }
           # `py` itself lives in C:\Windows and stays. Only an interpreter it can still
           # START is a leak, because Find-CompatiblePython (install.ps1:1130-1153) probes
-          # `py` first. `py -0p` is just the launcher's REGISTRY view, which still names
-          # the paths the rename removed, so a start attempt is the only real evidence.
+          # `py` first. `py -0p` is only the launcher's REGISTRY view, which still names the
+          # paths the rename removed, so a start attempt is the only real evidence.
           if (Get-Command py -ErrorAction SilentlyContinue) {
             foreach ($v in '-3.11', '-3.12', '-3.13') {
               $out = & py $v -c "import sys; print(sys.executable)" 2>&1
@@ -624,16 +605,15 @@ jobs:
               Write-Host ("py {0} -> exit {1}: {2}" -f $v, $rc, (($out | Out-String).Trim() -replace '\r?\n', ' / '))
               if ($rc -eq 0) { $leaked += "py $v -> $out" }
             }
-            # A failing probe is the outcome we want, but it leaves $LASTEXITCODE
-            # non-zero and the runner appends `exit $LASTEXITCODE` to every pwsh step
-            # (actions/runner#351), so the step would exit 1 with nothing printed on a
-            # machine that is in fact clean.
+            # A failing probe is the outcome we want, but it leaves $LASTEXITCODE non-zero
+            # and the runner appends `exit $LASTEXITCODE` to every pwsh step
+            # (actions/runner#351), so the step would exit 1 on a machine that is clean.
             $global:LASTEXITCODE = 0
           }
           # The shim is the only reason winget resolves after the WindowsApps drop. It
           # survives the installer's own refreshes because Refresh-SessionPath
           # (install.ps1:318-337) and setup.ps1's Refresh-Environment MERGE the current
-          # $env:Path back in rather than replace it -- but assert it, or this lane
+          # $env:Path back in rather than replace it -- but assert that, or this lane
           # silently degrades into the no-winget leg the installer workflow already pins.
           $winget = Get-Command winget -ErrorAction SilentlyContinue
           Write-Host ("winget   {0}" -f $(if ($winget) { $winget.Source } else { 'ABSENT' }))
@@ -651,8 +631,8 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Get-ChildItem dl/*setup.exe | Select-Object -First 1).FullName
-          # /S is the NSIS silent switch: a user double-clicks, but an installer that
-          # cannot run unattended cannot be scripted or MDM-deployed either.
+          # /S is the NSIS silent switch: a user double-clicks, but an installer that cannot
+          # run unattended cannot be scripted or MDM-deployed either.
           $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
           Write-Host "installer exit: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { Write-Host "::error::silent install failed"; exit 1 }
@@ -666,8 +646,8 @@ jobs:
       - name: Run the bundled installer, the path first launch takes
         shell: pwsh
         run: |
-          # The launch step below only proves the process stayed alive: on a fresh
-          # profile the app waits for a click on Install (use-tauri-backend.ts:252-254,
+          # The launch step below only proves the process stayed alive: on a fresh profile
+          # the app waits for a click on Install (use-tauri-backend.ts:252-254,
           # startup-screen.tsx:388-389), so this job passed on a bundle whose embedded
           # install.ps1 was missing or broken. tauri.conf.json:56-59 ships it as a bundle
           # resource, so find it where NSIS put it and invoke it as install.rs:326-341.
@@ -697,8 +677,8 @@ jobs:
             exit 1
           }
           & $py -V
-          # install.rs passes only --tauri, so torch is part of first launch, and a venv
-          # that cannot import it is the unbootable environment from the report.
+          # install.rs passes only --tauri, so torch is part of first launch, and a venv that
+          # cannot import it is the unbootable environment from the report.
           & $py -c "import torch; print('torch', torch.__version__)"
           if ($LASTEXITCODE -ne 0) {
             Write-Host '::error::the bundled install produced a venv with no working torch'
@@ -738,11 +718,8 @@ jobs:
                     -SimpleMatch -Quiet) { $disposition = $true }
             }
           }
-          # Same acceptance criterion macOS and Linux enforce. Test-Path, Get-Content and
+          # Same acceptance criterion macOS and Linux enforce: Test-Path, Get-Content and
           # Select-String cannot fail, so without these two lines the step was decoration.
-          # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally at
-          # process start, so no log means the binary never got that far, and an app that
-          # hangs before preflight would otherwise pass.
           if (-not $found) {
             Write-Host '::error::the app wrote no tauri.log; it never reached setup_logging'
             exit 1

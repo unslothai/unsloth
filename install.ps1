@@ -2766,18 +2766,17 @@ exit 0
     # text, ignored unless UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a
     # pyproject.toml.
     #
-    # The clean-machine legs run THIS script from a branch, but it installs
-    # unsloth from PyPI, the consumer path, so everything Python-side comes out
-    # of the released wheel (studio/setup.ps1, install_python_stack.py and every
-    # requirements/constraints file they reach via Path(__file__)) and the
-    # workflow meant to validate a branch could not. `& $UnslothExe studio setup`
-    # below goes through the CLI, and an editable overlay makes _PACKAGE_ROOT in
-    # unsloth_cli/commands/studio.py resolve to the working tree by PEP 660
-    # __file__, so setup.ps1 comes from the branch unchanged. NOT --local: that
-    # also installs `unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo`,
-    # which genuinely needs git, and git absence is what the masked leg proves.
-    # Editable + --no-deps resolves nothing and clones nothing, so it survives
-    # git, cmake and MSVC all missing.
+    # The clean-machine legs run THIS script from a branch but install unsloth
+    # from PyPI, the consumer path, so everything Python-side (studio/setup.ps1,
+    # install_python_stack.py and every requirements/constraints file they reach
+    # via Path(__file__)) would be the released wheel's and a branch could not be
+    # validated. `& $UnslothExe studio setup` below goes through the CLI, and an
+    # editable overlay makes _PACKAGE_ROOT in unsloth_cli/commands/studio.py
+    # resolve to the working tree by PEP 660 __file__, so setup.ps1 comes from
+    # this ref. NOT --local: that also installs `unsloth-zoo @
+    # git+https://github.com/unslothai/unsloth-zoo`, which genuinely needs git,
+    # and git absence is what the masked leg proves; editable + --no-deps
+    # resolves and clones nothing, so it survives git, cmake and MSVC all missing.
     if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
         $CiOverlayRoot = $env:UNSLOTH_CI_SOURCE_OVERLAY
         if (-not (Test-Path -LiteralPath (Join-Path $CiOverlayRoot "pyproject.toml"))) {
@@ -2785,8 +2784,8 @@ exit 0
             return (Exit-InstallFailure "UNSLOTH_CI_SOURCE_OVERLAY has no pyproject.toml: $CiOverlayRoot")
         }
         substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
-        # Retry: the editable build downloads its pinned build backend from PyPI,
-        # so it carries the same transient-network risk as every other step.
+        # Retry: the editable build fetches its build backend from PyPI, same
+        # transient-network risk as every other step.
         $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { uv pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
         if ($CiOverlayExit -ne 0) {
             return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs INSIDE a Windows container, after virgin-windows-probe.ps1 has proved the
-# environment has no toolchain. Runs install.ps1 the way a real user on a bare
-# Windows box would, then asserts the same things the hosted Windows leg asserts.
+# Runs INSIDE a Windows container, after virgin-windows-probe.ps1 has proved there is no
+# toolchain: install.ps1 the way a real user on a bare Windows box runs it, then the same
+# assertions the hosted Windows leg makes.
 
 [CmdletBinding()]
 param(
@@ -20,16 +20,16 @@ function Section($t) { Write-Host ""; Write-Host "=== $t ===" }
 # ── Environment the installer needs to be non-interactive ─────────────────────
 Section 'install environment'
 # install.ps1:2885-2888 prompts `Start Unsloth Studio now? [Y/n]` when
-# [Environment]::UserInteractive is true and stdin is not redirected. Both hold in a
-# `docker exec` session, so without this the installer BLOCKS FOREVER on Read-Host
-# and the job dies on timeout with no diagnosis.
+# [Environment]::UserInteractive is true and stdin is not redirected -- both hold under
+# `docker exec` -- so without this the installer BLOCKS FOREVER on Read-Host and the job
+# dies on timeout with no diagnosis.
 $env:UNSLOTH_SKIP_AUTOSTART = '1'
-# install.ps1:254/258 joins $env:USERPROFILE with no null guard. Setting the install
-# root explicitly also keeps the container's state entirely under one directory.
+# install.ps1:254/258 joins $env:USERPROFILE with no null guard. An explicit root also
+# keeps the container's state under one directory.
 $env:UNSLOTH_STUDIO_HOME = 'C:\studio-home'
 $env:UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK = '1'
-# Without this, uv's output is discarded on success and the nobuild check below can
-# only ever report "built: none".
+# Without this uv's output is discarded on success and the nobuild check below can only
+# ever report "built: none".
 $env:UNSLOTH_VERBOSE = '1'
 if ($Overlay) {
     $env:UNSLOTH_CI_SOURCE_OVERLAY = $Overlay
@@ -73,8 +73,7 @@ Section 'assert: the install produced something usable'
 if ($rc -ne 0) {
     $failures += "installer exited $rc"
 } else {
-    # Mirrors the Linux leg's "Assert the install is actually usable": an installer
-    # that exits 0 having done nothing must not pass.
+    # As the Linux leg: an installer that exits 0 having done nothing must not pass.
     if (-not (Test-Path -LiteralPath $venvPy)) {
         $failures += "installer exited 0 but left no managed Python at $venvPy"
         Get-ChildItem -Path $env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue | Format-Table | Out-String | Write-Host
@@ -89,11 +88,10 @@ if ($rc -ne 0) {
 }
 
 Section 'assert: torch imports'
-# On the hosted runner this proves less than it looks like: the runner image ships
-# the VC++ 2015-2022 runtime in System32, so Test-VCRedistInstalled (setup.ps1:875)
-# short-circuits before it needs winget. THIS container is the first environment in
-# which that is not true, so a failure here is a genuine finding about bare Windows,
-# not a CI artefact.
+# On the hosted runner this proves less than it looks: the image ships the VC++
+# 2015-2022 runtime in System32, so Test-VCRedistInstalled (setup.ps1:875)
+# short-circuits before it needs winget. THIS container is the first environment where
+# that is not true, so a failure here is a genuine finding about bare Windows.
 if (Test-Path -LiteralPath $venvPy) {
     foreach ($dll in 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') {
         $p = Join-Path $env:WINDIR "System32\$dll"
@@ -111,9 +109,9 @@ if (Test-Path -LiteralPath $venvPy) {
 
 Section "assert: the installer took the no-winget path"
 if (Test-Path -LiteralPath $LogPath) {
-    # install.ps1:1098, the no-winget branch. A container has no Microsoft Store and
-    # therefore no App Installer, so this is the fallback path (python.org + astral.sh)
-    # under test -- the whole reason a container is a good harness.
+    # install.ps1:1098, the no-winget branch. A container has no Microsoft Store and so
+    # no App Installer, which puts the fallback path (python.org + astral.sh) under
+    # test -- the whole reason a container is a good harness.
     $noWinget = 'will require Python + uv to be already installed'
     if (Select-String -Path $LogPath -Pattern $noWinget -SimpleMatch -Quiet) {
         Write-Host "confirmed: installer reported winget as unavailable and used the fallback path"
@@ -132,8 +130,8 @@ if ($Overlay -and $rc -eq 0) {
 }
 
 Section 'assert: no non-allowlisted source build'
-# Shared with the hosted Windows legs so the sdist allowlist lives in one place; the
-# script prints its own diagnosis, so only the verdict is folded in here.
+# Shared with the hosted Windows legs so the sdist allowlist lives in one place; it
+# prints its own diagnosis, so only the verdict is folded in here.
 $nobuild = Join-Path $PSScriptRoot 'assert-nobuild.ps1'
 if (-not (Test-Path -LiteralPath $nobuild)) {
     $failures += "assert-nobuild.ps1 is missing next to this script, so the no-build contract went unchecked"
