@@ -314,9 +314,7 @@ def test_diffusion_load_keeps_the_standing_gpu_memory_mode():
     assert "if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);" in store
 
     # And the sanitizer that produces the "auto" this guards against still runs.
-    page = " ".join(
-        _read("features/model-picker/components/model-config-page.tsx").split()
-    )
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)" in page
 
 
