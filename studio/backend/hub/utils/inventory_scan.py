@@ -806,6 +806,7 @@ def is_snapshot_partial(
     another's payload, and any rename or size change between the two flagged a
     complete, loadable row partial."""
     from hub.utils import download_manifest
+
     repo_signal_applies = _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
     return _compose_partial(
         lambda: repo_signal_applies
