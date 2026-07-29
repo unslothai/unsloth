@@ -60,7 +60,15 @@ export function applyPerModelConfigToRuntime(
     // The per-GPU split ratio is never remembered, so it always resets. The GPU
     // pick is reconciled against the GPUs present now (a saved [1] on a 1-GPU
     // host would otherwise be sent and rejected).
-    gpuMemoryMode: config.gpuMemoryMode ?? readPersistedGpuMemoryMode(),
+    // A diffusion config is sanitized to gpuMemoryMode "auto" because the mode
+    // does not apply to it, not because the user chose Auto. Writing that into
+    // the live standing preference would strand the session on Auto: the load
+    // itself skips saveGpuMemoryMode for diffusion, so nothing restores it, and
+    // the next ordinary GGUF loaded without its own config sends this value and
+    // persists it over the user's Manual. Keep the standing choice instead.
+    gpuMemoryMode: options.isDiffusion
+      ? readPersistedGpuMemoryMode()
+      : (config.gpuMemoryMode ?? readPersistedGpuMemoryMode()),
     gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: config.nCpuMoe ?? 0,
     splitRatio: null,

@@ -294,6 +294,32 @@ def test_diffusion_load_paths_disable_tensor_parallel():
     assert autoload.count("tensor_parallel: effectiveTensorParallel") == 2
 
 
+def test_diffusion_load_keeps_the_standing_gpu_memory_mode():
+    """A diffusion config is sanitized to gpuMemoryMode "auto" because the mode does
+    not apply to it, not because the user picked Auto. Applying that sanitized value
+    to the runtime store would strand the session on Auto: persistGpuMemoryModeOnLoad
+    deliberately skips diffusion responses, so nothing writes the standing preference
+    back, and the next ordinary GGUF loaded without its own config sends the stale
+    "auto" and persists it over the user's Manual."""
+    apply = " ".join(_read("features/model-picker/model-config/apply-per-model-config.ts").split())
+    assert (
+        "gpuMemoryMode: options.isDiffusion ? readPersistedGpuMemoryMode() : "
+        "(config.gpuMemoryMode ?? readPersistedGpuMemoryMode())," in apply
+    )
+    # The unconditional form is what leaked the sanitized mode into the store.
+    assert "gpuMemoryMode: config.gpuMemoryMode ?? readPersistedGpuMemoryMode()," not in apply
+
+    # The other half of the contract: the diffusion load itself must not persist.
+    store = " ".join(_read("features/chat/stores/chat-runtime-store.ts").split())
+    assert "if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);" in store
+
+    # And the sanitizer that produces the "auto" this guards against still runs.
+    page = " ".join(
+        _read("features/model-picker/components/model-config-page.tsx").split()
+    )
+    assert "withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)" in page
+
+
 def test_active_native_gguf_metadata_uses_path_token():
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "(isActiveModel ? activeNativePathToken : null)" in src

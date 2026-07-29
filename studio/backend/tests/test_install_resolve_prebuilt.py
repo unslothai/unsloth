@@ -656,6 +656,94 @@ def test_route_to_vulkan_prebuilt_preserves_explicit_upstream_pin():
     assert tag == "b9596"
 
 
+def _linux_arm64_vulkan_host():
+    return _host(
+        system = "Linux",
+        machine = "aarch64",
+        is_linux = True,
+        is_arm64 = True,
+        has_intel_gpu = True,
+    )
+
+
+def test_route_to_vulkan_prebuilt_linux_arm64_falls_back_to_upstream():
+    # The fork ships no ARM64 Vulkan bundle, so a forced-Vulkan Linux ARM64 host
+    # must keep planning against upstream (which publishes
+    # llama-<tag>-bin-ubuntu-vulkan-arm64.tar.gz). The fork pin is dropped because
+    # the two repos use different tag namespaces.
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        _linux_arm64_vulkan_host(),
+        FORK,
+        "b9596-mix-abc",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+
+    assert repo == UPSTREAM
+    assert tag == ""
+    assert persist == "vulkan"
+    assert routed.has_intel_gpu is True
+
+
+def test_forced_vulkan_linux_arm64_still_resolves_a_vulkan_bundle():
+    # End to end for the routing above: without it the fork planner yields only the
+    # ARM64 CPU attempt, and the strict-Vulkan filter then leaves nothing to install.
+    routed, repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
+        _linux_arm64_vulkan_host(),
+        FORK,
+        "",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+    fork_attempts = ilp._linux_published_attempts(
+        routed, _published_vulkan_bundle("linux-vulkan", "linux-arm64")
+    )
+    assert [attempt.install_kind for attempt in fork_attempts] == ["linux-arm64"]
+
+    release = _upstream_release(
+        "b9925",
+        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
+    )
+    plan = ilp.direct_upstream_release_plan(release, routed, repo, "latest")
+    filtered = ilp._vulkan_only_release_plans([plan])
+
+    assert [attempt.name for attempt in filtered[0].attempts] == [
+        "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz"
+    ]
+    assert filtered[0].attempts[0].repo == UPSTREAM
+
+
+def test_route_to_vulkan_prebuilt_linux_arm64_keeps_an_explicit_repo_override():
+    # A hand-picked --published-repo is the user's call; only the default fork
+    # repo is rerouted.
+    other = "someone/llama.cpp"
+    _routed, repo, tag, _persist = ilp._route_to_vulkan_prebuilt(
+        _linux_arm64_vulkan_host(),
+        other,
+        "b9596",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+
+    assert repo == other
+    assert tag == "b9596"
+
+
+def test_route_to_vulkan_prebuilt_linux_x86_64_keeps_the_fork_bundle():
+    # Only ARM64 lacks a fork Vulkan bundle; x86_64 must stay on the fork release
+    # so it keeps the DiffusionGemma visual server.
+    _routed, repo, tag, _persist = ilp._route_to_vulkan_prebuilt(
+        _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+        FORK,
+        "b9596-mix-abc",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
+
+
 def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     # --cpu-fallback suppresses Vulkan routing even for an Intel host.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
