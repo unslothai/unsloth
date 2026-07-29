@@ -372,9 +372,15 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 if total_size == 0 and not has_variant_state:
                     continue
+                # Walks each snapshot's quants, so it runs only for repos that
+                # made it past the skips above. Computed before the partial
+                # walk, which has to be judged against the snapshot this row
+                # hands out rather than the newest one.
+                gguf_snapshot, gguf_payload_snapshots = _repo_gguf_payload_snapshots(repo_info)
                 partial = hf_cache_scan.is_gguf_repo_partial(
                     repo_id,
                     repo_path,
+                    snapshot_dir = gguf_snapshot,
                 )
                 if total_size == 0 and not partial:
                     continue
@@ -393,9 +399,6 @@ def _scan_cached_gguf() -> list[dict]:
                 last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
                     row["last_modified"] = last_modified
-                # Walks each snapshot's quants, so it runs only for repos that
-                # made it past the skips above.
-                gguf_snapshot, gguf_payload_snapshots = _repo_gguf_payload_snapshots(repo_info)
                 row.update(
                     _cache_inventory_fields(
                         repo_id,
@@ -513,11 +516,17 @@ def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[s
     prefer a complete one exactly as ``_repo_gguf_load_id`` does. Fall back to
     any primary GGUF when nothing is complete, which is what shipped before.
     """
+    # Matched on the snapshot-relative path, not ``file_name``: huggingface_hub
+    # sets that to the bare name for a nested file (the recovered mirror copies
+    # it), and the ``MTP/`` drafters unsloth ships are only recognisable as
+    # companions from their directory. Matching the bare name lets a snapshot
+    # holding nothing but a drafter win the load id, where the variant lister
+    # -- which does relativise -- then offers no quant at all.
     with_gguf = [
         snapshot
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
-        and any(_is_main_gguf_filename(f.file_name) for f in revision.files)
+        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
     ]
     complete = [
         snapshot

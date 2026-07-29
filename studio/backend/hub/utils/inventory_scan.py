@@ -549,6 +549,23 @@ def _is_latest_snapshot(repo_cache_dir: Path, snapshot_dir: Path) -> bool:
         return latest == snapshot_dir
 
 
+def _repo_signal_applies_to_snapshot(
+    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
+) -> bool:
+    """Whether a repo-wide partial signal describes *snapshot_dir*.
+
+    A cancel marker is cleared at every download start and again on success, so
+    one that is present records the most recent attempt; an ``.incomplete`` blob
+    likewise belongs to the revision a download is writing. Both attach to the
+    newest snapshot, so a row advertising an older, already complete one must
+    not inherit them and lose ``can_chat``. With nothing to attribute against,
+    the signal is kept rather than dropped.
+    """
+    if repo_cache_dir is None or snapshot_dir is None:
+        return True
+    return _is_latest_snapshot(repo_cache_dir, snapshot_dir)
+
+
 def _gguf_variant_manifest_blob_hashes(
     repo_id: str, repo_cache_dir: Optional[Path] = None
 ) -> frozenset[str]:
@@ -759,7 +776,7 @@ def is_snapshot_partial(
     models — safetensors/adapter/checkpoint — and all datasets).
 
     Composes three signals, cheapest first:
-      1. Cancel marker (single stat).
+      1. Cancel marker (single stat), charged to the newest snapshot.
       2. Snapshot-attributed legacy .incomplete blob / broken-symlink check.
       3. Manifest walk (stat per expected file under the latest snapshot).
 
@@ -773,7 +790,8 @@ def is_snapshot_partial(
     fine."""
     from hub.utils import download_manifest
     return _compose_partial(
-        lambda: download_manifest.has_cancel_marker(
+        lambda: _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
+        and download_manifest.has_cancel_marker(
             repo_type,
             repo_id,
             None,
@@ -829,7 +847,12 @@ def is_variant_partial(
     )
 
 
-def is_gguf_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) -> bool:
+def is_gguf_repo_partial(
+    repo_id: str,
+    repo_cache_dir: Optional[Path] = None,
+    *,
+    snapshot_dir: Optional[Path] = None,
+) -> bool:
     """Repo-row partial flag for a GGUF repo. The inventory shows ONE row per
     GGUF repo (requires_variant=True); per-variant detail lives in
     GET /api/models/gguf-variants and uses is_variant_partial.
@@ -848,15 +871,25 @@ def is_gguf_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) ->
     Composes signals:
       1. Cheap legacy fast-path (.incomplete blobs / broken symlinks).
       2. Per-variant manifest + marker enumeration, gated on "all broken".
+
+    *snapshot_dir* pins both to the snapshot the row hands out as its load id.
+    Without it the newest snapshot supplies the completed quants while the
+    legacy walk stays repo-wide, so an interrupted re-download flips can_chat
+    off for the older complete quant the row actually advertises.
     """
     from hub.utils import download_manifest
 
-    has_legacy_partial = _legacy_partial("model", repo_id, repo_cache_dir)
-    snapshot_dir = resolve_snapshot_dir_for_scan(
-        "model",
-        repo_id,
-        repo_cache_dir,
-    )
+    if snapshot_dir is None:
+        snapshot_dir = resolve_snapshot_dir_for_scan(
+            "model",
+            repo_id,
+            repo_cache_dir,
+        )
+    # Same attribution as is_snapshot_partial: an .incomplete blob or a broken
+    # symlink belongs to the revision a download is writing, which is the newest.
+    has_legacy_partial = _repo_signal_applies_to_snapshot(
+        repo_cache_dir, snapshot_dir
+    ) and _legacy_partial("model", repo_id, repo_cache_dir)
     variants: set[str] = set(_completed_gguf_variants(snapshot_dir))
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
     for variant, _path in download_manifest.iter_variant_manifests(

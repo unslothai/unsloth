@@ -387,6 +387,9 @@ def _two_snapshot_repo(
         snapshot = repo_dir / "snapshots" / commit
         snapshot.mkdir(parents = True, exist_ok = True)
         for name, payload in files.items():
+            # Keys may name a subdir ("MTP/...") the way real GGUF repos ship
+            # their companions; forward slashes work on Windows too.
+            (snapshot / name).parent.mkdir(parents = True, exist_ok = True)
             (snapshot / name).write_bytes(payload)
     _age(repo_dir / "snapshots" / OLDER, 600)
     return repo_dir
@@ -781,3 +784,134 @@ def test_metadata_still_falls_back_to_the_newest_snapshot(tmp_path, monkeypatch)
     assert rows[0]["load_id"] == "Org/Model"
     assert rows[0].get("quant_method") == "bitsandbytes"
     assert rows[0].get("pipeline_tag") == "text-generation"
+
+
+# --- the signals paired with the pinned snapshot ------------------------------
+
+
+def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
+    """Payload selection matched GGUF companions by bare file name, but the
+    ``MTP/`` drafters unsloth ships are only recognisable from the path
+    relative to the snapshot (``huggingface_hub`` sets ``file_name`` to the
+    bare name for nested files, and the recovered mirror matches it). A
+    snapshot holding nothing but a drafter therefore counted as holding the
+    payload and won the load id, while the variant lister -- which does look at
+    the relative path -- offers nothing from it."""
+    from hub.utils.gguf import list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
+        newer_files = {"MTP/Model-Q8_0-MTP.gguf": b"\0" * 64},
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    load_dir = Path(rows[0]["load_id"])
+    variants, _has_vision = list_local_gguf_variants(str(load_dir))
+    assert [v.quant for v in variants], (
+        f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a "
+        "companion drafter"
+    )
+    assert load_dir == repo_dir / "snapshots" / OLDER
+
+
+def test_a_repo_root_drafter_still_leaves_a_real_quant_selectable(tmp_path, monkeypatch):
+    """The rule must stay narrow: a snapshot that holds a drafter *and* a real
+    quant is still a payload snapshot."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"mtp-Model-Q8_0.gguf": b"\0" * 64, "Model-Q8_0.gguf": b"\0" * 128},
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+
+
+def test_a_cancel_marker_from_a_newer_attempt_does_not_disable_the_pinned_snapshot(
+    tmp_path, monkeypatch
+):
+    """A cancel marker is repo-wide and records only the *last* attempt (it is
+    cleared at every download start and on success), so it belongs to the
+    newest snapshot. The row advertises an older, complete one, so inheriting
+    the marker turned ``can_chat`` off for a model that loads fine."""
+    from hub.utils import download_manifest
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}"},
+        ref = NEWER,
+    )
+    download_manifest.write_cancel_marker("model", "Org/Model", None, "http", hub_cache = tmp_path)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("partial") is False
+    assert rows[0]["capabilities"].get("can_chat") is True
+
+
+def test_a_cancel_marker_against_the_advertised_snapshot_is_still_partial(tmp_path, monkeypatch):
+    """Negative side of the same rule: when the row advertises the newest
+    snapshot the marker does describe it, and a cancelled download with no
+    ``.incomplete`` blob left behind has nothing else to give it away."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+    )
+    from hub.utils import download_manifest
+
+    download_manifest.write_cancel_marker("model", "Org/Model", None, "http", hub_cache = tmp_path)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+    assert rows[0].get("partial") is True
+    assert rows[0]["capabilities"].get("can_chat") is False
+
+
+def test_gguf_partial_is_judged_against_the_snapshot_the_row_advertises(tmp_path, monkeypatch):
+    """The GGUF row picked its payload snapshot after computing ``partial``,
+    and that walk used the repo's blobs plus the newest snapshot. An
+    interrupted re-download therefore flipped ``can_chat`` off for the older,
+    complete quant the row hands out as its load id."""
+    from hub.utils.gguf import list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+    )
+    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    load_dir = Path(rows[0]["load_id"])
+    assert load_dir == repo_dir / "snapshots" / OLDER
+    variants, _has_vision = list_local_gguf_variants(str(load_dir))
+    assert [v.quant for v in variants] == ["Q4_K_M"]
+    assert rows[0].get("partial") is False
+    assert rows[0]["capabilities"].get("can_chat") is True
+
+
+def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_path, monkeypatch):
+    """Negative side of the same rule: with no complete quant anywhere the row
+    falls back to the newest snapshot, the ``.incomplete`` blob does belong to
+    it, and the row must still be partial."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
+        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+    )
+    (repo_dir / "blobs" / ("a" * 40 + ".incomplete")).write_bytes(b"\0" * 3)
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+    assert rows[0].get("partial") is True
+    assert rows[0]["capabilities"].get("can_chat") is False
