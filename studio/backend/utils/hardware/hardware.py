@@ -245,8 +245,17 @@ def _detect_hardware_locked() -> DeviceType:
     CHAT_ONLY_REASON = None
     IS_ROCM = False
 
+    # Probe torch once per pass. A failed probe is expensive (the import runs to
+    # wherever it breaks) and self-repairing purge is refused whenever a compiled
+    # submodule is already loaded, so a second probe re-runs torch/__init__
+    # against those same cache hits: same failure, same declined purge, twice the
+    # wall clock on the path that is already degrading to CPU. It can also
+    # disagree with itself -- a re-run against a half-populated cache need not
+    # fail the same way -- so both branches below must see one answer, not two.
+    torch_ok = _has_torch()
+
     # --- CUDA / ROCm / XPU: try PyTorch ---
-    if _has_torch():
+    if torch_ok:
         import torch
 
         # --- Explicit-XPU hint ---
@@ -310,7 +319,7 @@ def _detect_hardware_locked() -> DeviceType:
             return DEVICE
 
     # --- XPU: Intel GPU ---
-    if _has_torch():
+    if torch_ok:
         import torch
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             DEVICE = DeviceType.XPU

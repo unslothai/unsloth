@@ -528,3 +528,58 @@ def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
         for name in [m for m in list(sys.modules) if m.split(".")[0] == "torch"]:
             sys.modules.pop(name, None)
         sys.modules.update(saved)
+
+
+def test_one_detection_pass_probes_torch_once(monkeypatch):
+    """A detection pass must import torch at most once.
+
+    _has_torch() is the expensive part of detection: a broken wheel fails
+    wherever it fails (seconds), and purge_partial_import() then refuses to
+    clean up because a compiled submodule is already loaded -- evicting one
+    would make the next import re-run its init and abort the process. So the
+    partial tree stays, and a second _has_torch() in the same pass re-runs
+    torch/__init__ against those cache hits: same cost again on the path that is
+    already degrading to CPU, and no guarantee it fails the same way twice.
+
+    The CUDA branch and the Intel-XPU fallback both need torch; they must share
+    one probe.
+    """
+    import builtins
+    from types import ModuleType
+
+    from utils.hardware import hardware as hw
+
+    saved = {n: m for n, m in sys.modules.items() if n.split(".")[0] == "torch"}
+    saved_device = hw.DEVICE
+    saved_chat, saved_reason = hw.CHAT_ONLY, hw.CHAT_ONLY_REASON
+    real_import = builtins.__import__
+    attempts = []
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            attempts.append(name)
+            # A compiled submodule left loaded: purge declines, so a retry is a
+            # full re-run of torch/__init__ rather than a cheap cache miss.
+            ext = ModuleType("torch._C")
+            ext.__file__ = "/nonexistent/torch/_C.cpython-313-x86_64-linux-gnu.so"
+            sys.modules["torch._C"] = ext
+            sys.modules.pop("torch", None)
+            raise OSError("libcudart.so.12: cannot open shared object file")
+        return real_import(name, *args, **kwargs)
+
+    for name in saved:
+        sys.modules.pop(name, None)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    try:
+        hw.DEVICE = None
+        assert hw._detect_hardware_locked() == hw.DeviceType.CPU
+        assert len(attempts) == 1, (
+            f"detection imported torch {len(attempts)} times in one pass; the "
+            "CUDA branch and the XPU fallback must share a single probe"
+        )
+    finally:
+        monkeypatch.undo()
+        for name in [m for m in list(sys.modules) if m.split(".")[0] == "torch"]:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = saved_device, saved_chat, saved_reason
