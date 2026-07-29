@@ -470,7 +470,7 @@ def _run_llama_phase(
         # otherwise re-route and silently replace it. Re-assert via setup's env/CLI flags.
         if llama_backend == "vulkan" or (asset and "vulkan" in asset.lower()):
             env["UNSLOTH_FORCE_VULKAN"] = "1"
-            env["UNSLOTH_LLAMA_BACKEND"] = "vulkan"
+            env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
         _flow.stream_installer(
             cmd,
             env,

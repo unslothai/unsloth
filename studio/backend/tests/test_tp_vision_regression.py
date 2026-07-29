@@ -843,3 +843,42 @@ def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
     )
     # A genuine layer load (no preserved intent) -> dedupe, no churn.
     assert _backend(False)._already_in_target_state(**kwargs) is True
+
+
+# ── route dedup: gpu_ids device strip (#7164/#7188) ───────────────────────────
+
+
+def _dedup_loaded_backend(*, extra_args):
+    """A loaded GGUF backend for route dedup tests."""
+    b = LlamaCppBackend()
+    b._model_identifier = "owner/repo"
+    b._requested_n_ctx = 0
+    b._cache_type_kv = None
+    b._tensor_parallel = False
+    b._layer_preserves_tensor_intent = False
+    b._extra_args = list(extra_args) if extra_args else None
+    b._requested_spec_mode = "auto"
+    b._chat_template_override = None
+    b._gguf_path = None
+    b._gpu_ids = None
+    return b
+
+
+def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
+    """A GGUF loaded with explicit gpu_ids had a user --device stripped from its stored
+    extras. A repeat identical request re-sending --device must still dedupe: the request-
+    side strip (gated on gpu_ids) compares equal to the stripped backend extras, so the
+    load hits the fast path instead of a needless reload / training 409 (#7188)."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+
+    req = LoadRequest(
+        model_path = "owner/repo",
+        gpu_ids = [0],
+        llama_extra_args = ["--device", "Vulkan3", "--top-k", "5"],
+    )
+    backend = _dedup_loaded_backend(extra_args = ["--top-k", "5"])
+    backend._gpu_ids = [0]
+    backend._requested_gpu_ids = [0]
+    assert inference_routes._request_matches_loaded_settings(req, backend) is True
