@@ -29,6 +29,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
+from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear
 import functools
 
@@ -252,7 +253,10 @@ else:
 # Bitsandbytes operations
 ctypes_c_int = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-if bnb is None:
+# Same verdict device_type.py used to clear ALLOW_BITSANDBYTES, applied to the binds
+# themselves. 0.45.5 leaves `functional.lib = None` when the native library fails to
+# load, so these lookups would kill `import unsloth` instead of degrading to 16bit.
+if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):
     cdequantize_blockwise_fp32 = _bnb_required
     cdequantize_blockwise_fp16_nf4 = _bnb_required
     cdequantize_blockwise_bf16_nf4 = _bnb_required
