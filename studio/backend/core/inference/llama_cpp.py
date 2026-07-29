@@ -564,29 +564,47 @@ def _hf_env_offline() -> bool:
         return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+_HF_OFFLINE_ENV_LOCK = threading.RLock()
+
+
 @contextlib.contextmanager
 def _hf_offline_if_dns_dead():
     """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
     restores env on exit so a transient hiccup can't quarantine the process.
-    No-op if the user already set it."""
-    if "HF_HUB_OFFLINE" in os.environ:
+    No-op if the user already set it. Temporary process-global overrides are
+    serialized so concurrent metadata resolutions cannot observe or remove one
+    another's environment."""
+    with _HF_OFFLINE_ENV_LOCK:
+        caller_offline = "HF_HUB_OFFLINE" in os.environ
+    if caller_offline:
         yield False
         return
     if not _probe_dns_dead():
         yield False
         return
 
+    # Hold the lock for the full override lifetime. A waiter re-checks the
+    # environment only after the preceding temporary override has been restored,
+    # so it cannot mistake that override for a caller-owned setting.
+    _HF_OFFLINE_ENV_LOCK.acquire()
+    if "HF_HUB_OFFLINE" in os.environ:
+        _HF_OFFLINE_ENV_LOCK.release()
+        yield False
+        return
     transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    if not transformers_was_set:
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    logger.warning("huggingface.co unreachable; using local HF cache for this load.")
     try:
-        yield True
-    finally:
-        os.environ.pop("HF_HUB_OFFLINE", None)
+        os.environ["HF_HUB_OFFLINE"] = "1"
         if not transformers_was_set:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        logger.warning("huggingface.co unreachable; using local HF cache for this load.")
+        try:
+            yield True
+        finally:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            if not transformers_was_set:
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+    finally:
+        _HF_OFFLINE_ENV_LOCK.release()
 
 
 try:
@@ -2402,6 +2420,7 @@ class LlamaCppBackend:
         self._audio_probed: bool = False
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
+        self._is_chat_capable: bool = True
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # Monotonic timestamp set in _kill_process; read by load_model
         # to decide whether to wait for the VRAM reclaim to finish.
@@ -2442,6 +2461,10 @@ class LlamaCppBackend:
     @property
     def is_vision(self) -> bool:
         return self._is_vision
+
+    @property
+    def is_chat_capable(self) -> bool:
+        return self._is_chat_capable
 
     @property
     def is_diffusion(self) -> bool:
@@ -6818,6 +6841,7 @@ class LlamaCppBackend:
         model_identifier: str,
         is_vision: bool = False,
         has_audio_input: bool = False,
+        is_chat_capable: bool = True,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
@@ -6858,6 +6882,7 @@ class LlamaCppBackend:
             "model_identifier": model_identifier,
             "is_vision": is_vision,
             "has_audio_input": has_audio_input,
+            "is_chat_capable": is_chat_capable,
             "n_ctx": n_ctx,
             "chat_template_override": chat_template_override,
             "cache_type_kv": cache_type_kv,
@@ -7081,6 +7106,7 @@ class LlamaCppBackend:
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
+            self._is_chat_capable = bool(is_chat_capable)
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
@@ -9893,6 +9919,7 @@ class LlamaCppBackend:
             self._audio_type = None
             self._audio_probed = False
             self._has_audio_input = False
+            self._is_chat_capable = True
             self._mmproj_has_audio = False
             self._port = None
             self._healthy = False

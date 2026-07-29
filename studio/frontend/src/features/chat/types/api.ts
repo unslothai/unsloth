@@ -236,6 +236,7 @@ export interface InferenceStatusResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  is_chat_capable?: boolean;
   loading: string[];
   loaded: string[];
   inference?: {

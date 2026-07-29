@@ -109,6 +109,8 @@ def test_chat_autoload_validates_server_active_model_capability_before_adoption(
     assert "tryAdoptServerActiveModel({" in auto_load
     assert "acceptStatus: async (status)" in auto_load
     assert "validation.is_chat_capable !== false" in auto_load
+    assert "const activeModel = status.model_identifier;" in auto_load
+    assert "return status.is_chat_capable !== false;" in auto_load
 
     adoption = _read("features/chat/lib/apply-inference-status-to-store.ts")
     adopt_fn = adoption.split(

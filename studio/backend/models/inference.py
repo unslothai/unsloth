@@ -635,6 +635,9 @@ class InferenceStatusResponse(BaseModel):
     is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    is_chat_capable: bool = Field(
+        True, description = "Whether the active model is suitable for automatic chat adoption"
+    )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(

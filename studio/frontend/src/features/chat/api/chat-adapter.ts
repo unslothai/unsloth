@@ -1453,9 +1453,12 @@ async function autoLoadSmallestModel(): Promise<{
   const initialStore = useChatRuntimeStore.getState();
   if (await tryAdoptServerActiveModel({
     acceptStatus: async (status) => {
-      const activeModel = status.model_identifier ?? status.active_model;
+      const activeModel = status.model_identifier;
       if (!activeModel) {
-        return false;
+        // Native-path loads intentionally redact their real identifier. The
+        // server already classified the loaded config, so use status metadata
+        // instead of trying to validate an unresolvable display label.
+        return status.is_chat_capable !== false;
       }
       try {
         const validation = await validateModel({

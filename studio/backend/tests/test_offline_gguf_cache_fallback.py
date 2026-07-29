@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import threading
 import types as _types
 from pathlib import Path
 from unittest.mock import patch
@@ -1103,6 +1104,53 @@ class TestHfOfflineIfDnsDead:
             with _hf_offline_if_dns_dead():
                 raise RuntimeError("boom")
         # Cleanup must happen on exception as well.
+        assert "HF_HUB_OFFLINE" not in os.environ
+        assert "TRANSFORMERS_OFFLINE" not in os.environ
+
+    def test_concurrent_temporary_overrides_are_serialized(self, dns, clean_offline_env):
+        dns.fail()
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+        errors = []
+
+        def first():
+            try:
+                with _hf_offline_if_dns_dead() as did_set:
+                    assert did_set is True
+                    first_entered.set()
+                    assert release_first.wait(2)
+                    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+            except BaseException as exc:
+                errors.append(exc)
+
+        def second():
+            try:
+                with _hf_offline_if_dns_dead() as did_set:
+                    assert did_set is True
+                    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+                    second_entered.set()
+            except BaseException as exc:
+                errors.append(exc)
+
+        first_thread = threading.Thread(target = first)
+        second_thread = threading.Thread(target = second)
+        first_thread.start()
+        assert first_entered.wait(2)
+        second_thread.start()
+        try:
+            # The second resolver must not run inside the first resolver's
+            # temporary process-global environment.
+            assert not second_entered.wait(0.1)
+        finally:
+            release_first.set()
+        first_thread.join(2)
+        second_thread.join(2)
+
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert second_entered.is_set()
+        assert errors == []
         assert "HF_HUB_OFFLINE" not in os.environ
         assert "TRANSFORMERS_OFFLINE" not in os.environ
 
