@@ -112,7 +112,7 @@ def profile_imports(python: str, top: int = 15) -> dict:
         return {
             "ok": False,
             "error": "no `import main` row in -X importtime output\n"
-                     + (proc.stderr or proc.stdout)[-2000:],
+            + (proc.stderr or proc.stdout)[-2000:],
         }
     self_by_pkg: dict[str, int] = {}
     for self_us, _cum, name in rows:
