@@ -811,8 +811,7 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
     load_dir = Path(rows[0]["load_id"])
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
     assert [v.quant for v in variants], (
-        f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a "
-        "companion drafter"
+        f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a " "companion drafter"
     )
     assert load_dir == repo_dir / "snapshots" / OLDER
 
