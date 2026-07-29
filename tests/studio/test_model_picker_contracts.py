@@ -689,9 +689,7 @@ def test_parallel_slots_setting_wired_end_to_end():
     # count has to be in that one definition rather than the sidebar's own copy.
     signature = _read("features/model-picker/model-config/config-signature.ts")
     assert 'config.nParallel ?? "",' in signature
-    sidebar = " ".join(
-        _read("features/model-picker/components/sidebar-model-config.tsx").split()
-    )
+    sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}" in sidebar
 
 
@@ -1181,9 +1179,7 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "_FLOAT_PRECISION_QUANTS" in gguf and "FLOAT_PRECISION_QUANTS" in identity
     # The executable half of this contract, checked case by case against the
     # answers split_quant_suffix gives.
-    assert (
-        WORKDIR / "studio" / "frontend" / "tests" / "quant-suffix-split.test.ts"
-    ).is_file()
+    assert (WORKDIR / "studio" / "frontend" / "tests" / "quant-suffix-split.test.ts").is_file()
 
 
 def test_the_detail_card_also_gates_ollama_out_of_the_api_promise():
