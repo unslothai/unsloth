@@ -730,6 +730,31 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
         return False
 
 
+def snapshot_has_complete_variants(snapshot: str) -> bool:
+    """True when at least one quant the variant lister would advertise from
+    *snapshot* is fully on disk.
+
+    Deliberately weaker than ``snapshot_variants_all_complete``: a snapshot that
+    mixes a whole quant with an interrupted split one is still loadable for the
+    whole quant, and the lister trims the offer to that completed subset. Skipping
+    such a snapshot outright hides a fully downloaded quant behind an older
+    revision's larger one, which auto-load may not have the memory for.
+
+    Snapshot selection and the offered variants have to agree on one directory, so
+    every caller that pins a load id uses this predicate and the lister uses the
+    matching subset.
+    """
+    from hub.utils.gguf import list_local_gguf_variants
+    try:
+        variants, _ = list_local_gguf_variants(snapshot)
+        offered = {v.quant for v in variants if getattr(v, "quant", None)}
+        if not offered:
+            return False
+        return bool(offered & _completed_gguf_variants(Path(snapshot)))
+    except Exception:
+        return False
+
+
 def complete_snapshot_variants(snapshot: str) -> set[str]:
     """Quant labels in *snapshot* whose files are all on disk. Same labels as
     ``snapshot_variants_all_complete`` compares, for callers that need the subset

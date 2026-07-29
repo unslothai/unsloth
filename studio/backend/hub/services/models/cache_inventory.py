@@ -513,8 +513,12 @@ def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[s
     must agree or an advertised quant resolves to nothing. A snapshot holding
     only part of a split quant is not usable either: the picker still offers
     that quant and the generated command asks for shards that are absent, so
-    prefer a complete one exactly as ``_repo_gguf_load_id`` does. Fall back to
-    any primary GGUF when nothing is complete, which is what shipped before.
+    prefer one holding a whole quant exactly as ``_repo_gguf_load_id`` does. A
+    snapshot that mixes a whole quant with an interrupted split one still counts,
+    because the lister trims its offer to the completed subset; demanding the
+    whole directory be complete would hide that finished quant behind an older
+    revision's larger one. Fall back to any primary GGUF when nothing is
+    complete, which is what shipped before.
     """
     # Matched on the snapshot-relative path, not ``file_name``: huggingface_hub
     # sets that to the bare name for a nested file (the recovered mirror copies
@@ -531,7 +535,7 @@ def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[s
     complete = [
         snapshot
         for snapshot in with_gguf
-        if hf_cache_scan.snapshot_variants_all_complete(str(snapshot))
+        if hf_cache_scan.snapshot_has_complete_variants(str(snapshot))
     ]
     usable = complete or with_gguf
     return _newest_snapshot_dir(usable), _resolved_snapshot_ids(usable)

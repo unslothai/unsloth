@@ -607,6 +607,52 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
     assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == offered
 
 
+def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(
+    tmp_path, monkeypatch
+):
+    """A whole small quant can sit in the newest snapshot beside an interrupted
+    split one while an older snapshot holds nothing but a whole larger quant.
+
+    Requiring the whole directory to be complete skipped that newest snapshot
+    outright, so both the load id and the offered quants fell back to the older
+    revision and the fully downloaded small quant disappeared. Auto-load takes
+    only the smallest quant offered, so it would then spend its one attempt on
+    the larger one and, if that does not fit in memory, leave chat with no model
+    while a usable quant sat on disk. The snapshot counts as usable and its
+    completed subset is what gets offered, so both ends still name one directory
+    and the interrupted quant is still withheld."""
+    from hub.utils.gguf import list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q6_K.gguf": b"\0" * 96},
+        newer_files = {
+            "Model-Q4_K_M.gguf": b"\0" * 16,
+            "Model-Q8_0-00001-of-00002.gguf": b"\0" * 8,
+        },
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    load_dir = Path(rows[0]["load_id"])
+    assert load_dir == repo_dir / "snapshots" / NEWER
+    offered = _local_gguf_variants_for_autoload(rows[0], tmp_path)
+    assert offered == ["Q4_K_M"]
+    # The pair still has to agree on one directory, and the interrupted split
+    # quant must not be advertised from it.
+    resolvable = {v.quant for v in list_local_gguf_variants(str(load_dir))[0]}
+    assert set(offered) <= resolvable, (
+        f"auto-load is offered {sorted(offered)} but load_id {load_dir.name[:8]} "
+        f"resolves only {sorted(resolvable)}"
+    )
+    assert "Q8_0" not in offered
+    # Pinning the snapshot that holds the interrupted download must not flip the
+    # row partial: a whole quant is loadable from it.
+    assert rows[0].get("partial") is False
+    assert rows[0].get("capabilities", {}).get("can_chat") is True
+
+
 def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkeypatch):
     """The repo-level format is allowed to rest on transformer-named weights
     alone, but a pinned load id names one directory and from_pretrained needs
