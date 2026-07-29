@@ -1,0 +1,2 @@
+include _changelog_build.py
+include CHANGELOG.md
