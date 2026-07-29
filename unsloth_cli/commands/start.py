@@ -2560,9 +2560,13 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
         )
     args = shlex.split(install_hint)
     env = dict(os.environ)
-    npm_dir = str(Path(npm).parent)
+    # dirname, not Path().parent: Path picks its flavour from os.name, so a caller that
+    # overrides it (the tests do) builds the wrong one. Empty means npm is a bare name,
+    # and prepending "" would put the cwd on PATH.
+    npm_dir = os.path.dirname(npm)
     current_path = env.get("PATH", "")
-    env["PATH"] = os.pathsep.join([npm_dir, current_path]) if current_path else npm_dir
+    if npm_dir:
+        env["PATH"] = os.pathsep.join([npm_dir, current_path]) if current_path else npm_dir
     if os.name == "nt":
         command = "& " + " ".join(_powershell_quote(arg) for arg in [npm, *args[1:]])
         return (
