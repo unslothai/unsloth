@@ -5219,6 +5219,42 @@ def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
     assert start._ephemeral_session_prefix("claude", None) == "unsloth-claude-"
 
 
+def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeypatch, tmp_path):
+    # mkdir(exist_ok = True) succeeds on a root that already exists but cannot be written,
+    # so the lock file is the first thing to fail.
+    agents = tmp_path / "agents"
+    temp_root = agents / ".tmp"
+    temp_root.mkdir(parents = True)
+    os.chmod(temp_root, 0o500)
+    monkeypatch.setattr(start, "_agents_config_root", lambda: agents)
+
+    try:
+        with start._session_config("claude", launch = True) as home:
+            assert home.exists()
+            assert temp_root not in home.parents
+    finally:
+        os.chmod(temp_root, 0o700)
+    assert not home.exists()
+
+
+def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path):
+    # A shim resolved via Studio's managed Node needs that node on PATH when it runs.
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    monkeypatch.setattr(
+        start,
+        "_managed_node_tools",
+        lambda: (managed_bin / "node", managed_bin / "npm", True),
+    )
+    before = os.environ.get("PATH")
+
+    env = start._probe_env(OPENCODE_CONFIG = "/tmp/cfg.json")
+
+    assert str(managed_bin) in env["PATH"]
+    assert env["OPENCODE_CONFIG"] == "/tmp/cfg.json"
+    assert os.environ.get("PATH") == before
+
+
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
     # Attaching to a remote or already-running Studio does not need a local auth tree, so
     # an absent or read-only one must not stop the launch.

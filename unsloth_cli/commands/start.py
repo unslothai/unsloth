@@ -385,6 +385,7 @@ def _opencode_supports_native_auto() -> bool:
             text = True,
             timeout = 10,
             stderr = subprocess.DEVNULL,
+            env = _probe_env(),
         )
     except Exception:
         return False
@@ -1677,7 +1678,7 @@ def _claude_version() -> Optional[tuple]:
         return None
     try:
         result = subprocess.run(
-            [executable, "--version"], capture_output = True, text = True, timeout = 10
+            [executable, "--version"], capture_output = True, text = True, timeout = 10, env = _probe_env()
         )
         # Pull the X.Y.Z out of the output rather than assuming it is the first token.
         # claude prints it first today ("2.1.98 (Claude Code)"), but a format change
@@ -1754,7 +1755,8 @@ def _codex_supports_model_catalog() -> bool:
         return True
     try:
         output = subprocess.check_output(
-            [executable, "--version"], text = True, timeout = 10, stderr = subprocess.DEVNULL
+            [executable, "--version"], text = True, timeout = 10, stderr = subprocess.DEVNULL,
+            env = _probe_env(),
         )
     except Exception:
         return False
@@ -2074,8 +2076,7 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
             err = True,
         )
     else:
-        env = os.environ.copy()
-        env["OPENCODE_CONFIG"] = _agent_config_path(path, ["opencode"])
+        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, ["opencode"]))
         try:
             resolved = subprocess.run(
                 [executable, "debug", "config"],
@@ -2485,6 +2486,23 @@ def _augment_path_with_install_dirs() -> None:
         os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def _probe_env(**extra: str) -> dict:
+    """Environment for probes that RUN a resolved shim.
+
+    _which_with_install_dirs restores PATH before returning, so a shim backed by Studio's
+    managed Node would not find that node when executed.
+    """
+    original = os.environ.get("PATH")
+    _augment_path_with_install_dirs()
+    env = os.environ.copy()
+    if original is None:
+        os.environ.pop("PATH", None)
+    else:
+        os.environ["PATH"] = original
+    env.update(extra)
+    return env
+
+
 def _which_with_install_dirs(name: str) -> Optional[str]:
     # shutil.which(name), but searching the known agent install dirs too, so a version probe
     # resolves the same binary _launch() will (it augments PATH before it runs). Without this an
@@ -2803,20 +2821,17 @@ def _temporary_agent_config(prefix: str):
     # locked session helper: a wrapper killed before its finally runs leaves a home that
     # the next launch reclaims, and the lock keeps a live session from being swept.
     temp_root = _agents_config_root() / ".tmp"
-    try:
-        temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
-    except OSError:
-        # Attaching to a remote or already-running Studio does not need a local auth tree,
-        # so it may be absent or read-only; the key cache degrades the same way. Fall back
-        # to the system temp dir, which is where these homes lived before. No reclamation
-        # there, but the OS prunes it.
-        path = Path(tempfile.mkdtemp(prefix = prefix))
+    with contextlib.ExitStack() as stack:
         try:
-            yield path
-        finally:
-            shutil.rmtree(path, ignore_errors = True)
-        return
-    with _short_ephemeral_session(temp_root, prefix) as path:
+            temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+            path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
+        except OSError:
+            # Attaching to a remote or already-running Studio does not need a local auth
+            # tree, so it may be absent, read-only, or owned by someone else; the key cache
+            # degrades the same way. Fall back to the system temp dir, where these homes
+            # lived before. No reclamation there, but the OS prunes it.
+            path = Path(tempfile.mkdtemp(prefix = prefix))
+            stack.callback(shutil.rmtree, path, ignore_errors = True)
         yield path
 
 
