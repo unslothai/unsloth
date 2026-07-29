@@ -1284,3 +1284,100 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
     # and there is no projector there.
     assert not (active / "models--Org--Model" / "snapshots" / SNAPSHOT / "mmproj-F16.gguf").exists()
     assert rows[0]["capabilities"].get("supports_vision") is False
+
+
+# --- the chokepoints, so a new signal cannot pick its own snapshot ------------
+
+_BACKEND = Path(__file__).resolve().parents[1]
+# Every helper the per-repo scan may hand the whole repo to. Each one aggregates
+# across revisions on purpose (bytes, mtimes, the payload snapshot set); a new
+# name here is a new repo-wide signal and has to be argued for, which is the
+# point: eight rounds of this bug were signals collected over every revision and
+# then advertised on a row that loads out of one directory.
+_REPO_WIDE_HELPERS = frozenset({
+    "_cache_inventory_fields",
+    "_repo_gguf_last_modified",
+    "_repo_gguf_payload_snapshots",
+    "_repo_gguf_size_bytes",
+    "_repo_has_gguf_files",
+    "_repo_non_gguf_model_payload",
+    "getattr",
+})
+# Only the shared ordering key may read a snapshot directory's mtime; _blob_mtime
+# reads a blob's, which orders nothing.
+_MTIME_READERS = {
+    "hub/utils/hf_cache_state.py": frozenset({"snapshot_selection_key"}),
+    "hub/utils/gguf.py": frozenset(),
+    "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
+}
+
+
+def _function_defs(path: Path) -> dict:
+    import ast
+
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+@pytest.mark.parametrize("scan", ["_scan_cached_gguf", "_scan_cached_models"])
+def test_the_scan_loop_cannot_advertise_a_signal_it_did_not_scope(scan):
+    """A row's flags come from ``_cache_inventory_fields``, which has exactly one
+    snapshot in scope. Setting one afterwards, or reading ``repo_info.revisions``
+    in the loop, is how each of the previous instances got in."""
+    import ast
+
+    node = _function_defs(_BACKEND / "hub/services/models/cache_inventory.py")[scan]
+
+    mutations = [
+        ast.unparse(target)
+        for stmt in ast.walk(node)
+        if isinstance(stmt, ast.Assign)
+        for target in stmt.targets
+        if isinstance(target, ast.Subscript) and "capabilities" in ast.unparse(target)
+    ]
+    assert mutations == [], f"{scan} sets a capability outside _cache_inventory_fields: {mutations}"
+
+    revision_reads = [
+        ast.unparse(sub)
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.Attribute)
+        and sub.attr == "revisions"
+        and isinstance(sub.value, ast.Name)
+        and sub.value.id == "repo_info"
+    ]
+    assert revision_reads == [], f"{scan} walks every revision itself: {revision_reads}"
+
+    handed_off = sorted({
+        ast.unparse(call.func)
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and any(
+            isinstance(arg, ast.Name) and arg.id == "repo_info"
+            for arg in [*call.args, *(kw.value for kw in call.keywords)]
+        )
+    })
+    assert set(handed_off) <= _REPO_WIDE_HELPERS, (
+        f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
+    )
+
+
+@pytest.mark.parametrize("module, allowed", sorted(_MTIME_READERS.items()))
+def test_only_the_shared_key_orders_snapshots_by_mtime(module, allowed):
+    """Two selectors ordering snapshots by their own mtime read is how the row
+    and the picker came to disagree on equal timestamps."""
+    import ast
+
+    readers = {
+        name
+        for name, node in _function_defs(_BACKEND / module).items()
+        if any(
+            isinstance(sub, ast.Attribute) and sub.attr == "st_mtime" for sub in ast.walk(node)
+        )
+    }
+    assert readers == set(allowed), (
+        f"{module} reads a snapshot mtime outside snapshot_selection_key: {sorted(readers)}"
+    )
