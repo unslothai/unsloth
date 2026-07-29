@@ -131,9 +131,9 @@ def test_device_type_gates_the_flags_on_the_kernels():
     assert "import bitsandbytes as _bnb_probe" in head
     assert 'find_spec("bitsandbytes")' not in head, "find_spec cannot see a broken wheel"
     assert "native_kernels_ready(_bnb_probe, DEVICE_TYPE)" in head
-    assert head.count("ALLOW_BITSANDBYTES = False") >= 2, (
-        "both the failed-import path and the dead-kernels path must clear the flag"
-    )
+    assert (
+        head.count("ALLOW_BITSANDBYTES = False") >= 2
+    ), "both the failed-import path and the dead-kernels path must clear the flag"
 
 
 def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
@@ -141,9 +141,10 @@ def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
     ``functional`` while the submodule stays in sys.modules, so the check has to go
     through ``import bitsandbytes.functional``, which reads sys.modules directly."""
     probe = _load_probe()
-    bnb = types.ModuleType("bitsandbytes")   # zombie: parent has no `functional`
+    bnb = types.ModuleType("bitsandbytes")  # zombie: parent has no `functional`
     bnb.__version__ = "0.50.0"
     import sys
+
     real = sys.modules.get("bitsandbytes.functional")
     if real is None:
         return  # bitsandbytes not importable here; the fallback has nothing to read
