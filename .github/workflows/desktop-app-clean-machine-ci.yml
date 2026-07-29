@@ -534,11 +534,29 @@ jobs:
         run: |
           $drop = @('hostedtoolcache\windows\Python', 'WindowsApps', '\Git\', 'CMake',
                     'Microsoft Visual Studio', 'BuildTools', 'LLVM', 'MSYS', 'mingw')
+          # winget is an app-execution alias under ...\Local\Microsoft\WindowsApps, so
+          # the WindowsApps fragment -- there to take the Store's python.exe alias away
+          # -- drops the OS package manager with it. winget is not developer tooling;
+          # every consumer Windows machine this bundle ships to has it, and the bundled
+          # install.ps1 reaches for it for the git that studio/setup.ps1:1657-1669 still
+          # gates on unconditionally. Without it this lane only re-runs the no-winget
+          # fallback that clean-machine-install-ci.yml already covers and pins on its
+          # winget=masked row, and it does so as a hard failure. Resolve winget before
+          # the scrub and hand it back through a shim, exactly as that workflow does.
+          $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+          if (-not $wingetCmd) {
+            Write-Host '::error::winget was not on PATH before the strip; this image ships it and the bundled installer needs it'
+            exit 1
+          }
+          $shim = Join-Path $env:RUNNER_TEMP 'winget-shim'
+          New-Item -ItemType Directory -Force -Path $shim | Out-Null
+          Set-Content -LiteralPath (Join-Path $shim 'winget.cmd') -Encoding ascii `
+            -Value "@`"$($wingetCmd.Source)`" %*"
           $scrub = {
             param($entries)
             ,@($entries | Where-Object { $p = $_; $p -and -not ($drop | Where-Object { $p -like "*$_*" }) })
           }
-          "PATH=$((& $scrub ($env:PATH -split ';')) -join ';')" |
+          "PATH=$shim;$((& $scrub ($env:PATH -split ';')) -join ';')" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # Take the toolcache Python off disk, not just off PATH: py.exe lives in
           # C:\Windows (which must stay) and uv does its own interpreter discovery,
@@ -551,9 +569,11 @@ jobs:
             }
           }
           # The bundled install.ps1 this job runs calls Refresh-SessionPath (318-337),
-          # which rebuilds $env:Path from the Machine and User registry values, so a
+          # which merges the Machine and User registry PATHs back into $env:Path, so a
           # process-only scrub lasts until the first refresh and Git/CMake/VS/LLVM come
-          # back. The runner is ephemeral, so rewrite the registry copies too. Expand
+          # back from the registry. The runner is ephemeral, so rewrite the registry
+          # copies too. (A merge keeps what the process already had, which is why the
+          # winget shim above survives.) Expand
           # first: SetEnvironmentVariable rewrites REG_EXPAND_SZ as REG_SZ
           # (dotnet/runtime#1442).
           foreach ($scope in 'Machine','User') {
@@ -603,6 +623,17 @@ jobs:
             # (actions/runner#351), so the step would exit 1 with nothing printed on a
             # machine that is in fact clean.
             $global:LASTEXITCODE = 0
+          }
+          # The shim is the only reason winget resolves after the WindowsApps drop. It
+          # survives the installer's own refreshes because Refresh-SessionPath
+          # (install.ps1:318-337) and setup.ps1's Refresh-Environment MERGE the current
+          # $env:Path back in rather than replace it -- but assert it, or this lane
+          # silently degrades into the no-winget leg the installer workflow already pins.
+          $winget = Get-Command winget -ErrorAction SilentlyContinue
+          Write-Host ("winget   {0}" -f $(if ($winget) { $winget.Source } else { 'ABSENT' }))
+          if (-not $winget) {
+            Write-Host '::error::winget did not survive the strip; the bundled installer would take the no-winget fallback instead of the consumer path'
+            exit 1
           }
           if ($leaked) {
             Write-Host "::error::developer tooling survived the strip: $($leaked -join '; ')"

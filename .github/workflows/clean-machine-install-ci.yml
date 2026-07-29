@@ -66,6 +66,7 @@ on:
       # The virgin Windows container lane lives in this workflow too.
       - '.github/scripts/virgin-windows-*.ps1'
       - '.github/scripts/ensure-docker-daemon.ps1'
+      - '.github/scripts/assert-nobuild.ps1'
       - '.github/workflows/clean-machine-install-ci.yml'
   push:
     branches: [main]
@@ -84,6 +85,7 @@ on:
       # The virgin Windows container lane lives in this workflow too.
       - '.github/scripts/virgin-windows-*.ps1'
       - '.github/scripts/ensure-docker-daemon.ps1'
+      - '.github/scripts/assert-nobuild.ps1'
       - '.github/workflows/clean-machine-install-ci.yml'
   workflow_dispatch:
     inputs:
@@ -1021,10 +1023,11 @@ jobs:
           $newPath = ($kept -join ';')
           "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # install.ps1's Refresh-SessionPath (318-337, called at 1246/1278/1295/1360/
-          # 1369/2797) rebuilds $env:Path from the Machine and User registry values, so a
-          # process-only scrub lasts until the first bootstrap refresh, after which
+          # 1369/2797) merges the Machine and User registry PATHs back into $env:Path, so
+          # a process-only scrub lasts until the first bootstrap refresh, after which
           # Git/CMake/VS/LLVM are back and the rest of the install is not clean. The
-          # runner is ephemeral, so rewrite the registry copies too. Expand first:
+          # runner is ephemeral, so rewrite the registry copies too. It is a merge, not a
+          # replace, so the shim above keeps resolving. Expand first:
           # SetEnvironmentVariable rewrites REG_EXPAND_SZ as REG_SZ
           # (dotnet/runtime#1442).
           foreach ($scope in 'Machine','User') {
@@ -1294,6 +1297,20 @@ jobs:
             exit 1
           }
           Write-Host 'no CMake and no VS Build Tools install; the prebuilt contract held'
+
+      - name: Assert no source build
+        if: always() && steps.install.outcome != 'skipped'
+        shell: pwsh
+        run: |
+          # The step above only catches a NEW CMake or VS Build Tools install. The
+          # image's Visual Studio survives a PATH scrub: setup.ps1's Find-VsBuildTools
+          # (763-800) reaches it through vswhere and a Program Files scan, and the
+          # visible leg logs `vs  Visual Studio 18 2026 (vswhere)` on the same machine
+          # whose pre-flight printed `cl ABSENT`. So a dependency that lost its Windows
+          # wheel would compile against that MSVC and the leg would stay green, while
+          # macOS and Linux caught it. uv really does build sdists here (openai-whisper,
+          # antlr4-python3-runtime, randomname, argbind), so this is the live path.
+          & "$env:GITHUB_WORKSPACE/.github/scripts/assert-nobuild.ps1" -LogPath logs/install.log
 
       - name: Assert torch loads, and record what that does and does not prove
         if: steps.install.outcome == 'success'

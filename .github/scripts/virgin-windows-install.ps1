@@ -132,40 +132,14 @@ if ($Overlay -and $rc -eq 0) {
 }
 
 Section 'assert: no non-allowlisted source build'
-# PowerShell port of .github/scripts/clean-machine-assert.sh's `nobuild`. Same
-# contract: pip prints "Building wheel for <pkg>", uv prints "Building <pkg>==<ver>"
-# (astral-sh/uv#11165), and a local-path build (`Building <pkg> @ file://`) is
-# something the caller pointed at, never something resolution chose.
-if (-not (Test-Path -LiteralPath $LogPath)) {
-    $failures += "nobuild requested but $LogPath is missing"
+# Shared with the hosted Windows legs so the sdist allowlist lives in one place; the
+# script prints its own diagnosis, so only the verdict is folded in here.
+$nobuild = Join-Path $PSScriptRoot 'assert-nobuild.ps1'
+if (-not (Test-Path -LiteralPath $nobuild)) {
+    $failures += "assert-nobuild.ps1 is missing next to this script, so the no-build contract went unchecked"
 } else {
-    $allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'triton-kernels')
-    # [char]27, not "`e": the `e escape sequence is PowerShell 6+, and this script runs
-    # under Windows PowerShell 5.1, where "`e" silently degrades to a literal "e" and
-    # the strip would eat real text instead of ANSI codes.
-    $esc = [char]27
-    $text = (Get-Content -LiteralPath $LogPath -Raw) -replace "$esc\[[0-9;]*[A-Za-z]", ''
-    $built = @()
-    foreach ($line in ($text -split "`r?`n")) {
-        if ($line -imatch 'building [a-z0-9._-]+ @ file://') { continue }
-        foreach ($m in [regex]::Matches($line, '(?i)building wheel for ([a-z0-9._-]+)|building ([a-z0-9._-]+)(==| @ )')) {
-            $name = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
-            $built += ($name.ToLowerInvariant() -replace '_', '-')
-        }
-    }
-    $built = $built | Sort-Object -Unique
-    $bad = @($built | Where-Object { $allow -notcontains $_ })
-    if ($bad.Count -gt 0) {
-        $failures += "built from source: $($bad -join ' ') -- these must resolve to wheels on a clean machine"
-    } else {
-        Write-Host "no non-allowlisted source build (built: $(if ($built) { $built -join ' ' } else { 'none' }))"
-    }
-    # Independent of package names: a compiler error means a toolchain was needed.
-    $compilerErr = Select-String -Path $LogPath -Pattern "error: command '(cc|gcc|clang|cl)' failed", 'clang: error', 'cargo: not found', 'Microsoft Visual C\+\+ 14.0 or greater is required'
-    if ($compilerErr) {
-        $failures += "compiler invocation appears in the install log"
-        $compilerErr | Select-Object -First 10 | ForEach-Object { Write-Host "  $($_.Line)" }
-    }
+    & $nobuild -LogPath $LogPath
+    if ($LASTEXITCODE -ne 0) { $failures += "a non-allowlisted source build appears in the install log" }
 }
 
 # ── Verdict ───────────────────────────────────────────────────────────────────
