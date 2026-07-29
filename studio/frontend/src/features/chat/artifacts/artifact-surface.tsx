@@ -30,7 +30,7 @@ import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
 import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
-import { getArtifactFilename } from "./types";
+import { buildArtifactSourceKey, getArtifactFilename } from "./types";
 
 const COPY_RESET_MS = 2000;
 const artifactSourceCodePlugin = createCodePlugin({
@@ -338,6 +338,8 @@ export function ArtifactSurface({
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
+              // Only computed when the source view is actually on screen.
+              key={buildArtifactSourceKey(artifact)}
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}
               controls={{ code: false }}
