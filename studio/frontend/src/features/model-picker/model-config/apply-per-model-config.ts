@@ -10,11 +10,16 @@ import {
   reconcilePersistedGpuIds,
   useChatRuntimeStore,
 } from "@/features/chat";
+// Lives in its own module so hosts that only need the signature (the editor keys)
+// can import it without pulling the chat runtime store in with it.
+import { gpuFieldsSignature } from "./config-signature";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
   normalizeMaxSeqLength,
 } from "./per-model-config";
+
+export { gpuFieldsSignature };
 
 function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
@@ -106,20 +111,6 @@ export function perModelConfigsEqual(
       cleanTemplate(b.chatTemplateOverride) &&
     gpuFieldsEqual(a, b)
   );
-}
-
-// Serialize the per-model GPU knobs with the same "absent == default"
-// coalescing the store applies: mode auto/absent, gpuLayers Auto (< 0) /
-// absent, nCpuMoe 0 / absent, and the GPU pick (null / absent = all GPUs).
-export function gpuFieldsSignature(config: PerModelConfig): string {
-  return [
-    config.gpuMemoryMode ?? "auto",
-    config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
-    config.nCpuMoe ?? 0,
-    config.selectedGpuIds == null
-      ? "all"
-      : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
-  ].join("|");
 }
 
 function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {

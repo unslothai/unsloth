@@ -3,6 +3,7 @@
 
 import { usePlatformStore } from "@/config/env";
 import {
+  applyActiveModelStatusToStore,
   getInferenceStatus,
   isExternalModelId,
   listGgufVariants,
@@ -72,6 +73,7 @@ import { useModelsSelection } from "./hooks/use-models-selection";
 import { useHubInventory } from "./inventory";
 import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
 import { settingsGgufVariantForRow } from "./inventory/settings-identity";
+import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -384,25 +386,40 @@ export function ModelsPage() {
     let cancelled = false;
     void getInferenceStatus()
       .then((status) => {
-        if (cancelled || !status.active_model) return;
-        // The loadable identifier, as every other status reader records it: a GGUF
-        // from a non-active HF cache or straight off disk loads by path, while
-        // active_model is the clean public id (an HF snapshot's repo id, any other
-        // file's filename stem). Two files that share a stem collapse onto one id,
-        // so storing that would make the catalog row for one of them look loaded.
-        const checkpointId = resolveInferenceCheckpointId(status);
-        if (!checkpointId) return;
+        if (cancelled) return;
         const store = useChatRuntimeStore.getState();
-        if (
-          !isExternalModelId(store.params.checkpoint) &&
-          (!modelIdsMatch(store.params.checkpoint, checkpointId) ||
-            !ggufVariantsMatch(
-              store.activeGgufVariant,
-              status.gguf_variant ?? null,
-            ))
-        ) {
-          store.setCheckpoint(checkpointId, status.gguf_variant ?? null);
-        }
+        adoptResidentModelStatus(
+          {
+            // The loadable identifier, as every other status reader records it: a
+            // GGUF from a non-active HF cache or straight off disk loads by path,
+            // while active_model is the clean public id (an HF snapshot's repo id,
+            // any other file's filename stem). Two files that share a stem collapse
+            // onto one id, so storing that would make the catalog row for one of
+            // them look loaded.
+            checkpointId: resolveInferenceCheckpointId(status),
+            ggufVariant: status.gguf_variant ?? null,
+          },
+          {
+            checkpoint: store.params.checkpoint,
+            checkpointIsExternal: isExternalModelId(store.params.checkpoint),
+            activeGgufVariant: store.activeGgufVariant,
+            modelLoading: store.modelLoading,
+          },
+          {
+            setCheckpoint: (checkpointId, ggufVariant) => {
+              store.setCheckpoint(checkpointId, ggufVariant);
+            },
+            // Landing here is the one entry point that has applied no status yet,
+            // so the settings page would read this model's live config off a store
+            // still holding defaults. Same call the chat runtime's refresh makes.
+            applyStatus: (previous) => {
+              applyActiveModelStatusToStore(status, {
+                previousCheckpoint: previous.checkpoint ?? undefined,
+                previousGgufVariant: previous.ggufVariant,
+              });
+            },
+          },
+        );
       })
       .catch(() => undefined);
     return () => {

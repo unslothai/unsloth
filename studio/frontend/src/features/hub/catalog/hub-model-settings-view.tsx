@@ -7,7 +7,11 @@
 // place to work through every knob. This gives them a page and says plainly that
 // what is saved here is what an API load uses, mirrored by ModelConfigPage.
 
-import { ModelConfigPage, type ModelPickTarget } from "@/features/model-picker";
+import {
+  ModelConfigPage,
+  type ModelPickTarget,
+  modelConfigInstanceKey,
+} from "@/features/model-picker";
 import type { PerModelConfig } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
 import { ArrowLeft01Icon, Globe02Icon } from "@hugeicons/core-free-icons";
@@ -122,7 +126,18 @@ export function HubModelSettingsView({
 
           <div className="rounded-xl border border-border/60 bg-card px-4 py-4">
             <ModelConfigPage
-              key={`${target.id}::${target.ggufVariant ?? ""}`}
+              // Keyed on the live config too, like the sidebar entry.
+              // ModelConfigPage reads loadedConfig once, in its useState
+              // initializer, so opening this page before /api/inference/status
+              // has hydrated (or while the target is still loading) would
+              // otherwise leave the editor on saved/default values for a model
+              // that is running with something else, and Apply would write them
+              // back over it.
+              key={modelConfigInstanceKey(
+                target.id,
+                target.ggufVariant,
+                loadedConfig,
+              )}
               target={target}
               onRun={onRun}
               loadedConfig={loadedConfig}

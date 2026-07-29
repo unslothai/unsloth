@@ -196,10 +196,21 @@ def test_active_model_config_round_trips_gpu_fields():
         "features/hub/catalog/sampling-settings-dialog.tsx",
     ):
         assert "useActiveModelConfig(" in _read(rel), rel
-    signature = _read("features/model-picker/components/sidebar-model-config.tsx")
-    assert "gpuFieldsSignature(config)" in signature
-    shared = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    # The GPU knobs are part of the editor's instance key, so a reload that lands
+    # on different placement re-seeds the editor instead of leaving it on the old
+    # values. Shared by every host that mounts ModelConfigPage.
+    shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
+    assert "gpuFieldsSignature(config)," in shared
+    assert "export function modelConfigInstanceKey" in shared
+    for rel in (
+        "features/model-picker/components/sidebar-model-config.tsx",
+        "features/hub/catalog/hub-model-settings-view.tsx",
+    ):
+        assert "modelConfigInstanceKey(" in _read(rel), rel
+    # apply-per-model-config re-exports it, so its own callers are unchanged.
+    reexport = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    assert "export { gpuFieldsSignature };" in reexport
 
 
 def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
@@ -1012,8 +1023,7 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     # The loadable identifier, as every other status reader records it. active_model
     # is the clean public id, and two files sharing a filename collapse onto one, so
     # storing it would let the wrong catalog row look loaded.
-    assert "const checkpointId = resolveInferenceCheckpointId(status);" in hub
-    assert "store.setCheckpoint(checkpointId, status.gguf_variant ?? null);" in hub
+    assert "checkpointId: resolveInferenceCheckpointId(status)," in hub
     assert "setCheckpoint(status.active_model" not in hub
     chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert "return status.model_identifier ?? status.active_model;" in chat, "the rule this mirrors"
@@ -1028,6 +1038,68 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
         encoding = "utf-8"
     )
     assert "def public_model_id(" in backend, "the rule this mirrors"
+
+
+def test_the_hub_hydrates_the_live_settings_before_it_offers_them():
+    """The Hub builds activeModelConfig out of the chat runtime store, and landing
+    straight on /hub is the one entry point where nothing has applied
+    /api/inference/status yet: useChatModelRuntime has no mount sync and the chat
+    page is a different route. Pinning only the checkpoint left every other field
+    at its default, so the settings page passed those defaults on as the resident
+    model's live config and Apply reloaded the model with them."""
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert "adoptResidentModelStatus(" in hub
+    assert "applyActiveModelStatusToStore(status, {" in hub
+    assert "previousCheckpoint: previous.checkpoint ?? undefined," in hub
+    assert "previousGgufVariant: previous.ggufVariant," in hub
+    assert "modelLoading: store.modelLoading," in hub
+
+    adopt = " ".join(_read("features/hub/lib/adopt-inference-status.ts").split())
+    # Unconditional: a persisted checkpoint rehydrates from localStorage on its
+    # own, carrying none of the fields that say how the model was launched.
+    assert "actions.applyStatus(previous); return true;" in adopt
+    # Never fight the load that owns the store, and never describe an external
+    # provider's model with the resident GGUF's launch settings.
+    assert "if (state.checkpointIsExternal) { return false; }" in adopt
+    assert "if (state.modelLoading) { return false; }" in adopt
+
+    # Same call the chat runtime's own refresh makes, which is the rule this mirrors.
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
+    assert "applyActiveModelStatusToStore(statusRes, {" in runtime
+
+
+def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
+    """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds
+    once per mounted instance. Opening the Hub's settings page before
+    /api/inference/status has hydrated (or while the target is still loading)
+    flips loadedConfig from null to the live config after mount, and without the
+    config in the React key the editor kept the saved/default values for a model
+    running with something else, which Apply then wrote back over it."""
+    view = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
+    assert "key={modelConfigInstanceKey( target.id, target.ggufVariant, loadedConfig, )}" in view
+    # Same key the sidebar entry uses; that parity is the point.
+    sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
+    assert "key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}" in sidebar
+
+    signature = " ".join(
+        _read("features/model-picker/model-config/config-signature.ts").split()
+    )
+    # "No live config yet" has to be its own value: that transition is exactly
+    # the one that must remount.
+    assert 'if (!config) { return "none"; }' in signature
+    for field in (
+        "config.customContextLength",
+        "config.maxSeqLength",
+        "config.kvCacheDtype",
+        "config.speculativeType",
+        "config.specDraftNMax",
+        "config.tensorParallel",
+        "config.chatTemplateOverride",
+    ):
+        assert field in signature, field
+
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "const [initial] = useState(resolveInitial);" in page, "the rule this mirrors"
 
 
 def test_a_standalone_gguf_has_one_settings_key():

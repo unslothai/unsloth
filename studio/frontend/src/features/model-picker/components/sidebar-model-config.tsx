@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useMemo } from "react";
-import { gpuFieldsSignature } from "../model-config/apply-per-model-config";
+import { modelConfigInstanceKey } from "../model-config/config-signature";
 import { isOllamaLinkPath } from "../model-config/model-identity";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
@@ -27,29 +27,6 @@ function leafName(id: string): string {
     trimmed.lastIndexOf("\\"),
   );
   return separator >= 0 ? trimmed.slice(separator + 1) : trimmed;
-}
-
-function hashString(value: string): number {
-  let hash = 5381;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (Math.imul(hash, 33) ^ value.charCodeAt(i)) >>> 0;
-  }
-  return hash;
-}
-
-function configSignature(config: PerModelConfig): string {
-  return [
-    config.customContextLength ?? "",
-    config.maxSeqLength ?? "",
-    config.kvCacheDtype ?? "",
-    config.speculativeType ?? "",
-    config.specDraftNMax ?? "",
-    config.tensorParallel ? "1" : "0",
-    config.chatTemplateOverride == null
-      ? ""
-      : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
-    gpuFieldsSignature(config),
-  ].join("|");
 }
 
 export function SidebarModelConfig({
@@ -84,7 +61,7 @@ export function SidebarModelConfig({
 
   return (
     <ModelConfigPage
-      key={`${modelId}::${ggufVariant ?? ""}::${configSignature(loadedConfig)}`}
+      key={modelConfigInstanceKey(modelId, ggufVariant, loadedConfig)}
       target={target}
       onRun={onReload}
       loadedConfig={loadedConfig}
