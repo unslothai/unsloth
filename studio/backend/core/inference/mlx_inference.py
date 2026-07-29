@@ -10,6 +10,7 @@ import hashlib
 import importlib
 import json
 import os
+import secrets
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -145,6 +146,9 @@ def _temporary_mlx_vlm_rope_suppression(model, cache_state):
     language_model = getattr(model, "language_model", None)
     if hasattr(language_model, "_position_ids"):
         language_model._position_ids = None
+    position_setter = getattr(model, "_set_position_state", None)
+    original_rope_index = getattr(language_model, "get_rope_index", None)
+    had_own_rope_index = "get_rope_index" in getattr(language_model, "__dict__", {})
 
     def _suppressing_get_input_embeddings(
         input_ids = None,
@@ -162,14 +166,33 @@ def _temporary_mlx_vlm_rope_suppression(model, cache_state):
             features.position_ids = None
         return features
 
-    model.get_input_embeddings = _suppressing_get_input_embeddings
+    rope_overridden = False
+    embedding_overridden = False
     try:
+        if callable(position_setter) and callable(original_rope_index):
+
+            def _wrapper_position_state(input_ids, *_args, **_kwargs):
+                position_setter(input_ids)
+                return language_model._position_ids, language_model._rope_deltas
+
+            language_model.get_rope_index = _wrapper_position_state
+            rope_overridden = True
+        model.get_input_embeddings = _suppressing_get_input_embeddings
+        embedding_overridden = True
         yield
     finally:
-        if had_own_override:
-            model.get_input_embeddings = original
-        else:
-            del model.get_input_embeddings
+        try:
+            if embedding_overridden:
+                if had_own_override:
+                    model.get_input_embeddings = original
+                else:
+                    del model.get_input_embeddings
+        finally:
+            if rope_overridden:
+                if had_own_rope_index:
+                    language_model.get_rope_index = original_rope_index
+                else:
+                    del language_model.get_rope_index
 
 
 def _mlx_vlm_model_config(model):
@@ -246,7 +269,13 @@ class _VLMProcessorWithoutImagePadding:
     def __getattr__(self, name):
         return getattr(self._processor, name)
 
-    def process(self, text, images = None, return_tensors = "mlx", **kwargs):
+    def process(
+        self,
+        text,
+        images = None,
+        return_tensors = "mlx",
+        **kwargs,
+    ):
         kwargs.pop("padding", None)
         return self._processor(
             text = text,
@@ -259,6 +288,51 @@ class _VLMProcessorWithoutImagePadding:
 def _vlm_rejects_image_padding(error):
     message = str(error)
     return "ImagesKwargs" in message and "unexpected keyword argument 'padding'" in message
+
+
+def _vlm_text_probe(messages):
+    nonce = secrets.token_hex(16)
+    markers = []
+    media_types = {
+        "image",
+        "image_url",
+        "input_image",
+        "audio",
+        "input_audio",
+        "video",
+        "input_video",
+        "video_url",
+    }
+
+    def replace(content):
+        if isinstance(content, str):
+            if not content:
+                return content
+            marker = f"UNSLOTH_VLM_TEXT_{nonce}_{len(markers):08x}"
+            markers.append(marker)
+            return marker
+        if isinstance(content, list):
+            return [replace(item) for item in content]
+        if not isinstance(content, dict):
+            return content
+        replaced = dict(content)
+        if str(content.get("type", "")).lower() in media_types:
+            return replaced
+        text_fields = [
+            name
+            for name in ("text", "content")
+            if isinstance(content.get(name), str) and content.get(name)
+        ]
+        if text_fields:
+            marker = f"UNSLOTH_VLM_TEXT_{nonce}_{len(markers):08x}"
+            markers.append(marker)
+            for name in text_fields:
+                replaced[name] = marker
+        elif "content" in content:
+            replaced["content"] = replace(content["content"])
+        return replaced
+
+    return replace(messages), tuple(markers)
 
 
 def _render_registered_vlm_prompt(
@@ -310,59 +384,118 @@ def _render_registered_vlm_prompt(
         raise RuntimeError("Model-aware image recovery requires media on the first user turn.")
 
     extract_text = getattr(prompt_utils, "extract_text_from_content", content_to_text)
-    text_messages = [
-        (
-            {**message, "content": extract_text(message.get("content"))}
-            if isinstance(message, dict)
-            else message
-        )
-        for message in messages
-    ]
-    normalized_messages = []
-    for index, source_message in enumerate(text_messages):
-        model_messages = prompt_utils.apply_chat_template(
-            processor,
-            config,
-            source_message,
-            add_generation_prompt = True,
-            return_messages = True,
-            num_images = num_images if index == media_owner else 0,
-            **kwargs,
-        )
-        if not isinstance(model_messages, list):
-            raise RuntimeError("mlx-vlm's registered renderer returned invalid messages.")
-        source_role = (
-            source_message.get("role", "user")
-            if isinstance(source_message, dict)
-            else "user"
-        )
-        for message in model_messages:
-            if isinstance(message, dict):
-                normalized_messages.append(
+
+    def extract_messages(source_messages):
+        return [
+            (
+                {**message, "content": extract_text(message.get("content"))}
+                if isinstance(message, dict)
+                else message
+            )
+            for message in source_messages
+        ]
+
+    text_messages = extract_messages(messages)
+
+    def format_messages(source_messages):
+        formatted = []
+        for index, source_message in enumerate(source_messages):
+            model_messages = prompt_utils.apply_chat_template(
+                processor,
+                config,
+                source_message,
+                add_generation_prompt = True,
+                return_messages = True,
+                num_images = num_images if index == media_owner else 0,
+                **kwargs,
+            )
+            if not isinstance(model_messages, list):
+                raise RuntimeError("mlx-vlm's registered renderer returned invalid messages.")
+            source_role = (
+                source_message.get("role", "user") if isinstance(source_message, dict) else "user"
+            )
+            for message in model_messages:
+                if isinstance(message, dict):
+                    formatted.append(message)
+                elif isinstance(message, str):
+                    formatted.append({"role": source_role, "content": message})
+                else:
+                    raise RuntimeError("mlx-vlm's registered renderer returned invalid messages.")
+        return formatted
+
+    def candidates(formatted):
+        def structured_content(content, field):
+            if isinstance(content, str):
+                return [{"type": "text", field: content}]
+            if not isinstance(content, list):
+                return content
+            normalized = []
+            for part in content:
+                if not isinstance(part, dict):
+                    normalized.append(part)
+                    continue
+                value = part.get("text", part.get("content"))
+                if not isinstance(value, str):
+                    normalized.append(part)
+                    continue
+                normalized.append(
                     {
-                        **message,
-                        "content": _flatten_registered_vlm_content(
-                            processor, message.get("content")
-                        ),
+                        **{
+                            name: item
+                            for name, item in part.items()
+                            if name not in ("text", "content")
+                        },
+                        field: value,
                     }
                 )
-            elif isinstance(message, str):
-                normalized_messages.append({"role": source_role, "content": message})
-            else:
-                raise RuntimeError("mlx-vlm's registered renderer returned invalid messages.")
-    rendered = prompt_utils.get_chat_template(
-        processor,
-        normalized_messages,
-        True,
-        **kwargs,
-    )
-    if (
-        isinstance(rendered, str)
-        and rendered.strip()
-        and not _prompt_serializes_vlm_media(rendered, messages)
-    ):
-        return rendered
-    raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
+            return normalized
+
+        def structured(field):
+            return [
+                {
+                    **message,
+                    "content": structured_content(message.get("content"), field),
+                }
+                for message in formatted
+            ]
+
+        flattened = [
+            {
+                **message,
+                "content": _flatten_registered_vlm_content(processor, message.get("content")),
+            }
+            for message in formatted
+        ]
+        return formatted, structured("text"), structured("content"), flattened
+
+    probe_source, markers = _vlm_text_probe(messages)
+    probe_messages = extract_messages(probe_source)
+    probe_candidates = candidates(format_messages(probe_messages))
+    actual_candidates = candidates(format_messages(text_messages))
+    for probe_candidate, candidate in zip(probe_candidates, actual_candidates):
+        try:
+            probe = prompt_utils.get_chat_template(
+                processor,
+                probe_candidate,
+                True,
+                **kwargs,
+            )
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            continue
+        if _vlm_prompt_issue(probe, probe_messages, markers) is not None:
+            continue
+        try:
+            rendered = prompt_utils.get_chat_template(
+                processor,
+                candidate,
+                True,
+                **kwargs,
+            )
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            continue
+        if _vlm_prompt_issue(rendered, messages) is None:
+            return rendered
+    raise RuntimeError("mlx-vlm's registered renderer returned an invalid prompt.")
 
 
 def _count_vlm_images(content):
@@ -407,11 +540,22 @@ def _prompt_serializes_vlm_media(prompt, messages):
     )
 
 
-def _vlm_prompt_issue(prompt, messages):
+def _vlm_prompt_issue(
+    prompt,
+    messages,
+    text_markers = (),
+):
     if not isinstance(prompt, str) or not prompt.strip():
         return "an empty prompt"
     if _prompt_serializes_vlm_media(prompt, messages):
         return "serialized structured image content"
+    positions = []
+    for marker in text_markers:
+        if prompt.count(marker) != 1:
+            return "dropped, duplicated, or reordered message text"
+        positions.append(prompt.index(marker))
+    if positions != sorted(positions):
+        return "dropped, duplicated, or reordered message text"
     return None
 
 
@@ -1949,6 +2093,27 @@ class MLXInferenceBackend:
         prompt_issue = (
             _vlm_prompt_issue(prompt, messages) if prompt_error is None else "a rendering error"
         )
+        if prompt_issue is None:
+            probe_messages, text_markers = _vlm_text_probe(messages)
+            if text_markers:
+                try:
+                    probe_prompt = apply_chat_template_for_generation(
+                        chat_target,
+                        probe_messages,
+                        tools = tools,
+                        enable_thinking = enable_thinking,
+                        reasoning_effort = reasoning_effort,
+                        preserve_thinking = preserve_thinking,
+                    )
+                except Exception as exc:
+                    prompt_error = exc
+                    prompt_issue = "a text-integrity rendering error"
+                else:
+                    prompt_issue = _vlm_prompt_issue(
+                        probe_prompt,
+                        probe_messages,
+                        text_markers,
+                    )
         if prompt_issue and has_tool_history:
             raise RuntimeError(
                 f"VLM chat template returned {prompt_issue} and cannot be recovered "

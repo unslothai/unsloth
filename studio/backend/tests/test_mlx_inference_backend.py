@@ -617,6 +617,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     assert order == ["adapter_enter", "adapter_exit"]
 
 
+# fmt: off
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     from core.inference import mlx_inference
 
@@ -644,10 +645,10 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         calls["model"].append(kwargs)
         calls["model_messages"].append(messages)
         assert kwargs.get("return_messages")
-        if state["model"] == "return messages":
+        if state["model"] in ("return messages", "require lists", "reject structured"):
             if messages["role"] == "assistant":
-                return ["Seen."]
-            content = [{"type": "text", "text": messages["content"]}]
+                return [messages["content"]]
+            content = [{"type": "text", "text": messages["content"], "content": messages["content"]}]
             if kwargs["num_images"]:
                 content[:0] = [{"type": "image"}, ""]
             return [{"role": messages["role"], "content": content}]
@@ -655,10 +656,16 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
     def model_template(_processor, messages, *_args, **kwargs):
         calls["template_messages"].append((messages, kwargs))
+        def joined(selected):
+            return " ".join(" ".join(str(part.get(field, "")) for part in message["content"] if isinstance(part, dict) for field in ("text", "content")) if isinstance(message.get("content"), list) else str(message.get("content")) for message in selected)
         if state["model"] == "return messages":
-            return "<image> recovered"
+            return joined(messages)
+        if state["model"] == "require lists":
+            return joined(messages) if all(isinstance(message.get("content"), list) for message in messages) else ""
         if state["model"] == "reject structured":
-            return "<image> flattened model-aware"
+            if any(isinstance(message.get("content"), list) for message in messages):
+                raise TypeError("string-only template")
+            return joined(messages) + " flattened model-aware"
         return state["model"]
 
     prompt_utils = SimpleNamespace(
@@ -682,6 +689,8 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         calls["generic"].append(kwargs)
         if isinstance(state["generic"], Exception):
             raise state["generic"]
+        if state["generic"] == "generic text":
+            return f"generic prompt {_messages[0]['content']}"
         if state["generic"].startswith("serialized"):
             index = -1 if state["generic"] == "serialized_last" else 0
             return f"User: {_messages[index]['content']}"
@@ -714,18 +723,23 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         {"role": "assistant", "content": [{"type": "text", "text": "Seen."}]},
         {"role": "user", "content": [{"type": "text", "text": "Again."}]},
     ]
-    recovered = backend._generate_vlm(*((multi_turn,) + args[1:]), enable_thinking=True, reasoning_effort="high", preserve_thinking=False)
+    recovered = backend._generate_vlm(*((multi_turn,) + args[1:]), enable_thinking = True, reasoning_effort = "high", preserve_thinking = False)
     assert list(recovered) == ["ok"]
     assert [message["content"] for message in calls["model_messages"][-3:]] == ["Read. Now.", "Seen.", "Again."]
     assert [call["num_images"] for call in calls["model"][-3:]] == [1, 0, 0]
-    roles_and_content = [(message["role"], message["content"]) for message in calls["template_messages"][-1][0]]
+    roles_and_content = [(message["role"], mlx_inference._flatten_registered_vlm_content(backend._processor, message["content"])) for message in calls["template_messages"][-1][0]]
     assert roles_and_content == [("user", "<image> Read. Now."), ("assistant", "Seen."), ("user", "Again.")]
     reasoning_kwargs = {"enable_thinking": True, "reasoning_effort": "high", "preserve_thinking": False}
     assert all(calls["model"][-1][name] == value for name, value in reasoning_kwargs.items())
     assert calls["template_messages"][-1][1] == reasoning_kwargs
+    state["model"] = "require lists"; assert list(backend._generate_vlm(*((multi_turn,) + args[1:]))) == ["ok"]
+    assert all(isinstance(message["content"], list) for message in calls["template_messages"][-1][0])
+    assert all(calls["stream"][-1][0][2].count(text) == 1 for text in ("Read. Now.", "Seen.", "Again."))
+    state["model"] = "reject structured"; assert list(backend._generate_vlm(*((multi_turn,) + args[1:]))) == ["ok"]
+    assert [message["content"] for message in calls["template_messages"][-1][0]] == ["<image> Read. Now.", "Seen.", "Again."]
     state["generic"] = "serialized_last"
     later_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": "Seen."}, {"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "Again."}]}]
-    with pytest.raises(RuntimeError, match="first user turn"):
+    with pytest.raises(RuntimeError, match = "first user turn"):
         list(backend._generate_vlm(*((later_image,) + args[1:])))
     backend._processor = SimpleNamespace(chat_template = "template")
     state["generic"] = "<image> healthy generic"
@@ -733,11 +747,11 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert list(backend._generate_vlm(*args, tools = tools, enable_thinking = False)) == ["ok"]
     assert calls["generic"][-1]["enable_thinking"] is False
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
-    state["generic"] = "generic prompt"
+    state["generic"] = "generic text"
     text_messages = [{"role": "user", "content": "hello"}]
     assert list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)) == ["ok"]
     assert calls["generic"][-1]["tools"] == tools
-    assert calls["stream"][-1][0][2] == "generic prompt"
+    assert calls["stream"][-1][0][2] == "generic prompt hello"
     two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
     with pytest.raises(RuntimeError, match = "2 structured image item"):
         list(backend._generate_vlm(*((two_images,) + args[1:]), tools = tools))
@@ -747,7 +761,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         padding_attempts.append((stream_args, stream_kwargs))
         if len(padding_attempts) == 1:
             raise ValueError("Failed to process inputs with error: ImagesKwargs.__init__() got an unexpected keyword argument 'padding'")
-        yield SimpleNamespace(text="ok", prompt_tokens=3, generation_tokens=1)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = padding_stream
     state["generic"] = "<image> healthy generic"
@@ -758,7 +772,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert list(backend._generate_vlm(*args)) == ["ok"]
     assert len(padding_attempts) == 2 and {"prompt_cache_state", "apc_manager"} <= padding_attempts[0][1].keys()
     assert {"prompt_cache_state", "apc_manager", "prefill_step_size"}.isdisjoint(padding_attempts[1][1])
-    padding_attempts[1][0][1].process("prompt", images=["image"], padding=True)
+    padding_attempts[1][0][1].process("prompt", images = ["image"], padding = True)
     assert processor_calls == [{"text": "prompt", "images": ["image"], "return_tensors": "mlx"}]
     assert isinstance(padding_attempts[1][0][1], mlx_inference._VLMProcessorWithoutImagePadding) and not exact_commits
     assert backend._vlm_prompt_cache_unavailable and backend._vlm_prompt_cache_history is None
@@ -768,8 +782,11 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         list(backend._generate_vlm(*((tool_history,) + args[1:]), tools = tools))
     state["generic"] = ValueError("generic rendering failed")
     state["model"] = f"User: {args[0][0]['content']}"
+    untyped = copy.deepcopy(multi_turn)
+    untyped[0]["content"][1].pop("type")
     with pytest.raises(ValueError, match = "generic rendering failed"):
-        list(backend._generate_vlm(*args))
+        list(backend._generate_vlm(*((untyped,) + args[1:])))
+# fmt: on
 
 
 def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
@@ -789,6 +806,14 @@ def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
         f"<image>\nExplain {json_repr}",
         [{"content": json_media}, {"content": f"Explain {json_repr}"}],
     )
+    module = sys.modules[MLXInferenceBackend.__module__]
+    repeated, markers = module._vlm_text_probe([{"content": "repeat"}, {"content": "repeat"}])
+    assert all(
+        module._vlm_prompt_issue(prompt, repeated, markers)
+        for prompt in (markers[0], " ".join(reversed(markers)), " ".join((markers[0], *markers)))
+    )
+    many, wide_markers = module._vlm_text_probe([{"content": str(index)} for index in range(11)])
+    assert module._vlm_prompt_issue(" ".join(wide_markers), many, wide_markers) is None
 
     backend = MLXInferenceBackend()
     backend._model = object()
@@ -1066,13 +1091,18 @@ def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatc
     assert all(current.startswith(previous) for previous, current in zip(snapshots, snapshots[1:]))
 
 
+# fmt: off
 def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     _install_fake_mlx(monkeypatch)
-    from core.inference.mlx_inference import MLXInferenceBackend
+    from core.inference.mlx_inference import MLXInferenceBackend, content_to_text
+
+    def render(_target, messages, **kwargs):
+        prompt = " ".join(content_to_text(message.get("content")) for message in messages)
+        return prompt.replace("<think>private chain</think>", "") if kwargs.get("preserve_thinking") is False else prompt
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda *_args, **_kwargs: "prompt",
+        render,
         raising = True,
     )
 
@@ -1084,6 +1114,7 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
             self.token = tok
 
     def _stream_generate(_model, _processor, _prompt, _images, **_kw):
+        assert "private chain" not in _prompt and "visible answer" in _prompt
         yield _Resp("<|channel>thought\n", 10)
         yield _Resp("vision", 11)
         yield _Resp("<channel|>", 12)
@@ -1100,12 +1131,12 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         apply_chat_template = lambda *_args, **_kwargs: "prompt",
     )
     backend._is_vlm = True
-
     assert list(
         backend.generate_chat_response(
-            messages = [{"role": "user", "content": "describe"}],
+            messages = [{"role": "assistant", "content": "<think>private chain</think>visible answer"}, {"role": "user", "content": "again"}],
             image = object(),
             max_new_tokens = 4,
+            preserve_thinking = False,
         )
     ) == [
         "<think>",
@@ -1113,6 +1144,7 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         "<think>vision</think>",
         "<think>vision</think> answer",
     ]
+# fmt: on
 
 
 # Turn 2 literally extends turn 1 as an append-only chat render does; the fork
@@ -1436,6 +1468,7 @@ def _mrope_model(arch = "qwen2_vl", **lm):
     )
 
 
+# fmt: off
 def test_mlx_vlm_mrope_admission_and_rope_suppression(monkeypatch):
     from core.inference import mlx_inference as module
 
@@ -1468,22 +1501,45 @@ def test_mlx_vlm_mrope_admission_and_rope_suppression(monkeypatch):
         ):
             return SimpleNamespace(rope_deltas = object(), position_ids = object())
 
+        def _set_position_state(self, input_ids):
+            self.language_model._position_ids = SimpleNamespace(shape = (3, 1, input_ids.shape[-1]))
+            self.language_model._rope_deltas = "wrapper delta"
+
     model = _Model()
+    original_rope_index = model.language_model.get_rope_index
     # Reuse: the runtime primes a 12-token map and trims the ids to the 7-token suffix, so
     # the map is exactly the cut length longer and the suffix-derived fields are dropped.
     with module._temporary_mlx_vlm_rope_suppression(model, SimpleNamespace(observed_prefix = 5)):
         assert "get_input_embeddings" in vars(model)
-        model.language_model._position_ids = SimpleNamespace(shape = (3, 1, 12))
+        position_ids, rope_deltas = model.language_model.get_rope_index(ids(12))
+        assert position_ids.shape == (3, 1, 12) and rope_deltas == "wrapper delta"
         reused = model.get_input_embeddings(ids(7), pixel_values = None)
         assert reused.rope_deltas is None and reused.position_ids is None
     assert "get_input_embeddings" not in vars(model)
+    assert model.language_model.get_rope_index is original_rope_index
     # A cold request keeps the state it just computed.
     with module._temporary_mlx_vlm_rope_suppression(model, SimpleNamespace(observed_prefix = 0)):
         cold = model.get_input_embeddings(ids(12), pixel_values = None)
         assert cold.rope_deltas is not None and cold.position_ids is not None
+
+    _Language = type("_Language", (), {"_rope_deltas": object(), "_position_ids": None, "get_rope_index": lambda *_args, **_kwargs: None})
+    class _RejectingModel(_Model):
+        language_model = _Language()
+        get_input_embeddings = property(lambda self: _Model.get_input_embeddings.__get__(self))
+    rejecting = _RejectingModel()
+    with pytest.raises(AttributeError): module._temporary_mlx_vlm_rope_suppression(rejecting, SimpleNamespace(observed_prefix = 5)).__enter__()
+    assert "get_rope_index" not in vars(rejecting.language_model)
+    assert rejecting.language_model.get_rope_index.__func__ is _Language.get_rope_index
+    cleanup_rejecting = _Model()
+    monkeypatch.setattr(_Model, "__delattr__", lambda *_args: (_ for _ in ()).throw(RuntimeError("cleanup refused")))
+    cleanup_rope_index = cleanup_rejecting.language_model.get_rope_index
+    with pytest.raises(RuntimeError, match = "cleanup refused"), module._temporary_mlx_vlm_rope_suppression(cleanup_rejecting, SimpleNamespace(observed_prefix = 5)): pass
+    assert "get_input_embeddings" in vars(cleanup_rejecting)
+    assert cleanup_rejecting.language_model.get_rope_index is cleanup_rope_index
     # A measured architecture is refused on a runtime that cannot prime.
     monkeypatch.setattr(module, "_runtime_primes_rope", lambda: False)
     assert module._vlm_mrope_reuse_arch(_mrope_model("qwen2_vl")) is None
+# fmt: on
 
 
 class _FakeLRUPromptCache:
