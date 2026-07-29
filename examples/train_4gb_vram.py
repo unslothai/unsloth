@@ -7,13 +7,15 @@ Compatible with: unsloth 2025+, trl>=0.18.2,<=0.24.0 (SFTConfig API), transforme
 """
 
 import os
+
+# Must run before `import torch` / `import unsloth` — Unsloth's GPU init touches
+# CUDA at import time, which lazily initializes the allocator before this can apply.
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 from datasets import load_dataset
 from unsloth import FastLanguageModel
 from trl import SFTTrainer, SFTConfig
-
-# Prevents PyTorch from allocating fragmented blocks that cause premature OOM on Linux
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def main():
