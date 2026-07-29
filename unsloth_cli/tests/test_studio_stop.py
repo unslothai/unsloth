@@ -453,8 +453,8 @@ def test_stop_keeps_a_record_it_cannot_read(monkeypatch, tmp_path):
 def test_stop_reaches_every_server_when_one_record_cannot_be_removed(monkeypatch, tmp_path):
     # One undeletable stale record must not end the loop before the live servers.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8600})
-    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)   # dead -> stop prunes it
-    _write_pid(tmp_path, "studio-8902-8600.pid", 8600)   # live -> stop signals it
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)  # dead -> stop prunes it
+    _write_pid(tmp_path, "studio-8902-8600.pid", 8600)  # live -> stop signals it
     real_unlink = Path.unlink
 
     def deny(self, *args, **kwargs):

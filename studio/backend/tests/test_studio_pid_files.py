@@ -476,11 +476,14 @@ def test_bind_addresses_keeps_every_family_a_hostname_resolves_to(monkeypatch):
     # Independent oracle: the sibling test derives its expectation from this
     # function's own output, so dropping a family would pass it.
     import socket
-
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8889)),
-        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8889, 0, 0)),
-    ])
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8889)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8889, 0, 0)),
+        ],
+    )
 
     assert run._bind_addresses("localhost", 8889) == {"127.0.0.1", "::1"}
 
@@ -491,8 +494,9 @@ def test_the_legacy_file_is_written_even_when_the_per_port_record_fails(tmp_path
     # overwrite of an existing path, so it can still succeed and must be tried.
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding = "utf-8")
-    monkeypatch.setattr(run, "_pid_file_for_port",
-                        lambda port: blocked / f"studio-{port}-{os.getpid()}.pid")
+    monkeypatch.setattr(
+        run, "_pid_file_for_port", lambda port: blocked / f"studio-{port}-{os.getpid()}.pid"
+    )
 
     run._write_pid_file(8901, "127.0.0.1")
 

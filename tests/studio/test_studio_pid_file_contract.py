@@ -54,12 +54,16 @@ def test_stop_finds_a_pid_file_named_the_way_the_backend_writes_it(tmp_path, mon
 def test_the_legacy_file_stays_a_bare_pid_an_older_cli_can_parse(tmp_path, monkeypatch):
     # An older `unsloth studio stop` reads studio.pid and requires str.isdigit(),
     # so the compatibility file must never gain the extra metadata lines.
-    ns = {"os": os, "Path": Path, "_studio_root": lambda: tmp_path,
-          "_PID_FILE": tmp_path / "studio.pid",
-          "_pid_file_for_port": lambda port: _backend_pid_path(tmp_path, port),
-          "_process_create_time": lambda pid: None,
-          "_bind_addresses": lambda host, port: {host},
-          "_OWN_PID_FILE": None}
+    ns = {
+        "os": os,
+        "Path": Path,
+        "_studio_root": lambda: tmp_path,
+        "_PID_FILE": tmp_path / "studio.pid",
+        "_pid_file_for_port": lambda port: _backend_pid_path(tmp_path, port),
+        "_process_create_time": lambda pid: None,
+        "_bind_addresses": lambda host, port: {host},
+        "_OWN_PID_FILE": None,
+    }
     exec(_func_source(_RUN_SRC, "_write_pid_file"), ns)
     ns["_write_pid_file"](8901, "127.0.0.1")
 

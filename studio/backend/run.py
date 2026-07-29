@@ -937,7 +937,11 @@ def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
         return []
 
 
-def _resolve_port(host: str, port: int, avoid_own_studio: bool = True) -> int:
+def _resolve_port(
+    host: str,
+    port: int,
+    avoid_own_studio: bool = True,
+) -> int:
     """The requested port, or the next free one.
 
     With ``avoid_own_studio`` this aborts rather than falling back past one of our
