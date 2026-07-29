@@ -9895,6 +9895,12 @@ def _check_signal_escape_patterns(code: str):
             )
 
         function_aliases = {name: {name} for name in definitions}
+        partial_aliases = {"partial"}
+        for candidate in ast.walk(tree):
+            if isinstance(candidate, ast.ImportFrom) and candidate.module == "functools":
+                for alias in candidate.names:
+                    if alias.name == "partial":
+                        partial_aliases.add(alias.asname or alias.name)
         changed = True
         while changed:
             changed = False
@@ -9916,40 +9922,123 @@ def _check_signal_escape_patterns(code: str):
                             previous.update(originals)
                             changed = True
 
+        class CallCollector(ast.NodeVisitor):
+            def __init__(self):
+                self.owner: str | None = None
+                self.calls: list[tuple[str | None, ast.Call]] = []
+
+            def visit_FunctionDef(self, node):
+                previous = self.owner
+                self.owner = node.name
+                self.generic_visit(node)
+                self.owner = previous
+
+            def visit_AsyncFunctionDef(self, node):
+                self.visit_FunctionDef(node)
+
+            def visit_Lambda(self, node):
+                # Lambdas close over parameters from their enclosing helper.
+                # Retain that owner while collecting nested calls.
+                self.generic_visit(node)
+
+            def visit_Call(self, node):
+                self.calls.append((self.owner, node))
+                self.generic_visit(node)
+
+        calls = CallCollector()
+        calls.visit(tree)
+
         supplied: dict[str, set[str]] = {}
-        for candidate in ast.walk(tree):
-            if not (
-                isinstance(candidate, ast.Call)
-                and isinstance(candidate.func, ast.Name)
-                and candidate.func.id in function_aliases
-            ):
-                continue
-            for original in function_aliases[candidate.func.id]:
+
+        def record_arguments(originals, args, keywords, owner):
+            changed = False
+            owner_parameters = supplied.get(owner, set()) if owner is not None else set()
+
+            def is_import_capable(argument):
+                return (
+                    isinstance(argument, ast.Name) and argument.id in owner_parameters
+                ) or _is_dynamic_import_callable(
+                    argument,
+                    import_aliases,
+                    namespace_aliases,
+                    import_module_aliases,
+                )
+
+            capable_args = [is_import_capable(argument) for argument in args]
+            capable_keywords = [is_import_capable(keyword.value) for keyword in keywords]
+            if not any(capable_args) and not any(capable_keywords):
+                return False
+
+            for original in originals:
                 for positional, keyword_only, vararg, kwarg in definitions[original]:
-                    for index, argument in enumerate(candidate.args):
-                        if not _is_dynamic_import_callable(
-                            argument,
-                            import_aliases,
-                            namespace_aliases,
-                            import_module_aliases,
-                        ):
+                    for index, import_capable in enumerate(capable_args):
+                        if not import_capable:
                             continue
                         if index < len(positional):
-                            supplied.setdefault(original, set()).add(positional[index])
+                            parameter = positional[index]
                         elif vararg:
-                            supplied.setdefault(original, set()).add(vararg)
-                    for keyword in candidate.keywords:
-                        if not _is_dynamic_import_callable(
-                            keyword.value,
-                            import_aliases,
-                            namespace_aliases,
-                            import_module_aliases,
-                        ):
+                            parameter = vararg
+                        else:
+                            continue
+                        parameters = supplied.setdefault(original, set())
+                        if parameter not in parameters:
+                            parameters.add(parameter)
+                            changed = True
+                    for keyword, import_capable in zip(keywords, capable_keywords):
+                        if not import_capable:
                             continue
                         if keyword.arg in {*positional, *keyword_only}:
-                            supplied.setdefault(original, set()).add(keyword.arg)
+                            parameter = keyword.arg
                         elif keyword.arg is None and kwarg:
-                            supplied.setdefault(original, set()).add(kwarg)
+                            parameter = kwarg
+                        else:
+                            continue
+                        parameters = supplied.setdefault(original, set())
+                        if parameter not in parameters:
+                            parameters.add(parameter)
+                            changed = True
+            return changed
+
+        # Propagate importer capability to a fixed point. Direct function
+        # aliases retain their exact target; opaque attributes, containers and
+        # higher-order call results conservatively fan out to local helpers.
+        # This prevents moving a helper behind ``box.fn`` or ``handlers[0]``
+        # from hiding a parameter that receives ``__import__``.
+        changed = True
+        while changed:
+            changed = False
+            for owner, candidate in calls.calls:
+                originals = None
+                if isinstance(candidate.func, ast.Name):
+                    originals = function_aliases.get(candidate.func.id)
+                if originals is None:
+                    originals = definitions.keys()
+                changed |= record_arguments(
+                    originals,
+                    candidate.args,
+                    candidate.keywords,
+                    owner,
+                )
+
+                # functools.partial binds arguments after its callable. Record
+                # those against the wrapped helper rather than partial itself.
+                is_partial = (
+                    isinstance(candidate.func, ast.Name) and candidate.func.id in partial_aliases
+                ) or (
+                    isinstance(candidate.func, ast.Attribute) and candidate.func.attr == "partial"
+                )
+                if (
+                    is_partial
+                    and candidate.args
+                    and isinstance(candidate.args[0], ast.Name)
+                    and candidate.args[0].id in function_aliases
+                ):
+                    changed |= record_arguments(
+                        function_aliases[candidate.args[0].id],
+                        candidate.args[1:],
+                        candidate.keywords,
+                        owner,
+                    )
         return supplied
 
     import_parameters_by_function = _function_import_parameters()
@@ -9981,6 +10070,7 @@ def _check_signal_escape_patterns(code: str):
             }
             self.pyyaml_resolver_aliases: set[str] = set()
             self.yaml_object_aliases: set[str] = module_pyyaml_imports["yaml_objects"].copy()
+            self.yaml_object_safe_loader_aliases: set[str] = set()
             self.pyyaml_resolver_module_aliases: set[str] = {"pydoc", "pkgutil"}
             self.pyyaml_entry_point_constructor_aliases: set[str] = set()
             self.pyyaml_entry_point_module_aliases: set[str] = set()
@@ -10455,6 +10545,7 @@ def _check_signal_escape_patterns(code: str):
             )
             pyyaml_callable_alias = value is not None and self._is_pyyaml_callable_reference(value)
             yaml_object_alias = False
+            yaml_object_safe_loader_alias = False
             if value is not None:
                 yaml_object_path = _pyyaml_attribute_path(
                     value,
@@ -10465,6 +10556,9 @@ def _check_signal_escape_patterns(code: str):
                 yaml_object_alias = (
                     isinstance(value, ast.Name) and value.id in self.yaml_object_aliases
                 ) or yaml_object_path == ("YAMLObject",)
+                yaml_object_safe_loader_alias = (
+                    isinstance(value, ast.Name) and value.id in self.yaml_object_safe_loader_aliases
+                )
             reference_kind = _pyyaml_load_reference_kind(
                 value,
                 self.yaml_aliases,
@@ -10499,6 +10593,7 @@ def _check_signal_escape_patterns(code: str):
             self.dynamic_namespace_aliases.difference_update(names)
             self.pyyaml_resolver_aliases.difference_update(names)
             self.yaml_object_aliases.difference_update(names)
+            self.yaml_object_safe_loader_aliases.difference_update(names)
             self.pyyaml_resolver_module_aliases.difference_update(names)
             self.pyyaml_entry_point_constructor_aliases.difference_update(names)
             self.pyyaml_entry_point_module_aliases.difference_update(names)
@@ -10536,6 +10631,8 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_resolver_aliases.update(names)
             if yaml_object_alias:
                 self.yaml_object_aliases.update(names)
+            if yaml_object_safe_loader_alias:
+                self.yaml_object_safe_loader_aliases.update(names)
             if resolver_module_alias:
                 self.pyyaml_resolver_module_aliases.update(names)
             if entry_point_constructor_alias:
@@ -10567,6 +10664,7 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_entry_point_module_aliases.copy(),
                 self.pyyaml_entry_point_loader_aliases.copy(),
                 self.pyyaml_callable_aliases.copy(),
+                self.yaml_object_safe_loader_aliases.copy(),
             )
 
         def _restore_pyyaml_scope_state(self, state):
@@ -10589,6 +10687,7 @@ def _check_signal_escape_patterns(code: str):
                 self.pyyaml_entry_point_module_aliases,
                 self.pyyaml_entry_point_loader_aliases,
                 self.pyyaml_callable_aliases,
+                self.yaml_object_safe_loader_aliases,
             ) = state
 
         def _merge_pyyaml_scope_states(self, *states):
@@ -10614,6 +10713,7 @@ def _check_signal_escape_patterns(code: str):
             self.pyyaml_entry_point_module_aliases = set().union(*(state[15] for state in states))
             self.pyyaml_entry_point_loader_aliases = set().union(*(state[16] for state in states))
             self.pyyaml_callable_aliases = set().union(*(state[17] for state in states))
+            self.yaml_object_safe_loader_aliases = set().union(*(state[18] for state in states))
 
         def visit_If(self, node):
             self.visit(node.test)
@@ -10860,6 +10960,7 @@ def _check_signal_escape_patterns(code: str):
                         (self.pyyaml_entry_point_module_aliases, 15),
                         (self.pyyaml_entry_point_loader_aliases, 16),
                         (self.pyyaml_callable_aliases, 17),
+                        (self.yaml_object_safe_loader_aliases, 18),
                     )
                     for outer_aliases, state_index in dangerous_scopes:
                         outer_aliases.update(
@@ -10885,6 +10986,11 @@ def _check_signal_escape_patterns(code: str):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization module escapes through return value",
+                )
+            if _is_dynamic_namespace(node.body, self.dynamic_namespace_aliases):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization namespace escapes through lambda",
                 )
             if _is_dynamic_import_callable(
                 node.body,
@@ -10967,7 +11073,11 @@ def _check_signal_escape_patterns(code: str):
                 == ("YAMLObject",)
                 for base in node.bases
             )
-            safe_loader_subclass = any(
+            yaml_object_inherits_safe_loader = any(
+                isinstance(base, ast.Name) and base.id in self.yaml_object_safe_loader_aliases
+                for base in node.bases
+            )
+            safe_loader_bases = [
                 _pyyaml_loader_is_safe(
                     base,
                     self.yaml_aliases,
@@ -10976,15 +11086,20 @@ def _check_signal_escape_patterns(code: str):
                     self.dynamic_namespace_aliases,
                 )
                 for base in node.bases
-            )
-            safe_loader_behavior_override = bool(node.decorator_list or node.keywords) or any(
-                not isinstance(statement, ast.Pass)
-                and not (
-                    isinstance(statement, ast.Expr)
-                    and isinstance(statement.value, ast.Constant)
-                    and isinstance(statement.value.value, str)
+            ]
+            safe_loader_subclass = any(safe_loader_bases)
+            safe_loader_behavior_override = (
+                not all(safe_loader_bases)
+                or bool(node.decorator_list or node.keywords)
+                or any(
+                    not isinstance(statement, ast.Pass)
+                    and not (
+                        isinstance(statement, ast.Expr)
+                        and isinstance(statement.value, ast.Constant)
+                        and isinstance(statement.value.value, str)
+                    )
+                    for statement in node.body
                 )
-                for statement in node.body
             )
             for decorator in node.decorator_list:
                 self.visit(decorator)
@@ -11016,7 +11131,24 @@ def _check_signal_escape_patterns(code: str):
             dangerous_class_bindings = set().union(
                 *(
                     body_state[index].intersection(class_bound_names)
-                    for index in (0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17)
+                    for index in (
+                        0,
+                        1,
+                        2,
+                        3,
+                        5,
+                        6,
+                        7,
+                        8,
+                        9,
+                        10,
+                        11,
+                        14,
+                        15,
+                        16,
+                        17,
+                        18,
+                    )
                 )
             )
             if dangerous_class_bindings:
@@ -11042,7 +11174,29 @@ def _check_signal_escape_patterns(code: str):
                 )
                 for statement in node.body
             )
-            if yaml_object_subclass and has_yaml_tag and "yaml_loader" in body_state[4]:
+            defines_yaml_loader = any(
+                isinstance(statement, (ast.Assign, ast.AnnAssign))
+                and any(
+                    isinstance(target, ast.Name) and target.id == "yaml_loader"
+                    for target in (
+                        statement.targets
+                        if isinstance(statement, ast.Assign)
+                        else (statement.target,)
+                    )
+                )
+                for statement in node.body
+            )
+            yaml_object_uses_safe_loader = yaml_object_subclass and (
+                (
+                    defines_yaml_loader
+                    and "yaml_loader" in body_state[4]
+                    and "yaml_loader" in class_bound_names
+                )
+                or (not defines_yaml_loader and yaml_object_inherits_safe_loader)
+            )
+            if yaml_object_uses_safe_loader:
+                self.yaml_object_safe_loader_aliases.add(node.name)
+            if yaml_object_uses_safe_loader and has_yaml_tag:
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization via YAMLObject SafeLoader registration",
@@ -11061,6 +11215,11 @@ def _check_signal_escape_patterns(code: str):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization module escapes through return value",
+                )
+            if _is_dynamic_namespace(node.value, self.dynamic_namespace_aliases):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization namespace escapes through return value",
                 )
             if _pyyaml_loader_is_safe(
                 node.value,

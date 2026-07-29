@@ -991,6 +991,60 @@ class TestPyYamlDeserialization:
                 "importer = safe_load.__builtins__.get('__import__')\n"
                 "importer('yaml').unsafe_load(payload)"
             ),
+            (
+                "def parse(importer):\n"
+                "    return importer('yaml').unsafe_load(payload)\n"
+                "class Box:\n"
+                "    pass\n"
+                "box = Box()\n"
+                "box.parse = parse\n"
+                "box.parse(__import__)"
+            ),
+            (
+                "def parse(importer):\n"
+                "    return importer('yaml').unsafe_load(payload)\n"
+                "handlers = [parse]\n"
+                "handlers[0](__import__)"
+            ),
+            (
+                "from functools import partial\n"
+                "def parse(importer):\n"
+                "    return importer('yaml').unsafe_load(payload)\n"
+                "partial(parse, __import__)()"
+            ),
+            (
+                "def parse(importer):\n"
+                "    return importer('yaml').unsafe_load(payload)\n"
+                "def invoke(fn, argument):\n"
+                "    return fn(argument)\n"
+                "invoke(parse, __import__)"
+            ),
+            (
+                "import yaml\n"
+                "def namespace():\n"
+                "    return globals()\n"
+                "namespace()['yaml'].unsafe_load(payload)"
+            ),
+            (
+                "import yaml\n"
+                "class Mixin:\n"
+                "    def construct_scalar(self, node):\n"
+                "        return eval(node.value)\n"
+                "class Evil(Mixin, yaml.SafeLoader):\n"
+                "    pass\n"
+                "yaml.load('!!str 40+2', Loader=Evil)"
+            ),
+            (
+                "from yaml import YAMLObject, SafeLoader, safe_load\n"
+                "class Base(YAMLObject):\n"
+                "    yaml_loader = SafeLoader\n"
+                "class Evil(Base):\n"
+                "    yaml_tag = '!run'\n"
+                "    @classmethod\n"
+                "    def from_yaml(cls, loader, node):\n"
+                "        return run()\n"
+                "safe_load('!run x')"
+            ),
         ],
     )
     def test_callable_class_factory_and_storage_pyyaml_bypasses_blocked(self, code):
