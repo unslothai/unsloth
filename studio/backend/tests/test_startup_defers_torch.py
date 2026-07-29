@@ -370,3 +370,56 @@ def test_a_broken_torch_counts_as_no_torch(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert hw._has_torch() is False
+
+
+def test_purge_partial_import_clears_the_zombie_and_leaves_live_ones():
+    """A half-imported package must not survive into the retry."""
+    import sys
+
+    from utils.torch_warmup import purge_partial_import
+
+    sys.modules["zzz_fake_pkg.sub"] = object()
+    sys.modules["zzz_fake_pkg.sub.deep"] = object()
+    try:
+        # Parent absent + submodules present: the zombie signature.
+        assert sorted(purge_partial_import("zzz_fake_pkg")) == [
+            "zzz_fake_pkg.sub",
+            "zzz_fake_pkg.sub.deep",
+        ]
+        assert not [m for m in sys.modules if m.startswith("zzz_fake_pkg")]
+
+        # Parent present: a healthy (or still-importing) package is left alone.
+        sys.modules["zzz_fake_pkg"] = object()
+        sys.modules["zzz_fake_pkg.sub"] = object()
+        assert purge_partial_import("zzz_fake_pkg") == []
+        assert "zzz_fake_pkg.sub" in sys.modules
+    finally:
+        for name in [m for m in list(sys.modules) if m.startswith("zzz_fake_pkg")]:
+            sys.modules.pop(name, None)
+
+
+def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
+    """_has_torch() must clean up after the import it just watched fail."""
+    import builtins
+    import sys
+
+    from utils.hardware import hardware as hw
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            sys.modules["torch._C"] = object()
+            sys.modules.pop("torch", None)
+            raise OSError("undefined symbol: cudaGetDeviceCount")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    saved = sys.modules.pop("torch", None)
+    try:
+        assert hw._has_torch() is False
+        assert "torch._C" not in sys.modules
+    finally:
+        if saved is not None:
+            sys.modules["torch"] = saved
+        sys.modules.pop("torch._C", None)

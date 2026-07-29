@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import sys
 import threading
 import time
 from typing import Optional
@@ -61,6 +62,36 @@ def _torch_installed() -> bool:
         return importlib.util.find_spec("torch") is not None
     except (ImportError, ValueError):
         return False
+
+
+def purge_partial_import(package: str) -> list:
+    """Drop the submodules a failed package import left behind in sys.modules.
+
+    When ``package/__init__.py`` raises, CPython removes only the parent from
+    sys.modules and keeps every submodule it had already executed. The next
+    import then re-runs ``__init__`` while each of its ``from .x import y`` is
+    served from that cache, so the attributes are never rebound: the package
+    imports "successfully" but is missing pieces (the bitsandbytes case fixed in
+    #7580). The warm makes this reachable -- it imports these packages on a
+    thread and swallows the failure, so the retry is somebody else's request.
+
+    Only acts on that exact signature (parent gone, submodules present), so a
+    concurrent, still-running import is left alone. Returns what it removed.
+    """
+    if package in sys.modules:
+        return []
+    prefix = package + "."
+    stale = [name for name in list(sys.modules) if name.startswith(prefix)]
+    for name in stale:
+        sys.modules.pop(name, None)
+    if stale:
+        logger.warning(
+            "purged %d half-imported %s submodule(s) so the next import re-runs clean: %s",
+            len(stale),
+            package,
+            ", ".join(sorted(stale)[:8]),
+        )
+    return stale
 
 
 def _run_stage(name: str, fn) -> None:
@@ -105,7 +136,14 @@ def _warm_unsloth_zoo() -> None:
     # shim already degrades to its own stubs on such a host.
     if not _torch_installed():
         return
-    importlib.import_module("unsloth_zoo")
+    try:
+        importlib.import_module("unsloth_zoo")
+    except BaseException:
+        # Leave nothing half-imported behind: the retry belongs to whichever
+        # request needs the watchdog next, and it must re-run __init__ against
+        # an empty cache. See purge_partial_import().
+        purge_partial_import("unsloth_zoo")
+        raise
 
 
 _STAGES = (
