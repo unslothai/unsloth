@@ -259,7 +259,7 @@ def _flatten_registered_vlm_content(processor, content):
             flattened.append(" ")
         flattened.append(part)
         previous_was_marker = is_marker
-    return "".join(flattened).strip()
+    return "".join(flattened)
 
 
 class _VLMProcessorWithoutImagePadding:
@@ -377,10 +377,22 @@ def _render_registered_vlm_prompt(
 
     extract_text = getattr(prompt_utils, "extract_text_from_content", content_to_text)
 
+    def extract_content(content):
+        if not isinstance(content, list):
+            return extract_text(content)
+        text_parts = []
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") not in ("text", "input_text"):
+                continue
+            text = item.get("text", "") or item.get("content", "")
+            if text:
+                text_parts.append(text)
+        return " ".join(text_parts)
+
     def extract_messages(source_messages):
         return [
             (
-                {**message, "content": extract_text(message.get("content"))}
+                {**message, "content": extract_content(message.get("content"))}
                 if isinstance(message, dict)
                 else message
             )

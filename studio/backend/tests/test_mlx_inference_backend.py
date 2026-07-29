@@ -671,7 +671,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     prompt_utils = SimpleNamespace(
         MODEL_CONFIG = {"deepseek_vl_v2": object()},
         apply_chat_template = model_render,
-        extract_text_from_content = lambda content: content if isinstance(content, str) else " ".join(item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") in ("text", "input_text")),
+        extract_text_from_content = lambda content: content if isinstance(content, str) else " ".join(item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") in ("text", "input_text")).strip(),
         get_chat_template = model_template,
     )
     mlx_vlm = types.ModuleType("mlx_vlm")
@@ -738,11 +738,17 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     state["model"] = "reject structured"; assert list(backend._generate_vlm(*((multi_turn,) + args[1:]))) == ["ok"]
     assert [message["content"] for message in calls["template_messages"][-1][0]] == ["<image> Read. Now.", "Seen.", "Again."]
     state["generic"] = "serialized_last"
-    later_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": "Seen."}, {"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "Again."}]}]
+    later_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": "Seen."}, {"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "  Again.\n"}]}]
     assert list(backend._generate_vlm(*((later_image,) + args[1:]))) == ["ok"]
     assert [call["num_images"] for call in calls["model"][-3:]] == [0, 0, 1]
     roles_and_content = [(message["role"], mlx_inference._flatten_registered_vlm_content(backend._processor, message["content"])) for message in calls["template_messages"][-1][0]]
-    assert roles_and_content == [("user", "First."), ("assistant", "Seen."), ("user", "<image> Again.")]
+    assert roles_and_content == [("user", "First."), ("assistant", "Seen."), ("user", "<image>  Again.\n")]
+    assert calls["stream"][-1][0][2] == "First. Seen. <image>  Again.\n flattened model-aware"
+    whitespace_image = [{"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "   "}]}]
+    assert list(backend._generate_vlm(*((whitespace_image,) + args[1:]))) == ["ok"]
+    assert calls["model_messages"][-1]["content"] == "   "
+    assert mlx_inference._flatten_registered_vlm_content(backend._processor, calls["template_messages"][-1][0][0]["content"]) == "<image>   "
+    assert calls["stream"][-1][0][2] == "<image>    flattened model-aware"
     non_user_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": [{"type": "input_image"}]}]
     with pytest.raises(RuntimeError, match = "media on a user turn"):
         list(backend._generate_vlm(*((non_user_image,) + args[1:])))
@@ -812,6 +818,19 @@ def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
         [{"content": json_media}, {"content": f"Explain {json_repr}"}],
     )
     module = sys.modules[MLXInferenceBackend.__module__]
+    processor = SimpleNamespace()
+    assert (
+        module._flatten_registered_vlm_content(
+            processor, [{"type": "text", "text": "  indented\n"}]
+        )
+        == "  indented\n"
+    )
+    assert (
+        module._flatten_registered_vlm_content(
+            processor, [{"type": "image"}, {"type": "text", "text": "caption "}]
+        )
+        == "<image> caption "
+    )
     repeated, markers = module._vlm_text_probe([{"content": "repeat"}, {"content": "repeat"}])
     assert all(
         module._vlm_prompt_issue(prompt, repeated, markers)
