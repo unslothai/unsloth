@@ -5627,3 +5627,46 @@ def test_a_fill_does_not_replay_a_stored_flag_through_validation(monkeypatch):
             "tester",
         )
     assert excinfo.value.status_code == 400
+
+
+def test_override_payload_rejects_booleans_for_numeric_fields():
+    """bool subclasses int and pydantic parses non-strictly, so `true` would
+    arrive as 1: `max_seq_length: true` becomes a one-token context and
+    `gpu_ids: [true]` pins GPU 1. _bounded_int rejects bools for exactly that
+    reason, but never sees one, because coercion happens at the route boundary
+    first. Reject them there so that guard is reachable through this path."""
+    import pytest
+    from pydantic import ValidationError
+    from routes.settings import ModelOverridePayload
+
+    for field, value in (
+        ("max_seq_length", True),
+        ("custom_context_length", True),
+        ("spec_draft_n_max", True),
+        ("n_parallel", True),
+        ("gpu_layers", False),
+        ("n_cpu_moe", True),
+        ("gpu_ids", [True]),
+        ("gpu_ids", [0, False, 2]),
+    ):
+        with pytest.raises(ValidationError):
+            ModelOverridePayload(model_id = "unsloth/x-GGUF:Q4_K_M", **{field: value})
+
+    # Only bools: every real value the picker sends still validates, and the
+    # fields that ARE booleans keep working.
+    ok = ModelOverridePayload(
+        model_id = "unsloth/x-GGUF:Q4_K_M",
+        max_seq_length = 4096,
+        gpu_layers = -1,
+        n_cpu_moe = 0,
+        gpu_ids = [0, 1],
+        tensor_parallel = True,
+        remove = True,
+        fill_absent_fields = True,
+    )
+    assert ok.max_seq_length == 4096
+    assert ok.gpu_ids == [0, 1]
+    assert ok.gpu_layers == -1
+    assert ok.tensor_parallel is True
+    assert ok.remove is True
+    assert ok.fill_absent_fields is True

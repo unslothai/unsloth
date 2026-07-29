@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import re
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -207,6 +207,29 @@ class ModelOverridePayload(BaseModel):
             raise ValueError("Chat template contains unpaired surrogate characters.")
         if size > MAX_CHAT_TEMPLATE_BYTES:
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        return value
+
+    @field_validator(
+        "max_seq_length",
+        "custom_context_length",
+        "spec_draft_n_max",
+        "n_parallel",
+        "gpu_layers",
+        "n_cpu_moe",
+        "gpu_ids",
+        mode = "before",
+    )
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # bool subclasses int and pydantic parses non-strictly, so `true` arrives
+        # as 1 and `false` as 0: a payload could pin GPU 1 or set a one-token
+        # context. _bounded_int in the normalizer rejects bools for exactly that
+        # reason, but never sees one, because coercion happens here first. Reject
+        # only bools, so every other lax conversion the field relies on still runs.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        if isinstance(value, list) and any(isinstance(item, bool) for item in value):
+            raise ValueError("Expected numbers, got a boolean.")
         return value
 
 
