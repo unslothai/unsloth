@@ -1789,9 +1789,7 @@ def test_only_a_physical_gpu_pin_is_mirrored_to_the_server():
 def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
     """A cached repo was keyed by the snapshot path it loads from and is now keyed by its
     repo id; the server backfill only mirrors what is stored, so nothing else moves it."""
-    config = " ".join(
-        _read("features/model-picker/model-config/per-model-config.ts").split()
-    )
+    config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function adoptLegacyConfigKey(" in config
     # A newer save under the current key wins, and the stale record still goes.
     assert (
@@ -1808,7 +1806,4 @@ def test_clearing_the_log_keeps_a_request_that_is_still_running():
     """Dropping an own row mid-flight loses the request outright: active_count falls to
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
-    assert (
-        "if entry.shared or entry.subject != subject or entry.status == \"running\""
-        in monitor
-    )
+    assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor

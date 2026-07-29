@@ -504,8 +504,13 @@ def update_openai_auto_switch_override(
             # bare one is still load-bearing, and this forget is not the last word on the
             # model.
             bare_id = _bare_model_id(payload.model_id)
-            if bare_id and bare_id not in target_ids and not _other_quants_remain(
-                bare_id, target_ids,
+            if (
+                bare_id
+                and bare_id not in target_ids
+                and not _other_quants_remain(
+                    bare_id,
+                    target_ids,
+                )
             ):
                 set_model_override(
                     bare_id,

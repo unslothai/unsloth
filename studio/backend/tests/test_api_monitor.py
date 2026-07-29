@@ -287,13 +287,19 @@ def test_clear_keeps_the_callers_own_request_that_is_still_running():
     has no entry left to land on, so a completed call never appears at all."""
     monitor = ApiMonitor(max_entries = 4)
     done = monitor.start(
-        endpoint = "/v1/chat/completions", method = "POST", model = "m",
-        prompt = "finished", subject = "alice",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "finished",
+        subject = "alice",
     )
     monitor.finish(done)
     live = monitor.start(
-        endpoint = "/v1/chat/completions", method = "POST", model = "m",
-        prompt = "in flight", subject = "alice",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "in flight",
+        subject = "alice",
     )
 
     monitor.clear(subject = "alice")
