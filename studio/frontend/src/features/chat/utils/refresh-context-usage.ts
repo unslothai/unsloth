@@ -107,6 +107,20 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   return chain.reverse();
 }
 
+/** The branch the mounted runtime is showing for the thread the store calls active. */
+type ActiveBranchReader = () => readonly ThreadMessage[] | null;
+
+let readActiveBranch: ActiveBranchReader | null = null;
+
+/**
+ * Publish the mounted runtime's view of the visible branch, so the recount can price it
+ * instead of the persisted records. Only the single-chat pane registers one; compare
+ * panes never own the bar. Pass null on unmount.
+ */
+export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
+  readActiveBranch = reader;
+}
+
 /** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
 export async function refreshContextUsage(options?: {
   threadId?: string;
@@ -140,12 +154,25 @@ export async function refreshContextUsage(options?: {
     useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
 
   try {
-    const records = threadId ? await listStoredChatMessages(threadId) : [];
-    if (stale()) return;
+    // The mounted runtime is what the next request reads from, so prefer it: a
+    // temporary/incognito thread persists nothing (listStoredChatMessages returns [] by
+    // design) and would otherwise be priced as a bare template, and after a retry or an
+    // edit the newest stored leaf is a branch the user has switched away from. Only for
+    // the thread the store calls active, since that is the one the bar belongs to; the
+    // history loader's own call runs before the import, so it falls through below.
+    const liveBranch =
+      useChatRuntimeStore.getState().activeThreadId === capturedThreadId
+        ? readActiveBranch?.()
+        : null;
 
-    const runMessages: readonly ThreadMessage[] = orderBySelectedBranch(
-      records,
-    ).map(storedMessageToRunMessage);
+    let runMessages: readonly ThreadMessage[];
+    if (liveBranch && liveBranch.length > 0) {
+      runMessages = liveBranch;
+    } else {
+      const records = threadId ? await listStoredChatMessages(threadId) : [];
+      if (stale()) return;
+      runMessages = orderBySelectedBranch(records).map(storedMessageToRunMessage);
+    }
 
     // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has
     // no audio branch, so counting would price a text-only prompt. Decline as images do.

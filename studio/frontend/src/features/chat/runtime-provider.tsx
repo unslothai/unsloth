@@ -66,7 +66,10 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
-import { refreshContextUsage } from "./utils/refresh-context-usage";
+import {
+  refreshContextUsage,
+  setActiveBranchReader,
+} from "./utils/refresh-context-usage";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
@@ -1442,6 +1445,33 @@ function ActiveThreadSync({
   return null;
 }
 
+// Lets the token recount read the branch on screen rather than the stored records: an
+// incognito thread stores none at all, and a thread the user retried or edited has a
+// newest stored leaf that is not the branch the runtime would send. Registered only for
+// the single-chat pane, which is the one whose thread the context bar tracks.
+function ActiveBranchRegistrar({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    setActiveBranchReader(() => {
+      try {
+        return aui.thread().getState().messages;
+      } catch {
+        // No thread mounted yet; the recount falls back to the stored records.
+        return null;
+      }
+    });
+    return () => setActiveBranchReader(null);
+  }, [aui, enabled]);
+
+  return null;
+}
+
 // Exposes the current thread's cancelRun() via the shared store so external
 // surfaces (e.g. the sidebar trash button) can stop an in-flight stream before
 // deleting the thread, mirroring the Stop -> Trash sequence.
@@ -1624,6 +1654,7 @@ export function ChatRuntimeProvider({
             !initialThreadId
           }
         />
+        <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
         <CancelRegistrar />
         {initialThreadId && (

@@ -463,21 +463,75 @@ def test_the_hydration_retry_stays_off_a_started_chat():
     assert out["contextUsage"].get("totalTokens") == 680
 
 
-def test_a_loaded_model_reprices_the_stored_branch_of_an_open_thread():
+TWO_STORED_TURNS = """
+    world.storedMessages["thread-a"] = [
+      { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
+      { id: "m2", role: "assistant", createdAt: 2, content: [{ type: "text", text: "yo" }], metadata: {} },
+    ];
+"""
+
+# A regenerated last answer: the retry is the newest stored leaf, so the branch rebuilt
+# from records is the one the runtime is NOT showing.
+RETRY_BRANCH_STORED = """
+    world.storedMessages["thread-a"] = [
+      { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
+      { id: "m2", role: "assistant", createdAt: 2, parentId: "m1", content: [{ type: "text", text: "yo" }], metadata: {} },
+      { id: "m3", role: "user", createdAt: 3, parentId: "m2", content: [{ type: "text", text: "again" }], metadata: {} },
+      { id: "m4", role: "assistant", createdAt: 4, parentId: "m3", content: [{ type: "text", text: "sure" }], metadata: {} },
+    ];
+"""
+
+# What the mounted runtime exports for the branch on screen.
+LIVE_BRANCH = """
+    setActiveBranchReader(() => [
+      { id: "m1", role: "user", createdAt: new Date(1), content: [{ type: "text", text: "hi" }] },
+      { id: "m2", role: "assistant", createdAt: new Date(2), content: [{ type: "text", text: "yo" }] },
+    ]);
+"""
+
+LIVE_INCOGNITO_BRANCH = """
+    setActiveBranchReader(() => [
+      { id: "m1", role: "user", createdAt: new Date(1), content: [{ type: "text", text: "hi" }] },
+      { id: "m2", role: "assistant", createdAt: new Date(2), content: [{ type: "text", text: "yo" }] },
+      { id: "m3", role: "user", createdAt: new Date(3), content: [{ type: "text", text: "more" }] },
+    ]);
+"""
+
+
+@pytest.mark.parametrize(
+    ("world_setup", "expected_sent"),
+    [
+        # No runtime branch published yet (the history loader's own call runs before the
+        # import): the stored records are the only source, and both turns must be priced.
+        pytest.param(TWO_STORED_TURNS, 2, id = "stored_branch"),
+        # A temporary/incognito chat persists nothing at all, so listStoredChatMessages
+        # returns [] by design and the records would price a bare template.
+        pytest.param(LIVE_INCOGNITO_BRANCH, 3, id = "incognito_thread_stores_nothing"),
+        # The user regenerated, then switched back to the first answer. The newest stored
+        # leaf is the retry, so records reconstruct four turns the request would not send.
+        pytest.param(RETRY_BRANCH_STORED + LIVE_BRANCH, 2, id = "runtime_shows_an_older_branch"),
+    ],
+)
+def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent):
     """The post-load recount on a real chat: a model change clears the per-thread cache,
-    so the bar has to be refilled from the stored branch rather than the last completion's
-    usage. Both stored turns must be in the count, and it must reach the per-thread cache
-    that setActiveThreadId restores from, or the bar blanks on the way back to it."""
+    so the bar has to be refilled by pricing the conversation rather than reusing the last
+    completion's usage. It must price the branch the next request would send -- the mounted
+    runtime's when it has one, the stored records otherwise -- and it must reach the
+    per-thread cache setActiveThreadId restores from, or the bar blanks on the way back."""
+    expected_total = 12 + 25 * expected_sent
     out = _run(
         textwrap.dedent(
             f"""
             // @ts-nocheck
-            import {{ refreshContextUsage, seed, snapshot, world }} from "./harness.ts";
+            import {{
+              refreshContextUsage,
+              seed,
+              setActiveBranchReader,
+              snapshot,
+              world,
+            }} from "./harness.ts";
             {LOADED_MODEL}
-            world.storedMessages["thread-a"] = [
-              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hi" }}], metadata: {{}} }},
-              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "yo" }}], metadata: {{}} }},
-            ];
+            {world_setup}
             seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
             await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
 
@@ -492,10 +546,10 @@ def test_a_loaded_model_reprices_the_stored_branch_of_an_open_thread():
         )
     )
     assert out["counts"] == 1
-    assert len(out["sent"]) == 2, "both stored turns must be priced"
-    assert out["contextUsage"].get("totalTokens") == 62
+    assert len(out["sent"]) == expected_sent, "the branch the request would send must be priced"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total
     assert out["cached"] is not None, "the recount must reach the per-thread cache"
-    assert out["cached"].get("totalTokens") == 62
+    assert (out["cached"] or {}).get("totalTokens") == expected_total
 
 
 def test_adopting_the_resident_gguf_reprices_the_open_thread():
