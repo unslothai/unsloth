@@ -149,6 +149,8 @@ type SharedModelLoadHandle = {
 // cancellation entry point available so another surface can stop that run
 // without trying to mutate refs it does not own.
 let sharedModelLoadHandle: SharedModelLoadHandle | null = null;
+let modelSelectionIntentEpoch = 0;
+let pendingExternalReplacementConfig: PerModelConfig | undefined;
 
 type PendingReplacementRollback = {
   checkpoint: string | null;
@@ -380,14 +382,17 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // No active model is also the normal idle auto-unload state. Keep the
-      // checkpoint so the next generation can transparently reload it, while
-      // clearing only the resident model capabilities.
-      useChatRuntimeStore.setState({
-        modelRequiresTrustRemoteCode: false,
-        loadedIsMultimodal: false,
-        loadedIsDiffusion: false,
-      });
+      if (statusRes.idle_unloaded) {
+        // The backend retained an idle-reload stash, so keep the checkpoint for
+        // transparent reload while clearing only resident capabilities.
+        useChatRuntimeStore.setState({
+          modelRequiresTrustRemoteCode: false,
+          loadedIsMultimodal: false,
+          loadedIsDiffusion: false,
+        });
+      } else {
+        useChatRuntimeStore.getState().clearCheckpoint();
+      }
     }
   } catch (error) {
     if (signal?.aborted) return;
@@ -455,7 +460,6 @@ export function useChatModelRuntime() {
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
   const loadAttemptRef = useRef(0);
-  const loadIntentRef = useRef(0);
   const activeLoadRunRef = useRef<ActiveModelLoadRun | null>(null);
   const loadToastDismissedRef = useRef(false);
 
@@ -544,16 +548,14 @@ export function useChatModelRuntime() {
         try {
           // AbortController cannot interrupt every preflight await (for
           // example, a consent dialog), and it is not passed to the backend
-          // /load request. /unload is the operation that promptly interrupts an
-          // in-flight backend load, so send it before waiting for the frontend
-          // task to observe the abort. The unload route waits for cancellation
-          // to settle before it returns, preventing a late /load activation.
-          await unloadModel({ model_path: backendLoadModelId });
-          if (
-            run.rollbackCheckpoint &&
-            (run.backendLoadStarted ||
-              run.rollbackCheckpoint.toLowerCase() === model.id.toLowerCase())
-          ) {
+          // /load request. Once that request has started, /unload is the
+          // operation that promptly interrupts it. During preflight there is
+          // nothing backend-side to cancel, and unloading a same-model target
+          // would eject the still-resident working model.
+          if (run.backendLoadStarted) {
+            await unloadModel({ model_path: backendLoadModelId });
+          }
+          if (run.rollbackCheckpoint && run.backendLoadStarted) {
             run.previousCheckpointWasUnloaded = true;
           }
           // Every owned confirmation above is now declined. If a transformers
@@ -643,21 +645,37 @@ export function useChatModelRuntime() {
     [cancelLoadingWithCheckpointPolicy],
   );
   const cancelLoadingForReplacement = useCallback(
-    (): Promise<boolean> => cancelLoadingWithCheckpointPolicy(true),
+    async (): Promise<boolean> => {
+      const run = activeLoadRunRef.current ?? sharedModelLoadHandle?.run;
+      pendingExternalReplacementConfig = run?.rollbackConfig;
+      const stopped = await cancelLoadingWithCheckpointPolicy(true);
+      if (!stopped) pendingExternalReplacementConfig = undefined;
+      return stopped;
+    },
     [cancelLoadingWithCheckpointPolicy],
   );
 
   const invalidatePendingModelSelection = useCallback((): number => {
-    loadIntentRef.current += 1;
-    return loadIntentRef.current;
+    modelSelectionIntentEpoch += 1;
+    return modelSelectionIntentEpoch;
   }, []);
 
-  const clearPendingReplacementRollback = useCallback((): void => {
+  const restoreConfigForExternalReplacement = useCallback((): void => {
+    const config =
+      pendingExternalReplacementConfig ??
+      sharedModelLoadHandle?.run.rollbackConfig ??
+      pendingReplacementRollback?.config;
+    if (config) {
+      applyPerModelConfigToRuntime(config, {
+        isDiffusion: useChatRuntimeStore.getState().loadedIsDiffusion,
+      });
+    }
+    pendingExternalReplacementConfig = undefined;
     pendingReplacementRollback = null;
   }, []);
 
   const isModelSelectionIntentCurrent = useCallback((intentId: number) => {
-    return loadIntentRef.current === intentId;
+    return modelSelectionIntentEpoch === intentId;
   }, []);
 
   const selectModel = useCallback(
@@ -724,7 +742,7 @@ export function useChatModelRuntime() {
       // Register the user's intent before awaiting cancellation. This prevents
       // the superseded run's error cleanup from restoring its previous config
       // over settings already applied by the new caller.
-      const loadIntentId = ++loadIntentRef.current;
+      const loadIntentId = ++modelSelectionIntentEpoch;
       let replacementNeedsRollback = pendingReplacementRollback != null;
       let inheritedRollbackState = pendingReplacementRollback?.state;
       if (pendingReplacementRollback?.config) {
@@ -779,7 +797,7 @@ export function useChatModelRuntime() {
             shared.supersedeOwnerIntent();
             const stopped = await shared.cancel(true);
             inheritCancelledRunRollback(shared.run);
-            if (loadIntentRef.current !== loadIntentId) {
+            if (modelSelectionIntentEpoch !== loadIntentId) {
               if (throwOnError) {
                 throw new Error("Model selection was superseded by a newer choice.");
               }
@@ -800,7 +818,7 @@ export function useChatModelRuntime() {
         inheritCancelledRunRollback(activeRun);
         const stopped = await cancelLoadRun(activeRun, true);
         inheritCancelledRunRollback(activeRun);
-        if (loadIntentRef.current !== loadIntentId) {
+        if (modelSelectionIntentEpoch !== loadIntentId) {
           if (throwOnError) {
             throw new Error("Model selection was superseded by a newer choice.");
           }
@@ -824,7 +842,7 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().params.checkpoint;
       if (!forceReload && isExternalModelId(selectedCheckpoint)) {
         const residentStatus = await getInferenceStatus().catch(() => null);
-        if (loadIntentRef.current !== loadIntentId) {
+        if (modelSelectionIntentEpoch !== loadIntentId) {
           if (throwOnError) {
             throw new Error("Model selection was superseded by a newer choice.");
           }
@@ -861,7 +879,7 @@ export function useChatModelRuntime() {
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         forceReload ? "Applying these settings" : "Loading a different model",
       );
-      if (loadIntentRef.current !== loadIntentId) {
+      if (modelSelectionIntentEpoch !== loadIntentId) {
         if (throwOnError) {
           throw new Error("Model selection was superseded by a newer choice.");
         }
@@ -997,7 +1015,7 @@ export function useChatModelRuntime() {
       sharedModelLoadHandle = {
         run,
         supersedeOwnerIntent: () => {
-          loadIntentRef.current += 1;
+          modelSelectionIntentEpoch += 1;
         },
         cancel: (preserveCheckpoint = false) =>
           cancelLoadRun(run, preserveCheckpoint),
@@ -1422,7 +1440,7 @@ export function useChatModelRuntime() {
             // the model as active -- it's being unloaded.
             if (
               abortCtrl.signal.aborted ||
-              loadIntentRef.current !== run.intentId
+              modelSelectionIntentEpoch !== run.intentId
             ) {
               throw new Error("Cancelled");
             }
@@ -2073,7 +2091,7 @@ export function useChatModelRuntime() {
       } catch (error) {
         const isLatestRun =
           loadAttemptRef.current === run.attemptId &&
-          loadIntentRef.current === run.intentId;
+          modelSelectionIntentEpoch === run.intentId;
         if (isLatestRun) restorePreviousConfig();
         if (abortCtrl.signal.aborted) return false; // User cancelled, nothing to report
         if (!isLatestRun) return false;
@@ -2170,7 +2188,7 @@ export function useChatModelRuntime() {
     cancelLoading,
     cancelLoadingForReplacement,
     invalidatePendingModelSelection,
-    clearPendingReplacementRollback,
+    restoreConfigForExternalReplacement,
     isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,

@@ -29,8 +29,9 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert standalone.index("clearCheckpoint();") < standalone.index("await refresh();")
     no_active = runtime.split(
         "} else if (!statusRes.active_model && !isExternalSelectionActive) {", 1
-    )[1].split("}", 1)[0]
-    assert "clearCheckpoint();" not in no_active
+    )[1].split("  } catch (error)", 1)[0]
+    assert "if (statusRes.idle_unloaded)" in no_active
+    assert "clearCheckpoint();" in no_active
     assert "loadedIsDiffusion: false" in no_active
     assert 'useHfTokenWarningStore.getState().resolve("cancel", run);' in cancel
     assert "useRemoteCodeConsentDialogStore.getState().resolve(false, run);" in cancel
@@ -46,9 +47,10 @@ def test_late_callbacks_are_bound_to_their_originating_run():
     assert runtime.count("resetLoadingUi(run)") >= 2
     assert "if (run.cancelPromise) return;" in runtime
     assert "loadAttemptRef.current === run.attemptId" in runtime
-    assert "loadIntentRef.current === run.intentId" in runtime
-    assert runtime.count("loadIntentRef.current !== loadIntentId") >= 2
-    assert "loadIntentRef.current += 1;" in runtime
+    assert "modelSelectionIntentEpoch === run.intentId" in runtime
+    assert runtime.count("modelSelectionIntentEpoch !== loadIntentId") >= 2
+    assert "modelSelectionIntentEpoch += 1;" in runtime
+    assert "let modelSelectionIntentEpoch = 0;" in runtime
 
 
 def test_cancelled_load_does_not_report_success_to_callers():
@@ -83,7 +85,7 @@ def test_external_selection_invalidates_older_local_intent():
     assert external.index("await cancelLoadingForReplacement();") < external.index(
         "store.setCheckpoint(value, null);"
     )
-    assert external.index("clearPendingReplacementRollback();") < external.index(
+    assert external.index("restoreConfigForExternalReplacement();") < external.index(
         "store.setCheckpoint(value, null);"
     )
     assert "isModelSelectionIntentCurrent(selectionIntentId)" in external
@@ -125,7 +127,7 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     assert runtime.count("inheritCancelledRunRollback(shared.run);") >= 2
     assert "supersedeOwnerIntent: () => void;" in runtime
     assert "shared.supersedeOwnerIntent();" in runtime
-    assert "loadIntentRef.current += 1;" in runtime
+    assert "modelSelectionIntentEpoch += 1;" in runtime
     assert "!initialSharedRun?.cancelPromise" in runtime
     assert "!sharedRun?.cancelPromise" in runtime
     assert "const cancelLoading = useCallback(\n    (): Promise<boolean>" in runtime
@@ -214,8 +216,44 @@ def test_active_model_reload_cancellation_marks_rollback_unloaded():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
     cancel = cancel.split("const cancelLoading = useCallback(", 1)[0]
-    assert "run.rollbackCheckpoint.toLowerCase() === model.id.toLowerCase()" in cancel
+    assert "if (run.backendLoadStarted)" in cancel
+    assert "if (run.rollbackCheckpoint && run.backendLoadStarted)" in cancel
     assert "run.previousCheckpointWasUnloaded = true;" in cancel
+
+
+def test_preflight_cancellation_does_not_unload_the_resident_model():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
+    cancel = cancel.split("const cancelLoadingWithCheckpointPolicy", 1)[0]
+    first_unload = cancel.split("await unloadModel({ model_path: backendLoadModelId });", 1)[0]
+    assert first_unload.rfind("if (run.backendLoadStarted)") > first_unload.rfind(
+        "const cancelPromise"
+    )
+
+
+def test_status_distinguishes_idle_reload_stash_from_manual_unload():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    frontend_types = _read("features/chat/types/api.ts")
+    backend_model = (ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
+        encoding="utf-8"
+    )
+    backend_route = (ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding="utf-8"
+    )
+    assert "idle_unloaded?: boolean;" in frontend_types
+    assert "idle_unloaded: bool" in backend_model
+    assert "get_last_unloaded_model() is not None" in backend_route
+    assert "if (statusRes.idle_unloaded)" in runtime
+
+
+def test_hosted_selection_restores_cancelled_local_config():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    restore = runtime.split("const restoreConfigForExternalReplacement", 1)[1]
+    restore = restore.split("const isModelSelectionIntentCurrent", 1)[0]
+    assert "pendingExternalReplacementConfig" in restore
+    assert "sharedModelLoadHandle?.run.rollbackConfig" in restore
+    assert "pendingReplacementRollback?.config" in restore
+    assert "applyPerModelConfigToRuntime(config" in restore
 
 
 def test_successful_rollback_requires_the_replacement_to_unload_it():

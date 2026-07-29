@@ -7361,9 +7361,15 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         inference_config = (
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
+        from core.inference.llama_keepwarm import get_last_unloaded_model
+        idle_unloaded = (
+            backend.active_model_name is None
+            and get_last_unloaded_model() is not None
+        )
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
+            idle_unloaded = idle_unloaded,
             model_identifier = backend.active_model_name,
             is_vision = is_vision,
             is_gguf = False,

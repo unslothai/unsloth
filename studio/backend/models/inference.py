@@ -623,6 +623,10 @@ class InferenceStatusResponse(BaseModel):
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
     )
+    idle_unloaded: bool = Field(
+        False,
+        description = "Whether the last GGUF model was idle-unloaded and can be transparently reloaded",
+    )
     model_identifier: Optional[str] = Field(
         None,
         description = "Loadable identifier for the active model.",

@@ -226,6 +226,7 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   active_model: string | null;
+  idle_unloaded?: boolean;
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;

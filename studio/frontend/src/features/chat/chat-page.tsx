@@ -1966,7 +1966,7 @@ export function ChatPage({
     cancelLoading,
     cancelLoadingForReplacement,
     invalidatePendingModelSelection,
-    clearPendingReplacementRollback,
+    restoreConfigForExternalReplacement,
     isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,
@@ -2663,7 +2663,7 @@ export function ChatPage({
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
-        clearPendingReplacementRollback();
+        restoreConfigForExternalReplacement();
         store.setCheckpoint(value, null);
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
@@ -2806,7 +2806,7 @@ export function ChatPage({
       externalProvidersForChat,
       modelsFromStore,
       cancelLoadingForReplacement,
-      clearPendingReplacementRollback,
+      restoreConfigForExternalReplacement,
       invalidatePendingModelSelection,
       isModelSelectionIntentCurrent,
       stageOrLoad,
