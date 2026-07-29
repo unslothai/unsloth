@@ -874,10 +874,15 @@ class TestAmdBnbFloorParity:
     FLOOR = "0.50.0"
     PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-    def test_amd_extra_floor(self):
+    def test_amd_extra_floor_when_present(self):
+        """This branch ships no `amd` extra: main's version carries direct URL
+        requirements, which PyPI rejects in Requires-Dist, so the extras block is not
+        merged here. Assert the floor once #7278 adds the extra in floor form, so it
+        cannot drift from the two installer fallbacks."""
         text = self.PYPROJECT.read_text(encoding = "utf-8")
         amd = re.search(r"^amd = \[(.*?)^\]", text, re.S | re.M)
-        assert amd, "pyproject.toml must define an `amd` extra"
+        if amd is None:
+            pytest.skip("pyproject.toml has no amd extra on this branch")
         specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
         assert specs, "the amd extra must pin bitsandbytes"
         for spec in specs:
