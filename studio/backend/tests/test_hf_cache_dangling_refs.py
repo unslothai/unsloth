@@ -1070,6 +1070,48 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
             False,
             id = "pinned-snapshot-holds-an-unsharded-payload",
         ),
+        # from_pretrained loads one family, so an interrupted alternative
+        # checkpoint family beside a complete one must not take auto-load away.
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model.safetensors": b"\0" * 32,
+                "pytorch_model-00001-of-00002.bin": b"\0" * 32,
+            },
+            False,
+            id = "pinned-snapshot-holds-a-whole-family-beside-a-broken-one",
+        ),
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "model-00002-of-00002.safetensors": b"\0" * 32,
+                "pytorch_model-00001-of-00003.bin": b"\0" * 32,
+            },
+            False,
+            id = "pinned-snapshot-holds-a-whole-sharded-family-beside-a-broken-one",
+        ),
+        # The half-fetched set above stays proof of breakage: neither a training
+        # artefact nor an adapter is a runnable base weight family.
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "training_args.bin": b"\0" * 8,
+                "optimizer.bin": b"\0" * 8,
+            },
+            True,
+            id = "half-a-sharded-set-beside-training-artefacts",
+        ),
+        pytest.param(
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 32,
+                "adapter_model.safetensors": b"\0" * 8,
+            },
+            True,
+            id = "half-a-sharded-set-beside-an-adapter",
+        ),
     ],
 )
 def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapshot(

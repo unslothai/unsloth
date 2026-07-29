@@ -711,14 +711,26 @@ def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
         return set()
 
 
-def _snapshot_missing_a_weight_shard(snapshot_dir: Path) -> bool:
-    """Whether a sharded non-GGUF weight set in *snapshot_dir* is missing a shard.
+def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
+    """Whether every non-GGUF weight family in *snapshot_dir* is short a shard.
 
-    ``from_pretrained`` reads every shard the set names, so one absent shard
-    means the pinned snapshot cannot load. Grouped per directory and prefix
-    because a snapshot may ship more than one set.
+    ``from_pretrained`` loads one family, so a whole safetensors set beside an
+    interrupted ``.bin`` one still loads and the snapshot serves the row;
+    rejecting it because some optional family is short a shard took auto-load
+    away from a usable payload. Only a snapshot with no complete family cannot
+    serve. Shard groups are keyed per directory, prefix and total because a
+    snapshot may ship more than one set. A base weight file naming no total is a
+    whole family by itself; adapters are not, since they need base weights.
     """
+    # hub.services imports hub.utils, so this import stays inside the call.
+    from hub.services.models.common import (
+        _is_adapter_weight_name,
+        _is_transformers_bin_weight_name,
+        _is_transformers_safetensors_weight_name,
+    )
+
     groups: dict[tuple[str, str, int], set[int]] = {}
+    has_whole_family = False
     try:
         paths = list(snapshot_dir.rglob("*"))
     except OSError:
@@ -731,13 +743,20 @@ def _snapshot_missing_a_weight_shard(snapshot_dir: Path) -> bool:
             continue
         match = _WEIGHT_SHARD_RE.search(path.name)
         if match is None:
+            if not _is_adapter_weight_name(path.name) and (
+                _is_transformers_safetensors_weight_name(path.name)
+                or _is_transformers_bin_weight_name(path.name)
+            ):
+                has_whole_family = True
             continue
         index = int(match.group(1))
         total = int(match.group(2))
         if index <= 0 or total <= 0 or index > total:
             continue
         groups.setdefault((str(path.parent), path.name[: match.start()], total), set()).add(index)
-    return any(
+    if not groups or has_whole_family:
+        return False
+    return all(
         indices != set(range(1, total + 1)) for (_dir, _prefix, total), indices in groups.items()
     )
 
@@ -749,17 +768,18 @@ def _snapshot_cannot_serve_its_payload(snapshot_dir: Optional[Path]) -> bool:
     the dangling ref is exactly what stops being evidence. A snapshot offering
     quants is judged on those: one whole quant beside a broken one still loads
     -- the rule ``is_gguf_repo_partial`` keeps -- so the GGUF answer is
-    unchanged by the shard walk below. One offering none is judged on its
-    sharded safetensors/checkpoint sets. Either way a file naming its own total
-    is the only proof accepted; holding nothing that names one is not proof of
-    breakage, so the dangling ref still excuses that snapshot.
+    unchanged by the family walk below. One offering none is judged on its
+    safetensors/checkpoint families under the same rule: one complete family is
+    enough. Either way a file naming its own total is the only proof accepted;
+    holding nothing that names one is not proof of breakage, so the dangling ref
+    still excuses that snapshot.
     """
     if snapshot_dir is None:
         return False
     offered = _offered_gguf_quants(snapshot_dir)
     if offered:
         return not (offered & _completed_gguf_variants(snapshot_dir))
-    return _snapshot_missing_a_weight_shard(snapshot_dir)
+    return _snapshot_lacks_a_complete_weight_family(snapshot_dir)
 
 
 def snapshot_variants_all_complete(snapshot: str) -> bool:
