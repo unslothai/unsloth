@@ -626,12 +626,9 @@ jobs:
   # `platform wsl` assertion and the CLI check all unable to fail anything. There is no
   # flake to absorb; if the pinned rootfs ever moves, a red job is the correct signal.
   #
-  # The eight green staging runs cited when that continue-on-error came off do not
-  # transfer to this branch: every one of them ran a tree that already carried #7548
-  # (installer-fix-ci and integ-installer-fixes-ci both have `_unsloth_main` in
-  # install.sh), and #7548 is exactly what makes the script survive being piped. This
-  # branch does not carry it, so the Install step pins that one difference and
-  # everything else in this job still gates.
+  # It is also the only job that can catch a piped install being truncated: WSL is the
+  # one platform whose install shells out to Windows interop mid-script, and interop
+  # relays the stdin it inherited. #7548 is in main now, so this gates unconditionally.
   wsl:
     name: wsl ubuntu-24.04
     runs-on: windows-latest
@@ -663,7 +660,6 @@ jobs:
           wsl -d unsloth-ci -- sh -c 'for t in curl wget git gcc cmake python3 sudo; do printf "%-8s %s\n" "$t" "$(command -v $t || echo ABSENT)"; done'
 
       - name: Install inside WSL, piped exactly as documented
-        id: install
         shell: pwsh
         run: |
           # Only ca-certificates + curl: the advertised one-liner cannot start without a
@@ -693,39 +689,20 @@ jobs:
           $installRc = $LASTEXITCODE
           Write-Host "installer exit: $installRc"
 
-          # KNOWN OUTCOME PIN, retire when #7548 merges. Piping a 218KB script into sh is
-          # not atomic: dash reads it from the pipe in 8192-byte blocks and runs each
-          # command as soon as it parses, so any command that inherits fd 0 and reads to
-          # EOF swallows the rest of the script. install.sh:2007 runs
-          # _maybe_reroute_strixhalo_to_2404, which on WSL alone shells out to Windows
-          # interop (powershell.exe for the WMI GPU name, then wsl.exe -l -q), and interop
-          # relays the stdin it inherited. dash has exactly 11 blocks buffered by then,
-          # ending at byte 90112, which lands inside "$STUDIO_LOCAL_INSTALL" on line 2082
-          # -- hence that line number rather than anything wrong with it. Truncating
-          # install.sh at 90112 and parsing it reproduces the message verbatim. Every
-          # other platform runs the same file and stays green because nothing in that
-          # window touches stdin. #7548 wraps the body in _unsloth_main so sh must parse
-          # the whole script before running any of it, which is why that marker is what
-          # retires this pin. Read it out of the distro so it tracks the script that
-          # actually ran, published or not.
-          wsl -d unsloth-ci -u root -- sh -c 'grep -q "^_unsloth_main()" /root/install.sh'
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host '::error::the installer under test now carries #7548; delete this pin block and let the exit-code check below gate unconditionally'
-            exit 1
-          }
           if (-not (Test-Path logs/wsl-install.log)) {
             Write-Host '::error::the WSL install produced no log'
             exit 1
           }
-          # Exit code AND the shell's own parse error, so any other non-zero exit, and any
-          # other syntax error, still fails this required job. The line number is not
-          # matched: it moves with any edit to install.sh while the failure is the same.
-          $truncated = Select-String -Path logs/wsl-install.log `
-            -Pattern 'sh: [0-9]+: Syntax error: Unterminated quoted string' -Quiet
-          if ($installRc -eq 2 -and $truncated) {
-            Write-Host '::notice::known outcome: install.sh is not pipe-safe, so WSL interop drained the pipe and sh hit EOF mid-string. Fixed by #7548; nothing in this branch can change it.'
-            "pinned=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            exit 0
+          # This job is the one that proves the pipe stays intact. WSL is the only
+          # platform whose install shells out to Windows interop mid-script
+          # (_maybe_reroute_strixhalo_to_2404 -> powershell.exe, wsl.exe), and interop
+          # relays the stdin it inherited, so before #7548 it drank the rest of the
+          # script and sh died on a half-read line. #7548's _unsloth_main wrapper makes
+          # sh parse the whole file first; a truncation here means that regressed.
+          if (Select-String -Path logs/wsl-install.log `
+                -Pattern 'Syntax error: Unterminated quoted string' -Quiet) {
+            Write-Host '::error::the piped install was truncated again; install.sh is no longer parsed in full before it runs'
+            exit 1
           }
           # Printing the code discarded it, and the next step's CLI check does not
           # compensate: install.sh links the `unsloth` shim (4174-4182) BEFORE it reports
@@ -757,14 +734,6 @@ jobs:
           if (-not ($platformLines | Where-Object { $_ -match '^\s*platform\s+wsl\s*$' })) {
             Write-Host '::error::installer never reported ''platform wsl''; the WSL branch was not exercised'
             exit 1
-          }
-          # Only the CLI half is waived under the pin: the truncation kills the run
-          # before anything is installed, so there is nothing to find. The `platform wsl`
-          # assertion above still gates either way, because the installer prints it
-          # several hundred lines before the point where the pipe runs dry.
-          if ('${{ steps.install.outputs.pinned }}' -eq 'true') {
-            Write-Host '::notice::CLI check waived: the Install step recorded the pinned pre-#7548 pipe truncation'
-            exit 0
           }
           # No `|| echo`: substituting a message for the missing CLI made the inner
           # shell, this step and the job all succeed even when the install produced
