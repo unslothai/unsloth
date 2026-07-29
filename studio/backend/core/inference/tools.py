@@ -723,7 +723,18 @@ _PYYAML_UNSAFE_LOAD_NAMES = frozenset(
     {"full_load", "full_load_all", "unsafe_load", "unsafe_load_all"}
 )
 _PYYAML_UNSAFE_LOADERS = frozenset(
-    {"Loader", "CLoader", "FullLoader", "CFullLoader", "UnsafeLoader", "CUnsafeLoader"}
+    {
+        "Loader",
+        "CLoader",
+        "FullLoader",
+        "CFullLoader",
+        "UnsafeLoader",
+        "CUnsafeLoader",
+        # These constructors expose Python-object construction without a
+        # Loader facade.
+        "Constructor",
+        "UnsafeConstructor",
+    }
 )
 _PYYAML_SUBMODULE_NAMES = frozenset({"constructor", "cyaml", "loader"})
 _PYYAML_SAFE_LOADER_MUTATORS = frozenset(
@@ -815,6 +826,13 @@ def _is_dynamic_import_callable(
         ) in {"import_module", "__import__"}
     if not isinstance(node, ast.Call):
         return False
+    if isinstance(node.func, ast.Lambda):
+        return _is_dynamic_import_callable(
+            node.func.body,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+            dynamic_import_module_aliases,
+        )
     if node.args and (
         (isinstance(node.func, ast.Name) and node.func.id == "partial")
         or (isinstance(node.func, ast.Attribute) and node.func.attr == "partial")
@@ -898,6 +916,15 @@ def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset(
         and _is_dynamic_namespace(node.value, dynamic_namespace_aliases)
     ):
         return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _is_dynamic_namespace(node.left, dynamic_namespace_aliases) or _is_dynamic_namespace(
+            node.right, dynamic_namespace_aliases
+        )
+    if isinstance(node, ast.Dict):
+        return any(
+            key is None and _is_dynamic_namespace(value, dynamic_namespace_aliases)
+            for key, value in zip(node.keys, node.values)
+        )
     if not isinstance(node, ast.Call):
         return False
     if (
@@ -911,9 +938,14 @@ def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset(
     if (
         isinstance(node.func, ast.Name)
         and node.func.id == "dict"
-        and len(node.args) == 1
-        and not node.keywords
-        and _is_dynamic_namespace(node.args[0], dynamic_namespace_aliases)
+        and (
+            (len(node.args) == 1 and _is_dynamic_namespace(node.args[0], dynamic_namespace_aliases))
+            or any(
+                keyword.arg is None
+                and _is_dynamic_namespace(keyword.value, dynamic_namespace_aliases)
+                for keyword in node.keywords
+            )
+        )
     ):
         return True
     if (
@@ -921,6 +953,8 @@ def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset(
         and node.func.id == "getattr"
         and len(node.args) >= 2
         and _subscript_key(node.args[1]) == "modules"
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in dynamic_namespace_aliases
     ):
         return True
     if not (isinstance(node.func, ast.Name) and not node.keywords):
@@ -6335,6 +6369,16 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Lambda(self, node):
             self._visit_function_scope(node)
+            if _is_dynamic_import_callable(
+                node.body,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+                self.dynamic_import_module_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization import callable escapes through lambda",
+                )
 
         def visit_ClassDef(self, node):
             yaml_object_subclass = any(
@@ -6438,6 +6482,16 @@ def _check_signal_escape_patterns(code: str):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization mutator escapes through return value",
+                )
+            if _is_dynamic_import_callable(
+                node.value,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+                self.dynamic_import_module_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization import callable escapes through return value",
                 )
 
         def visit_Yield(self, node):

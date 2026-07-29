@@ -798,6 +798,30 @@ class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
         [
+            (
+                "import yaml\n"
+                "yaml.constructor.Constructor().construct_object("
+                "yaml.compose(payload), deep=True)"
+            ),
+            "im = (lambda: __import__)()\nim('yaml').unsafe_load(payload)",
+            (
+                "import yaml\n"
+                "namespace = globals() | {}\n"
+                "namespace['yaml'].unsafe_load(payload)"
+            ),
+            (
+                "import yaml\n"
+                "namespace = {**globals()}\n"
+                "namespace['yaml'].unsafe_load(payload)"
+            ),
+        ],
+    )
+    def test_constructor_import_callable_and_namespace_copy_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
             "from yaml import loader as yl\nyl.Loader('a: 1')",
             ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
             "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",
