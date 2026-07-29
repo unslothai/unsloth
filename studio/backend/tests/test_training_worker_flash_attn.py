@@ -19,6 +19,19 @@ linux_only = pytest.mark.skipif(
     reason = "the runtime flash-attn install is gated to Linux",
 )
 
+# causal-conv1d and flash-linear-attention are NOT Linux-gated: both installers
+# bail out on `sys.platform == "win32"` alone (no prebuilt wheel for Windows) and
+# run everywhere else, macOS included. Gating these on linux_only would skip cases
+# that legitimately pass off Linux.
+not_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = (
+        "mirrors the sys.platform == 'win32' bail-out in "
+        "_ensure_flash_linear_attention_unconditional and "
+        "_ensure_causal_conv1d_fast_path"
+    ),
+)
+
 
 def _missing_flash_attn_import():
     real_import = builtins.__import__
@@ -144,6 +157,7 @@ def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     worker._sp.run.assert_not_called()
 
 
+@not_on_windows
 def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
@@ -165,6 +179,7 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
     )
 
 
+@not_on_windows
 def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
@@ -230,6 +245,7 @@ def _pin_fla_model_types(monkeypatch):
     )
 
 
+@not_on_windows
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
@@ -282,6 +298,7 @@ def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
 def test_flash_linear_attention_matches_full_qwen3_family(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
@@ -336,6 +353,7 @@ def test_flash_linear_attention_skipped_via_env(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
 def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
@@ -354,6 +372,7 @@ def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
     assert any("torch>=" in s for s in statuses)
 
 
+@not_on_windows
 def test_flash_linear_attention_install_includes_einops(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
@@ -380,6 +399,7 @@ def test_flash_linear_attention_install_includes_einops(monkeypatch):
     assert f"fla-core=={worker._FLA_CORE_PACKAGE_VERSION}" in args
 
 
+@not_on_windows
 def test_flash_linear_attention_logs_post_install_import_failure(monkeypatch):
     """pip exits 0 but `import fla.modules` still fails (missing transitive)."""
     _pin_fla_model_types(monkeypatch)
@@ -683,6 +703,7 @@ def _patch_iu_gates(monkeypatch, fla_gate, conv_gate):
     monkeypatch.setattr(_iu, "is_causal_conv1d_available", conv_gate)
 
 
+@not_on_windows
 def test_hook_installs_when_gate_returns_false(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
@@ -1130,6 +1151,7 @@ def test_hook_runs_tilelang_repair_when_fla_already_true(monkeypatch):
     tile_install.assert_called_once()
 
 
+@not_on_windows
 def test_fla_installer_force_reinstalls_when_older_version_present(monkeypatch):
     """Finding #8: an older `flash-linear-attention` that is importable
     but below the pin must force a reinstall (not no-op).

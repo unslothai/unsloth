@@ -45,7 +45,20 @@ def _build_structlog_stub():
 _maybe_stub("loggers", _build_loggers_stub)
 _maybe_stub("structlog", _build_structlog_stub)
 
+import pytest
+
 import utils.hardware.hardware as hw  # noqa: E402
+
+# The DRM/KFD readers below are Linux-only in production: _rocm_linux_amdgpu_cards
+# and _rocm_linux_sysfs_vram_by_pci_gb return early unless platform.system() is
+# "Linux", and _rocm_kfd_gpu_pci_ids only ever globs /sys/class/kfd. The fixtures
+# that exercise them build a fake Linux sysfs tree, which needs PCI addresses such
+# as "0000:00:02.0" as directory names and POSIX separators in the paths the
+# readers match; Windows permits neither, so the fake tree cannot be represented.
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason = "covers Linux-only DRM/KFD sysfs parsing driven by a fake /sys tree",
+)
 
 
 def _device(
@@ -99,6 +112,7 @@ def _fake_drm(tmp_path, monkeypatch, cards):
     return card_paths
 
 
+@linux_only
 def test_linux_vram_keyed_by_pci_excludes_foreign_adapters(monkeypatch, tmp_path):
     # Foreign (non-amdgpu) adapters contribute no entry, so they cannot shift ordinals.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -117,6 +131,7 @@ def test_linux_vram_keyed_by_pci_excludes_foreign_adapters(monkeypatch, tmp_path
     }
 
 
+@linux_only
 def test_linux_vram_omits_bad_cards_without_shifting(monkeypatch, tmp_path):
     # A zero-total card has no entry; identity keying means its absence renumbers nothing.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -131,6 +146,7 @@ def test_linux_vram_omits_bad_cards_without_shifting(monkeypatch, tmp_path):
     assert hw._rocm_linux_sysfs_vram_by_pci_gb() == {"0000:41:00.0": (2.0, 16.0)}
 
 
+@linux_only
 def test_linux_vram_omits_amd_card_without_vram_files(monkeypatch, tmp_path):
     # An APU with no mem_info_vram_* files has no entry; the discrete card keeps its address.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -174,6 +190,7 @@ def _fake_kfd(tmp_path, monkeypatch, nodes):
     return node_paths
 
 
+@linux_only
 def test_kfd_lists_gpu_nodes_in_device_order(monkeypatch, tmp_path):
     # The CPU node (simd_count 0) takes no ordinal; GPU nodes in node-id order are HIP's order.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -189,12 +206,14 @@ def test_kfd_lists_gpu_nodes_in_device_order(monkeypatch, tmp_path):
     assert hw._rocm_kfd_gpu_pci_ids() == ["0000:03:00.0", "0000:41:00.0"]
 
 
+@linux_only
 def test_kfd_decodes_domain_device_and_function(monkeypatch, tmp_path):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     _fake_kfd(tmp_path, monkeypatch, [(1, 64, (0xC1 << 8) | (0x1F << 3) | 5, 0x1234, _AMD)])
     assert hw._rocm_kfd_gpu_pci_ids() == ["1234:c1:1f.5"]
 
 
+@linux_only
 def test_kfd_skips_non_amd_gpu_nodes(monkeypatch, tmp_path):
     # An NVIDIA KFD node is not a HIP device: it must take no ordinal, else it
     # shifts every AMD GPU and ROCm device 1 resolves to AMD GPU 0.
@@ -212,6 +231,7 @@ def test_kfd_skips_non_amd_gpu_nodes(monkeypatch, tmp_path):
     assert hw._rocm_kfd_gpu_pci_ids() == ["0000:03:00.0", "0000:41:00.0"]
 
 
+@linux_only
 def test_kfd_fails_closed_when_a_gpu_has_no_location(monkeypatch, tmp_path):
     # Dropping an unplaceable AMD GPU shifts later ordinals; fail closed for the whole map.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -226,6 +246,7 @@ def test_kfd_fails_closed_when_a_gpu_has_no_location(monkeypatch, tmp_path):
     assert hw._rocm_kfd_gpu_pci_ids() == []
 
 
+@linux_only
 def test_kfd_fails_closed_when_a_node_is_unreadable(monkeypatch, tmp_path):
     # An unreadable node could be a GPU; assuming otherwise would shift ordinals.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -241,6 +262,7 @@ def test_kfd_fails_closed_when_a_node_is_unreadable(monkeypatch, tmp_path):
     assert hw._rocm_kfd_gpu_pci_ids() == []
 
 
+@linux_only
 def test_kfd_fails_closed_when_a_node_does_not_decode(monkeypatch, tmp_path):
     # UnicodeDecodeError is a ValueError, so it slips past `except OSError` and
     # would shift every later HIP ordinal.
@@ -438,6 +460,11 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
     ):
         monkeypatch.delenv(_var, raising = False)
     monkeypatch.setattr(hw, "IS_ROCM", True)
+    # No AMD adapter data on this host. On Windows this is the branch
+    # get_visible_gpu_utilization takes ahead of the torch fallback under test,
+    # and probing it imports torch, which the CI runner does not install. Off
+    # Windows the real function is never reached, so this changes nothing there.
+    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: [])
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi unavailable
     monkeypatch.setattr(
@@ -466,6 +493,11 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
 def test_visible_utilization_relative_index_skips_overlay(monkeypatch):
     # UUID/MIG mask gives relative indices; the overlay matches physical index, so it must not run.
     monkeypatch.setattr(hw, "IS_ROCM", True)
+    # No AMD adapter data on this host. On Windows this is the branch
+    # get_visible_gpu_utilization takes ahead of the torch fallback under test,
+    # and probing it imports torch, which the CI runner does not install. Off
+    # Windows the real function is never reached, so this changes nothing there.
+    monkeypatch.setattr(hw, "_rocm_windows_per_device_vram", lambda ids: [])
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
     monkeypatch.setattr(
