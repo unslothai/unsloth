@@ -1536,12 +1536,8 @@ def test_monitor_unload_clears_only_the_model_it_freed():
     pinned to a model just freed; matching none of them, or matching an external
     pick, deletes a selection this button never touched, because clearCheckpoint
     also drops the persisted external checkpoint."""
-    page = " ".join(
-        _read("features/api-monitor/api-monitor-page.tsx").split()
-    )
+    page = " ".join(_read("features/api-monitor/api-monitor-page.tsx").split())
     assert "const unloadedAliases = [checkpoint, status.active_model];" in page
     assert "!isExternalModelId(selected)" in page
-    assert (
-        "unloadedAliases.some((alias) => modelIdsMatch(selected, alias))" in page
-    )
+    assert "unloadedAliases.some((alias) => modelIdsMatch(selected, alias))" in page
     assert "store.clearCheckpoint();" in page
