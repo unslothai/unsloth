@@ -12,8 +12,9 @@
 #            "Building <pkg>==<ver>" from uv. Needs UNSLOTH_VERBOSE=1, or
 #            run_install_cmd (install.sh:193-243) discards uv's output on success
 #            and there is nothing to read.
-#   macho    Every Mach-O under $MACHO_ROOT is the host architecture and is signed.
-#            Closes the Rosetta 2 gap, the one divergence masking cannot reproduce.
+#   macho    Every Mach-O under $MACHO_ROOT is the host architecture, and every
+#            Mach-O MAIN EXECUTABLE is signed. Closes the Rosetta 2 gap, the one
+#            divergence masking cannot reproduce.
 #
 # Usage: bash .github/scripts/clean-machine-assert.sh absent notools nobuild macho
 set -uo pipefail
@@ -160,13 +161,18 @@ for check in "$@"; do
       # architecture rather than hope the runner lacks Rosetta.
       # `lipo` is an xcrun shim and is gone after masking, so read `file -b`, exactly
       # as the desktop lane does. Keyed off `uname -m`, since macos-15-intel is x86_64.
+      #
+      # SCOPE: all of $MACHO_ROOT, including the .venv_t5_510/_530/_550 sidecars.
+      # Those are payload, not scratch: setup.sh:579-581 creates them during a
+      # normal install and transformers_version.py:338-348 puts them on sys.path.
+      # Any exclusion must be a named path rule, never a narrowed find.
       root="${MACHO_ROOT:-${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth}}"
       want="$(uname -m)"
       [ "$want" = "aarch64" ] && want=arm64
       if [ ! -d "$root" ]; then
         fail "macho requested but $root does not exist"
       else
-        n=0 bad_arch="" unsigned=""
+        n=0 nexe=0 bad_arch="" unsigned="" broken=""
         while IFS= read -r f; do
           desc="$(file -b "$f" 2>/dev/null || true)"
           case "$desc" in *Mach-O*) ;; *) continue ;; esac
@@ -177,11 +183,49 @@ for check in "$@"; do
             *"$want"*) ;;
             *) bad_arch="$bad_arch $f [$desc]" ;;
           esac
-          # arm64 only: AMFI SIGKILLs unsigned code there ("Killed: 9"), while x86_64
-          # loads it happily, so an unsigned x86_64 payload is not the same defect.
-          # Ad-hoc is enough, which is what the linker emits by default.
-          if [ "$want" = "arm64" ] && ! codesign -v "$f" >/dev/null 2>&1; then
-            unsigned="$unsigned $f"
+
+          # Signature: MAIN EXECUTABLES ONLY. Asserting it for every Mach-O failed
+          # the mask/pipe leg on 29 ordinary PyPI extension modules (lxml,
+          # charset_normalizer, cygrpc, fontTools, ...) plus libportaudio.dylib.
+          # The premise was wrong: those are MH_BUNDLE/MH_DYLIB images dlopen'd
+          # into a process without library validation and ship unsigned, and the
+          # run that flagged them had already imported them with the installer
+          # exiting 0. Enforcement lands on main executables and gatekept .app
+          # bundles, so that is all this asserts.
+          #
+          # Key off the filetype `file` reports, not the path or extension: a .so
+          # may be a bundle or a dylib, and an executable may have no extension.
+          # The library veto is second so a mixed-type fat file counts as a
+          # library. Substring tests are order-independent: Apple's `file` prints
+          # `Mach-O 64-bit executable arm64`, GNU's `Mach-O 64-bit arm64 executable`.
+          _is_exe=0
+          case "$desc" in *executable*) _is_exe=1 ;; esac
+          case "$desc" in *"shared library"*|*bundle*) _is_exe=0 ;; esac
+          # Named rule so a failure says which path matched; the filetype test
+          # already covers the MH_EXECUTE at .app/Contents/MacOS/<name>.
+          case "$f" in *.app/Contents/MacOS/*) _is_exe=1 ;; esac
+          [ "$_is_exe" = 1 ] && nexe=$((nexe + 1))
+
+          # arm64 only: the kernel refuses to exec an unsigned arm64 main binary
+          # ("Killed: 9"), while x86_64 execs it happily, so an unsigned x86_64
+          # payload is not the same defect.
+          if [ "$want" = "arm64" ] && [ "$_is_exe" = 1 ]; then
+            # Ad-hoc counts as signed: arm64 linkers apply an ad-hoc seal by
+            # default, so the test is "has a seal that verifies", not "has an
+            # identity". `spctl`/`--strict` would demand an authority and reject
+            # ad-hoc, so neither is used.
+            if ! codesign -v "$f" >/dev/null 2>&1; then
+              # Nothing to verify and a seal that does not match mean different
+              # things. Captured, not piped into grep: `codesign -dvv` exits
+              # non-zero on an unsigned file, and under the `pipefail` above that
+              # status is what `codesign ... | grep -q` returns even on a match,
+              # reporting every unsigned binary as a broken signature.
+              _sig="$(codesign -dvv "$f" 2>&1 || true)"
+              case "$_sig" in
+                *"not signed at all"*) unsigned="$unsigned $f" ;;
+                *)                     broken="$broken $f" ;;
+              esac
+            fi
           fi
         done < <(find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null)
         if [ "$n" = "0" ]; then
@@ -191,9 +235,11 @@ for check in "$@"; do
         elif [ -n "$bad_arch" ]; then
           fail "Mach-O is not $want, so it runs here only under Rosetta 2, which a fresh Mac does not have:$bad_arch"
         elif [ -n "$unsigned" ]; then
-          fail "unsigned Mach-O, which AMFI kills on arm64:$unsigned"
+          fail "unsigned Mach-O main executable, which arm64 macOS refuses to exec:$unsigned"
+        elif [ -n "$broken" ]; then
+          fail "Mach-O main executable carries a signature that does not verify:$broken"
         else
-          ok "$n Mach-O files under $root are $want$([ "$want" = arm64 ] && echo ' and signed')"
+          ok "$n Mach-O files under $root are $want$([ "$want" = arm64 ] && echo "; all $nexe main executable(s) signed")"
         fi
       fi
       ;;
