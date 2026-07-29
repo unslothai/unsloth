@@ -1555,8 +1555,7 @@ def test_article_still_beats_a_bigger_card_after_its_header_goes():
 
 
 def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
-    # Furniture may rank a candidate but never make it eligible: astro.build returned a 225 char
-    # feature card for the homepage because a nav-only header cleared the gate on deleted bytes.
+    # Furniture ranks, never makes eligible: a nav-only header returned a 225 char astro.build card.
     card = "<article><header>%s</header><p>%s</p></article>" % (
         "".join('<a href="/l%d">Language %d</a>' % (i, i) for i in range(120)),
         "Short teaser about the related thing, read more.",
@@ -1589,7 +1588,7 @@ def test_unclosed_table_cell_inside_a_header_is_still_stripped():
 
 
 def test_a_long_heading_href_does_not_condemn_the_rest_of_the_header():
-    # The heading is kept either way, so its size must not clear the floor for the metadata beside it.
+    # The heading is kept anyway, so its size must not clear the floor for the metadata beside it.
     body = (
         "<article><header><h1><a href='/p?%s'>Title</a></h1>"
         "<a href='/author/jane'>Jane</a></header><p>%s</p></article>"
@@ -1654,8 +1653,7 @@ def test_truncated_header_and_blockquote_keep_source_order():
     assert out.index("Title") < out.index("Quote")
 
 
-# Headers interact with every other buffer, well-formed and malformed, so the grid is enumerated
-# rather than sampled: that is where the one-off bugs in this area have lived.
+# Headers interact with every buffer, so enumerate the grid: that is where the one-off bugs live.
 _GRID_HEADINGS = {
     "h1": "<h1>Page Title</h1>",
     "aria": "<div role='heading'>Page Title</div>",
@@ -1709,8 +1707,8 @@ def test_header_survives_every_buffer_combination(
     assert "Article body sentence." in out, "body lost"
     assert out.strip(), "empty output"
     assert out.index("Article body sentence.") < 16000, "body pushed past the fetch cap"
-    # The title is only guaranteed for closed markup with no <pre>: inside <pre> a heading is
-    # verbatim text, and unclosed shapes are recovered best-effort by code predating this pass.
+    # The title holds only for closed markup with no <pre>: in <pre> a heading is verbatim text,
+    # and unclosed shapes get best-effort recovery from code predating this pass.
     well_formed = close_header and close_nested and "pre" not in (wrapper, nested)
     if _GRID_HEADINGS[heading] and well_formed:
         assert out.count("Page Title") == 1, "title duplicated or lost"
@@ -1853,8 +1851,7 @@ def test_linked_heading_text_is_counted_once_for_the_size_floor():
 
 
 def test_fenced_code_counts_as_retained_content():
-    # A leading # inside a fence is a comment, not a heading. Eligibility is measured on non-heading
-    # text, so counting the fence as headings would lose this article to the sibling.
+    # A leading # inside a fence is a comment, not a heading; scoring it as one loses this article.
     code = "<pre>%s</pre>" % "\n".join("# comment line %d" % i for i in range(16))
     article = "<article><header><h1>T</h1><ul>%s</ul></header>%s</article>" % (
         _interlanguage_list(300),
@@ -1870,8 +1867,8 @@ _FENCE = "`" * 3
 
 
 def test_post_processing_respects_the_widened_fence():
-    # _cleanup and _strip_boilerplate_lines toggled on any ``` line, so the
-    # literal one closed the block and its code was cleaned and de-boilerplated.
+    # _cleanup and _strip_boilerplate_lines toggled on any ``` line, so the literal one
+    # closed the block and its code was cleaned and de-boilerplated.
     code = "<pre>%s\nskip to content\n\nreal code line   \nmore code</pre>" % _FENCE
     body = "<article>%s<p>%s</p></article>" % (code, "Body text here. " * 20)
     out = html_to_markdown(f"<body><main>{body}</main></body>", main_content = True)
@@ -1881,8 +1878,7 @@ def test_post_processing_respects_the_widened_fence():
 
 
 def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
-    # /docs/(draft never balances, so it is not a link any reader resolves; the
-    # scan must not discard the prose sharing that rendered line.
+    # /docs/(draft never balances, so it is not a link; the scan must keep the prose on that line.
     article = '<article><p><a href="/docs/(draft">Doc</a> %s</p></article>' % (
         "Substantial article prose continues here. " * 6,
     )
@@ -1893,8 +1889,8 @@ def test_unbalanced_destination_keeps_scoring_the_rest_of_the_line():
 
 
 def test_structural_headings_do_not_satisfy_the_eligibility_gate():
-    # role="heading" renders as plain prose, so reparsing ATX could not see it and
-    # a header-only card cleared the gate on its title plus dropped-list credit.
+    # role="heading" renders as plain prose, so ATX reparsing missed it and a header-only card
+    # cleared the gate on its title plus dropped-list credit.
     card = '<article><header><div role="heading">%s</div><ul>%s</ul></header></article>' % (
         "Card Title Words " * 14,
         _interlanguage_list(300),
@@ -1906,8 +1902,7 @@ def test_structural_headings_do_not_satisfy_the_eligibility_gate():
 
 
 def test_anchor_wrapping_a_heading_preserves_only_the_heading():
-    # <a><h1>Title</h1>...nav...</a> is furniture carrying a title; teeing the
-    # whole anchor returned 14k of navigation ahead of the article.
+    # <a><h1>Title</h1>...nav...</a> carries a title; teeing the whole anchor returned 14k of nav.
     bulk = " ".join("NavWord%04d" % i for i in range(1200))
     body = (
         '<main><header><a href="/home"><h1>Title</h1>%s</a><ul>%s</ul></header><p>%s</p></main>'
@@ -1924,8 +1919,7 @@ def test_anchor_wrapping_a_heading_preserves_only_the_heading():
 
 
 def test_link_destination_scan_balances_parentheses():
-    # A destination may legally hold parens, so stopping at the first ) scored
-    # the rest of the URL as prose and handed the scope to a link-only card.
+    # A destination may hold parens, so stopping at the first ) scored the rest of the URL as prose.
     query = "utm_source=x&" * 25
     card = '<article><header>%s</header><p><a href="/card(foo)?%s">Read</a></p></article>' % (
         "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
@@ -1938,8 +1932,7 @@ def test_link_destination_scan_balances_parentheses():
 
 
 def test_literal_fence_inside_pre_does_not_end_the_code_region():
-    # A ``` line in the source is content; ending the fence there made the rest
-    # of the snippet read as headings, so the article looked empty.
+    # A ``` line in the source is content; ending the fence there made the rest read as headings.
     code = "<pre>%s\n%s</pre>" % (
         _FENCE,
         "\n".join("# code line %d" % i for i in range(20)),
@@ -1955,8 +1948,7 @@ def test_literal_fence_inside_pre_does_not_end_the_code_region():
 
 
 def test_heading_through_a_nested_buffer_is_emitted_once():
-    # The title was teed raw entering the blockquote and again when the quote
-    # flushed, so a stripped header kept two copies of it.
+    # The title was teed entering the blockquote and again on flush, so it was kept twice.
     body = (
         '<main><header><div role="heading"><blockquote>UniqueTitle</blockquote></div><ul>%s</ul></header><p>%s</p></main>'
         % (
@@ -1969,8 +1961,8 @@ def test_heading_through_a_nested_buffer_is_emitted_once():
 
 
 def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
-    # </code> arrives after </header>; the frame already closed the span, so
-    # emitting again left an unmatched delimiter across the rest of the page.
+    # </code> arrives after </header>; the frame already closed the span, so a second emit is
+    # unpaired across the rest of the page.
     body = "<main><header><h1>T</h1><code>navcode<ul>%s</ul></header><p>%s</p></code></main>" % (
         _interlanguage_list(300),
         "Article body. " * 30,
@@ -1981,8 +1973,7 @@ def test_late_code_end_tag_after_a_recovered_header_is_a_no_op():
 
 
 def test_header_text_is_sized_after_whitespace_collapses():
-    # The run collapses to one space when rendered, so counting it raw pushed a
-    # short byline over the floor at near total link density and dropped it.
+    # The run collapses to one space, so counting it raw pushed a short byline over the floor.
     byline = '<a href="/a">Jane%sDoe</a><time>July 2026</time>' % (" " * 300)
     body = "<main><header><h1>T</h1>%s</header><p>%s</p></main>" % (
         byline,
@@ -1994,8 +1985,7 @@ def test_header_text_is_sized_after_whitespace_collapses():
 
 
 def test_link_destinations_do_not_count_as_retained_prose():
-    # A tracking URL is not prose: this card shows 4 visible characters but its
-    # serialized destination scored 339, enough to displace the real article.
+    # A tracking URL is not prose: this card shows 4 visible chars but its destination scored 339.
     query = "utm_source=x&" * 25
     card = '<article><header>%s</header><p><a href="/card?%s">Read</a></p></article>' % (
         "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(120)),
@@ -2008,8 +1998,7 @@ def test_link_destinations_do_not_count_as_retained_prose():
 
 
 def test_late_end_tag_cannot_replay_a_recovered_pre_block():
-    # </header> arrives while <pre> is open, so the frame drains it; the later
-    # </pre> re-emitted the same buffer OUTSIDE the stripped header.
+    # </header> arrives while <pre> is open, so the frame drains it; the later </pre> replayed it.
     body = "<main><header><h1>T</h1><ul>%s</ul><pre>%s</header><p>%s</p></pre></main>" % (
         _interlanguage_list(300),
         "NAVJUNK_MARKER\n" * 3,
@@ -2021,8 +2010,7 @@ def test_late_end_tag_cannot_replay_a_recovered_pre_block():
 
 
 def test_aria_heading_accepts_a_fallback_role_token_list():
-    # role is a token list authors use for fallbacks, so an exact match dropped
-    # the title of a header that was then reduced to its headings.
+    # role is a token list authors use for fallbacks, so an exact match dropped the title.
     assert _is_aria_heading({"role": "heading"})
     assert _is_aria_heading({"role": "future-role heading"})
     assert _is_aria_heading({"role": "HEADING"})
@@ -2041,8 +2029,7 @@ def test_aria_heading_accepts_a_fallback_role_token_list():
 
 
 def test_only_valid_atx_syntax_counts_as_a_heading():
-    # CommonMark needs 1-6 hashes closed by whitespace or line end, so "#include" is prose; without
-    # that check a C snippet whose every line starts with # read as pure heading, so as empty.
+    # 1-6 hashes must close with whitespace or line end, else a C snippet of #includes reads empty.
     assert not _is_heading_line("#include <stdio.h>")
     assert not _is_heading_line("#hashtag trending")
     assert not _is_heading_line("####### seven hashes")
@@ -2097,8 +2084,7 @@ def test_header_inside_open_inline_code_leaves_delimiters_paired():
 
 
 def test_nested_blockquote_prose_does_not_backtrack():
-    # Heading detection must scan linearly: a regex with adjacent whitespace groups backtracks
-    # exponentially on "> > > ... prose".
+    # Heading detection must scan linearly: a regex backtracks exponentially on "> > > ... prose".
     import time
 
     html = (
