@@ -278,6 +278,16 @@ class ValidateModelRequest(BaseModel):
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
         ),
     )
+    gpu_layers: int = Field(
+        -1,
+        ge = -1,
+        description = (
+            "Layer count intended for the follow-up load, so the coexistence estimate "
+            "sizes like /load. Only 0 changes the verdict: a zero-layer DiffusionGemma "
+            "split places no layers on any device, so it cannot compete with training "
+            "for VRAM. -1 (Auto) keeps the previous behaviour for callers that omit it."
+        ),
+    )
     n_parallel: Optional[int] = Field(
         None,
         ge = PARALLEL_MIN,

@@ -3378,8 +3378,12 @@ def _request_matches_loaded_settings(
         # preference standing across a diffusion load, so comparing modes would
         # reload forever, while comparing raw gpu_layers would miss that Auto(-1)
         # and Unsloth mode both mean "runner default".
+        # Compare against what the live runner was ASKED for, not what it applied:
+        # against an unsloth_zoo without --ngl the two differ, and comparing with the
+        # applied default would make the same request mismatch forever and reload on
+        # every /load.
         from core.inference.llama_cpp import _diffusion_manual_ngl
-        loaded_ngl = llama_backend.gpu_layers if llama_backend.gpu_layers >= 0 else None
+        loaded_ngl = llama_backend.diffusion_requested_ngl
         if _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers) != loaded_ngl:
             return False
     else:
@@ -4725,6 +4729,7 @@ def _guard_chat_load_against_training(
     cache_type_kv: Optional[str] = None,
     tensor_parallel: bool = False,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    gpu_layers: int = -1,
 ) -> None:
     """Protect active training from automatically placed chat-model loads.
 
@@ -4732,9 +4737,10 @@ def _guard_chat_load_against_training(
     effective quantization (see _effective_load_in_4bit). Manual chat-GGUF
     placement is an explicit override: Auto layers delegate fitting to
     llama.cpp's ``--fit`` and pinned layers are owned by the user, so neither is
-    estimated here. Diffusion is still guarded because its mode-agnostic runner
-    ignores those controls and uses one GPU. An unclassified GGUF is guarded as
-    potentially diffusion until its local header proves otherwise. Other loads
+    estimated here. Diffusion is still guarded because its runner uses one GPU --
+    except for an explicit zero-layer split, which places no model layers at all
+    and so cannot compete with training for VRAM. An unclassified GGUF is guarded
+    as potentially diffusion until its local header proves otherwise. Other loads
     raise HTTP 409 when they would not fit beside training.
     """
     from core.training import get_training_backend
@@ -4747,9 +4753,18 @@ def _guard_chat_load_against_training(
         logger.warning("Could not check training state for chat-load guard: %s", e)
         return
 
+    from core.inference.llama_cpp import _diffusion_manual_ngl
+
     is_gguf = bool(getattr(config, "is_gguf", False))
     diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
+        return
+    # A zero-layer diffusion split places no model layers on any device, so it
+    # cannot compete with training for VRAM and must not be refused by size.
+    # Mirrors the loader, which folds the same condition into its cpu_only
+    # (core/inference/llama_cpp.py, _start_diffusion_server).
+    diffusion_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers) if is_gguf else None
+    if is_gguf and diffusion_kind is not False and diffusion_ngl == 0:
         return
 
     # Vulkan GGUF pins are ggml ordinals, not CUDA physical IDs. Detect this
@@ -4769,6 +4784,7 @@ def _guard_chat_load_against_training(
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
             requested_gpu_ids,
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
+            force_cpu = diffusion_ngl == 0,
         )
 
     # Size with the count that will actually launch, or a load that fits gets a
@@ -5553,6 +5569,7 @@ async def _load_model_impl(
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = bool(request.tensor_parallel),
             gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -6236,6 +6253,7 @@ async def validate_model(
                 cache_type_kv = request.cache_type_kv,
                 tensor_parallel = request.tensor_parallel,
                 gpu_memory_mode = request.gpu_memory_mode,
+                gpu_layers = request.gpu_layers,
             )
 
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a

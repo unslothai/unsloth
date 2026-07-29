@@ -192,6 +192,10 @@ export async function validateModel(
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
+      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places no
+      // layers on any device, so validate must not refuse it during training when
+      // /load would accept it.
+      gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
     }),
