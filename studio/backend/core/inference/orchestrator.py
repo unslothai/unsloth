@@ -155,6 +155,16 @@ class InferenceOrchestrator:
         from core.inference.defaults import get_default_models
 
         self._static_models = get_default_models()
+        # The list depends on detection (chat-only hosts get the GGUF set), and
+        # detection is not once-per-process: the MLX self-heal re-detects after a
+        # successful repair and flips CHAT_ONLY. The warm builds this singleton
+        # before that repair runs, so without a staleness check an Apple Silicon
+        # host whose MLX stack was repaired would keep serving the chat-only list
+        # for the rest of the process, even after the reload the log tells the
+        # user to do.
+        import utils.hardware.hardware as _hw_mod
+
+        self._static_models_generation = _hw_mod.DETECTION_GENERATION
         self._top_gguf_cache: Optional[list[str]] = None
         self._top_hub_cache: Optional[list[str]] = None
         self._top_models_ready = threading.Event()
@@ -168,8 +178,21 @@ class InferenceOrchestrator:
     # Default models (top GGUFs fetched dynamically from HF)
     # ------------------------------------------------------------------
 
+    def _refresh_static_models_if_stale(self) -> None:
+        """Recompute the curated defaults if hardware was re-detected since."""
+        import utils.hardware.hardware as _hw_mod
+
+        if _hw_mod.DETECTION_GENERATION == self._static_models_generation:
+            return
+        from core.inference.defaults import get_default_models
+
+        self._static_models = get_default_models()
+        self._static_models_generation = _hw_mod.DETECTION_GENERATION
+        logger.info("hardware was re-detected; curated default models refreshed")
+
     @property
     def default_models(self) -> list[str]:
+        self._refresh_static_models_if_stale()
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
         # Never wait for the remote Hugging Face ranking during startup. Chat's
@@ -407,9 +430,7 @@ class InferenceOrchestrator:
                     " This usually means the system killed it under memory pressure. "
                     "Try a smaller model, lower context length, or close other GPU-heavy apps."
                 )
-            return (
-                f"{message}{suffix} " f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
-            )
+            return f"{message}{suffix} Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
 
         return f"{message} Details: pid={pid}, exitcode={exitcode}."
 
@@ -496,7 +517,7 @@ class InferenceOrchestrator:
             )
 
         raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response " f"(no activity for {timeout}s)"
+            f"Timeout waiting for '{expected_type}' response (no activity for {timeout}s)"
         )
 
     def _drain_queue(self) -> list:

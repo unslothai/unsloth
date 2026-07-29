@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The curated default models must survive a re-detection.
+
+Detection is not once-per-process. On Apple Silicon with a missing or too-old
+MLX stack the initial detection is chat-only, the background autorepair then
+installs MLX and re-detects, and CHAT_ONLY flips. get_default_models() reads
+that state, so a snapshot taken before the repair is wrong afterwards.
+
+The warm builds the orchestrator in its own stage, which runs before the
+post-warm thread starts the repair, so the snapshot is guaranteed to be the
+pre-repair one. Without a staleness check the host serves the chat-only list for
+the rest of the process, including after the reload the repair log asks for.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_BACKEND = Path(__file__).resolve().parent.parent
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+import core.inference.defaults as defaults_mod  # noqa: E402
+import utils.hardware.hardware as hw  # noqa: E402
+from core.inference.orchestrator import InferenceOrchestrator  # noqa: E402
+
+
+def _orchestrator(monkeypatch, models):
+    monkeypatch.setattr(InferenceOrchestrator, "_fetch_top_models", lambda self: None)
+    monkeypatch.setattr(defaults_mod, "get_default_models", lambda: list(models))
+    return InferenceOrchestrator()
+
+
+def test_defaults_refresh_when_hardware_is_redetected(monkeypatch):
+    monkeypatch.setattr(hw, "DETECTION_GENERATION", 1)
+    orch = _orchestrator(monkeypatch, ["chat-only-gguf"])
+    assert orch.default_models == ["chat-only-gguf"]
+
+    # The MLX repair succeeds and re-detects: CHAT_ONLY flips and the curated
+    # list is now the full one.
+    monkeypatch.setattr(defaults_mod, "get_default_models", lambda: ["full-a", "full-b"])
+    monkeypatch.setattr(hw, "DETECTION_GENERATION", 2)
+
+    assert orch.default_models == ["full-a", "full-b"], (
+        "the orchestrator is still serving the pre-repair chat-only list"
+    )
+
+
+def test_defaults_are_not_recomputed_without_a_redetect(monkeypatch):
+    """The refresh is keyed on the generation, not on every read."""
+    monkeypatch.setattr(hw, "DETECTION_GENERATION", 5)
+    calls = []
+
+    def _counted():
+        calls.append(1)
+        return ["a"]
+
+    monkeypatch.setattr(InferenceOrchestrator, "_fetch_top_models", lambda self: None)
+    monkeypatch.setattr(defaults_mod, "get_default_models", _counted)
+    orch = InferenceOrchestrator()
+
+    orch.default_models
+    orch.default_models
+
+    assert len(calls) == 1, f"recomputed {len(calls)}x without a re-detection"
+
+
+def test_detection_generation_advances_on_every_settled_detection():
+    """The counter is what makes the staleness check possible."""
+    before = hw.DETECTION_GENERATION
+    hw.ensure_hardware_detected()
+    hw.detect_hardware()
+    assert hw.DETECTION_GENERATION > before

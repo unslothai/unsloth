@@ -89,6 +89,11 @@ _DETECT_LOCK = threading.RLock()
 # CPU/chat-only fallback. Poll this rather than DEVICE: DEVICE is assigned
 # mid-detection, so it goes non-None while later probes can still change it.
 DETECTION_COMPLETE = threading.Event()
+# Bumped every time detection settles on an answer. Detection is not
+# once-per-process: the MLX self-heal re-detects after a successful repair and
+# flips CHAT_ONLY, so anything that snapshots a detection-derived value has to
+# be able to tell that its snapshot is stale.
+DETECTION_GENERATION = 0
 
 # Drives start_background_detection(). Separate from _DETECT_LOCK because it is
 # only ever held for the bookkeeping below, never across the import.
@@ -248,11 +253,13 @@ def detect_hardware() -> DeviceType:
       4. MLX   (Apple Silicon via MLX framework)
       5. CPU   (fallback)
     """
+    global DETECTION_GENERATION
     with _DETECT_LOCK:
         device = _detect_hardware_locked()
         # A forced re-detect that returns has a settled value too. Deliberately
         # not in a finally: if this raises, the branch's partial assignment is
         # still in place, and that is precisely what the event must not publish.
+        DETECTION_GENERATION += 1
         DETECTION_COMPLETE.set()
         return device
 
@@ -269,7 +276,7 @@ def ensure_hardware_detected() -> DeviceType:
     /api/health, which waits on this, would 500. Record CPU + chat-only with a
     reason instead: the UI can explain the greyed-out Train/Export and the retry
     never happens."""
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
     with _DETECT_LOCK:
         if DEVICE is None:
             try:
@@ -286,6 +293,7 @@ def ensure_hardware_detected() -> DeviceType:
         # picked", not "detection finished". A waiter that treats the
         # intermediate value as authoritative can publish training-enabled for a
         # host the except above is about to degrade to CPU/chat-only.
+        DETECTION_GENERATION += 1
         DETECTION_COMPLETE.set()
         return DEVICE
 
