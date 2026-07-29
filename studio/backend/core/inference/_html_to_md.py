@@ -234,7 +234,7 @@ class _HeaderFrame:
         link_seq: int,
         cell_seq: int,
         in_pre: bool,
-        in_code: bool,
+        in_code: int,
         bq_depth: int,
         list_depth: int,
     ):
@@ -356,7 +356,9 @@ class _MarkdownRenderer(HTMLParser):
         # Pre/code state
         self._in_pre: bool = False
         self._pre_parts: list[str] = []
-        self._in_inline_code: bool = False
+        # Depth, not a flag: <code><code>x</code></code> opens two spans and each
+        # end tag owes a backtick, else the delimiters stop pairing.
+        self._inline_code_depth: int = 0
 
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
@@ -592,8 +594,8 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_link()
         # Inline code opened OUTSIDE the header is the page's; closing it here would leave the real
         # </code> to emit an unpaired backtick.
-        if self._in_inline_code and not frame.outer_in_code:
-            self._in_inline_code = False
+        while self._inline_code_depth > frame.outer_in_code:
+            self._inline_code_depth -= 1
             self._emit("`")
         # Before the cell: _finish_row emits, and an open <pre> would swallow the
         # row into the code block as CODE|  | instead of a cell holding the code.
@@ -658,7 +660,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._link_seq if self._in_link else -1,
                         self._cell_seq if self._in_cell else -1,
                         self._in_pre,
-                        self._in_inline_code,
+                        self._inline_code_depth,
                         len(self._bq_stack),
                         len(self._list_stack),
                     )
@@ -793,7 +795,7 @@ class _MarkdownRenderer(HTMLParser):
             self._in_pre = True
 
         elif tag == "code" and not self._in_pre:
-            self._in_inline_code = True
+            self._inline_code_depth += 1
             self._emit("`")
 
         elif tag == "table":
@@ -866,8 +868,8 @@ class _MarkdownRenderer(HTMLParser):
 
         # Already closed means a header frame recovered it; a second backtick here would leave the
         # rest of the page formatted as code.
-        elif tag == "code" and not self._in_pre and self._in_inline_code:
-            self._in_inline_code = False
+        elif tag == "code" and not self._in_pre and self._inline_code_depth:
+            self._inline_code_depth -= 1
             self._emit("`")
 
         elif tag in ("th", "td"):
@@ -900,7 +902,7 @@ class _MarkdownRenderer(HTMLParser):
             self._pre_parts.append(data)
             return
         # Preserve literal whitespace inside inline <code> spans.
-        if self._in_inline_code:
+        if self._inline_code_depth:
             self._count_header_text(data)
             self._emit(data)
             return
@@ -939,8 +941,8 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_link:
             self._finish_link()
 
-        if self._in_inline_code:
-            self._in_inline_code = False
+        while self._inline_code_depth:
+            self._inline_code_depth -= 1
             self._emit("`")
 
         self._finish_cell()

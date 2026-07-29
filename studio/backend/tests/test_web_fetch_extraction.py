@@ -2051,6 +2051,17 @@ def test_header_size_is_independent_of_the_buffer_it_renders_through():
     assert len(kept) == 1
 
 
+def test_nested_inline_code_closes_every_span_it_opened():
+    # Two <code> elements owe two closing backticks. Tracking open/closed as a
+    # flag let the first </code> answer for both and left the delimiters odd.
+    body = "<main><article><p><code><code>x</code></code></p><p>%s</p></article></main>" % (
+        "Body text here. " * 20,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert out.count("`") % 2 == 0
+    assert "``x``" in out
+
+
 def test_header_inside_open_inline_code_leaves_delimiters_paired():
     # The <code> opened outside the header, so closing it in the frame left </code> unpaired.
     body = "<main><code>head<header><h1>T</h1></header>tail</code><p>%s</p></main>" % (
