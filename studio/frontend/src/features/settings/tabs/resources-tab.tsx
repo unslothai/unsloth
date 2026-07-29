@@ -72,7 +72,10 @@ function formatBytes(value: number | null): string | null {
 function formatGiB(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
-  return `${safe.toFixed(digits)} GiB`;
+  // digits is never 0, so toFixed always leaves a decimal point and trimming
+  // trailing zeros cannot reach an integer digit. "64.0" reads as "64".
+  const text = safe.toFixed(digits).replace(/\.?0+$/, "");
+  return `${text} GiB`;
 }
 
 function formatMb(value: number | null | undefined): string {
@@ -515,15 +518,20 @@ export function ResourcesTab() {
                   </div>
                 </div>
                 {/* Meter under the figures, so it spans their width instead of
-                    being squeezed into the gap beside them. */}
-                <div className="flex shrink-0 flex-col items-stretch gap-1.5">
-                  <div className="flex gap-3 font-mono text-xs tabular-nums text-muted-foreground">
+                    being squeezed into the gap beside them. The min width
+                    starts the block further left than its text alone would. */}
+                <div className="flex min-w-[19rem] shrink-0 flex-col items-stretch gap-1.5">
+                  {/* Ruled between the three readings: run together they are
+                      easy to misread as one number. */}
+                  <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
                     <span className="truncate">
                       {t("settings.resources.gpu.used", { value: usedText })}
                     </span>
+                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
                     <span className="truncate">
                       {t("settings.resources.gpu.free", { value: freeText })}
                     </span>
+                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
                     <span className="truncate">
                       {t("settings.resources.gpu.total", {
                         value: totalText,
