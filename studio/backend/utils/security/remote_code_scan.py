@@ -21,6 +21,8 @@ canonical scanner loads in-repo so the fallback never silently takes over.
 from __future__ import annotations
 
 import hashlib
+import io
+import tokenize
 import importlib.util
 import pathlib
 import re
@@ -29,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from loggers import get_logger
+from utils.hf_cache_settings import active_hf_hub_cache
 
 logger = get_logger(__name__)
 
@@ -391,6 +394,18 @@ def scan_remote_code_files(files: dict[str, str]) -> ScanResult:
     return result
 
 
+def _read_python_source(path) -> str:
+    """Decode a .py the way Python will execute it: a PEP 263 cookie
+    (`# coding: cp1252`) wins, so forcing utf-8 would scan something other than
+    what runs."""
+    data = path.read_bytes()
+    try:
+        encoding = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    except (SyntaxError, ValueError):
+        encoding = "utf-8"
+    return data.decode(encoding, errors = "replace")
+
+
 def remote_code_fingerprint(files: dict[str, str]) -> str:
     """Stable sha256 over the (sorted) file contents, for pinning consent."""
     h = hashlib.sha256()
@@ -429,7 +444,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             # for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             for p in root.rglob("*.py"):
                 if p.is_file():
-                    files[str(p.relative_to(root))] = p.read_text(errors = "replace")
+                    files[str(p.relative_to(root))] = _read_python_source(p)
             # A local config can still point auto_map at an EXTERNAL Hub repo
             # (owner/name--module.Class) that executes on load, so fetch it. Every config
             # that can declare auto_map is checked, so a custom processor's external code
@@ -439,7 +454,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 p = root / name
                 if p.is_file():
                     try:
-                        ext_refs |= _auto_map_refs(json.loads(p.read_text()))
+                        ext_refs |= _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
                     except Exception:
                         pass
             if not _add_external_refs(files, ext_refs, hf_token, model_name):
@@ -455,7 +470,12 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         refs = set()
         for cfg_name in REMOTE_CODE_CONFIG_FILES:
             try:
-                cfg_path = hf_hub_download(model_name, cfg_name, token = hf_token)
+                cfg_path = hf_hub_download(
+                    model_name,
+                    cfg_name,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue
             except Exception as exc:
@@ -463,7 +483,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                     f"{model_name}: config {cfg_name} could not be fetched ({exc})"
                 ) from exc
             try:
-                refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text()))
+                refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
             except Exception:
                 pass
         own_refs = {fn for repo, fn in refs if repo is None}
@@ -499,7 +519,12 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         wanted = present_py | (own_refs & repo_file_set)
         for fn in sorted(wanted):
             try:
-                fp = hf_hub_download(model_name, fn, token = hf_token)
+                fp = hf_hub_download(
+                    model_name,
+                    fn,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except Exception as exc:
                 # A .py CONFIRMED PRESENT could not be fetched. A partial set would
                 # fingerprint "clean" while transformers later runs this file, so fail
@@ -508,7 +533,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 raise RemoteCodeUnscannable(
                     f"{model_name}: present file {fn} could not be fetched ({exc})"
                 ) from exc
-            files[fn] = Path(fp).read_text(errors = "replace")
+            files[fn] = _read_python_source(Path(fp))
         # Code referenced from another repo executes too: scan it or fail closed.
         if not _add_external_refs(files, refs, hf_token, model_name):
             raise RemoteCodeUnscannable(f"{model_name}: external auto_map code unreachable")
@@ -591,7 +616,7 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
                 if not p.is_file():
                     continue
                 try:
-                    refs = _auto_map_refs(json.loads(p.read_text()))
+                    refs = _auto_map_refs(json.loads(p.read_text(encoding = "utf-8-sig")))
                 except Exception:
                     continue
                 repos.update(repo for repo, _fn in refs if repo)
@@ -602,13 +627,18 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
 
         for cfg_name in REMOTE_CODE_CONFIG_FILES:
             try:
-                cfg_path = hf_hub_download(model_name, cfg_name, token = hf_token)
+                cfg_path = hf_hub_download(
+                    model_name,
+                    cfg_name,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue
             except Exception:
                 continue
             try:
-                refs = _auto_map_refs(json.loads(Path(cfg_path).read_text()))
+                refs = _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
             except Exception:
                 continue
             repos.update(repo for repo, _fn in refs if repo)
@@ -670,7 +700,12 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
             wanted = present_py | set(entry_files)
         for fn in sorted(wanted):
             try:
-                fp = hf_hub_download(repo, fn, token = hf_token)
+                fp = hf_hub_download(
+                    repo,
+                    fn,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except Exception as exc:
                 logger.warning(
                     "repo_remote_code_files(%s): external %s:%s unscannable (%s)",
@@ -680,5 +715,5 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
                     exc,
                 )
                 return False
-            files[f"{repo}--{fn}"] = Path(fp).read_text(errors = "replace")
+            files[f"{repo}--{fn}"] = _read_python_source(Path(fp))
     return True

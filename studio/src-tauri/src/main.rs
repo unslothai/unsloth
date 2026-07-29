@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_layout;
 mod commands;
 mod desktop_auth;
 mod desktop_backend_owner;
@@ -7,6 +8,8 @@ mod desktop_update_policy;
 mod diagnostics;
 mod install;
 mod native_backend_lease;
+mod native_clipboard;
+mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
 mod preflight;
@@ -14,7 +17,7 @@ mod process;
 mod update;
 mod windows_job;
 
-use log::info;
+use log::{info, warn};
 use process::new_backend_state;
 use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
@@ -82,6 +85,33 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
+/// installer, leaving a venv that looks healthy but cannot start. Tray Quit only, since
+/// RunEvent::Exit must never block on a dialog nobody can answer.
+fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(install_state) = app.try_state::<install::InstallState>() else {
+        return true;
+    };
+    if !install::is_install_running(&install_state) {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "Unsloth Studio is still installing. Quitting now stops it part-way and \
+             leaves the installation incomplete, so it will need to be repaired before \
+             it can start.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Installation in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep installing".to_string(),
+        ))
+        .blocking_show()
+}
+
 fn cleanup_child_processes(app: &tauri::AppHandle) {
     let diagnostics_state = app
         .try_state::<diagnostics::DiagnosticsState>()
@@ -135,6 +165,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 // leaving the backend orphaned.
                 let app_handle = app.clone();
                 std::thread::spawn(move || {
+                    if !confirm_quit_during_install(&app_handle) {
+                        return;
+                    }
                     cleanup_child_processes(&app_handle);
                     app_handle.exit(0);
                 });
@@ -173,9 +206,11 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+                let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -195,6 +230,9 @@ fn main() {
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
+            app_layout::has_initialized_app_window_layout,
+            app_layout::mark_app_window_layout_initialized,
+            app_layout::reset_app_window_layout_initialized,
             commands::check_install_status,
             commands::desktop_preflight,
             commands::start_install,
@@ -213,9 +251,14 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             diagnostics::collect_support_diagnostics,
+            native_clipboard::read_native_clipboard_files,
+            native_clipboard::read_native_clipboard_png,
+            native_file_dialogs::save_native_file,
+            native_file_dialogs::pick_native_chat_import,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
             native_intents::pick_native_model,
+            native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
@@ -223,6 +266,13 @@ fn main() {
             has_saved_window_state,
         ])
         .setup(|app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    warn!("Failed to register deep-link handlers: {error}");
+                }
+            }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
             setup_tray(app)?;

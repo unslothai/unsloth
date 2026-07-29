@@ -181,6 +181,7 @@ export function mapBackendModelConfigToTrainingPatch(
 
   if (lora?.use_loftq === true) patch.loraVariant = "loftq";
   else if (lora?.use_rslora === true) patch.loraVariant = "rslora";
+  else if (lora?.use_dora === true) patch.loraVariant = "dora";
   else if (lora) patch.loraVariant = "lora";
 
   const finetuneVisionLayers = toBoolean(lora?.finetune_vision_layers);

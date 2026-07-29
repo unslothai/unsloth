@@ -36,7 +36,7 @@ export function DotTag({
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 bg-transparent px-2 text-[11px] font-medium leading-none text-muted-foreground",
+        "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border/60 bg-transparent px-2 text-ui-11 font-medium leading-none text-muted-foreground",
         className,
       )}
     >

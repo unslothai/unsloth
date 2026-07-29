@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.7.3"
+__version__ = "2026.7.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1670,6 +1670,13 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+# Faster safetensors loads on UMA (integrated) GPUs; lazy gate keeps this import
+# fork-safe (no CUDA init). No-op off-UMA. Opt out: UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
+from ._uma_safetensors import patch_unified_memory_safetensors_load
+
+patch_unified_memory_safetensors_load()
+
+
 def _all_missing_keys_are_position_ids(record_str):
     """True only when EVERY key in the 'newly initialized: [...]' list is a position_ids
     buffer.
@@ -2464,7 +2471,7 @@ def _get_statistics(statistics = None, force_download = True):
                     for vendor_file in vendor_files:
                         path = Path(vendor_file)
                         if path.is_file():
-                            file_content = path.read_text().lower()
+                            file_content = path.read_text(encoding = "utf-8").lower()
                             if "amazon" in file_content:
                                 return "aws"
                             elif "microsoft corporation" in file_content:

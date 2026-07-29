@@ -130,8 +130,8 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         .canonicalize()
         .map_err(|e| format!("Path could not be resolved: {e}"))?;
     reject_network_or_device_path(&canonical_path)?;
-    let canonical_symlink_metadata = fs::symlink_metadata(&canonical_path)
-        .map_err(|e| format!("Path is not available: {e}"))?;
+    let canonical_symlink_metadata =
+        fs::symlink_metadata(&canonical_path).map_err(|e| format!("Path is not available: {e}"))?;
     if canonical_symlink_metadata.file_type().is_symlink() {
         return Err("Symlink paths are not supported for native intake.".to_string());
     }

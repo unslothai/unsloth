@@ -16,8 +16,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.huggingFaceToken",
     "settings.general.gettingStarted",
     "settings.general.startOnboarding",
-    "settings.general.storage.sectionTitle",
-    "settings.general.storage.modelsFolder",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.general.notifications.sectionTitle",
@@ -71,6 +69,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.gpu.title",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
+    "settings.resources.storage.futureDownloads",
     "settings.resources.storage.systemDisk",
     "settings.resources.environment.title",
     "settings.resources.environment.backend",
@@ -85,24 +84,45 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
-    "settings.chat.data",
+    "settings.chat.modelDisclaimer",
+  ],
+  // Chat data management moved to the Data tab; keep these rows findable there.
+  data: [
+    "settings.data.fineTuneExport",
+    "settings.data.archivedChats",
+    "settings.data.archiveAllChats",
+    "settings.data.confirmBeforeDeleting",
+    "settings.data.uploadedFiles",
+    "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",
     "settings.chat.clearAllChats",
-    "settings.chat.exportHistory",
-    "settings.chat.modelDisclaimer",
   ],
   "api-keys": [
     "settings.apiKeys.title",
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
   ],
+  agents: [
+    // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
+    "settings.agents.title",
+    "settings.agents.description",
+    "settings.agents.intro",
+    "settings.agents.agent",
+    "settings.agents.model",
+    "settings.agents.quantization",
+    // subagent.title is deliberately absent: its label only mounts for the agents
+    // that support subagents, so a hit would have nothing to scroll to otherwise.
+    "settings.agents.options.title",
+    "settings.agents.remote.title",
+    "settings.agents.passthrough.title",
+    "settings.agents.dryRun.title",
+  ],
   connections: [],
   voice: [
     "settings.voice.dictation.sectionTitle",
     "settings.voice.dictation.microphoneLabel",
     "settings.voice.dictation.languageLabel",
-    "settings.voice.dictation.testLabel",
     "settings.voice.dictionary.sectionTitle",
     "settings.voice.recents.sectionTitle",
     "settings.voice.readAloud.sectionTitle",
@@ -125,4 +145,16 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.about.dangerZone",
     "settings.about.shutDownStudio",
   ],
+};
+
+/**
+ * Extra terms a row matches on, beyond its own label. The value is a
+ * translation key holding space-separated synonyms; it is never rendered.
+ * Search matched labels only, so "models folder" or "directory" found nothing.
+ */
+export const SETTINGS_SEARCH_KEYWORDS: Partial<
+  Record<TranslationKey, TranslationKey>
+> = {
+  "settings.resources.storage.modelsFolder":
+    "settings.resources.storage.modelsFolderKeywords",
 };

@@ -15,6 +15,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { DeepLinkHandler } from "@/features/deep-links";
 import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
@@ -51,9 +52,12 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
     "@tauri-apps/api/window"
   );
+  const { invoke } = await import("@tauri-apps/api/core");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
+  await invoke("reset_app_window_layout_initialized");
+  if (!isCurrent()) return;
   await win.setResizable(false);
   if (!isCurrent()) return;
   await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));
@@ -98,18 +102,20 @@ async function applyAppWindowLayout(
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
-  // Decide first-launch vs restore from the on-disk state file BEFORE touching the
-  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
-  // set_size on a hidden window is deferred until show(), so innerSize() reads a
-  // stale value and a baseline fallback would overwrite the queued restore. On
-  // macOS the same probe works, hence the inconsistency between prior iterations.
-  const hasSavedState = await invoke<boolean>("has_saved_window_state");
+  // Setup-window activity may create plugin state before the full app is ever
+  // shown, so use a dedicated full-app marker to decide whether restoration is
+  // appropriate. Keep checking plugin state so a missing/corrupt state file
+  // falls back to a monitor-safe centered layout.
+  const [hasInitializedAppLayout, hasSavedState] = await Promise.all([
+    invoke<boolean>("has_initialized_app_window_layout"),
+    invoke<boolean>("has_saved_window_state"),
+  ]);
   if (!isCurrent()) return;
 
   await win.setResizable(true);
   if (!isCurrent()) return;
 
-  if (hasSavedState) {
+  if (hasInitializedAppLayout && hasSavedState) {
     // Subsequent launch: plugin restores size/position/maximized, with built-in
     // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
@@ -144,6 +150,9 @@ async function applyAppWindowLayout(
   });
   if (!isCurrent()) return;
   await enforceMinimumWindowSize(win, LogicalSize, isCurrent);
+
+  if (!isCurrent()) return;
+  await invoke("mark_app_window_layout_initialized");
 }
 
 async function showWindowFallback(): Promise<void> {
@@ -205,7 +214,8 @@ function TauriUpdateLayer({
   }
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+    // Capped like the browser stack: the download panel shares it, so both must fit.
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
       <UpdateBanner
         status={update.status}
         info={update.info}
@@ -214,6 +224,7 @@ function TauriUpdateLayer({
         isExternalServer={isExternalServer}
         updatePolicyMode={update.updatePolicyMode}
         manualReleaseUrl={update.manualReleaseUrl}
+        releasePageUrl={update.releasePageUrl}
         positioned={false}
         onInstall={update.installUpdate}
         onDismiss={update.dismiss}
@@ -247,7 +258,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-non-chat-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",
   "--studio-chat-header-height": "44px",
-  "--studio-chat-header-padding-top": "8px",
+  "--studio-chat-header-padding-top": "7px",
   "--studio-chat-control-height": "33px",
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
@@ -370,9 +381,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
-        {/* One bottom-right stack so overlays never overlap; they stack with a
-            gap, download panel anchored at the corner with banners above. */}
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+        {/* One bottom-right stack so overlays never overlap: download panel at the
+            corner, banners above, each owning its width. */}
+        {/* Capped to the viewport, or a long download list plus expanded notes
+            pushes the top of the stack off screen. */}
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
@@ -387,9 +400,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     );
   }
 
-  const showApp = status === "running";
-  const desktopBooting = status === "running" && !desktopAuthReady;
-  const showInteractiveApp = showApp && desktopAuthReady;
+  const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
@@ -401,28 +412,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer}>
         <LlamaUpdateBanner
           positioned={false}
-          enabled={showInteractiveApp && !hidesTitlebarSidebar}
+          enabled={!hidesTitlebarSidebar}
         />
-        {showInteractiveApp ? (
-          <DownloadManagerPanel positioned={false} />
-        ) : null}
+        <DownloadManagerPanel positioned={false} />
       </TauriUpdateLayer>
-      {showInteractiveApp ? <NativeIntentDrain /> : null}
-      {showInteractiveApp ? children : null}
-      {desktopBooting ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-5 z-[9999] flex justify-center px-4">
-          <div className="absolute inset-x-4 bottom-16 mx-auto flex max-w-[520px] flex-col items-center gap-2 rounded-2xl border border-border/70 bg-background/95 px-6 py-5 text-center shadow-xl">
-            <div className="font-medium text-sm">Preparing Unsloth</div>
-            <div className="text-muted-foreground text-xs">
-              The local backend is ready. Signing in to your desktop session
-              before loading chats.
-            </div>
-          </div>
-          <div className="rounded-full border border-border/70 bg-background/95 px-4 py-2 text-xs text-muted-foreground shadow-lg">
-            Signing in to desktop session...
-          </div>
-        </div>
-      ) : null}
+      <NativeIntentDrain />
+      {children}
     </>
   ) : (
     <StartupScreen
@@ -510,14 +505,17 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
+        <DeepLinkHandler />
         <TauriWrapper>{children}</TauriWrapper>
         <Toaster
           position="top-right"
           visibleToasts={2}
           expand={true}
           closeButton={true}
-          // Clear the chat header buttons on the right.
-          offset={{ top: 12, right: 64 }}
+          // Clear the chat header buttons on the right. On desktop, also drop
+          // below the ~34px custom window titlebar so toasts don't cover the
+          // minimize / maximize / close controls.
+          offset={{ top: isTauri ? 46 : 12, right: 64 }}
         />
       </TooltipProvider>
     </MotionConfig>

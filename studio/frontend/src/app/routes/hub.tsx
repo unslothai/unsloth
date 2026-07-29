@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { createRoute } from "@tanstack/react-router";
-import { lazy } from "react";
+import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-const ModelsPage = lazy(() =>
-  import("@/features/hub/hub-page").then((m) => ({
-    default: m.ModelsPage,
-  })),
+const ModelsPage = lazyRouteComponent(
+  () => import("@/features/hub/hub-page"),
+  "ModelsPage",
 );
 
 export interface ModelsSearch {
   tab?: "discover" | "downloaded";
   model?: string;
+  file?: string;
+
+  intent?: number;
   section?: "trending" | "latest" | "finetune";
   kind?: "models" | "datasets";
 }
@@ -30,8 +31,24 @@ export const Route = createRoute({
     if (raw === "discover" || raw === "downloaded") next.tab = raw;
     const model = search.model;
     if (typeof model === "string" && model.length > 0) next.model = model;
+    const file = search.file;
+    if (next.model && typeof file === "string" && file.length > 0)
+      next.file = file;
+
+    const intent = search.intent;
+    if (
+      next.file &&
+      typeof intent === "number" &&
+      Number.isSafeInteger(intent)
+    ) {
+      next.intent = intent;
+    }
     const section = search.section;
-    if (section === "trending" || section === "latest" || section === "finetune") {
+    if (
+      section === "trending" ||
+      section === "latest" ||
+      section === "finetune"
+    ) {
       next.section = section;
     }
     const kind = search.kind;
