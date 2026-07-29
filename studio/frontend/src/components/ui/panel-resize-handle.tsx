@@ -100,6 +100,9 @@ export function PanelResizeHandle({
   // What the pointer asked for, before the viewport cap. Committing the capped
   // value instead would quietly downgrade a stored preference on a narrow window.
   const rawRef = React.useRef(0)
+  // Set when a pointer or key sequence already toggled, so the click that
+  // follows does not toggle a second time.
+  const handledRef = React.useRef(false)
   const committedRef = React.useRef(width)
   React.useEffect(() => {
     committedRef.current = width
@@ -130,6 +133,10 @@ export function PanelResizeHandle({
   )
 
   const endDrag = React.useCallback(() => {
+    // Any sequence that reached the element already decided the outcome, so the
+    // click the browser fires next must not toggle again. A cancelled drag ends
+    // here too, and must not collapse on release.
+    handledRef.current = true
     dragRef.current = null
     if (frameRef.current) {
       cancelAnimationFrame(frameRef.current)
@@ -214,6 +221,7 @@ export function PanelResizeHandle({
     // handles it for the mouse; a synthesized click never reaches it.
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault()
+      handledRef.current = true
       onToggle()
       return
     }
@@ -248,16 +256,25 @@ export function PanelResizeHandle({
           data-slot={dataSlot}
           data-dragging={dragging || undefined}
           aria-label={open ? label : toggleLabel}
-          aria-orientation="vertical"
+          {...(open ? { "aria-orientation": "vertical" as const } : {})}
           {...(open
             ? { "aria-valuenow": width, "aria-valuemin": min, "aria-valuemax": max }
             : {})}
-          role="separator"
+          role={open ? "separator" : "button"}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={endDrag}
           onKeyDown={handleKeyDown}
+          onClick={() => {
+            // Switch and voice control activate by dispatching a bare click
+            // with no pointer or key events, which nothing else here catches.
+            if (handledRef.current) {
+              handledRef.current = false
+              return
+            }
+            onToggle()
+          }}
           onPointerEnter={() => setHovered(true)}
           onPointerLeave={() => setHovered(false)}
           onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
