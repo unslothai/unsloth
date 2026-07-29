@@ -120,7 +120,18 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (typeof config.nCpuMoe === "number" && config.nCpuMoe > 0) {
     payload.n_cpu_moe = config.nCpuMoe;
   }
-  if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
+  // Only a physical pin travels. The same integers mean a Vulkan ordinal under Vulkan
+  // and a CUDA/ROCm device index elsewhere, and the override carries no namespace to say
+  // which, so after a backend change the server would accept them in the wrong one and
+  // pin the model to a different device -- its availability check cannot catch that,
+  // because the ids are valid there too. An absent kind is a record written before the
+  // field existed, which was physical-only. Dropping the pin leaves automatic placement.
+  const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
+  if (
+    config.selectedGpuIds &&
+    config.selectedGpuIds.length > 0 &&
+    gpuIndexKind === "physical"
+  ) {
     payload.gpu_ids = config.selectedGpuIds;
   }
   return payload;

@@ -385,6 +385,26 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     return split[0] if split is not None else None
 
 
+def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
+    """Whether a quant of ``bare_id`` other than the ones being removed still has an entry.
+
+    Such a quant has its own settings and never reads the bare fallback, so this is not
+    "is anyone inheriting" but "is this forget the last one for the model". If it is not,
+    the bare entry stays: an inheriting quant is exactly what it is there for.
+    """
+    from utils.openai_auto_switch_settings import split_quant_suffix
+
+    removed = {key.strip().lower() for key in removed_ids}
+    prefix = bare_id.strip().lower()
+    for key, entry in get_model_overrides().items():
+        if not isinstance(entry, dict) or key.strip().lower() in removed:
+            continue
+        split = split_quant_suffix(key)
+        if split is not None and split[0].strip().lower() == prefix:
+            return True
+    return False
+
+
 def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
     """The stored ``<path>:LABEL`` entry for a bare standalone .gguf path, if any.
 
@@ -477,8 +497,16 @@ def update_openai_auto_switch_override(
             # qualified key hands the same flags straight back on the next load and the
             # forget silently does nothing. Nothing in the UI can reach the bare entry for
             # a repo that requires a variant, so this is its only way out.
+            #
+            # Only once it is nobody else's fallback, though: the same bare entry backs
+            # every quant of the repo that has no entry of its own, so forgetting Q4 must
+            # not strip what Q8 is still reading. Another qualified key surviving means the
+            # bare one is still load-bearing, and this forget is not the last word on the
+            # model.
             bare_id = _bare_model_id(payload.model_id)
-            if bare_id and bare_id not in target_ids:
+            if bare_id and bare_id not in target_ids and not _other_quants_remain(
+                bare_id, target_ids,
+            ):
                 set_model_override(
                     bare_id,
                     llama_extra_args = [],

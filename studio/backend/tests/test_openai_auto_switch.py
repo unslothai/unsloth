@@ -4775,6 +4775,17 @@ def test_forget_clears_the_bare_repo_entry_the_quant_inherited_from(override_sto
     assert settings.get_model_overrides() == {}
 
 
+def test_forget_keeps_a_bare_entry_another_quant_still_has_settings_under(override_store):
+    # The bare entry backs every quant with no entry of its own, so forgetting Q4 must not
+    # strip it while Q8 is still there: this forget is not the last word on the model.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 8192)
+    settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 2048)
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_override("unsloth/B-GGUF") == {"max_seq_length": 8192}
+    assert settings.get_model_override("unsloth/B-GGUF:Q8_0") == {"max_seq_length": 2048}
+
+
 def test_forget_clears_every_spelling_of_one_model(override_store):
     # Two spellings of one repo can coexist; clearing only the named one makes the survivor
     # the sole fold match, so the next load reapplies what was just forgotten.

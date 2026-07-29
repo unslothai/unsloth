@@ -400,10 +400,12 @@ export function applyActiveModelStatusToStore(
     // The one load param that only ever seeded from null, so a switch left the previous
     // model's template in the store. The Hub settings page reads that as the new model's
     // loaded config, and Apply or Remember then saves A's template under B and reloads B
-    // with the wrong prompt format. Re-seed on a switch, under the same seedLoadParams
-    // guard the fields above use so a re-adoption of the same model keeps a dirty edit.
+    // with the wrong prompt format. Re-seeding needs BOTH guards the fields above use:
+    // seedLoadParams alone is just "no load in flight", so it holds on an ordinary poll
+    // and would overwrite an unsaved edit every refresh.
     ...(status.chat_template_override !== undefined &&
-      (seedLoadParams ||
+      seedLoadParams &&
+      (hydratingExistingModel ||
         (prevState.loadedChatTemplateOverride === null &&
           prevState.chatTemplateOverride === null)) && {
         chatTemplateOverride: status.chat_template_override,

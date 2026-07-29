@@ -47,5 +47,6 @@ export {
   DEFAULT_MAX_SEQ_LENGTH,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  adoptLegacyConfigKey,
   resolveInitialConfig,
 } from "./model-config/per-model-config";

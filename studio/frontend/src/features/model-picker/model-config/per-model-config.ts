@@ -755,6 +755,39 @@ export function deletePerModelConfig(
   return writeMap(map);
 }
 
+/**
+ * Move a saved config from an id an older release keyed it by onto the current one.
+ *
+ * A repo cached outside the active HF cache is now keyed by its repo id, because that is
+ * what the picker and the auto-switch index use; it used to be keyed by the snapshot
+ * path it loads from. Nothing else migrates that: the server backfill only mirrors what
+ * is already stored, so without this the model reads as never remembered and comes up on
+ * defaults after an upgrade.
+ *
+ * Returns whether anything moved. A config already saved under *modelId* wins and the
+ * stale record is dropped, so this can never overwrite a newer save.
+ */
+export function adoptLegacyConfigKey(
+  modelId: string,
+  legacyModelId: string,
+  ggufVariant?: string | null,
+): boolean {
+  if (!legacyModelId || legacyModelId === modelId) {
+    return false;
+  }
+  const legacy = loadPerModelConfig(legacyModelId, ggufVariant);
+  if (!legacy) {
+    return false;
+  }
+  const moved = loadPerModelConfig(modelId, ggufVariant)
+    ? true
+    : savePerModelConfig(modelId, legacy, ggufVariant);
+  if (moved) {
+    deletePerModelConfig(legacyModelId, ggufVariant);
+  }
+  return moved;
+}
+
 export function resolveInitialConfig(
   modelId: string,
   ggufVariant?: string | null,

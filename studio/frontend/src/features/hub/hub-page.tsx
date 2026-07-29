@@ -16,6 +16,7 @@ import { useHubInfiniteScroll } from "@/features/hub";
 import {
   type ModelPickTarget,
   type PerModelConfig,
+  adoptLegacyConfigKey,
   applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
@@ -392,19 +393,28 @@ export function ModelsPage() {
   // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
   // /status cannot say whether an empty answer is an idle eviction that will reload
-  // or a real unload, and only this endpoint knows. Read once per mount and held as
-  // the promise, not the answer: the very first status read is the one most likely to
-  // land on an evicted model, and racing it against this read would let an unresolved
-  // "false" clear a checkpoint the idle loop is about to bring back. A failed read
-  // resolves false, which is the setting's own default (idle unload is off unless an
-  // idle timeout is configured).
-  const idleUnloadRead = useRef<Promise<boolean> | null>(null);
-  const readIdleUnloadArmed = useCallback((): Promise<boolean> => {
-    idleUnloadRead.current ??= loadOpenAIAutoSwitchSettings()
-      .then((settings) => settings.idleUnloadActive)
-      .catch(() => false);
-    return idleUnloadRead.current;
-  }, []);
+  // or a real unload, and only this endpoint knows. Read alongside every status read
+  // rather than cached: the idle timeout is editable from Settings while this page
+  // stays mounted, and a cached answer would read a later eviction against a setting
+  // that no longer holds. Awaited with the status read, never raced, because the first
+  // read is the one most likely to land on an already-evicted model.
+  //
+  // Last answer wins on failure, not the default. The default is "disarmed", which is
+  // the side that clears the checkpoint, so a transient failure would discard a
+  // selection the idle loop is about to bring back. Before any successful read it is
+  // false, which is the setting's own default: idle unload is off unless a timeout is
+  // configured.
+  const idleUnloadArmed = useRef(false);
+  const readIdleUnloadArmed = useCallback(
+    (): Promise<boolean> =>
+      loadOpenAIAutoSwitchSettings()
+        .then((settings) => {
+          idleUnloadArmed.current = settings.idleUnloadActive;
+          return idleUnloadArmed.current;
+        })
+        .catch(() => idleUnloadArmed.current),
+    [],
+  );
   // Returns the read so a caller that needs the answer first can wait for it.
   const refreshResidentModelStatus = useCallback((): Promise<void> => {
     const seq = ++residentStatusSeq.current;
@@ -1271,8 +1281,15 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      const configIdentity = modelConfigIdentity(
+        selectedModel.kind,
+        selectedModel.resource,
+      );
+      // A cached repo used to be keyed by the snapshot path it loads from, which is its
+      // runId. Move that record over before reading, or an upgrade reads as unremembered.
+      adoptLegacyConfigKey(configIdentity, runId, opts.ggufVariant);
       const resolvedConfig = resolveInitialConfig(
-        modelConfigIdentity(selectedModel.kind, selectedModel.resource),
+        configIdentity,
         opts.ggufVariant,
       );
       const rememberedConfig = resolvedConfig.remembered
@@ -1514,6 +1531,9 @@ export function ModelsPage() {
         selectedModel.kind,
         selectedModel.resource,
       );
+      // As in runSelectedModel: the editor seeds from this key, so the move has to happen
+      // before it reads or the page opens on defaults and Apply writes them back.
+      adoptLegacyConfigKey(configId, id, variant);
       const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
       setSettingsTarget({
         id,

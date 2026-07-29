@@ -1729,7 +1729,6 @@ def test_an_empty_status_is_read_against_the_idle_unload_setting():
     checkpoint only while the loop is armed."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     adopt = " ".join(_read("features/hub/lib/adopt-inference-status.ts").split())
-    assert ".then((settings) => settings.idleUnloadActive)" in hub
     # Awaited, not raced: the first status read is the one most likely to land on an
     # evicted model, and an unresolved default of false would clear a checkpoint the
     # idle loop is about to bring back.
@@ -1738,6 +1737,13 @@ def test_an_empty_status_is_read_against_the_idle_unload_setting():
         ".then(([status, idleUnloadArmed]) => {" in hub
     )
     assert "idleUnloadArmed," in hub
+    # Read with every status read, not cached for the life of the page: the idle timeout
+    # is editable from Settings while this page stays mounted.
+    assert "idleUnloadRead.current ??=" not in hub
+    assert "idleUnloadArmed.current = settings.idleUnloadActive;" in hub
+    # A failed read keeps the last answer. The default is disarmed, which is the side
+    # that clears the checkpoint, so falling back to it would drop a live selection.
+    assert ".catch(() => idleUnloadArmed.current)" in hub
     assert "if (state.idleUnloadArmed) { return false; }" in adopt
     assert "actions.clearCheckpoint?.();" in adopt
 
@@ -1769,3 +1775,40 @@ def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():
     assert "if (!quantIsUserPicked) { const settled = useChatRuntimeStore.getState();" in page
     assert "variant = settled.activeGgufVariant;" in page
     assert "onOpenSettings(selectedQuant ?? null, quantIsUserPicked)" in card
+
+
+def test_only_a_physical_gpu_pin_is_mirrored_to_the_server():
+    """The same integers are Vulkan ordinals under Vulkan and device indices elsewhere,
+    and the server override carries no namespace, so a backend change would pin the model
+    to a different device with ids that validate."""
+    mirror = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert 'const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";' in mirror
+    assert 'gpuIndexKind === "physical"' in mirror
+
+
+def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
+    """A cached repo was keyed by the snapshot path it loads from and is now keyed by its
+    repo id; the server backfill only mirrors what is stored, so nothing else moves it."""
+    config = " ".join(
+        _read("features/model-picker/model-config/per-model-config.ts").split()
+    )
+    assert "export function adoptLegacyConfigKey(" in config
+    # A newer save under the current key wins, and the stale record still goes.
+    assert (
+        "const moved = loadPerModelConfig(modelId, ggufVariant) ? true : "
+        "savePerModelConfig(modelId, legacy, ggufVariant);" in config
+    )
+    assert "deletePerModelConfig(legacyModelId, ggufVariant);" in config
+    # Both entry points move it before anything reads the new key.
+    page = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert page.count("adoptLegacyConfigKey(") == 2
+
+
+def test_clearing_the_log_keeps_a_request_that_is_still_running():
+    """Dropping an own row mid-flight loses the request outright: active_count falls to
+    zero and the finish or fail that follows has no entry left to land on."""
+    monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
+    assert (
+        "if entry.shared or entry.subject != subject or entry.status == \"running\""
+        in monitor
+    )

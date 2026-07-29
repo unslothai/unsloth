@@ -281,6 +281,30 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
 
 
+def test_clear_keeps_the_callers_own_request_that_is_still_running():
+    """Clear log drops history, and a request in flight is not history yet. Dropping it
+    loses the request outright: the active count falls to zero and the finish that follows
+    has no entry left to land on, so a completed call never appears at all."""
+    monitor = ApiMonitor(max_entries = 4)
+    done = monitor.start(
+        endpoint = "/v1/chat/completions", method = "POST", model = "m",
+        prompt = "finished", subject = "alice",
+    )
+    monitor.finish(done)
+    live = monitor.start(
+        endpoint = "/v1/chat/completions", method = "POST", model = "m",
+        prompt = "in flight", subject = "alice",
+    )
+
+    monitor.clear(subject = "alice")
+
+    assert [entry["id"] for entry in monitor.snapshot(subject = "alice")] == [live]
+    assert monitor.active_count(subject = "alice") == 1
+    # And the row is still there to be completed.
+    monitor.finish(live)
+    assert monitor.get(live, subject = "alice")["status"] == "completed"
+
+
 def test_api_monitor_clear_is_scoped_to_one_subject():
     # Every other read is subject-scoped; an unscoped clear would erase another's history.
     monitor = ApiMonitor(max_entries = 4)
@@ -298,6 +322,9 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
         prompt = "bob prompt",
         subject = "bob",
     )
+    # Finished first: a running row is a request in flight, not history, and clear keeps
+    # it. This test is about the subject scoping, so it clears history and nothing else.
+    monitor.finish(alice)
 
     monitor.clear(subject = "alice")
     assert monitor.snapshot(subject = "alice") == []
