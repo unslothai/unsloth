@@ -214,11 +214,14 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     ``_scan_cached_repo`` assembles every revision successfully and only then
     raises ``CorruptedCacheException`` because a ``refs/<branch>`` file names a
     commit with no ``snapshots/<commit>/`` dir, so ``scan_cache_dir`` omits an
-    entirely intact repo from ``.repos``. Studio creates that state itself: a
-    metadata probe that 404s writes ``refs/main`` at the live upstream HEAD
-    without materialising that snapshot, so any repo re-uploaded since it was
-    downloaded goes invisible to every inventory endpoint while the model
-    picker's plain directory walk still lists it.
+    entirely intact repo from ``.repos``. Studio creates that state itself:
+    ``snapshot_download`` writes ``refs/main`` at the live upstream sha *before*
+    fetching the first file and never creates ``snapshots/<sha>/`` itself, and no
+    Studio caller pins ``revision``. So any repo re-uploaded since it was
+    downloaded goes invisible to every inventory endpoint the moment a refresh
+    starts, while the model picker's plain directory walk still lists it. No race
+    is needed: when the allow/ignore patterns match nothing the download returns
+    normally having written only the ref.
 
     This reads the same directories huggingface_hub reads and writes nothing:
     the ref file that upstream's assertion trips over is left exactly as it is.
