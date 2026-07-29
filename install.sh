@@ -321,10 +321,25 @@ _gfx906_bnb_prune() {
         || "$_VENV_PY" -m pip uninstall -y bitsandbytes >/dev/null 2>&1 || true
 }
 
-# Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
-# wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
-# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
-# pre-release URL is unreachable. Drop the pin once bnb 0.50+ ships on PyPI.
+# Install bitsandbytes on AMD ROCm hosts. bnb <= 0.49.2 NaNs at 4-bit decode
+# shape on every AMD GPU; the fix (bnb #1887) ships in continuous-release_main
+# and, on PyPI, first in 0.50.0. Keep this floor in step with the amd extra in
+# pyproject.toml and studio/install_python_stack.py.
+_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
+# bitsandbytes ships no ROCm binary in its aarch64 wheel at any version: the PyPI
+# 0.50.0 and continuous-release_main aarch64 wheels both carry only
+# libbitsandbytes_cpu.so plus CUDA variants. So neither install path below gives
+# aarch64 a 4-bit backend, and the messages must not claim one. Cf. gfx906.
+_bnb_rocm_arch_has_binary() {
+    case "$_ARCH" in
+        aarch64|arm64) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+_warn_bnb_no_rocm_binary() {
+    _bnb_rocm_arch_has_binary && return 0
+    substep "[WARN] aarch64: bitsandbytes ships no ROCm kernels on this arch; 4-bit QLoRA needs a source build -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+}
 _install_bnb_rocm() {
     _label="$1"
     _venv_py="$2"
@@ -339,9 +354,8 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
-    # uv rejects the continuous-release_main bitsandbytes wheel because the
-    # filename version (1.33.7rc0) does not match the embedded metadata version
-    # (0.50.0.dev0). pip accepts the mismatch, so bootstrap pip and use it.
+    # uv rejects the pre-release wheel: filename version (1.33.7rc0) does not
+    # match metadata (0.50.x.dev0). pip accepts it, so bootstrap pip and use it.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
             run_maybe_quiet uv pip install --python "$_venv_py" pip || \
@@ -357,6 +371,7 @@ _install_bnb_rocm() {
             --retries 8 --timeout 90 \
             "$_bnb_whl_url" >"$_bnb_log" 2>&1; then
             rm -f "$_bnb_log"
+            _warn_bnb_no_rocm_binary
             return 0
         fi
         _bnb_rc=$?
@@ -365,10 +380,17 @@ _install_bnb_rocm() {
         fi
         rm -f "$_bnb_log"
         step "warning" "$_label (pre-release) failed (exit code $_bnb_rc)" "$C_WARN" >&2
-        substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+        if _bnb_rocm_arch_has_binary; then
+            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK, which carries the ROCm 4-bit fix" "$C_WARN"
+        else
+            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK" "$C_WARN"
+        fi
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
-        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+        --force-reinstall --no-cache-dir --no-deps "$_BNB_ROCM_PYPI_FALLBACK"
+    _bnb_pypi_rc=$?
+    _warn_bnb_no_rocm_binary
+    return $_bnb_pypi_rc
 }
 
 if [ "$_next_is_package" = true ]; then
@@ -778,8 +800,17 @@ _smart_apt_install() {
         return 0
     fi
 
-    # In Tauri mode, report needed packages and exit — Rust handles elevation
+    # Optional callers never elevate, in any mode: nothing on the consumer path
+    # builds anything, so neither the terminal sudo prompt below nor the Tauri
+    # NEED_SUDO dialog (whose Cancel leaves the user not installed) may gate the
+    # run over unused tools. The caller falls through to prebuilt llama.cpp.
+    # Required packages such as curl still escalate.
+    if [ "${_SMART_APT_OPTIONAL:-false}" = true ]; then
+        return 2
+    fi
+
     if [ "$TAURI_MODE" = true ]; then
+        # Report needed packages and exit — Rust handles elevation.
         tauri_log "NEED_SUDO" "$_STILL_MISSING"
         exit 2
     fi
@@ -1976,67 +2007,142 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# cmake/git are only needed to *build* llama.cpp from source. Unsloth downloads a
-# prebuilt by default, and setup.sh self-skips the source build when they're
-# absent -- so macOS doesn't block on cmake (requiring it would force a manual
-# Homebrew install). Linux keeps requiring them; its package manager has them.
 tauri_log "STEP" "Checking system dependencies"
+
+# Without the Xcode CLT, macOS still ships /usr/bin/git as a stub that errors and pops
+# a GUI dialog, so `command -v git` is not enough -- only running it tells the truth.
+_has_working_git() {
+    command -v git >/dev/null 2>&1 || return 1
+    git --version >/dev/null 2>&1
+}
+
+# macOS system-dependency check. A function so tests/sh can sed-extract it; the old
+# inline form was untestable, which is why this gate shipped broken.
+#
+# The consumer install needs no developer toolchain: uv is a prebuilt binary, CPython
+# is uv-managed, llama.cpp/whisper.cpp/Node are prebuilt downloads, and triton is
+# skipped on macOS. Only `--local` needs git, for the unsloth-zoo git+https URL.
+_check_macos_deps() {
+    _clt_missing=false
+    xcode-select -p >/dev/null 2>&1 || _clt_missing=true
+
+    if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
+        echo ""
+        step "deps" "git is required for --local installs" "$C_ERR"
+        substep "--local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo,"
+        substep "which needs a working git. Install the Xcode Command Line Tools:"
+        substep "  xcode-select --install"
+        substep "Then re-run this script. A normal (non---local) install needs no compiler"
+        substep "and no git -- it uses prebuilt binaries and wheels only."
+        tauri_log "NEED_XCODE_CLT" "git"
+        return 1
+    fi
+
+    if [ "$_clt_missing" = true ]; then
+        # Not fatal, and no GUI dialog: firing xcode-select --install and exiting is
+        # what stranded clean Macs.
+        step "deps" "no Xcode Command Line Tools (not required)" "$C_WARN"
+        substep "Unsloth installs prebuilt binaries and wheels, so no compiler is needed."
+        substep "Install them only for a llama.cpp source build: xcode-select --install"
+    elif command -v cmake >/dev/null 2>&1; then
+        step "deps" "all system dependencies found"
+    else
+        # cmake is only for a source build, so its absence is not fatal.
+        step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
+        substep "Install cmake only if you want a source build: brew install cmake"
+    fi
+    return 0
+}
+
+# Linux/WSL system-dependency check. Same split as macOS, and a function for the same
+# reason: tests/sh can extract it.
+#
+# Only a download transport is required. cmake, gcc and the libcurl headers exist
+# solely for a llama.cpp source build the consumer path never does -- unslothai/
+# llama.cpp publishes linux-x64/arm64 prebuilts for cpu, cuda12, cuda13, rocm and
+# vulkan. Requiring them turned every non-apt distro into a hard exit 1 over unused
+# tooling. git follows macOS: --local only.
+_check_linux_deps() {
+    _transport_missing=false
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        _transport_missing=true
+    fi
+
+    # Wanted, never required: git fetches the triton_kernels git+https requirement (a
+    # training speedup), the rest serve the optional source build. Warn, never stop.
+    _optional_missing=""
+    command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
+    _has_working_git                       || _optional_missing="$_optional_missing git"
+    command -v gcc         >/dev/null 2>&1 || _optional_missing="$_optional_missing build-essential"
+    command -v curl-config >/dev/null 2>&1 || _optional_missing="$_optional_missing libcurl4-openssl-dev"
+    # Parameter expansion, not `sed`: sed may be absent on a minimal image, and a
+    # failed `$(... | sed ...)` yields "" -- "all found" on a machine that has none.
+    _optional_missing="${_optional_missing# }"
+
+    if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
+        echo ""
+        step "deps" "git is required for --local installs" "$C_ERR"
+        substep "--local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo,"
+        substep "which needs git. Install it with your package manager, then re-run."
+        substep "A normal (non---local) install needs no git and no compiler."
+        return 1
+    fi
+
+    # The one fatal case: nothing can be downloaded. apt is the only distro family we
+    # can drive unattended.
+    if [ "$_transport_missing" = true ]; then
+        if command -v apt-get >/dev/null 2>&1; then
+            echo ""
+            step "deps" "missing: curl" "$C_WARN"
+            substep "Needed to download uv, Python and the prebuilt inference engine."
+            _smart_apt_install curl
+            echo ""
+        else
+            echo ""
+            step "deps" "missing: curl (or wget)" "$C_ERR"
+            substep "Unsloth needs one of them to download uv, Python and the prebuilt"
+            substep "inference engine. Install one, then re-run setup:"
+            substep "  Fedora/RHEL: sudo dnf install curl"
+            substep "  Arch:        sudo pacman -S --needed curl"
+            substep "  openSUSE:    sudo zypper install curl"
+            return 1
+        fi
+    fi
+
+    # Try apt for the optional set too; failing only costs the features warned about
+    # below.
+    if [ -n "$_optional_missing" ] && command -v apt-get >/dev/null 2>&1; then
+        step "deps" "installing optional build tools: $_optional_missing" "$C_DIM"
+        # Subshell because _smart_apt_install exits rather than returns, so `|| true`
+        # alone would not catch it. _SMART_APT_OPTIONAL suppresses every escalation
+        # path, so no install hinges on a prompt for tools nothing here needs.
+        ( _SMART_APT_OPTIONAL=true; _smart_apt_install $_optional_missing ) || true
+        _optional_missing=""
+        command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
+        _has_working_git                       || _optional_missing="$_optional_missing git"
+        command -v gcc         >/dev/null 2>&1 || _optional_missing="$_optional_missing build-essential"
+        command -v curl-config >/dev/null 2>&1 || _optional_missing="$_optional_missing libcurl4-openssl-dev"
+        _optional_missing="${_optional_missing# }"
+    fi
+
+    if [ -n "$_optional_missing" ]; then
+        step "deps" "using prebuilt llama.cpp (missing: $_optional_missing)" "$C_WARN"
+        substep "Not required to run: Unsloth downloads a prebuilt inference engine."
+        case " $_optional_missing " in
+            *" git "*) substep "Without git the triton kernels training speedup is skipped." ;;
+        esac
+    else
+        step "deps" "all system dependencies found"
+    fi
+    return 0
+}
 
 case "$OS" in
     macos)
-        # Xcode Command Line Tools provide the C/C++ compiler and git.
-        if ! xcode-select -p >/dev/null 2>&1; then
-            echo ""
-            echo "==> Xcode Command Line Tools are required."
-            echo "    Installing (a system dialog will appear)..."
-            xcode-select --install </dev/null 2>/dev/null || true
-            echo "    After the installation completes, please re-run this script."
-            exit 1
-        fi
-        # cmake is only needed for a source build; the default prebuilt path
-        # doesn't use it, so its absence is not fatal -- no Homebrew prerequisite.
-        if command -v cmake >/dev/null 2>&1; then
-            step "deps" "all system dependencies found"
-        else
-            step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
-            substep "Install cmake only if you want a source build: brew install cmake"
-        fi
+        _check_macos_deps || exit 1
         ;;
     linux|wsl)
-        MISSING=""
-        command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
-        command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
-        # curl or wget is needed for downloads; check both
-        if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-            MISSING="$MISSING curl"
-        fi
-        command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
-        # libcurl dev headers for llama.cpp HTTPS support
-        command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-
-        MISSING=$(echo "$MISSING" | sed 's/^ *//')
-        if [ -n "$MISSING" ]; then
-            echo ""
-            step "deps" "missing: $MISSING" "$C_WARN"
-            substep "These are needed to build the GGUF inference engine."
-            if command -v apt-get >/dev/null 2>&1; then
-                _smart_apt_install $MISSING
-            else
-                echo "    Automatic system package installation is supported on apt-based"
-                echo "    Linux distributions (Ubuntu/Debian) only. Please install the"
-                echo "    missing dependencies with your package manager, then re-run setup:"
-                echo "    $MISSING"
-                echo ""
-                echo "    Examples:"
-                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel"
-                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl"
-                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
-                exit 1
-            fi
-            echo ""
-        else
-            step "deps" "all system dependencies found"
-        fi
+        _check_linux_deps || exit 1
         ;;
 esac
 

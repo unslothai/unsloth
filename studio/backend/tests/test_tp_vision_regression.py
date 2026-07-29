@@ -24,6 +24,8 @@ import textwrap
 import types as _types
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -327,14 +329,18 @@ def test_tensor_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
         ), "a binary swapped in place (new mtime) must be re-probed"
         # A same-second replacement (sub-second mtime bump) must also re-probe:
         # second-resolution mtime would inherit the stale abort (reviewer.py P2).
+        # Bump by 1ms, not 1ns: NTFS stores mtime as 100ns FILETIME ticks, so a 1ns
+        # bump rounds away on Windows and the key never changes.
         sec_ns = (binp.stat().st_mtime_ns // 1_000_000_000) * 1_000_000_000
         os.utime(p, ns = (sec_ns, sec_ns))
         LlamaCppBackend._record_tensor_split_abort(p, "m")
         binp.write_text("v2")
-        os.utime(p, ns = (sec_ns, sec_ns + 1))
+        os.utime(p, ns = (sec_ns, sec_ns + 1_000_000))
+        if binp.stat().st_mtime_ns == sec_ns:
+            pytest.skip("filesystem cannot record a sub-second mtime change")
         assert (
             LlamaCppBackend._tensor_split_aborts(p, "m") is False
-        ), "a same-second in-place swap (ns mtime bump) must be re-probed"
+        ), "a same-second in-place swap (sub-second mtime bump) must be re-probed"
     finally:
         for key in list(LlamaCppBackend._tensor_split_abort_keys):
             if key and key[0] == p:
@@ -661,6 +667,29 @@ def test_tensor_off_echo_preserves_multi_gpu_fallback():
         )
         is True
     )
+
+
+def test_route_dedupe_reloads_when_swa_full_env_changes(monkeypatch):
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+    monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
+
+    request = LoadRequest(model_path = "owner/repo")
+    assert inference_routes._request_matches_loaded_settings(request, backend) is False
+
+
+def test_route_dedupe_ignores_swa_full_for_diffusion(monkeypatch):
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+    backend._is_diffusion = True
+    monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
+
+    request = LoadRequest(model_path = "owner/repo")
+    assert inference_routes._request_matches_loaded_settings(request, backend) is True
 
 
 def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():

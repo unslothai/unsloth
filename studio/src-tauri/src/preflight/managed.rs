@@ -704,7 +704,15 @@ mod tests {
         fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin\n").unwrap();
         fs::write(venv.join("unsloth_install_manifest.json"), "{}").unwrap();
 
-        let site_packages = venv.join("lib").join("python3.11").join("site-packages");
+        // site_packages_dirs() only walks lib/<pyver>/site-packages on unix; on
+        // Windows it looks at Lib/site-packages. Building the posix layout
+        // everywhere left the dist-info invisible to the fingerprint on Windows,
+        // so removing it changed nothing and the assert_ne below could not hold.
+        let site_packages = if cfg!(windows) {
+            venv.join("Lib").join("site-packages")
+        } else {
+            venv.join("lib").join("python3.11").join("site-packages")
+        };
         fs::create_dir_all(site_packages.join("unsloth_cli").join("commands")).unwrap();
         fs::write(
             site_packages
