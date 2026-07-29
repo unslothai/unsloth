@@ -400,6 +400,7 @@ const FOREGROUND_LIGHT = "#ffffff";
 const FOREGROUND_DARK_FALLBACK = "#000000";
 const FOREGROUND_CONTRAST_FLOOR = 4.5;
 const ACCENT_TEXT_FLOOR = 2.5;
+const ACCENT_TEXT_WASH_OPACITY = 0.2;
 // Cover the full 8-bit channel range so a narrow valid contrast band is not
 // skipped when the custom and elevated surfaces sit far apart.
 const MIX_STEPS = 255;
@@ -408,6 +409,17 @@ const MIX_STEPS = 255;
 function contrastRatio(a: number, b: number): number {
   const [high, low] = a >= b ? [a, b] : [b, a];
   return (high + 0.05) / (low + 0.05);
+}
+
+function mixColors(hex: string, target: string, amount: number): string {
+  const channel = (index: number) => {
+    const value = Number.parseInt(hex.slice(index, index + 2), 16);
+    const targetValue = Number.parseInt(target.slice(index, index + 2), 16);
+    return Math.round(value + (targetValue - value) * amount)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
 
 /**
@@ -439,58 +451,94 @@ const PALETTE_SURFACES: Record<
   dark: { background: "#181818", elevated: "#212121" },
 };
 
-function minimumContrast(hex: string, backgrounds: readonly string[]): number {
-  const luminance = hexLuminance(hex);
+function minimumAccentTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
+  const against = (background: string) => {
+    const wash = mixColors(background, accent, ACCENT_TEXT_WASH_OPACITY);
+    return Math.min(
+      contrastRatio(accentLuminance, hexLuminance(background)),
+      contrastRatio(accentLuminance, hexLuminance(wash)),
+    );
+  };
+  return Math.min(...backgrounds.map(against));
+}
+
+function minimumPlainTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
   return Math.min(
     ...backgrounds.map((background) =>
-      contrastRatio(luminance, hexLuminance(background)),
+      contrastRatio(accentLuminance, hexLuminance(background)),
     ),
   );
 }
 
-function mixToward(hex: string, target: number, amount: number): string {
-  const channel = (index: number) => {
-    const value = Number.parseInt(hex.slice(index, index + 2), 16);
-    return Math.round(value + (target - value) * amount)
-      .toString(16)
-      .padStart(2, "0");
-  };
-  return `#${channel(1)}${channel(3)}${channel(5)}`;
-}
-
-/**
- * The accent is not only a fill: text-primary and text-control-accent paint it
- * straight onto page and elevated surfaces. A pale pick in light mode, or a
- * near-black one in dark, then disappears. The shipped green reads at 2.52:1
- * against its own background, so hold custom accents to that same bar.
- *
- * Find the smallest correction in either direction. Endpoint order is based
- * on actual worst-case contrast, so a mid-gray background cannot send a
- * failing accent toward white when black is the readable endpoint.
- */
-function legibleAccent(accent: string, backgrounds: readonly string[]): string {
-  const clears = (hex: string) =>
-    minimumContrast(hex, backgrounds) >= ACCENT_TEXT_FLOOR;
+function findAccentCorrection(
+  accent: string,
+  backgrounds: readonly string[],
+  score: (hex: string, surfaces: readonly string[]) => number,
+): string | null {
+  const clears = (hex: string) => score(hex, backgrounds) >= ACCENT_TEXT_FLOOR;
   if (clears(accent)) {
     return accent;
   }
 
-  const targets = [0, 255].sort(
-    (a, b) =>
-      minimumContrast(b === 0 ? "#000000" : "#ffffff", backgrounds) -
-      minimumContrast(a === 0 ? "#000000" : "#ffffff", backgrounds),
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) => score(b, backgrounds) - score(a, backgrounds),
   );
   for (let step = 1; step <= MIX_STEPS; step += 1) {
     for (const target of targets) {
-      const candidate = mixToward(accent, target, step / MIX_STEPS);
+      const candidate = mixColors(accent, target, step / MIX_STEPS);
       if (clears(candidate)) {
         return candidate;
       }
     }
   }
+  return null;
+}
 
-  const target = targets[0] ?? 0;
-  return target === 0 ? "#000000" : "#ffffff";
+/**
+ * The accent is not only a fill: text-primary and text-control-accent paint it
+ * straight onto page and elevated surfaces, including primary washes up to
+ * 20%. A pale pick in light mode, or a near-black one in dark, then disappears.
+ * Hold custom accents to the same 2.5:1 bar across both plain and tinted uses.
+ *
+ * Find the smallest correction in either direction. Endpoint order is based
+ * on actual worst-case contrast, so a mid-gray background cannot send a
+ * failing accent toward white when black is the readable endpoint. Arbitrary
+ * custom and elevated surfaces can make the stronger wash constraint
+ * impossible; in that case the plain-surface floor remains mandatory.
+ */
+function legibleAccent(accent: string, backgrounds: readonly string[]): string {
+  const washSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumAccentTextContrast,
+  );
+  if (washSafe) {
+    return washSafe;
+  }
+
+  const plainSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumPlainTextContrast,
+  );
+  if (plainSafe) {
+    return plainSafe;
+  }
+
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) =>
+      minimumPlainTextContrast(b, backgrounds) -
+      minimumPlainTextContrast(a, backgrounds),
+  );
+  return targets[0] ?? FOREGROUND_DARK_FALLBACK;
 }
 
 /**

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 /** Minimal <html> stand-in: the applier only needs style, attributes, classes. */
@@ -77,6 +78,17 @@ function ratio(a: string, b: string): number {
   return ((high ?? 0) + 0.05) / ((low ?? 0) + 0.05);
 }
 
+function mix(foreground: string, background: string, opacity: number): string {
+  const channel = (index: number) => {
+    const front = Number.parseInt(foreground.slice(index, index + 2), 16);
+    const back = Number.parseInt(background.slice(index, index + 2), 16);
+    return Math.round(front * opacity + back * (1 - opacity))
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
 test("the foreground is the higher-contrast of the two, not a luminance guess", () => {
   // Mid-tone accents are the ones a fixed 0.45 cutoff got wrong.
   for (const accent of [
@@ -140,12 +152,9 @@ test("focus rings are never touched, so highlight borders stay neutral", () => {
   assert.equal(vars.has("--verified"), false);
 });
 
-test("shipped palette accents are never second-guessed", () => {
-  // Every accent the app itself offers already clears the bar.
+test("custom accents already safe on their strongest wash stay untouched", () => {
   for (const [accent, mode] of [
-    ["#17b88b", "light"],
     ["#17b88b", "dark"],
-    ["#339cff", "light"],
     ["#4dabff", "dark"],
     ["#171717", "light"],
     ["#ededed", "dark"],
@@ -166,6 +175,11 @@ test("an accent too pale to read as text is pulled into range", () => {
   assert.ok(
     ratio(corrected, background) >= 2.5,
     `${corrected} is only ${ratio(corrected, background).toFixed(2)}:1`,
+  );
+  const wash = mix(corrected, background, 0.2);
+  assert.ok(
+    ratio(corrected, wash) >= 2.5,
+    `${corrected} is only ${ratio(corrected, wash).toFixed(2)}:1 on ${wash}`,
   );
   // Darkened, not discarded: still a yellow, red channel still leads.
   const [r, g, b] = [1, 3, 5].map((i) =>
@@ -236,4 +250,32 @@ test("a narrow valid band between custom and elevated surfaces is not skipped", 
   const corrected = vars.get("--primary") ?? "";
   assert.ok(ratio(corrected, "#4bba47") >= 2.5);
   assert.ok(ratio(corrected, "#212121") >= 2.5);
+});
+
+test("loaded-model stripes stay on the semantic success color", () => {
+  const hubCss = readFileSync(
+    new URL("../src/features/hub/hub.css", import.meta.url),
+    "utf8",
+  );
+  const activeBlocks = [
+    ...hubCss.matchAll(/\[data-active="true"\]\s*\{([^}]+)\}/g),
+  ];
+  assert.equal(activeBlocks.length, 4);
+  for (const [, declarations = ""] of activeBlocks) {
+    assert.match(declarations, /box-shadow:[^;]+var\(--status-success\)/);
+    assert.doesNotMatch(declarations, /var\(--primary\)/);
+  }
+});
+
+test("resize-handle glows follow the primary token", () => {
+  const source = readFileSync(
+    new URL("../src/components/ui/resizable.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /rgba\(23,\s*184,\s*139/);
+  assert.equal(
+    source.match(/color-mix\(in_srgb,var\(--primary\)_[0-9]+%,transparent\)/g)
+      ?.length,
+    3,
+  );
 });
