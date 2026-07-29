@@ -383,6 +383,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
         get_auto_unload_idle_seconds,
         get_auto_unload_keep_kv,
     )
+    from core.inference.model_ids import public_model_id
 
     seen_model = None
     while True:
@@ -408,11 +409,24 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
                     capabilities = {
+                        "model_identifier": (
+                            getattr(backend, "_native_display_label", None)
+                            or public_model_id(
+                                getattr(backend, "_openai_advertised_id", None)
+                                or backend.model_identifier
+                            )
+                        ),
                         "is_vision": backend.is_vision,
                         "is_diffusion": backend.is_diffusion,
                         "is_audio": getattr(backend, "_is_audio", False),
                         "audio_type": getattr(backend, "_audio_type", None),
                         "has_audio_input": getattr(backend, "_has_audio_input", False),
+                        "supports_reasoning": backend.supports_reasoning,
+                        "reasoning_always_on": backend.reasoning_always_on,
+                        "reasoning_style": backend.reasoning_style,
+                        "reasoning_effort_levels": backend.reasoning_effort_levels,
+                        "supports_preserve_thinking": backend.supports_preserve_thinking,
+                        "supports_tools": backend.supports_tools,
                     }
                     manifest = None
                     if get_auto_unload_keep_kv():

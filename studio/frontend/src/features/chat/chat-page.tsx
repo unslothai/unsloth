@@ -2595,7 +2595,12 @@ export function ChatPage({
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
-      if (isSameLoadedModel && !meta?.forceReload) {
+      if (
+        isSameLoadedModel &&
+        !meta?.forceReload &&
+        !store.modelLoading &&
+        !store.loadingModelPick
+      ) {
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {

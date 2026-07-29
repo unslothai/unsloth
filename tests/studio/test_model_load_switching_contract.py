@@ -257,14 +257,18 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
         ROOT / "studio" / "backend" / "core" / "inference" / "llama_keepwarm.py"
     ).read_text(encoding="utf-8")
     assert "get_last_unloaded_state()" in backend_route
-    assert "idle_model_identifier, idle_gguf_variant = last_unloaded_model[:2]" in backend_route
+    assert "_, idle_gguf_variant = last_unloaded_model[:2]" in backend_route
+    assert 'idle_capabilities.get("model_identifier")' in backend_route
     assert "model_identifier = backend.active_model_name or idle_model_identifier" in backend_route
     assert '_last_unloaded_capabilities = None' in keepwarm
     assert '_set_last_unloaded(freed, capabilities)' in keepwarm
+    assert '"supports_reasoning": backend.supports_reasoning' in keepwarm
+    assert '"supports_tools": backend.supports_tools' in keepwarm
     assert "statusRes.idle_unloaded && statusRes.model_identifier" in runtime
     assert "syncModelCapabilities(statusRes.model_identifier, statusRes);" in runtime
     assert "loadedIsMultimodal: isMultimodalResponse(statusRes)" in runtime
     assert "loadedIsDiffusion: statusRes.is_diffusion ?? false" in runtime
+    assert "const idleReasoningCaps = reasoningCapsFromLoad(statusRes);" in runtime
     assert "statusRes.loading.length === 0" in runtime
 
 
@@ -288,6 +292,31 @@ def test_hosted_replacement_treats_a_completed_load_as_already_stopped():
     assert "activeLoadRunRef.current ?? sharedModelLoadHandle?.run" in replacement
     assert "if (!stopped && !runStillActive)" in replacement
     assert "return true;" in replacement
+
+
+def test_cancel_retries_unload_after_the_retained_load_settles():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
+    cancel = cancel.split("const cancelLoadingWithCheckpointPolicy", 1)[0]
+    assert cancel.count("await unloadModel({") >= 2
+    first_unload = cancel.split("await run.completionPromise;", 1)[0]
+    assert "} catch {" in first_unload
+
+
+def test_superseded_preflight_restores_the_staged_config():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    stale = runtime.split(
+        "if (modelSelectionIntentEpoch !== loadIntentId) {",
+        1,
+    )[1].split("if (!stopDecision.proceed)", 1)[0]
+    assert "restorePreviousConfig();" in stale
+
+
+def test_reselecting_hosted_checkpoint_still_cancels_a_local_load():
+    page = _read("features/chat/chat-page.tsx")
+    same_model = page.split("isSameLoadedModel &&", 1)[1].split("return;", 1)[0]
+    assert "!store.modelLoading" in same_model
+    assert "!store.loadingModelPick" in same_model
 
 
 def test_hosted_selection_restores_cancelled_local_config():

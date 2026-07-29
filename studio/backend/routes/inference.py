@@ -7371,7 +7371,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         idle_model_identifier = None
         idle_gguf_variant = None
         if last_unloaded_model is not None:
-            idle_model_identifier, idle_gguf_variant = last_unloaded_model[:2]
+            _, idle_gguf_variant = last_unloaded_model[:2]
+            idle_model_identifier = idle_capabilities.get("model_identifier")
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
@@ -7398,12 +7399,26 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             requires_trust_remote_code = _resolve_loaded_trust_remote_code(
                 backend.active_model_name, model_info, inference_config
             ),
-            supports_reasoning = _sf_flags["supports_reasoning"],
-            reasoning_style = _sf_flags["reasoning_style"],
-            reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
-            reasoning_always_on = _sf_flags["reasoning_always_on"],
-            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
-            supports_tools = _sf_flags["supports_tools"],
+            supports_reasoning = idle_capabilities.get(
+                "supports_reasoning", _sf_flags["supports_reasoning"]
+            ),
+            reasoning_style = idle_capabilities.get(
+                "reasoning_style", _sf_flags["reasoning_style"]
+            ),
+            reasoning_effort_levels = idle_capabilities.get(
+                "reasoning_effort_levels",
+                _sf_flags.get("reasoning_effort_levels", []),
+            ),
+            reasoning_always_on = idle_capabilities.get(
+                "reasoning_always_on", _sf_flags["reasoning_always_on"]
+            ),
+            supports_preserve_thinking = idle_capabilities.get(
+                "supports_preserve_thinking",
+                _sf_flags["supports_preserve_thinking"],
+            ),
+            supports_tools = idle_capabilities.get(
+                "supports_tools", _sf_flags["supports_tools"]
+            ),
             context_length = _positive_int_or_none(model_info.get("context_length")),
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,

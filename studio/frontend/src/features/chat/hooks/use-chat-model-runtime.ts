@@ -53,6 +53,7 @@ import {
   applyActiveModelStatusToStore,
   clampLocalReasoningEffort,
   normalizeSpeculativeType,
+  reasoningCapsFromLoad,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
 import {
@@ -388,9 +389,19 @@ async function syncInferenceStatusToStore(options?: {
       if (statusRes.idle_unloaded && statusRes.model_identifier) {
         setCheckpoint(statusRes.model_identifier, statusRes.gguf_variant);
         syncModelCapabilities(statusRes.model_identifier, statusRes);
+        const supportsReasoning = statusRes.supports_reasoning ?? false;
+        const supportsTools = statusRes.supports_tools ?? false;
+        const idleReasoningCaps = reasoningCapsFromLoad(statusRes);
         useChatRuntimeStore.setState({
           loadedIsMultimodal: isMultimodalResponse(statusRes),
           loadedIsDiffusion: statusRes.is_diffusion ?? false,
+          supportsReasoning,
+          reasoningAlwaysOn: statusRes.reasoning_always_on ?? false,
+          ...idleReasoningCaps,
+          supportsPreserveThinking:
+            statusRes.supports_preserve_thinking ?? false,
+          supportsTools,
+          ...resolveToolsEnabledOnLoad(supportsTools),
         });
       } else if (
         // Another client may own a normal no-active interval while its model
@@ -561,7 +572,13 @@ export function useChatModelRuntime() {
           // nothing backend-side to cancel, and unloading a same-model target
           // would eject the still-resident working model.
           if (run.backendLoadStarted) {
-            await unloadModel({ model_path: backendLoadModelId });
+            try {
+              await unloadModel({ model_path: backendLoadModelId });
+            } catch {
+              // A same-model reload can still be waiting to apply its approved
+              // chat cancellation. The mandatory post-completion unload below
+              // is the authoritative cancellation attempt.
+            }
           }
           if (run.rollbackCheckpoint && run.backendLoadStarted) {
             run.previousCheckpointWasUnloaded = true;
@@ -911,6 +928,7 @@ export function useChatModelRuntime() {
         forceReload ? "Applying these settings" : "Loading a different model",
       );
       if (modelSelectionIntentEpoch !== loadIntentId) {
+        restorePreviousConfig();
         if (throwOnError) {
           throw new Error("Model selection was superseded by a newer choice.");
         }
