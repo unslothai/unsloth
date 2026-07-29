@@ -3359,9 +3359,9 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
     monkeypatch.setattr(_tp, "get_tool_policy", lambda: cli_policy)
 
     assert _counted_body(_count_request(messages, **fields))["input_tokens"] == 99
-    assert [
-        (tool.get("function") or {}).get("name") for tool in counted.get("tools") or []
-    ] == (priced_tools or [])
+    assert [(tool.get("function") or {}).get("name") for tool in counted.get("tools") or []] == (
+        priced_tools or []
+    )
     # The nudge rides with the built-in selection, so it must follow the same verdict.
     nudged = any(
         message.get("role") == "system" and "web_search" in str(message.get("content", ""))
@@ -3385,16 +3385,17 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
     ]
 
     _counted_body(_count_request(sentinel_thread, tools = _PASSTHROUGH_CATALOG))
-    assert [
-        message.get("content") for message in counted.get("messages") or []
-    ] == ["first", "second"]
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first",
+        "second",
+    ]
 
     # Negative control: off the passthrough the same thread merges, so the strict
     # template never sees two user turns in a row.
     _counted_body(_count_request(sentinel_thread))
-    assert [
-        message.get("content") for message in counted.get("messages") or []
-    ] == ["first\n\nsecond"]
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first\n\nsecond"
+    ]
 
 
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):
