@@ -27,10 +27,16 @@ BeforeAll {
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     Write-Host "setup.ps1 under test: $script:SetupPs1"
 
+    # Test-VCRedistInstalled consults Get-HostMachineArch before trusting the
+    # System32 DLL, and dot-sourcing functions one at a time does not carry that
+    # callee in. The registry hit returns early, so only the clean-box cases reach
+    # the call and fail there with "Get-HostMachineArch is not recognized"; the
+    # same list in the VC++ round-trip job gained the helper in #7597.
     foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools', 'Get-VcBuildCustomizationsDir',
                       'Test-CmakeSupportsGenerator', 'Get-CmakeVersion', 'Test-CmakeListsGenerator',
                       'Test-CmakeCanDriveGenerator', 'Get-FallbackVsGenerator',
-                      'Ensure-BuildToolsForLlamaSourceBuild', 'Test-VCRedistInstalled')) {
+                      'Ensure-BuildToolsForLlamaSourceBuild', 'Get-HostMachineArch',
+                      'Test-VCRedistInstalled')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
