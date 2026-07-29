@@ -149,3 +149,106 @@ test("a load in flight is not fought", () => {
   assert.equal(adopted, false);
   assert.deepEqual(calls, []);
 });
+
+test("an empty status drops a local checkpoint the server no longer has", () => {
+  // Unloading from another tab, from the API monitor or over the API leaves this
+  // store pinned; the settings page then treats the row as resident and seeds the
+  // editor from a launch config nothing is running.
+  const cleared: string[] = [];
+  const adopted = adoptResidentModelStatus(
+    { checkpointId: null, ggufVariant: null },
+    {
+      checkpoint: "/models/llama.gguf",
+      checkpointIsExternal: false,
+      activeGgufVariant: "Q4_K_M",
+      modelLoading: false,
+    },
+    {
+      setCheckpoint: () => {
+        throw new Error("nothing is resident, so nothing may be pinned");
+      },
+      clearCheckpoint: () => {
+        cleared.push("cleared");
+      },
+      applyStatus: () => {
+        throw new Error("there is no status to apply");
+      },
+    },
+  );
+  assert.equal(adopted, true);
+  assert.deepEqual(cleared, ["cleared"]);
+});
+
+test("an empty status leaves an external pick alone", () => {
+  // clearCheckpoint also drops the persisted external selection, so an empty
+  // status must not reach it: the local model is not what the user is talking to.
+  const adopted = adoptResidentModelStatus(
+    { checkpointId: null, ggufVariant: null },
+    {
+      checkpoint: "gemini/gemini-2.5-pro",
+      checkpointIsExternal: true,
+      activeGgufVariant: null,
+      modelLoading: false,
+    },
+    {
+      setCheckpoint: () => {
+        throw new Error("unreachable");
+      },
+      clearCheckpoint: () => {
+        throw new Error("an external pick must survive an empty status");
+      },
+      applyStatus: () => {
+        throw new Error("unreachable");
+      },
+    },
+  );
+  assert.equal(adopted, false);
+});
+
+test("an empty status does not fight a load this tab started", () => {
+  const adopted = adoptResidentModelStatus(
+    { checkpointId: null, ggufVariant: null },
+    {
+      checkpoint: "/models/llama.gguf",
+      checkpointIsExternal: false,
+      activeGgufVariant: null,
+      modelLoading: true,
+    },
+    {
+      setCheckpoint: () => {
+        throw new Error("unreachable");
+      },
+      clearCheckpoint: () => {
+        throw new Error("the load owns the store until it settles");
+      },
+      applyStatus: () => {
+        throw new Error("unreachable");
+      },
+    },
+  );
+  assert.equal(adopted, false);
+});
+
+test("an empty status on an already empty store changes nothing", () => {
+  const adopted = adoptResidentModelStatus(
+    { checkpointId: null, ggufVariant: null },
+    {
+      checkpoint: null,
+      checkpointIsExternal: false,
+      activeGgufVariant: null,
+      modelLoading: false,
+    },
+    {
+      setCheckpoint: () => {
+        throw new Error("unreachable");
+      },
+      clearCheckpoint: () => {
+        throw new Error("there is nothing to clear");
+      },
+      applyStatus: () => {
+        throw new Error("unreachable");
+      },
+    },
+  );
+  assert.equal(adopted, false);
+});

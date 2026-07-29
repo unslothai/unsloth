@@ -414,6 +414,9 @@ export function ModelsPage() {
             setCheckpoint: (checkpointId, ggufVariant) => {
               store.setCheckpoint(checkpointId, ggufVariant);
             },
+            clearCheckpoint: () => {
+              store.clearCheckpoint();
+            },
             // Landing here is the one entry point that has applied no status yet,
             // so the settings page would read this model's live config off a store
             // still holding defaults. Same call the chat runtime's refresh makes.
@@ -1313,15 +1316,13 @@ export function ModelsPage() {
       const openSeq = ++settingsOpenSeq.current;
       // loadId is what the loader accepts; repoId is only a display/API alias.
       const id = row.loadId;
-      // Whether this row is the loaded model, under any of its names. Gates the
-      // "prefer the loaded quant" hint below.
+      // Every name this row answers to. Residency is judged against the store
+      // AFTER the variant lookup settles, not here, because that lookup and the
+      // status refresh this same click starts are in flight together.
       const rowAliases =
         row.kind === "local"
           ? [id, row.repoId, row.path]
           : [id, row.repoId, row.cachePath];
-      const rowIsActive = rowAliases.some((alias) =>
-        modelIdsMatch(alias, activeCheckpoint),
-      );
       // Cached repo rows never carry a quant (cache_inventory.py emits one row per
       // repo with format_variant null). Opening with a null variant keys the config
       // to `repo::` while the loader reads `repo::Q4_K_M`, so it never applies and
@@ -1337,14 +1338,28 @@ export function ModelsPage() {
                 row.kind === "local" ? row.path : (row.cachePath ?? null),
             });
             const downloaded = res.variants.filter((v) => v.downloaded);
+            // Re-read residency after the await. Opening settings also kicks a
+            // status refresh, and this request usually hits the network, so the
+            // refresh routinely lands first; the values closed over above then
+            // describe whichever model was resident BEFORE an API-driven switch,
+            // and the loaded-quant branch would silently pick the wrong one.
+            const settled = useChatRuntimeStore.getState();
+            const settledCheckpoint =
+              settled.params.checkpoint &&
+              !isExternalModelId(settled.params.checkpoint)
+                ? settled.params.checkpoint
+                : null;
+            const settledIsActive = rowAliases.some((alias) =>
+              modelIdsMatch(alias, settledCheckpoint),
+            );
             ggufVariant =
               // Loaded quant, then the repo default, then whatever is on disk,
               // mirroring LocalOnDeviceCard's selectedQuant. Only for the loaded
               // row: Q4_K_M exists in most repos, so an unguarded match would
               // target the wrong quant of the wrong model.
-              (rowIsActive
+              (settledIsActive
                 ? downloaded.find((v) =>
-                    ggufVariantsMatch(v.quant, activeGgufVariant),
+                    ggufVariantsMatch(v.quant, settled.activeGgufVariant),
                   )?.quant
                 : undefined) ??
               downloaded.find((v) =>

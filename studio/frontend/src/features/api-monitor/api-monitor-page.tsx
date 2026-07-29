@@ -21,6 +21,7 @@ import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -515,7 +516,15 @@ export function ApiMonitorPage(): ReactElement {
       }
       await unloadModel({ model_path: checkpoint });
       // Same as the chat eject flow: the store still holds the freed checkpoint.
-      useChatRuntimeStore.getState().clearCheckpoint();
+      // Only when that IS the model just unloaded, though. Chat can have an
+      // external provider selected while a local model stays resident, and
+      // clearCheckpoint calls saveLastExternalCheckpoint(null), so clearing
+      // unconditionally would delete a selection this button never touched.
+      const store = useChatRuntimeStore.getState();
+      const selected = store.params.checkpoint;
+      if (selected && modelIdsMatch(selected, checkpoint)) {
+        store.clearCheckpoint();
+      }
       setUnloadError(null);
       refresh();
     } catch (err: unknown) {
