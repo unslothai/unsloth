@@ -743,7 +743,13 @@ export function loadedGpuMemoryFields(resp: {
           // loaded baseline) -- else a later switch back to Manual would snapshot
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
-          gpuLayers: GPU_LAYERS_AUTO,
+          // Diffusion is the exception for the layer count: an "auto" diffusion
+          // response can be an older shim DROPPING a manual split (the backend
+          // reports what ran and keeps the ask in diffusion_requested_ngl).
+          // Resetting the slider would turn that ask into manual/-1 on the next
+          // Apply, unapplyable even after the unsloth_zoo upgrade that adds
+          // --ngl. Standing layers survive, like the standing mode below.
+          ...(resp.is_diffusion ? {} : { gpuLayers: GPU_LAYERS_AUTO }),
           nCpuMoe: 0,
           splitRatio: null,
         };
