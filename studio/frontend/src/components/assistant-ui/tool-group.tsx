@@ -215,11 +215,13 @@ const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
-  const containsArtifactTool = useAuiState(({ message }) =>
+  const containsUngroupedTool = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
       .some(
-        (part) => part.type === "tool-call" && part.toolName === "render_html",
+        (part) =>
+          part.type === "tool-call" &&
+          (part.toolName === "render_html" || part.toolName === "python"),
       ),
   );
   // A blocking allow/deny prompt must never be hidden inside a collapsed
@@ -271,9 +273,9 @@ const ToolGroupImpl: FC<
     (hasLiveOutput && messageRunning) ||
     (forcedOpenRef.current && messageRunning);
 
-  // Render single tool calls and canvases directly so cards never hide in a
-  // collapsed group.
-  if (toolCount <= 1 || containsArtifactTool) {
+  // Render single calls, canvases, and Python scripts directly so their
+  // persistent content never hides in a collapsed group.
+  if (toolCount <= 1 || containsUngroupedTool) {
     return <>{children}</>;
   }
 

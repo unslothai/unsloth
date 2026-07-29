@@ -373,11 +373,10 @@ jobs:
             tests/test_bad_mappings_redirect.py \
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
-            --deselect 'tests/utils/test_attention_masks.py::test_run_attention_flash_varlen_receives_window_and_softcap'
-          # The deselected test monkeypatches flash_attn_varlen_func, which is
-          # only bound on the module when `flash_attn` is importable. flash_attn
-          # requires CUDA + dev toolchain, which the CPU-only ubuntu-latest
-          # runner does not have. The other Bucket-A tests pass cleanly.
+            tests/test_raw_text_json_loading.py
+          # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
+          # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
+          # monkeypatches that name, so it no longer needs flash_attn on this runner.
 
       - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
         # 106 of 111 test_* in unsloth_zoo are CPU-only. The two CUDA-skip
