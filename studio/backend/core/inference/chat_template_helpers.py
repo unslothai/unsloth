@@ -36,12 +36,18 @@ _GEMMA_TEMPLATE_OPENERS = (
 #                        Granite (<|start_of_role|>role<|end_of_role|> ... <|end_of_text|>)
 #   <name>   / </name>   Qwen tool XML, Gemma turn delimiters, think tags
 #   <name|>              Gemma-4 closing delimiters
-#   [INST]   / [/INST]   Mistral / Llama-2, the one family delimited by brackets
+#   [NAME]   / [/NAME]   Mistral / Llama-2, the one family delimited by brackets:
+#                        [INST], plus the [SYSTEM_PROMPT] / [AVAILABLE_TOOLS] /
+#                        [TOOL_CALLS][ARGS] / [TOOL_RESULTS] set that Mistral-Small-3
+#                        and Magistral emit (their chat_template.jinja). [THINK] is
+#                        deliberately absent: no template emits it, it is reasoning
+#                        the model writes and the output parsers consume.
 # The name list is closed on purpose: bare words match only in the pipe shape, so
 # "<div>", "<End>" and "List<String>" are untouched. The bare words that do match
 # are template delimiters in their own right, so they break even inside a code
-# fence, the same trade the structural parsers make. [INST] is anchored to the
-# exact uppercase pair the templates emit, so "[1]" and "[inst]" stay as typed.
+# fence, the same trade the structural parsers make. The bracket names are anchored
+# to the exact uppercase spelling the templates emit, so "[1]" and "[inst]" stay
+# as typed.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
@@ -51,7 +57,7 @@ _CONTROL_MARKUP = re.compile(
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|think)>"
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
-    r"|\[(?=/?INST\])"
+    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\]|TOOL_CALLS\]|ARGS\])"
 )
 
 # Turn-boundary subset, for replayed ASSISTANT content: that text is
@@ -63,7 +69,9 @@ _CONTROL_MARKUP = re.compile(
 # <|user|> / <|assistant|> / <|system|>, and Granite opens one with
 # <|start_of_role|>role<|end_of_role|> and ends it on its eos <|end_of_text|>, so
 # those are boundaries too, and Mistral / Llama-2 delimit a turn with the bracket
-# pair [INST] ... [/INST] rather than an angle marker (#7066).
+# pairs [INST] ... [/INST] and [SYSTEM_PROMPT] ... [/SYSTEM_PROMPT] rather than an
+# angle marker. [TOOL_CALLS] / [ARGS] stay out for the same reason <|tool_call>
+# does: they are the assistant's own structural markup (#7066).
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end)"
@@ -72,7 +80,7 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     r"|(?:start|end)_of_turn>"
     r"|turn\|>"
     r")"
-    r"|\[(?=/?INST\])"
+    r"|\[(?=/?(?:INST|SYSTEM_PROMPT)\])"
 )
 
 
