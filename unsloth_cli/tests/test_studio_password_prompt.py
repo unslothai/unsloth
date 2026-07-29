@@ -1232,9 +1232,7 @@ def test_seeded_bootstrap_file_ends_with_a_newline(monkeypatch, tmp_path):
         ).fetchone()
     finally:
         conn.close()
-    assert studio_mod._pbkdf2_hex(
-        raw.decode("utf-8").strip(), salt.encode("utf-8")
-    ) == pwd_hash
+    assert studio_mod._pbkdf2_hex(raw.decode("utf-8").strip(), salt.encode("utf-8")) == pwd_hash
 
 
 # ── non-interactive --password / UNSLOTH_STUDIO_PASSWORD / stdin ──────
