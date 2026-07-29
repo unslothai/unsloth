@@ -738,7 +738,7 @@ def _snapshot_missing_a_weight_shard(snapshot_dir: Path) -> bool:
             continue
         groups.setdefault((str(path.parent), path.name[: match.start()], total), set()).add(index)
     return any(
-        indices != set(range(1, key[2] + 1)) for key, indices in groups.items()
+        indices != set(range(1, total + 1)) for (_dir, _prefix, total), indices in groups.items()
     )
 
 
