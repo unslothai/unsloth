@@ -86,6 +86,41 @@ IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monit
 # Re-entrant: get_device() -> detect_hardware() nests on the same thread.
 _DETECT_LOCK = threading.RLock()
 
+# Drives start_background_detection(). Separate from _DETECT_LOCK because it is
+# only ever held for the bookkeeping below, never across the import.
+_DETECT_KICK_LOCK = threading.Lock()
+_DETECT_THREAD: Optional[threading.Thread] = None
+
+
+def start_background_detection() -> None:
+    """Run detection on a daemon thread if nothing is running it yet.
+
+    For callers that must answer inside a deadline and so cannot await
+    ensure_hardware_detected() -- /api/health, which the desktop launcher probes
+    with a 2s client timeout. They poll DEVICE against their own budget; this
+    guarantees something is filling it in even when the warm thread is disabled
+    (UNSLOTH_DISABLE_TORCH_WARM=1) or has already moved past its hardware stage.
+
+    At most one thread at a time, and none once DEVICE is set, so a route that
+    keeps returning "still detecting" cannot pile them up. Not the asyncio
+    executor: a to_thread that outlives its awaiter holds an executor slot, and a
+    polled endpoint would exhaust the pool during a slow import.
+    """
+    global _DETECT_THREAD
+    if DEVICE is not None:
+        return
+    with _DETECT_KICK_LOCK:
+        if DEVICE is not None:
+            return
+        if _DETECT_THREAD is not None and _DETECT_THREAD.is_alive():
+            return
+        _DETECT_THREAD = threading.Thread(
+            target = ensure_hardware_detected,
+            daemon = True,
+            name = "hardware-detect",
+        )
+        _DETECT_THREAD.start()
+
 
 def _backend_label(device: DeviceType) -> str:
     """Return the user-facing backend name for API responses.

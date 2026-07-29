@@ -333,7 +333,7 @@ from routes.prompts import router as prompts_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
-    ensure_hardware_detected,
+    start_background_detection,
     get_device,
     DeviceType,
     get_backend_visible_gpu_info,
@@ -1074,6 +1074,49 @@ install_api_error_handlers(app)
 
 # ============ Health and System Endpoints ============
 
+# /api/health has a hard deadline. studio/src-tauri/src/preflight/backend.rs
+# builds its probe client with a 2s timeout and calls backend_health() on the
+# ownerless-spawned path, which runs right after TAURI_PORT is emitted. A
+# timeout there is not a retry: probe_ownerless_spawned_backend() returns
+# Missing, choose_ownerless_spawned_preflight() falls through to
+# ExternalConflict/"desktop_owned_backend_starting", and use-tauri-backend.ts
+# turns that into setBackendError("The desktop-owned Unsloth backend is still
+# starting. Wait a moment, then try again.") -- a dead end the user has to
+# retry by hand.
+#
+# That was safe while the lifespan detected hardware inline, since TAURI_PORT
+# came after detection and health answered instantly. Detection is on the warm
+# thread now and TAURI_PORT is emitted before it finishes, so health must answer
+# within the budget whether or not detection is done. 1.5s leaves headroom under
+# the 2s client timeout for connect and JSON.
+#
+# Nothing the launcher reads from health depends on detection: it reads
+# status/service, the protocol and manageability versions, the auth and
+# ownership bits, studio_root_id, desktop_owner and version. Only chat_only
+# does, and only the web UI reads that.
+_HEALTH_DETECT_BUDGET_S = 1.5
+
+
+async def _await_hardware_detection(budget: float) -> bool:
+    """Wait up to ``budget`` seconds for DEVICE to be set. True iff it is.
+
+    Polls on the event loop instead of awaiting ensure_hardware_detected() in a
+    thread: asyncio.wait_for cannot cancel a to_thread, so a timed-out call
+    leaves the executor slot held for the rest of the import, and a polled
+    endpoint would drain the pool. Detection itself runs on the warm thread, or
+    on the one start_background_detection() puts up when the warm is disabled.
+    """
+    if _hw_module.DEVICE is not None:
+        return True
+    start_background_detection()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget
+    while _hw_module.DEVICE is None:
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
 
 @app.get("/api/liveness")
 async def liveness_check():
@@ -1102,10 +1145,11 @@ async def health_check(request: Request):
     device_type require a bearer since they fingerprint the host.
     """
     # chat_only comes from hardware detection, which the warm thread may still
-    # be running. Wait rather than publish the pre-detection default (True) and
-    # grey out Train/Export on a GPU host for a second. Off-loop so the login
-    # screen and /api/auth/status keep answering meanwhile.
-    await asyncio.to_thread(ensure_hardware_detected)
+    # be running. Wait for it rather than publish the pre-detection default and
+    # grey out Train/Export on a GPU host for a second -- but only up to a
+    # budget, because this endpoint has a hard deadline (see
+    # _HEALTH_DETECT_BUDGET_S).
+    detected = await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -1121,6 +1165,14 @@ async def health_check(request: Request):
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    if not detected:
+        # chat_only above is the pre-detection default, not a measurement. It is
+        # the conservative direction (Train/Export hidden, never wrongly
+        # offered), but a client that caches it should re-read instead. Additive
+        # field: every launcher and UI that predates it ignores it, which is the
+        # point -- the desktop probe only needs the capability bits, all of which
+        # are already correct here.
+        base["hardware_detecting"] = True
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         return base
