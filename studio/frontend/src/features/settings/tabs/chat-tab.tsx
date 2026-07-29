@@ -8,6 +8,7 @@ import {
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
 } from "@/features/chat";
+import { useUserProfileStore } from "@/features/profile";
 import { useT } from "@/i18n";
 import {
   Bookmark02Icon,
@@ -126,6 +127,10 @@ export function ChatTab() {
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const setShowGreetingSloth = useUserProfileStore(
+    (s) => s.setShowGreetingSloth,
+  );
   const showCanvasMenuItem = useChatRuntimeStore(
     (state) => state.showCanvasMenuItem,
   );
@@ -275,6 +280,16 @@ export function ChatTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.profile.greetingSloth")}
+          description={t("settings.profile.greetingSlothDescription")}
+        >
+          <Switch
+            id="profile-greeting-sloth"
+            checked={showGreetingSloth}
+            onCheckedChange={setShowGreetingSloth}
+          />
         </SettingsRow>
       </SettingsSection>
 

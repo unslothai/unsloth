@@ -1487,7 +1487,418 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now."]
+    # Each retry restates the last, so the loop gives up: initial + 2 re-prompts.
+    assert len(payloads) == 3 < _MAX_REPROMPTS + 1
+
+
+def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
+    """The post-tool nudge has its own budget, so an earlier stall can't spend it."""
+
+    streams = [
+        [_sse({"content": "I will search the web now."}), _done()],
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_first",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Search results: red is #f00."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) == 4
+    assert len(calls) == 1
+    nudges = [
+        message
+        for message in payloads[-1]["messages"]
+        if message.get("role") == "user" and "call web_search now" in message.get("content", "")
+    ]
+    assert len(nudges) == 2
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == "Final answer: the square is red."
+
+
+def test_post_tool_reprompt_budget_is_one(monkeypatch):
+    """The post-tool nudge fires once; a second stall is surrendered as the answer."""
+
+    streams = [
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_first",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Now I will check the sources."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) == 3
+
+
+def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
+    """A tool execution opens a new phase, so the same intent text is nudged again.
+
+    Without the reset the pre-tool stall text still sits in the repeat tracker and
+    the identical post-tool stall is surrendered as the visible final answer.
+    """
+
+    stall = "I will search the web now."
+    streams = [
+        [_sse({"content": stall}), _done()],
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_first",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": stall}), _done()],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) == 4
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == "Final answer: the square is red."
+
+
+def test_restatement_keeps_deletions_that_change_the_answer():
+    """A dropped word can invert the meaning, so a subset is not a restatement."""
+
+    from core.inference.tool_call_parser import is_reprompt_restatement
+    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+
+    previous = "Now I think the feature is not supported in version 1."
+    corrected = "Now I think the feature is supported in version 1."
+    assert not is_reprompt_restatement(corrected, previous)
+    assert not suppress(corrected, previous)
+
+    stall = "I'll search for that now."
+    assert is_reprompt_restatement(stall, stall)
+    assert is_reprompt_restatement("Understood. " + stall, "Understood, " + stall)
+    assert not is_reprompt_restatement(stall + " Tokyo.", stall)
+
+
+def test_forced_turn_suppression_covers_obligation_phrasing():
+    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+    for stall in (
+        "I need to use render_html now",
+        "Need to call web_search",
+        "I will summarize the results now",
+        "I have to run the search first",
+        "I should call web_search now",
+        "I should use render_html now",
+        # Plain modals take a bare infinitive, not the need|have|ought "to" group.
+        "I must call web_search now",
+        "I must use render_html now",
+        "I must run the search first",
+        # Subjectless plans open a new sentence just as often as a new line.
+        "Okay. Need to call web_search now.",
+        "Understood. Going to search now.",
+        # Subjectless modals, not just subjectless semi-modals.
+        "Must call web_search now.",
+        "Should search the web now.",
+        # A missing answer is not a final answer: the plan behind it is still a stall.
+        "I should call web_search because the answer is not in the provided context",
+        "I must run the search since the answer is unknown so far",
+        # A pivot with nothing behind it answers nothing.
+        "I should call web_search, though.",
+        "I need to run the search, but",
+        # A purpose clause is part of the plan, not a summary of results.
+        "I need to call web_search to summarize the results",
+    ):
+        assert suppress(stall), f"leaked {stall!r}"
+
+    for answer in (
+        "You need to install the package first.",
+        "The square is red.",
+        "Here is the summary of what I found.",
+        "Run `pip install unsloth` to get started.",
+        "I should mention that the square is red.",
+        # Obligation phrasing mid-sentence is prose that happens to name a tool.
+        "The API I should invoke is foo() because it supports streaming.",
+        "The tool I need to use is documented here.",
+        # "invoke"/"query" read as technical prose far more often than as a stall.
+        "I should invoke foo() because it supports streaming.",
+        "I should query the cache first for a faster path.",
+        "You should call your bank about the charge.",
+        # Second person is the user's obligation, not the model's plan.
+        "You must call your bank about the charge.",
+        "I must admit the square is red.",
+        # A plan that pivots to an answer must ship the answer with it.
+        "I should call web_search, but the answer is Tokyo.",
+        "I need to call web_search. The answer is Tokyo.",
+        "I should call web_search to confirm, but Tokyo is the capital of Japan.",
+        "I must run the search, however the result is already known: 42.",
+    ):
+        assert not suppress(answer), f"dropped {answer!r}"
+
+
+def test_forced_turn_intent_lead_in_needs_a_restatement_to_be_dropped():
+    """A bare intent match is a stall only when the retry restates the nudge.
+
+    ``INTENT_SIGNAL`` fires on lead-ins that introduce a real answer ("Now I
+    have the results. ..."), so matching it alone would discard the answer.
+    """
+    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+
+    stall = "I will summarize the results now"
+    answer = "Now I have the search results. The capital of Japan is Tokyo."
+
+    # Restating the nudged text is still a stall.
+    assert suppress(stall, stall)
+    assert suppress("Understood. " + stall, "Understood, " + stall)
+    # Progress past the nudged text keeps the answer, lead-in and all.
+    assert not suppress(answer, stall)
+    assert not suppress("Step 3: done. Tokyo is the capital.", stall)
+    # Near-repeat is enough to stop nudging, never enough to drop the turn.
+    assert not suppress(stall + ": Tokyo.", stall)
+    # An obligation plan is a stall on its own, no previous text needed.
+    assert suppress("I must call web_search now", answer)
+
+
+def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeypatch):
+    """The post-tool retry answers behind a lead-in; the answer must still ship.
+
+    The nudge budget is spent, so the reply lands on the suppression branch.
+    ``INTENT_SIGNAL`` matches its "Now I ..." opener, and dropping it on that
+    alone left the user with the stall and no answer at all.
+    """
+
+    answer = "Now I have the results. The capital of Japan is Tokyo."
+    streams = [
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_first",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "capital of Japan"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Let me summarize what I found."}), _done()],
+        [_sse({"content": answer}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: Tokyo.",
+    )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What is the capital of Japan?"}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) == 3
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == answer
+
+
+def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch):
+    """Same guarantee once the pre-tool nudge budget is spent on distinct stalls."""
+
+    answer = "Now I see the data clearly. Tokyo is the capital."
+    streams = [
+        [_sse({"content": text}), _done()]
+        for text in (
+            "I will look that up for you.",
+            "Now I have the search results. The capital of Japan is Tokyo.",
+            "Now I can confirm it. Japan's capital city is Tokyo.",
+            answer,
+        )
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What is the capital of Japan?"}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    # Initial turn plus the three pre-tool nudges.
     assert len(payloads) == _MAX_REPROMPTS + 1
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == answer
 
 
 def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
@@ -2082,6 +2493,51 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
     )
 
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+
+
+def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
+    """Autoinjected retrieval runs before the controller, so history stays empty.
+
+    Without counting it the turn reads as pre-tool and gets the full re-prompt
+    budget, repeating the expensive retrieval the post-tool cap exists to stop.
+    """
+
+    stall = "I will summarize the retrieved passages now."
+    streams = [
+        [_sse({"content": stall}), _done()],
+        [_sse({"content": "Still working on the summary."}), _done()],
+        [_sse({"content": "Final answer: the passages describe Tokyo."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.build_rag_autoinject",
+        lambda *_a, **_k: {
+            "events": [],
+            "messages": [{"role": "user", "content": "Retrieved passage: Tokyo."}],
+        },
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "summarize the docs"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            max_tool_iterations = 2,
+            rag_scope = {"thread_id": "t1"},
+        )
+    )
+
+    # Initial turn plus one retry; read as pre-tool it would spend the full budget.
+    assert len(payloads) == 2, payloads
+    nudges = [
+        message
+        for message in payloads[-1]["messages"]
+        if message.get("role") == "user"
+        and "call search_knowledge_base now" in message.get("content", "")
+    ]
+    assert len(nudges) == 1, nudges
+    assert events
 
 
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):

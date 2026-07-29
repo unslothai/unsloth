@@ -330,6 +330,7 @@ from hub.utils.download_registry import (
 )
 from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
+from routes.profile_stats import router as profile_stats_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
@@ -347,6 +348,7 @@ from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
 )
+from utils.changelog import get_release_notes, is_supported_version_query
 from utils.studio_version import get_studio_version
 from utils.api_errors import install_api_error_handlers
 
@@ -1048,6 +1050,7 @@ app.include_router(providers_router, prefix = "/api/providers", tags = ["provide
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
+app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
@@ -1154,6 +1157,18 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     return get_studio_update_status(UNSLOTH_VERSION)
 
 
+@app.get("/api/studio/release-notes")
+def studio_release_notes(
+    version: str = Query(..., max_length = 64),
+    refresh: bool = Query(False),
+    _current_subject: str = Depends(get_current_subject),
+):
+    """Return CHANGELOG.md notes for exactly `version` (never a nearby one)."""
+    if not is_supported_version_query(version):
+        raise HTTPException(status_code = 422, detail = "Invalid version.")
+    return get_release_notes(version, refresh = refresh)
+
+
 @app.get(
     "/api/studio/download-transport-capabilities",
     response_model = TransportCapabilities,
@@ -1252,20 +1267,26 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             )
             enriched_devices.append(enriched_dev)
 
-        # Whether GGUF loads accept an explicit gpu_ids pick. /load and /validate
-        # 400 picks on XPU hosts, where no visibility mask speaks torch-xpu
-        # ordinals. A Vulkan build IS pinnable: its picks are ggml ordinals, the
-        # same space `--device Vulkan<i>` uses, so check it first and let it
-        # through even on an XPU host (the XPU ban is about torch ordinals).
-        is_vulkan_build = False
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
 
-            is_vulkan_build = LlamaCppBackend._is_vulkan_backend()
-            gpu_ids_supported = is_vulkan_build or get_device() != DeviceType.XPU
+            llama_uses_vulkan = LlamaCppBackend._is_vulkan_backend()
+            if llama_uses_vulkan:
+                # The separate inference inventory below owns Vulkan ordinals.
+                # Keep this false so a failed Vulkan probe cannot expose torch
+                # indices that llama.cpp would interpret in another namespace.
+                gpu_ids_supported = False
+            else:
+                # XPU indices cannot yet be applied safely across Level Zero's
+                # FLAT and COMPOSITE hierarchy modes. A proven CPU-only
+                # llama.cpp build cannot apply a CUDA pin either.
+                gpu_ids_supported = (
+                    get_device() != DeviceType.XPU and not LlamaCppBackend._backend_lacks_gpu_lib()
+                )
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
+            llama_uses_vulkan = False
             gpu_ids_supported = True
         # Preserve backend/index metadata from the visibility probe. In
         # particular, a CPU training host can expose a Vulkan inference GPU and
@@ -1275,6 +1296,7 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             **visibility_info,
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
+            "backend": visibility_info.get("backend"),
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
 
@@ -1283,6 +1305,7 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
         # If Vulkan is installed but its probe fails, retain the unavailable
         # Vulkan shape instead of budgeting training GPUs that llama.cpp cannot use.
         if visibility_info.get("backend") == "vulkan":
+            gpu_info["gguf_gpu_ids_supported"] = bool(enriched_devices)
             inference_gpu_info = gpu_info
         else:
             vulkan_info = get_vulkan_inference_gpu_info()
