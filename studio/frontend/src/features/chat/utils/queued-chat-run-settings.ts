@@ -25,6 +25,7 @@ const QUEUED_SETTING_KEYS = [
   "ragAutoInjectMinScore",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "activeGgufVariant",
   "ggufContextLength",
   "autoHealToolCalls",
   "nudgeToolCalls",

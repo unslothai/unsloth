@@ -793,6 +793,9 @@ function removePromptQueueItem(itemId: string) {
 
   const wasActive = itemIndex === Math.max(run.index, 0);
   run.items.splice(itemIndex, 1);
+  if (!run.items.some((remaining) => remaining.target === item.target)) {
+    item.target.dispose();
+  }
   if (run.items.length === 0) {
     deletePromptQueueRun(run);
     return true;

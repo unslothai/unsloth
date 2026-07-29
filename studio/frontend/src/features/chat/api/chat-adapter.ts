@@ -1401,6 +1401,13 @@ type AutoLoadCandidate = {
   successLabel: string;
 };
 
+type PreferredAutoLoad = {
+  id: string;
+  kind: LastLocalModelKind;
+  ggufVariant: string | null;
+  maxSeqLength: number;
+};
+
 function autoLoadCandidateKey(
   kind: LastLocalModelKind,
   id: string,
@@ -1453,11 +1460,13 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-async function autoLoadSmallestModel(): Promise<{
+async function autoLoadSmallestModel(
+  preferred?: PreferredAutoLoad,
+): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
-  if (await tryAdoptServerActiveModel()) {
+  if (!preferred && (await tryAdoptServerActiveModel())) {
     return { loaded: true, blockedByTrustRemoteCode: false };
   }
 
@@ -1465,7 +1474,7 @@ async function autoLoadSmallestModel(): Promise<{
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
-  const lastLoaded = readLastLocalModelLoad();
+  const lastLoaded = preferred ?? readLastLocalModelLoad();
   let autoLoadToastDismissed = false;
   const toastId = toast.message("Loading a model…", {
     description: lastLoaded
@@ -1864,7 +1873,7 @@ async function autoLoadSmallestModel(): Promise<{
                 loadId: repo.load_id,
                 kind: "model",
                 ggufVariant: null,
-                maxSeqLength: store.params.maxSeqLength,
+                maxSeqLength: preferred?.maxSeqLength ?? store.params.maxSeqLength,
                 successLabel: `Loaded ${repo.repo_id}`,
               })
             ) {
@@ -1882,6 +1891,14 @@ async function autoLoadSmallestModel(): Promise<{
         "Loading a model…",
         "Auto-selecting the smallest downloaded model.",
       );
+    }
+    if (preferred) {
+      toast.dismiss(toastId);
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode:
+          blockedByTrustRemoteCode && !hadNonTrustFailure,
+      };
     }
 
     // GGUF first: smallest-total-size repo, then its smallest variant.
@@ -2128,6 +2145,42 @@ export function createOpenAIStreamAdapter(
         consumeQueuedChatRunSettings(resolvedThreadId);
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
+      }
+      const queuedCheckpoint = queuedRunSettings?.params.checkpoint ?? "";
+      if (queuedCheckpoint && !parseExternalModelId(queuedCheckpoint)) {
+        try {
+          if (useChatRuntimeStore.getState().modelLoading) {
+            await waitForModelReady(abortSignal);
+          }
+          const liveModelRuntime = useChatRuntimeStore.getState();
+          const queuedVariant = queuedRunSettings?.activeGgufVariant ?? null;
+          if (
+            liveModelRuntime.params.checkpoint !== queuedCheckpoint ||
+            liveModelRuntime.activeGgufVariant !== queuedVariant
+          ) {
+            const queuedModel = runtime.models.find(
+              (model) => model.id === queuedCheckpoint,
+            );
+            const { loaded } = await autoLoadSmallestModel({
+              id: queuedCheckpoint,
+              kind:
+                queuedModel?.isGguf || queuedVariant ? "gguf" : "model",
+              ggufVariant: queuedVariant,
+              maxSeqLength: runtime.params.maxSeqLength,
+            });
+            if (!loaded) {
+              throw new Error(
+                `Could not reload queued model ${queuedCheckpoint}.`,
+              );
+            }
+          }
+        } catch (error) {
+          notifyPreStreamRunFailed(
+            resolvedThreadId ?? null,
+            runReservationToken,
+          );
+          throw error;
+        }
       }
       const threadAlreadyResearched = Boolean(
         resolvedThreadId &&

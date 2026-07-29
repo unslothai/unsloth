@@ -215,6 +215,7 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert '"preserveThinking"' in QUEUED_SETTINGS
     assert '"deepResearchEnabled"' in QUEUED_SETTINGS
     assert '"researchWebsitePolicy"' in QUEUED_SETTINGS
+    assert '"activeGgufVariant"' in QUEUED_SETTINGS
     assert "if (queuedRunSettings)" in CHAT_ADAPTER
     assert "if (!queuedRunSettings)" in CHAT_ADAPTER
     assert "pendingSettingsIds" in target
@@ -232,6 +233,13 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert "appendStarted = true;" in target
     assert "dispose," in target
     assert "target.dispose();" in THREAD
+    remove_item = _between(
+        THREAD,
+        "function removePromptQueueItem(",
+        "function isPromptQueueTargetRunning(",
+    )
+    assert "remaining.target === item.target" in remove_item
+    assert "item.target.dispose();" in remove_item
     assert "discardQueuedChatRunSettings(settingsId)" in target
     assert "discardQueuedChatRunSettingsForThread(threadId);" in THREAD
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
@@ -241,6 +249,10 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert "checkpoint: liveRuntime.params.checkpoint" in CHAT_ADAPTER
     assert "const liveResearchRuntime = useChatRuntimeStore.getState();" in CHAT_ADAPTER
     assert "checkpoint: liveResearchRuntime.params.checkpoint" in CHAT_ADAPTER
+    assert "const queuedCheckpoint = queuedRunSettings?.params.checkpoint" in CHAT_ADAPTER
+    assert "await autoLoadSmallestModel({" in CHAT_ADAPTER
+    assert "liveModelRuntime.params.checkpoint !== queuedCheckpoint" in CHAT_ADAPTER
+    assert "liveModelRuntime.activeGgufVariant !== queuedVariant" in CHAT_ADAPTER
     assert "usePromptQueueUI.getState().isRunning" in CHAT_PAGE
     assert "Object.values(runtime.runningByThreadId).some(Boolean)" in CHAT_PAGE
     assert "getPreStreamRunReservationCount() > 0" in CHAT_PAGE
@@ -252,7 +264,10 @@ def test_bulk_archive_and_clear_stop_prompt_queues_first():
         "export async function archiveAllChatItems(",
         "export async function unarchiveChatItem(",
     )
-    assert "requestPromptQueueStop(toArchive.map((thread) => thread.id));" in archive_all
+    assert "requestPromptQueueStop();" in archive_all
+    assert archive_all.index("requestPromptQueueStop();") < archive_all.index(
+        "if (toArchive.length === 0)"
+    )
     assert "isPreStreamRunActive(threadId)" in SIDEBAR_ITEMS
     assert "cancelByThreadId[threadId]?.();" in CLEAR_ALL_CHATS
     assert "getPreStreamRunThreadIds()" in CLEAR_ALL_CHATS

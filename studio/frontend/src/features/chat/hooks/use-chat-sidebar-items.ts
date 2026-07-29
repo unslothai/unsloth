@@ -241,13 +241,15 @@ export async function archiveAllChatItems(
   activeId?: string,
   onSelect?: (view: { mode: "single"; newThreadNonce: string }) => void,
 ): Promise<number> {
+  // Bulk archive owns every chat queue, including a fresh target whose eager
+  // initialization has not reached stored history yet.
+  requestPromptQueueStop();
   const threads = await listStoredChatThreads({ includeArchived: true });
   // Boolean() mirrors groupThreads: legacy records may have archived
   // undefined/null, which must count as "not archived".
   const toArchive = threads.filter((t) => !t.archived);
   if (toArchive.length === 0) return 0;
 
-  requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
   await Promise.all(
