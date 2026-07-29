@@ -275,3 +275,51 @@ def test_v1_models_exposes_real_context_window(monkeypatch):
     # The REAL (post /props readback) window, not the requested one.
     assert entry["context_length"] == 67584
     assert entry["max_context_length"] == 262144
+
+
+def _conversation_with_unrendered_reasoning(trace_chars = 40000):
+    """A normal chat turn list ending in a user message, with a huge prior trace.
+
+    Qwen3.5/3.6 emit prior reasoning only for ``loop.index0 > ns.last_query_index``,
+    so when the list ends with a user message none of this renders.
+    """
+    msgs = [{"role": "system", "content": "sys"}]
+    for i in range(8):
+        msgs.append({"role": "user", "content": f"question {i} " + "u" * 200})
+        msgs.append({"role": "assistant", "content": f"answer {i} " + "a" * 200})
+    # Protected tail: the last assistant turn carries a trace the template will drop.
+    msgs[-1]["reasoning_content"] = "t" * trace_chars
+    msgs.append({"role": "user", "content": "final question"})
+    return msgs
+
+
+def test_unrendered_reasoning_is_not_counted_when_sizing():
+    msgs = _conversation_with_unrendered_reasoning()
+    # The trace dominates a raw json.dumps sizing but contributes no prompt tokens.
+    raw = sum(_estimate_message_tokens(m) for m in msgs)
+    effective = routes_mod._estimate_messages_tokens(msgs)
+    assert raw > 3 * effective
+
+
+def test_unrendered_trace_does_not_evict_the_whole_middle():
+    # Regression: the trace sits in a protected turn, so its weight could never be
+    # dropped and the loop would evict every eligible group trying to reach the target.
+    with_trace = _conversation_with_unrendered_reasoning()
+    without_trace = _conversation_with_unrendered_reasoning(trace_chars = 0)
+    without_trace[-2].pop("reasoning_content", None)
+
+    _, dropped_with = _truncate_middle_messages(with_trace, keep_ratio = 0.6)
+    _, dropped_without = _truncate_middle_messages(without_trace, keep_ratio = 0.6)
+    assert dropped_with == dropped_without
+
+
+def test_reasoning_after_the_last_user_turn_still_counts():
+    # The tool-calling shape this PR targets: reasoning past the last user message is
+    # rendered, so it must keep contributing to the estimate.
+    msgs = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "reasoning_content": "r" * 4000},
+    ]
+    assert routes_mod._estimate_messages_tokens(msgs) == sum(
+        _estimate_message_tokens(m) for m in msgs
+    )

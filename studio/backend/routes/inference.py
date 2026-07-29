@@ -493,6 +493,35 @@ def _estimate_message_tokens(msg: dict) -> int:
         return 1
 
 
+def _reasoning_rendered_flags(messages: list) -> list:
+    """Which turns' ``reasoning_content`` the chat template actually emits.
+
+    Qwen3.5/3.6 emit prior reasoning only for ``loop.index0 > ns.last_query_index``,
+    and the bundled gemma-4 templates gate on the same index with ``preserve_thinking``
+    pinned off at launch. Anything at or before the last user turn is dropped before it
+    reaches the model, so it must not be counted when sizing the prompt.
+    """
+    last_user = -1
+    for index, msg in enumerate(messages):
+        if msg.get("role") == "user":
+            last_user = index
+    return [index > last_user for index in range(len(messages))]
+
+
+def _counted_message(msg: dict, rendered: bool) -> dict:
+    """``msg`` as the template will render it, for sizing only."""
+    if rendered or msg.get("reasoning_content") is None:
+        return msg
+    return {key: value for key, value in msg.items() if key != "reasoning_content"}
+
+
+def _estimate_messages_tokens(messages: list) -> int:
+    return sum(
+        _estimate_message_tokens(_counted_message(msg, rendered))
+        for msg, rendered in zip(messages, _reasoning_rendered_flags(messages))
+    )
+
+
 def _truncate_middle_messages(messages: list, keep_ratio: float):
     """Drop whole turn-groups from the middle of an OpenAI message list.
 
@@ -526,7 +555,13 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     if len(groups) <= 1 + protected_tail:
         return messages, 0
 
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    # Size on what the template renders: an unrendered trace in a protected turn would
+    # otherwise be undroppable weight and force the whole middle out to hit the target.
+    est_of = {
+        id(msg): _estimate_message_tokens(_counted_message(msg, rendered))
+        for msg, rendered in zip(messages, _reasoning_rendered_flags(messages))
+    }
+    total_est = sum(est_of.values())
     target_est = int(total_est * keep_ratio)
 
     anchor = groups[0]
@@ -540,7 +575,7 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     while kept_middle and current_est > target_est:
         victim = kept_middle.pop(0)
         dropped += len(victim)
-        current_est -= sum(_estimate_message_tokens(m) for m in victim)
+        current_est -= sum(est_of[id(m)] for m in victim)
 
     if dropped == 0:
         return messages, 0
@@ -585,7 +620,7 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
     # Pass 1: clip reasoning_content on assistant messages.
     for keep in _CLIP_KEEP_CHARS:
         for msg in _reasoning_candidates():
-            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
+            if _estimate_messages_tokens(messages) <= target_est:
                 return clipped
             rc = msg.get("reasoning_content")
             if not isinstance(rc, str) or len(rc) <= 2 * keep + len(_CLIP_MARKER):
@@ -595,7 +630,7 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
     # Pass 2: clip content fields as before.
     for keep in _CLIP_KEEP_CHARS:
         for msg in _candidates():
-            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
+            if _estimate_messages_tokens(messages) <= target_est:
                 return clipped
             content = msg.get("content")
             if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
@@ -611,7 +646,7 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
         keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
@@ -625,7 +660,7 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     if dropped:
         body["messages"] = new_messages
     clipped = 0
-    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
+    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
         clipped = _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
