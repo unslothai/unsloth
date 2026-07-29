@@ -167,9 +167,7 @@ WITH_PROMPT = (
         ),
         # The pill is off by default; the count must not invent a prompt the request has
         # no reason to send.
-        pytest.param(
-            "{ artifactsEnabled: false, supportsTools: true }", None, "", id = "canvas_off"
-        ),
+        pytest.param("{ artifactsEnabled: false, supportsTools: true }", None, "", id = "canvas_off"),
     ],
 )
 def test_the_recount_prices_the_canvas_instruction(seed_patch, constant, prompt):
