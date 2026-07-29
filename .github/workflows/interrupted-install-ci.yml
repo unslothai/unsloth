@@ -70,26 +70,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The exact reported case: killed during the step that installs structlog.
-          - {os: macos-14, label: studio-deps, marker: 'studio deps', experimental: false}
+          # `beat` is the delay between the marker and the signal, in seconds. It is 0
+          # everywhere except the three steps that provably run for minutes: every phase
+          # label prints BEFORE its work starts, so killing at detection is already inside
+          # the phase, while any beat longer than the phase lands the signal in the NEXT
+          # one. A flat 3s beat is what made 5 of the 12 legs of staging run 30419729244
+          # interrupt a later phase than their label claims.
+          #
+          # The exact reported case: killed during the sub-step that installs structlog.
+          - {os: macos-14, label: studio-deps, marker: 'studio deps', beat: 0, experimental: false}
           # Coarse phases, earliest to latest -- each leaves a different partial venv.
-          # venv is experimental: with a warm uv cache the step takes ~0.1s (staging run
-          # 30419729244 logged 03:31:07.371 -> 07.478 between its step line and "Installing
-          # PyTorch"), under the log poll, so the kill often lands in the next step and the
-          # landing check FAILS it. It still probes the earliest torn state when it lands.
-          - {os: macos-14, label: venv,        marker: '\[TAURI:STEP\] Creating virtual environment', experimental: true}
-          - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch',           experimental: false}
-          - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth',           experimental: false}
-          - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup',        experimental: false}
-          # Other dependency-pass steps around the named one.
-          - {os: macos-14, label: pip-bootstrap,  marker: 'pip bootstrap',     experimental: false}
+          # venv is experimental: the step takes ~0.1s (30419729244 logged 03:31:07.371 ->
+          # 07.478 between its line and "Installing PyTorch"), shorter than any log poll, so
+          # the kill usually lands in the next phase and the landing check FAILS it. It
+          # still probes the earliest torn state when it does land.
+          - {os: macos-14, label: venv,        marker: '\[TAURI:STEP\] Creating virtual environment', beat: 0, experimental: true}
+          - {os: macos-14, label: torch,       marker: '\[TAURI:STEP\] Installing PyTorch',           beat: 3, experimental: false}
+          - {os: macos-14, label: unsloth,     marker: '\[TAURI:STEP\] Installing Unsloth',           beat: 3, experimental: false}
+          - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup',        beat: 3, experimental: false}
+          # Other dependency-pass sub-steps around the named one. pip-bootstrap is
+          # experimental for the same reason as venv: in 30419729244 it landed in "2/10
+          # unsloth extras", producing a log byte-identical to the unsloth-extras leg.
+          - {os: macos-14, label: pip-bootstrap,  marker: 'pip bootstrap',     beat: 0, experimental: true}
           # No base-packages cell: --local sets skip_base, so install_python_stack returns
           # before "base packages" ever prints -- that leg ran to completion, proving nothing.
-          - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras',    experimental: true}
-          - {os: macos-14, label: data-designer,  marker: 'data designer deps', experimental: true}
+          - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras',    beat: 0, experimental: true}
+          - {os: macos-14, label: data-designer,  marker: 'data designer deps', beat: 0, experimental: true}
           # Linux: same teardown path, different package manager and process semantics.
-          - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps', experimental: false}
-          - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', experimental: false}
+          - {os: ubuntu-latest, label: studio-deps, marker: 'studio deps', beat: 0, experimental: false}
+          - {os: ubuntu-latest, label: torch, marker: '\[TAURI:STEP\] Installing PyTorch', beat: 3, experimental: false}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -106,6 +115,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           KILL_AT_SECONDS: '1500'
+          KILL_AFTER_MARKER_SECONDS: '${{ matrix.beat }}'
         run: |
           # --local is load-bearing. Without it install.sh:3996 resolves
           # `unsloth>=2026.7.5` from PyPI, so the venv gets the PUBLISHED CLI, every
@@ -139,14 +149,15 @@ jobs:
             tail -30 logs/install.log || true
             exit 1
           fi
-          # ...and the signal must land in the step this leg is named after. A step whose
-          # line is no longer the last was already over when the poll saw it, so the kill
-          # hit the NEXT step and the leg duplicates another one under a false label.
-          # Sub-step markers ("studio deps") print no [TAURI:STEP] line and are exempt.
-          if [ "$interrupt_step_mismatch" = "true" ]; then
-            echo "::error::the signal landed after '${{ matrix.marker }}' finished, so this"
-            echo "::error::leg interrupted a later step than the one it is named for."
-            grep -E '^\[TAURI:STEP\]' logs/install.log || true
+          # ...and the signal must land in the phase this leg is NAMED for. Warning-only
+          # left staging run 30419729244 fully green with the venv leg's install.log
+          # byte-identical to the torch leg's, and both "studio deps" legs killed past
+          # structlog (their own probe artefacts report backend_ok=true), so the flagship
+          # cell never reproduced the bug it is named after.
+          if [ "$interrupt_phase_mismatch" = "true" ]; then
+            echo "::error::the kill landed in a LATER phase than '${{ matrix.marker }}', so this"
+            echo "::error::leg duplicates whichever leg owns that phase and its label lies."
+            tr '\r' '\n' < logs/install.log | grep -aE '^\[TAURI:STEP\]|\[[=-]+\] *[0-9]+/[0-9]+' || true
             exit 1
           fi
 
@@ -233,8 +244,9 @@ jobs:
         include:
           # install.ps1:121 parses `--no-torch`; `-SkipTorch` matches no case there and is
           # silently dropped. The torch leg must NOT skip torch or its marker never appears.
-          - {label: studio-deps, marker: 'studio deps', installArgs: '--tauri --no-torch --local'}
-          - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local'}
+          # `beat` as in the POSIX job: 0 for the sub-step, 3 for the minutes-long torch step.
+          - {label: studio-deps, marker: 'studio deps', beat: 0, installArgs: '--tauri --no-torch --local'}
+          - {label: torch, marker: 'Installing PyTorch', beat: 3, installArgs: '--tauri --local'}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -246,7 +258,8 @@ jobs:
         run: |
           pwsh -NoProfile -File .github/scripts/interrupt-install.ps1 `
             -Marker '${{ matrix.marker }}' -LogPath logs/install.log `
-            -InstallArgs '${{ matrix.installArgs }}' -KillAtSeconds 1500
+            -InstallArgs '${{ matrix.installArgs }}' -KillAtSeconds 1500 `
+            -KillAfterMarkerSeconds ${{ matrix.beat }}
 
       - name: The kill must have landed where it was aimed
         shell: pwsh
@@ -274,12 +287,13 @@ jobs:
             Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
             exit 1
           }
-          # Same landing check as the POSIX leg: a step already over when the poll saw its
-          # line means the kill hit the NEXT step, so the leg duplicates another one.
-          if ($vals['interrupt_step_mismatch'] -eq 'true') {
-            Write-Host "::error::the signal landed after '${{ matrix.marker }}' finished, so this"
-            Write-Host '::error::leg interrupted a later step than the one it is named for.'
-            Select-String -Path logs/install.log -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue
+          # Same landing check as the POSIX leg: a phase already over when the poll saw the
+          # marker means the kill hit a LATER phase, so the leg duplicates another one.
+          if ($vals['interrupt_phase_mismatch'] -eq 'true') {
+            Write-Host "::error::the kill landed in a LATER phase than '${{ matrix.marker }}', so this"
+            Write-Host '::error::leg duplicates whichever leg owns that phase and its label lies.'
+            ((Get-Content logs/install.log -Raw) -replace "`r", "`n") -split "`n" |
+              Where-Object { $_ -match '^\[TAURI:STEP\]' -or $_ -match '\[[=-]+\]\s*\d+/\d+\s' }
             exit 1
           }
 

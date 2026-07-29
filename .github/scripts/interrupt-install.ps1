@@ -16,7 +16,7 @@ param(
   [string]$LogPath = 'logs/install.log',
   [string]$InstallArgs = '',
   [int]$KillAtSeconds = 900,
-  [int]$KillAfterMarkerSeconds = 3
+  [int]$KillAfterMarkerSeconds = 0
 )
 
 $ErrorActionPreference = 'Continue'
@@ -62,45 +62,58 @@ function Stop-Tree([int]$RootId) {
   catch { }
 }
 
-function Get-StepCount([string]$Path) {
-  @(Select-String -Path $Path -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue).Count
+# A leg can be aimed at either kind of phase the installer prints, and only one of them is
+# a line. install.ps1 prints "[TAURI:STEP] <name>" lines, while the dependency pass rewrites
+# ONE physical line with \r (install_python_stack.py:2499), so its sub-steps are
+# CR-separated SEGMENTS. Splitting on \r is what makes a sub-step's END observable at all.
+$SubRe = '\[[=-]+\]\s*\d+/\d+\s'
+
+function Get-PhaseLines([string]$Path) {
+  $raw = Get-Content -Path $Path -Raw -ErrorAction SilentlyContinue
+  if (-not $raw) { return @() }
+  return @(($raw -replace "`r", "`n") -split "`n")
 }
 
-function Get-LastStep([string]$Path) {
-  $steps = @(Select-String -Path $Path -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue)
-  if ($steps.Count) { return $steps[-1].Line }
+function Get-LastPhase([string]$Path) {
+  $p = @(Get-PhaseLines $Path | Where-Object { $_ -match '^\[TAURI:STEP\]' -or $_ -match $SubRe })
+  if ($p.Count) { return $p[-1] }
   return ''
 }
 
-# True when the marker names a [TAURI:STEP] line that is no longer the last one: the step
-# ended before the poll noticed it. Sub-step markers ('studio deps') print no step line of
-# their own, so they are never judged here.
-function Test-MarkedStepOver {
+# True when the phase the marker named is no longer the running one. A sub-step marker is
+# judged against the running sub-step, a step marker against the running step -- a step is
+# not "over" because the sub-steps beneath it advanced.
+function Test-MarkedPhaseOver {
   if (-not $Marker) { return $false }
-  $steps = @(Select-String -Path $LogPath -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue)
-  if (-not ($steps | Where-Object { $_.Line -match $Marker })) { return $false }
-  return ((Get-LastStep $LogPath) -notmatch $Marker)
+  $lines = @(Get-PhaseLines $LogPath)
+  $subs = @($lines | Where-Object { $_ -match $SubRe })
+  if ($subs | Where-Object { $_ -match $Marker }) {
+    $last = Get-LastPhase $LogPath
+    return -not ($last -match $SubRe -and $last -match $Marker)
+  }
+  $steps = @($lines | Where-Object { $_ -match '^\[TAURI:STEP\]' })
+  if ($steps | Where-Object { $_ -match $Marker }) {
+    return ($steps[-1] -notmatch $Marker)
+  }
+  return $false
 }
 
 $killed = $false
 $reason = ''
-# Half-second slices: a sub-second step is over before a 1s poll sees its line.
-for ($i = 0; $i -lt ($KillAtSeconds * 2); $i++) {
+# Fifth-of-a-second slices: every phase label prints BEFORE its work starts, so the poll
+# delay is the whole distance between the label and the signal.
+for ($i = 0; $i -lt ($KillAtSeconds * 5); $i++) {
   if ($proc.HasExited) { $reason = 'exited-before-marker'; break }
   if ($Marker) {
     $hit = Select-String -Path $LogPath -Pattern $Marker -SimpleMatch:$false -ErrorAction SilentlyContinue
     if ($hit) {
-      # Same beat as the POSIX driver, in slices and cut short once a later [TAURI:STEP]
-      # line appears, so a fast step does not send the signal into the step after it.
-      # Skipped when the step is ALREADY over: the cut-short cannot help once the next
-      # line is logged, and beating on would push the signal deeper into the next step.
-      if (-not (Test-MarkedStepOver)) {
-        $stepsAtMarker = Get-StepCount $LogPath
-        for ($j = 0; $j -lt ($KillAfterMarkerSeconds * 5); $j++) {
-          Start-Sleep -Milliseconds 200
-          if ($proc.HasExited) { break }
-          if ((Get-StepCount $LogPath) -ne $stepsAtMarker) { break }
-        }
+      # Same as the POSIX driver: no beat by default, because the label prints before the
+      # work, so killing at detection is already inside the phase while a flat beat sends
+      # the signal into a LATER phase. The loop stops the moment the marked phase ends.
+      for ($j = 0; $j -lt ($KillAfterMarkerSeconds * 5); $j++) {
+        if (Test-MarkedPhaseOver) { break }
+        Start-Sleep -Milliseconds 200
+        if ($proc.HasExited) { break }
       }
       # The installer can finish inside the delay; recording marker-hit before it
       # let a COMPLETED install satisfy the landing assertion and probe HEALTHY.
@@ -146,14 +159,14 @@ Get-Content $LogPath -Tail 15 -ErrorAction SilentlyContinue
 if ($Marker -and -not (Select-String -Path $LogPath -Pattern $Marker -ErrorAction SilentlyContinue)) {
   Write-Host "::warning::marker '$Marker' never appeared -- killed at the deadline, not the intended step"
 }
-# Where the signal actually landed. A sub-second step can end before any poll sees its
-# line, and the leg then kills the NEXT step while its label claims otherwise. Sub-step
-# markers print no [TAURI:STEP] line, so the test skips them instead of always warning.
-$lastStep = Get-LastStep $LogPath
-Write-Host "[interrupt] step at kill: $lastStep"
-$mismatch = Test-MarkedStepOver
+# Where the signal actually landed. A phase that ended before the poll saw the marker sends
+# the kill into a LATER phase, and the leg then duplicates whichever leg owns that phase
+# while its own label claims otherwise.
+$lastPhase = Get-LastPhase $LogPath
+Write-Host "[interrupt] phase at kill: $lastPhase"
+$mismatch = Test-MarkedPhaseOver
 if ($mismatch) {
-  Write-Host "::warning::killed in '$lastStep', not the marked step -- that step was already over"
+  Write-Host "::warning::killed in '$lastPhase', not the marked phase -- that phase was already over"
 }
 # Lower-cased so the workflow can compare it the same way on every platform, and only
 # simple values: the POSIX side sources this file.
@@ -161,6 +174,6 @@ if ($mismatch) {
   "interrupt_reason=$reason"
   "interrupt_killed=$killed"
   "installer_exit=$rc"
-  "interrupt_step_mismatch=$(if ($mismatch) { 'true' } else { 'false' })"
+  "interrupt_phase_mismatch=$(if ($mismatch) { 'true' } else { 'false' })"
 ) | Set-Content -Path (Join-Path (Split-Path -Parent $LogPath) 'interrupt.env') -Encoding utf8
 exit 0
