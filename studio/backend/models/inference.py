@@ -1518,6 +1518,10 @@ class ChatCountTokensRequest(BaseModel):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = "Optional OpenAI tool definitions included in the prompt",
+    )
     enable_thinking: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Render the template in thinking mode, as a completion would",
