@@ -6937,6 +6937,10 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         operating_status = "idle"
     return {
         "status": operating_status,
+        # The clock every entry's started_at is on. The floating monitor dates its
+        # first snapshot against this instead of the browser's clock, which need not
+        # agree with ours over a tunnel or from a container.
+        "server_time": time.time(),
         "active_model": active_model,
         "context_length": _monitor_context_length(),
         "active_requests": active_requests,

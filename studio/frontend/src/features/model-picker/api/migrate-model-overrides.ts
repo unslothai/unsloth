@@ -8,6 +8,7 @@
 // API load uses app defaults, the exact bug the server-side map exists to fix.
 
 import {
+  isNativeFileLabel,
   isOllamaLinkPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
@@ -101,11 +102,13 @@ export async function backfillModelOverrides(): Promise<void> {
     // .gguf has no quant to select between and is stored with a null variant, so it
     // needs the extra test or its settings stay browser-only for good. An Ollama
     // blob is GGUF but reached through a link dir the resolver skips, so it is not
-    // auto-switchable either.
+    // auto-switchable either, and a bare file name is a dropped/picked file's label,
+    // which the resolver never keys.
     (entry) =>
       (entry.ggufVariant != null ||
         entry.modelId.toLowerCase().endsWith(".gguf")) &&
       !isOllamaLinkPath(entry.modelId) &&
+      !isNativeFileLabel(entry.modelId) &&
       !isDefaultConfig(entry.config),
   );
   if (local.length === 0) {

@@ -174,3 +174,17 @@ export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
     .split("/")
     .some((segment) => OLLAMA_LINK_SEGMENTS.has(segment));
 }
+
+// A drag-dropped or file-picked GGUF is the API's second unreachable identity.
+// /api/inference/status reports model_identifier as null for a lease-backed load
+// (routes/inference.py withholds the host path), so the checkpoint the browser
+// keys settings by is the bare file name the backend echoes back. _build_index
+// keys a standalone GGUF by its on-disk path and by its .gguf-stripped stem, so
+// that name is never an index key and no auto-switch load can read an override
+// stored under it. Anything the API can load is keyed by a path or a repo id,
+// both of which carry a separator.
+const NATIVE_FILE_LABEL_RE = /^[^/\\]+\.gguf$/i;
+
+export function isNativeFileLabel(modelId: string | null | undefined): boolean {
+  return modelId != null && NATIVE_FILE_LABEL_RE.test(modelId);
+}

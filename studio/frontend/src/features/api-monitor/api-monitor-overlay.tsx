@@ -25,6 +25,13 @@ import {
   useState,
 } from "react";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import {
+  type ApiMonitorWatch,
+  createWatch,
+  observeResponse,
+  rearmWatch,
+  startWatching,
+} from "./new-traffic";
 import { useApiMonitorOverlayStore } from "./overlay-store";
 import { computeStats } from "./use-api-monitor";
 
@@ -109,6 +116,10 @@ export function ApiMonitorOverlay(): ReactElement | null {
     ReturnType<typeof getApiMonitor>
   > | null>(null);
 
+  // What this session has already shown, and when it started watching.
+  const watchRef = useRef<ApiMonitorWatch>(createWatch(0));
+  const lastNewEntryAtRef = useRef(0);
+
   // One loop for both jobs: panel contents while open, traffic watch while closed.
   // Stands down on the full page, which polls for itself.
   useEffect(() => {
@@ -119,6 +130,11 @@ export function ApiMonitorOverlay(): ReactElement | null {
     let cancelled = false;
     let timer: number | undefined;
     const intervalMs = isOpen ? OPEN_POLL_MS : IDLE_POLL_MS;
+
+    // Anchor the watch here, not at mount: the first snapshot can arrive much
+    // later (a hidden tab skips its poll entirely, an unreachable backend fails
+    // one), and everything terminal in it would otherwise read as history.
+    startWatching(watchRef.current, performance.now());
 
     function schedule(): void {
       timer = window.setTimeout(poll, intervalMs);
@@ -153,40 +169,15 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);
 
-  // Ids already seen. A set, not "the newest id": finishing moves an entry to the
-  // front, so the head flips without any new traffic.
-  const seenIdsRef = useRef<Set<string>>(new Set());
-  // Seeded on the first response even when empty, so the first request of a fresh
-  // session is not mistaken for history.
-  const seededRef = useRef(false);
-  const lastNewEntryAtRef = useRef(0);
-
   useEffect(() => {
     if (data == null) {
       return;
     }
-    const ids = data.entries.map((entry) => entry.id);
-    if (!seededRef.current) {
-      seededRef.current = true;
-      // Seed finished requests only: one still running at the first snapshot started
-      // while Studio was loading, so it is unseen live traffic, not history.
-      seenIdsRef.current = new Set(
-        data.entries
-          .filter((entry) => entry.status !== "running")
-          .map((entry) => entry.id),
-      );
-      if (!data.entries.some((e) => e.via_api_key && e.status === "running")) {
-        return;
-      }
-    }
-    const seen = seenIdsRef.current;
-    // Only API-key traffic counts: Studio's own chat uses these same endpoints, and
-    // this panel is about serving other clients.
-    const hasNewTraffic = data.entries.some(
-      (entry) => entry.via_api_key && !seen.has(entry.id),
+    const hasNewTraffic = observeResponse(
+      watchRef.current,
+      data,
+      performance.now(),
     );
-    // Re-seed each poll so the set stays bounded by the server's ring buffer.
-    seenIdsRef.current = new Set(ids);
     if (!hasNewTraffic) {
       return;
     }
@@ -203,10 +194,13 @@ export function ApiMonitorOverlay(): ReactElement | null {
     open();
   }, [data, autoOpen, suppressed, isOpen, open]);
 
-  // The backlog built up while the poll was stood down is not new traffic.
+  // The backlog built up while the poll was stood down is not new traffic. The
+  // watch re-anchors when the poll stands back up, not here, or the whole stay on
+  // the full page would read as unwatched and the panel would pop with rows the
+  // user has just read.
   useEffect(() => {
     if (onFullPage) {
-      seededRef.current = false;
+      rearmWatch(watchRef.current);
     }
   }, [onFullPage]);
 

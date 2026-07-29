@@ -940,7 +940,15 @@ export function ModelConfigPage({
     // two would permanently disagree with no way to tell which the next load used.
     // Gated on auto-switch reach, not just GGUF-ness: the resolver indexes GGUFs and
     // skips Ollama, so mirroring either would advertise a load that cannot happen.
-    if (!saveFailed && (target.apiLoadable ?? target.isGguf)) {
+    // A native-path lease is the same case: /status withholds model_identifier for a
+    // dropped or file-picked GGUF, so this id is only the file's display name, which
+    // the resolver never keys, and reopening the file needs a lease the API cannot
+    // mint. The token, not the name, decides: the fallback label carries no suffix.
+    if (
+      !saveFailed &&
+      (target.apiLoadable ?? target.isGguf) &&
+      !nativePathToken
+    ) {
       syncModelOverride(
         configId,
         target.ggufVariant,

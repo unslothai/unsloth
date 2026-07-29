@@ -953,9 +953,46 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     loads safetensors models and must honour their config.
     """
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "if (!saveFailed && (target.apiLoadable ?? target.isGguf)) { syncModelOverride(" in src
+    assert (
+        "if ( !saveFailed && (target.apiLoadable ?? target.isGguf) && !nativePathToken ) "
+        "{ syncModelOverride(" in src
+    )
     # The local save is not behind the same gate.
     assert "if (remember) { saveFailed = !savePerModelConfig(" in src
+
+
+def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
+    """A dropped or file-picked GGUF loads through a signed native-path lease, and
+    /api/inference/status reports model_identifier as null for it, so the checkpoint
+    the browser keys settings by is the bare file name the backend echoes back.
+    _build_index keys a standalone GGUF by its on-disk path and by its .gguf-stripped
+    stem, so that name is never an index key: mirroring it wrote an override no load
+    can read, which the monitor's applied-on-API-load list then advertised as live.
+
+    The live save gates on the lease token rather than the name, because the label
+    falls back to a plain string with no suffix when the host reports none.
+    """
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "&& !nativePathToken ) { syncModelOverride(" in page
+    assert (
+        "const nativePathToken = target.meta.nativePathToken ?? "
+        "(isActiveModel ? activeNativePathToken : null);" in page
+    ), "the token this gate reads"
+    # The one-time backfill has no token to read, so it goes by the identity shape.
+    backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
+    assert "!isNativeFileLabel(entry.modelId) &&" in backfill
+    identity = " ".join(_read("features/hub/lib/model-identity.ts").split())
+    assert "export function isNativeFileLabel(" in identity
+    # A bare file name: no separator, and the .gguf the resolver's keys never carry.
+    assert "const NATIVE_FILE_LABEL_RE = /^[^/\\\\]+\\.gguf$/i;" in identity
+
+    backend = WORKDIR / "studio" / "backend"
+    inference = (backend / "routes" / "inference.py").read_text(encoding = "utf-8")
+    assert (
+        "model_identifier = None if _native_grant_backed else _model_id" in inference
+    ), "why the checkpoint is only a display name"
+    models = (backend / "routes" / "models.py").read_text(encoding = "utf-8")
+    assert "display_name = gguf_file.stem," in models, "why the name is never an index key"
 
 
 def test_evicted_local_configs_drop_their_server_overrides():
