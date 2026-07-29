@@ -1350,6 +1350,51 @@ export async function buildOutboundMessagesForTokenCount(
 }
 
 /**
+ * The reasoning fields a completion would send. The backend turns these into
+ * llama-server `chat_template_kwargs`, and llama-server only falls back to the
+ * load-time `--chat-template-kwargs` for keys a request omits -- so a count that sends
+ * none of them renders the template in whatever mode the model was LOADED in. Templates
+ * that prefill a thinking block, or that drop past reasoning unless preserve_thinking is
+ * set, then report a different prompt size from the next completion.
+ */
+export function buildLocalTokenCountReasoning(): Record<string, unknown> {
+  const {
+    supportsReasoning,
+    reasoningStyle,
+    reasoningEnabled,
+    reasoningEffort,
+    reasoningEffortLevels,
+    supportsPreserveThinking,
+    preserveThinking,
+  } = useChatRuntimeStore.getState();
+  // Same clamp the request build applies, so a level the loaded template does not offer
+  // is not sent (the backend would drop it and count against the template default).
+  const localReasoningEffort = clampReasoningEffortToLevels(
+    reasoningEffort,
+    reasoningEffortLevels,
+  );
+  return {
+    // enable_thinking, never the Anthropic-style `thinking` block the request may use:
+    // ChatCompletionRequest normalizes that shape into enable_thinking anyway, and this
+    // route models the normalized field directly.
+    ...(supportsReasoning
+      ? reasoningStyle === "enable_thinking_effort"
+        ? reasoningEnabled
+          ? { enable_thinking: true, reasoning_effort: localReasoningEffort }
+          : { enable_thinking: false }
+        : reasoningStyle === "reasoning_effort"
+          ? reasoningEnabled
+            ? { reasoning_effort: localReasoningEffort }
+            : {}
+          : { enable_thinking: reasoningEnabled }
+      : {}),
+    ...(supportsPreserveThinking
+      ? { preserve_thinking: preserveThinking }
+      : {}),
+  };
+}
+
+/**
  * The tool flags a completion would send, so the count includes the tool schemas and
  * the action nudge. Same gates the adapter applies before it turns tools on; the
  * render_html image gate is left to the server, which sees the rendered prompt.

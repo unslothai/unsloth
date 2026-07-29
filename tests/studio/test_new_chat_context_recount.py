@@ -201,6 +201,12 @@ async function buildLocalTokenCountExtras(): Promise<Record<string, unknown>> {
   return {};
 }
 
+// The reasoning kwargs are pinned by test_token_count_prompt_parity.py; here the count
+// only has to reach the server with the right branch of messages.
+function buildLocalTokenCountReasoning(): Record<string, unknown> {
+  return {};
+}
+
 // 12 tokens for the bare template, 25 more per message actually sent.
 async function countChatInputTokens(payload: any): Promise<any> {
   world.countedMessages.push(payload.messages);
@@ -730,6 +736,8 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
             """
         )
     )
+    # thread-b in the first case still holds a completion's usage: an exact number this
+    # count would only ever estimate, so becoming active must leave it alone.
     assert out["beforeSwitch"] == 0, "nothing to reprice until the thread is the active one"
     assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
         "a thread the bar points at with no cached usage stays blank until the next "
@@ -738,40 +746,3 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
     assert (out["cached"] or {}).get("totalTokens") == 62
     assert out["counts"] == 1
     assert len(out["sent"]) == 2, "the thread's stored branch must be priced"
-
-
-def test_the_recount_leaves_a_thread_that_already_has_usage_alone():
-    """Switching back to a thread whose usage survived is the common case: the restored
-    value is a real completion's, and repricing it would replace an exact number with an
-    estimate of the same prompt."""
-    out = _run(
-        textwrap.dedent(
-            f"""
-            // @ts-nocheck
-            import {{
-              renderThreadContextUsageRecount,
-              seed,
-              snapshot,
-              useChatRuntimeStore,
-              world,
-            }} from "./harness.ts";
-            {LOADED_MODEL}
-            {TWO_STORED_TURNS}
-            seed({{
-              contextUsageByThreadId: {{
-                "thread-a": {{ promptTokens: 500, completionTokens: 10, totalTokens: 510, cachedTokens: 0 }},
-              }},
-            }});
-            useChatRuntimeStore.getState().setActiveThreadId("thread-a");
-            renderThreadContextUsageRecount();
-            await new Promise((resolve) => setTimeout(resolve, 30));
-
-            console.log(JSON.stringify({{
-              counts: world.countedMessages.length,
-              contextUsage: snapshot().contextUsage,
-            }}));
-            """
-        )
-    )
-    assert out["counts"] == 0
-    assert (out["contextUsage"] or {}).get("totalTokens") == 510

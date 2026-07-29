@@ -4,6 +4,7 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import {
   buildLocalTokenCountExtras,
+  buildLocalTokenCountReasoning,
   buildOutboundMessagesForTokenCount,
   findLatestUserAudioBase64,
 } from "../api/chat-adapter";
@@ -171,7 +172,9 @@ export async function refreshContextUsage(options?: {
     } else {
       const records = threadId ? await listStoredChatMessages(threadId) : [];
       if (stale()) return;
-      runMessages = orderBySelectedBranch(records).map(storedMessageToRunMessage);
+      runMessages = orderBySelectedBranch(records).map(
+        storedMessageToRunMessage,
+      );
     }
 
     // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has
@@ -199,6 +202,7 @@ export async function refreshContextUsage(options?: {
     const { input_tokens: inputTokens } = await countChatInputTokens({
       model: capturedCheckpoint,
       messages: outbound,
+      ...buildLocalTokenCountReasoning(),
       ...countExtras,
     });
 

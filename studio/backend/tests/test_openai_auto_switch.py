@@ -3147,14 +3147,28 @@ def _count_tokens_backend(
     count = 10,
     *,
     supports_tools = False,
+    reasoning_style = "enable_thinking",
 ):
     """A loaded GGUF backend wired into the count endpoint.
 
     Returns ``(switched, counted)``: ``switched`` records auto-switch attempts, ``counted``
-    the messages/system/tools the route hands to the tokenizer.
+    the messages/system/tools/template kwargs the route hands to the tokenizer.
     """
+    from core.inference.llama_cpp import LlamaCppBackend
+
     backend = _FakeBackend(loaded_id)
     backend.supports_tools = supports_tools
+    # The real kwargs builder, so the route is pinned against the mapping the completion
+    # paths use rather than a reimplementation of it.
+    backend._supports_reasoning = True
+    backend._reasoning_always_on = False
+    backend._reasoning_style = reasoning_style
+    backend._reasoning_effort_levels = ["high", "max"]
+    backend._supports_preserve_thinking = True
+    backend._architecture = None
+    backend._request_reasoning_kwargs = (
+        LlamaCppBackend._request_reasoning_kwargs.__get__(backend, type(backend))
+    )
     switched: list = []
     counted: dict = {}
 
@@ -3163,8 +3177,15 @@ def _count_tokens_backend(
         system,
         tools,
         strict = False,
+        chat_template_kwargs = None,
     ):
-        counted.update(messages = messages, system = system, tools = tools, strict = strict)
+        counted.update(
+            messages = messages,
+            system = system,
+            tools = tools,
+            strict = strict,
+            chat_template_kwargs = chat_template_kwargs,
+        )
         return count
 
     async def _switch(*args, **kwargs):
@@ -3281,6 +3302,112 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     assert len(systems) == 1, messages
     assert "Runtime rules." in systems[0].get("content", "")
     assert "Studio prompt." in systems[0].get("content", "")
+
+
+@pytest.mark.parametrize(
+    ("reasoning_style", "fields", "expected"),
+    [
+        # Qwen3-style gate: the completion sends enable_thinking=false when the user turns
+        # Thinking off, and the template prefills an empty <think> block for it. Without
+        # the same kwarg here /apply-template renders whatever the model was LOADED with.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": False},
+            {"enable_thinking": False},
+            id = "thinking_turned_off",
+        ),
+        # gpt-oss-style: the effort level is rendered into the system turn.
+        pytest.param(
+            "reasoning_effort",
+            {"reasoning_effort": "low"},
+            {"reasoning_effort": "low"},
+            id = "effort_level",
+        ),
+        # preserve_thinking decides whether past <think> blocks stay in the prompt, which
+        # is the difference between a short count and the whole reasoning history.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": True, "preserve_thinking": True},
+            {"enable_thinking": True, "preserve_thinking": True},
+            id = "preserve_thinking",
+        ),
+        # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
+        pytest.param("enable_thinking", {}, None, id = "template_default"),
+    ],
+)
+def test_chat_count_tokens_renders_the_requested_reasoning_mode(
+    monkeypatch, reasoning_style, fields, expected
+):
+    # llama-server layers a request's chat_template_kwargs over the load-time
+    # --chat-template-kwargs, so a count that omits them prices the template in the mode
+    # the model was loaded in rather than the one the next completion asks for.
+    _switched, counted = _count_tokens_backend(
+        monkeypatch, count = 7, reasoning_style = reasoning_style
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}], **fields)
+    assert _counted_body(payload) == {"input_tokens": 7}
+    assert counted.get("chat_template_kwargs") == expected
+
+
+@pytest.mark.parametrize(
+    ("template_kwargs", "expected_tokens"),
+    [
+        # Thinking off: the template prefills an empty <think></think> pair the completion
+        # will spend tokens on, so the count has to include it.
+        pytest.param({"enable_thinking": False}, 5, id = "thinking_off"),
+        pytest.param(None, 3, id = "template_default"),
+    ],
+)
+def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
+    monkeypatch, template_kwargs, expected_tokens
+):
+    """The kwargs have to reach llama-server itself: /apply-template runs the same parser
+    as /v1/chat/completions, so the rendered prompt only moves when they are in the body."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(self, url, json = None):
+            body = json or {}
+            if not url.endswith("/apply-template"):
+                return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+            # A Qwen3-style template: thinking off prefills an empty reasoning block.
+            kwargs = body.get("chat_template_kwargs") or {}
+            prefill = "" if kwargs.get("enable_thinking", True) else " <think> </think>"
+            return _FakeResponse({"prompt": "user hi assistant" + prefill})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    assert _CountBackend().count_chat_tokens(
+        [{"role": "user", "content": "hi"}],
+        strict = True,
+        chat_template_kwargs = template_kwargs,
+    ) == expected_tokens
 
 
 def test_audio_generate_is_reload_only(monkeypatch):

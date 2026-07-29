@@ -1455,6 +1455,18 @@ class ChatCountTokensRequest(BaseModel):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Render the template in thinking mode, as a completion would",
+    )
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level the completion would request",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Keep historical <think> blocks in the rendered prompt",
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",

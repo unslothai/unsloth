@@ -12603,6 +12603,7 @@ class LlamaCppBackend:
         system = None,
         tools = None,
         strict: bool = False,
+        chat_template_kwargs = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -12611,6 +12612,10 @@ class LlamaCppBackend:
         endpoints) get an exception instead of a successful-looking zero when
         tokenizer/template calls fail or a multimodal prompt would fall back to a
         text-only approximation.
+
+        ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller
+        pricing a request that renders the template in a non-default reasoning
+        mode counts the prompt that request will actually build.
         """
         if not self.is_loaded:
             if strict:
@@ -12691,6 +12696,10 @@ class LlamaCppBackend:
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
+                    # llama-server layers the request's kwargs over the load-time
+                    # --chat-template-kwargs, so only the keys sent here move.
+                    if chat_template_kwargs:
+                        template_body["chat_template_kwargs"] = chat_template_kwargs
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,

@@ -171,6 +171,9 @@ export async function loadModel(
 export async function countChatInputTokens(payload: {
   model: string;
   messages: OpenAIChatCompletionsRequest["messages"];
+  enable_thinking?: boolean;
+  reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
+  preserve_thinking?: boolean;
   enable_tools?: boolean;
   enabled_tools?: string[];
   mcp_enabled?: boolean;

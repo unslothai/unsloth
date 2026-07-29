@@ -14219,6 +14219,15 @@ async def chat_count_tokens(
                 ),
             )
 
+    # Render in the mode the next completion asks for. llama-server merges the load-time
+    # --chat-template-kwargs under whatever a request omits, so sending nothing here
+    # prices the template as the model was LOADED rather than as it is about to be used.
+    _template_kwargs = llama_backend._request_reasoning_kwargs(
+        payload.enable_thinking,
+        payload.reasoning_effort,
+        payload.preserve_thinking,
+    )
+
     try:
         count = await asyncio.to_thread(
             llama_backend.count_chat_tokens,
@@ -14226,6 +14235,7 @@ async def chat_count_tokens(
             None,
             openai_tools,
             strict = True,
+            chat_template_kwargs = _template_kwargs,
         )
     except Exception:
         raise HTTPException(

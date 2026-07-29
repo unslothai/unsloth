@@ -9,8 +9,13 @@ call the tool, the fenced-HTML fallback otherwise. Neither is a tool schema, so 
 server cannot add it back from the flags ``buildLocalTokenCountExtras`` sends: a count
 that skips it reports fewer tokens than the next completion actually spends.
 
-``studio/frontend`` carries no JS test runner, so the builder and both instruction
-constants are sliced verbatim out of chat-adapter.ts and run under ``node``.
+The same applies to the reasoning settings: llama-server layers a request's
+``chat_template_kwargs`` over the load-time ``--chat-template-kwargs``, so a count that
+sends none of them renders the template in whatever mode the model was LOADED in.
+
+``studio/frontend`` carries no JS test runner, so the builders, both instruction
+constants and the shared effort clamp are sliced verbatim out of the studio sources and
+run under ``node``.
 """
 
 from __future__ import annotations
@@ -30,10 +35,11 @@ from _node_harness import (
 )
 
 ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
+CAPABILITIES = source_path("studio/frontend/src/features/chat/provider-capabilities.ts")
 
 TEMP = WORKDIR / "temp" / "token_count_prompt_parity"
 
-SOURCES = (ADAPTER,)
+SOURCES = (ADAPTER, CAPABILITIES)
 
 
 def _canvas_constants() -> str:
@@ -48,8 +54,23 @@ def _outbound_builder() -> str:
     return slice_between(
         read(ADAPTER),
         "export async function buildOutboundMessagesForTokenCount(",
+        "/**\n * The reasoning fields a completion would send",
+    )
+
+
+def _reasoning_builder() -> str:
+    """buildLocalTokenCountReasoning plus the clamp it shares with the request build."""
+    clamp = slice_between(
+        read(CAPABILITIES),
+        "export function clampReasoningEffortToLevels(",
+        "\n/**",
+    )
+    builder = slice_between(
+        read(ADAPTER),
+        "export function buildLocalTokenCountReasoning(",
         "/**\n * The tool flags a completion would send",
     )
+    return clamp + "\n" + builder
 
 
 def _instruction(name: str) -> str:
@@ -69,6 +90,13 @@ const state: any = {
   params: { systemPrompt: "", systemVariables: "" },
   artifactsEnabled: false,
   supportsTools: false,
+  supportsReasoning: false,
+  reasoningStyle: "enable_thinking",
+  reasoningEnabled: true,
+  reasoningEffort: "high",
+  reasoningEffortLevels: ["low", "medium", "high"],
+  supportsPreserveThinking: false,
+  preserveThinking: false,
 };
 
 const useChatRuntimeStore: any = { getState: () => state };
@@ -111,7 +139,7 @@ def _estimate(contents: list[str]) -> int:
 
 
 def _harness_source() -> str:
-    return HARNESS + _canvas_constants() + _outbound_builder()
+    return HARNESS + _canvas_constants() + _outbound_builder() + _reasoning_builder()
 
 
 def _run(script: str) -> dict:
@@ -194,3 +222,65 @@ def test_the_request_path_sends_the_same_constants():
     for name in ("CANVAS_TOOL_INSTRUCTION", "CANVAS_FALLBACK_INSTRUCTION"):
         assert src.count(f"export const {name} =") == 1
         assert src.count(name) == 3, f"{name} must have exactly one declaration and two uses"
+
+
+@pytest.mark.parametrize(
+    ("seed_patch", "expected"),
+    [
+        # No reasoning support: send nothing, and llama-server keeps its own defaults.
+        pytest.param("{ supportsReasoning: false }", {}, id = "no_reasoning_support"),
+        # Qwen3-style gate turned off. The completion sends this, the template prefills an
+        # empty thinking block for it, and a count without it prices the loaded default.
+        pytest.param(
+            '{ supportsReasoning: true, reasoningStyle: "enable_thinking", reasoningEnabled: false }',
+            {"enable_thinking": False},
+            id = "thinking_turned_off",
+        ),
+        # gpt-oss-style: the effort level is rendered into the prompt.
+        pytest.param(
+            '{ supportsReasoning: true, reasoningStyle: "reasoning_effort", reasoningEnabled: true,'
+            ' reasoningEffort: "low" }',
+            {"reasoning_effort": "low"},
+            id = "effort_level",
+        ),
+        # GLM-style: the on/off gate plus a level, clamped to the levels this template
+        # offers, exactly as the request build clamps it. "high" is not one of them here.
+        pytest.param(
+            '{ supportsReasoning: true, reasoningStyle: "enable_thinking_effort",'
+            ' reasoningEnabled: true, reasoningEffort: "high", reasoningEffortLevels: ["max"] }',
+            {"enable_thinking": True, "reasoning_effort": "max"},
+            id = "effort_clamped_to_the_template_levels",
+        ),
+        # Independent of the gate: decides whether past <think> blocks stay in the prompt.
+        pytest.param(
+            "{ supportsPreserveThinking: true, preserveThinking: true }",
+            {"preserve_thinking": True},
+            id = "preserve_thinking",
+        ),
+    ],
+)
+def test_the_recount_sends_the_reasoning_mode_the_completion_would(seed_patch, expected):
+    """llama-server layers a request's chat_template_kwargs over the load-time
+    --chat-template-kwargs, so a count that omits them renders the template in whatever
+    mode the model was LOADED in and reports a prompt size the next completion will not
+    match."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountReasoning, seed }} from "./harness.ts";
+            seed({seed_patch});
+            console.log(JSON.stringify({{ reasoning: buildLocalTokenCountReasoning() }}));
+            """
+        )
+    )
+    assert out.get("reasoning") == expected
+
+
+def test_the_request_path_clamps_the_effort_the_same_way():
+    """Both payloads have to clamp against the loaded template's levels, or the count
+    sends a level the backend drops and prices the template default instead."""
+    src = " ".join(read(ADAPTER).split())
+    assert (
+        src.count("clampReasoningEffortToLevels( reasoningEffort, reasoningEffortLevels, )") == 2
+    ), "the request build and the token recount must clamp from the same store fields"
