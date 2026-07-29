@@ -3,8 +3,54 @@
 
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 
+// Same derivation the Playwright config uses for its backendUrl metadata, so an
+// E2E_BACKEND_PORT override reaches the API helpers too and not just the config.
+// The page's own /api calls still go through the Vite dev proxy, which targets
+// 127.0.0.1:8888 unconditionally.
 const backendUrl =
-  process.env.E2E_BACKEND_URL ?? "http://127.0.0.1:8888";
+  process.env.E2E_BACKEND_URL ??
+  `http://127.0.0.1:${process.env.E2E_BACKEND_PORT ?? 8888}`;
+
+/** How long to let a chat finish decoding before unloading anyway. */
+const GENERATION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const GENERATION_IDLE_POLL_MS = 500;
+
+/**
+ * Block until no conversation is decoding.
+ *
+ * An unforced /api/inference/unload refuses with 409 while any generation is
+ * registered, and the UI signal a test can reach first (its own user bubble)
+ * renders the moment the message is sent, long before the run ends. Poll the
+ * counter the unload gate itself reads instead. A timeout falls through to the
+ * unload so the 409 is still reported rather than swallowed here.
+ */
+export async function waitForGenerationsIdle(
+  request: APIRequestContext,
+  headers: Record<string, string>,
+): Promise<number> {
+  const deadline = Date.now() + GENERATION_IDLE_TIMEOUT_MS;
+  let active = 0;
+  for (;;) {
+    const response = await request.get(
+      `${backendUrl}/api/inference/active-generations`,
+      { headers },
+    );
+    if (!response.ok()) return active;
+    const payload = (await response.json()) as {
+      count?: number;
+      active?: unknown[];
+    };
+    active =
+      typeof payload.count === "number"
+        ? payload.count
+        : (payload.active?.length ?? 0);
+    if (active === 0) return 0;
+    if (Date.now() >= deadline) return active;
+    await new Promise((resolve) =>
+      setTimeout(resolve, GENERATION_IDLE_POLL_MS),
+    );
+  }
+}
 
 export async function unloadInferenceModel(
   request: APIRequestContext,
@@ -29,6 +75,9 @@ export async function unloadInferenceModel(
   const modelPath =
     status.model_identifier ?? status.active_model ?? status.loaded?.[0];
   if (!modelPath) return;
+
+  // Unforced, so a chat still decoding would 409 the request below.
+  await waitForGenerationsIdle(request, headers);
 
   const response = await request.post(`${backendUrl}/api/inference/unload`, {
     headers,

@@ -517,3 +517,45 @@ def test_hydration_retry_stays_out_of_the_way_of_a_started_chat():
     )
     assert out["counts"] == 0, "a real completion's usage must not be recounted away"
     assert out["contextUsage"].get("totalTokens") == 680
+
+
+def test_a_thread_recount_survives_switching_away_and_back():
+    """setActiveThreadId restores usage from contextUsageByThreadId only, so a recount
+    that landed on the visible thread has to reach that map too. setContextUsage writes
+    through for the active thread, which is the thread every recount publish is gated on."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ refreshContextUsage, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            world.storedMessages["thread-a"] = [
+              {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hi" }}], metadata: {{}} }},
+              {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "yo" }}], metadata: {{}} }},
+            ];
+            // A model change cleared the per-thread cache; the post-load recount refills the bar.
+            seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
+            await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            const recounted = snapshot();
+
+            // Switch to another still-mounted thread and back: no history loader reruns.
+            useChatRuntimeStore.getState().setActiveThreadId("thread-b");
+            const away = snapshot().contextUsage;
+            useChatRuntimeStore.getState().setActiveThreadId("thread-a");
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              recounted: recounted.contextUsage,
+              cached: recounted.contextUsageByThreadId["thread-a"] ?? null,
+              away,
+              back: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert out["recounted"].get("totalTokens") == 62
+    assert out["cached"] is not None, "the recount must reach the per-thread cache"
+    assert out["cached"].get("totalTokens") == 62
+    assert out["away"] is None, "another thread has no usage of its own here"
+    assert out["back"].get("totalTokens") == 62, "the bar must not blank on the way back"
