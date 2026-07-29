@@ -84,7 +84,11 @@ def test_budget_fails_when_no_launch_was_measured(capsys, monkeypatch):
     assert "no unsloth CLI found" in out
 
 
-def _healthy_launch(mod, monkeypatch, healthz = 1.5):
+def _healthy_launch(
+    mod,
+    monkeypatch,
+    healthz = 1.5,
+):
     monkeypatch.setattr(mod, "find_bin", lambda: "unsloth")
     monkeypatch.setattr(
         mod,
@@ -109,8 +113,9 @@ def test_budget_still_passes_when_a_launch_was_measured(monkeypatch):
 
 
 # "=" form for -inf: a bare "-inf" is an option token to argparse, not a value.
-@pytest.mark.parametrize("bad", ["--max-healthz-seconds=nan", "--max-healthz-seconds=inf",
-                                "--max-healthz-seconds=-inf"])
+@pytest.mark.parametrize(
+    "bad", ["--max-healthz-seconds=nan", "--max-healthz-seconds=inf", "--max-healthz-seconds=-inf"]
+)
 def test_budget_rejects_non_finite_values(bad, capsys, monkeypatch):
     """`med > nan` and `med > inf` are always False, so the gate would never bind."""
     mod = _load()
@@ -217,12 +222,10 @@ def _desktop_backend_argv():
 def _profiler_argv():
     tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
     fn = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "profile_launch"
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "profile_launch"
     )
     call = next(
-        n for n in ast.walk(fn)
-        if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("Popen")
+        n for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("Popen")
     )
     return [e.value for e in call.args[0].elts if isinstance(e, ast.Constant)]
 
