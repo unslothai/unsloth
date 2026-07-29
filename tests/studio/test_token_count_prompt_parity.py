@@ -18,6 +18,8 @@ from __future__ import annotations
 import math
 import textwrap
 
+import pytest
+
 from _node_harness import (
     WORKDIR,
     read,
@@ -141,45 +143,46 @@ def _count_script(seed_patch: str) -> str:
 
 USER_TURN = "draw me a bar chart"
 SYSTEM_PROMPT = "You are a helpful assistant."
+WITH_PROMPT = (
+    '{ artifactsEnabled: true, supportsTools: true, params: { systemPrompt: "'
+    + SYSTEM_PROMPT
+    + '", systemVariables: "" } }'
+)
 
 
-def test_the_recount_prices_the_canvas_tool_instruction():
-    """Canvas on, tool-capable model: the request carries the render_html wording after
-    the user's system prompt, so the count has to carry it too."""
-    instruction = _instruction("CANVAS_TOOL_INSTRUCTION")
-    out = _run(
-        _count_script(
-            "{ artifactsEnabled: true, supportsTools: true, params: { systemPrompt: "
-            + f'"{SYSTEM_PROMPT}"'
-            + ', systemVariables: "" } }'
-        )
-    )
-    expected_system = f"{SYSTEM_PROMPT}\n\n{instruction}"
-    assert out.get("system") == expected_system
-    assert out.get("inputTokens") == _estimate([expected_system, USER_TURN]), (
-        "the recount must price the Canvas instruction the completion sends, or the "
-        "bar reports a chat fits when the next completion is larger"
-    )
-
-
-def test_the_recount_prices_the_canvas_fallback_without_tool_support():
-    """No tool support means no render_html, and the request sends the fenced-HTML
-    fallback instead. It is shorter, but it is still in the prompt."""
-    instruction = _instruction("CANVAS_FALLBACK_INSTRUCTION")
-    out = _run(_count_script("{ artifactsEnabled: true, supportsTools: false }"))
-    assert out.get("system") == instruction, (
-        "with no system prompt to append to, the fallback instruction becomes the "
-        "leading system turn, exactly as addSystemInstruction does"
-    )
-    assert out.get("inputTokens") == _estimate([instruction, USER_TURN])
-
-
-def test_canvas_off_adds_nothing():
-    """The pill is off by default; the count must not invent a prompt the request has
-    no reason to send."""
-    out = _run(_count_script("{ artifactsEnabled: false, supportsTools: true }"))
-    assert out.get("system") is None
-    assert out.get("inputTokens") == _estimate([USER_TURN])
+@pytest.mark.parametrize(
+    ("seed_patch", "constant", "prompt"),
+    [
+        # Canvas on against a tool-capable model: the request carries the render_html
+        # wording appended to the user's system prompt, so the count has to carry it too.
+        pytest.param(WITH_PROMPT, "CANVAS_TOOL_INSTRUCTION", SYSTEM_PROMPT, id = "render_html"),
+        # No tool support means no render_html and the fenced-HTML fallback instead. With
+        # no system prompt to append to, it becomes the leading system turn -- exactly what
+        # the adapter's addSystemInstruction does.
+        pytest.param(
+            "{ artifactsEnabled: true, supportsTools: false }",
+            "CANVAS_FALLBACK_INSTRUCTION",
+            "",
+            id = "fenced_html_fallback",
+        ),
+        # The pill is off by default; the count must not invent a prompt the request has
+        # no reason to send.
+        pytest.param(
+            "{ artifactsEnabled: false, supportsTools: true }", None, "", id = "canvas_off"
+        ),
+    ],
+)
+def test_the_recount_prices_the_canvas_instruction(seed_patch, constant, prompt):
+    """#7450's bar answers "does this chat still fit", so it has to price every part of
+    the prompt the next completion builds -- including the Canvas instruction, which is
+    not a tool schema and so cannot be added back server-side from the tool flags."""
+    instruction = _instruction(constant) if constant else ""
+    expected_system = "\n\n".join(part for part in (prompt, instruction) if part)
+    out = _run(_count_script(seed_patch))
+    assert out.get("system") == (expected_system or None)
+    assert out.get("inputTokens") == _estimate(
+        ([expected_system] if expected_system else []) + [USER_TURN]
+    ), "the recount must price the Canvas instruction the completion sends"
 
 
 def test_the_request_path_sends_the_same_constants():
