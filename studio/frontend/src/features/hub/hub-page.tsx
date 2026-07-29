@@ -1343,7 +1343,14 @@ export function ModelsPage() {
       // the server mirror is wrong too. Resolve it as the on-device card does.
       let ggufVariant = settingsGgufVariantForRow(row);
       if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
-        const repoId = row.kind === "cache" ? row.repoId : (row.repoId ?? null);
+        // A local row only carries a repo id when it sits in the HF cache, so a
+        // plain folder of quants (the models dir, a custom folder, LM Studio) has
+        // none while still being marked as needing one. The listing takes a path
+        // in the same position and scans it, which is exactly what the on-device
+        // card already does for these rows, so without the fallback this menu
+        // entry could only ever reach the "couldn't determine which quant" toast.
+        const repoId =
+          row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);
         if (repoId) {
           try {
             const [res] = await Promise.all([

@@ -1389,6 +1389,29 @@ def test_settings_open_reads_status_before_resolving_the_quant():
     assert "refreshResidentModelStatus(), ]);" in page
 
 
+def test_a_local_quant_folder_resolves_its_variants_by_path():
+    """A local row carries a repo id only inside the HF cache, so a plain folder of
+    quants has none while still being marked as needing one, and the row menu's
+    Settings could then only reach the error toast."""
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert (
+        'const repoId = row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);'
+        in hub
+    )
+    # The on-device card already lists by path for the same rows; this is the
+    # request it makes, so both surfaces choose from one set of quants.
+    card = " ".join(_read("features/hub/catalog/local-on-device-card.tsx").split())
+    assert "repoId: modelId, hfToken, preferLocalCache: true, localPath: localGgufPath," in card
+    # The backend takes a path in the repo_id position and scans it, before the
+    # repo-id validation that would otherwise 400 on a path.
+    variants = (
+        WORKDIR / "studio" / "backend" / "hub" / "services" / "models" / "gguf_variants.py"
+    ).read_text(encoding = "utf-8")
+    scan = variants.split("if is_local_path(repo_id):", 1)
+    assert len(scan) == 2, "the local-path branch this leans on"
+    assert "_is_valid_repo_id(repo_id)" in scan[1], "the branch has to come first"
+
+
 def test_cached_repo_settings_key_follows_the_row_not_the_view():
     """A repo in an inactive HF cache loads by snapshot path while its settings are keyed
     by repo id."""
