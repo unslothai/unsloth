@@ -24,6 +24,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import types
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
@@ -77,6 +78,14 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
 CHAT_ONLY_REASON: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
+
+# Detection is no longer reached from one place at one time: the startup warm
+# thread runs it while the lifespan (and any early request through get_device())
+# may ask for it too. Without this lock two runs interleave on the globals above
+# -- detect_hardware() resets CHAT_ONLY/IS_ROCM at entry, so a reader between the
+# reset and the CUDA branch sees "chat only" on a GPU host. Re-entrant because
+# get_device() -> detect_hardware() is a nested acquire on the same thread.
+_DETECT_LOCK = threading.RLock()
 
 
 def _backend_label(device: DeviceType) -> str:
@@ -185,6 +194,23 @@ def detect_hardware() -> DeviceType:
       4. MLX   (Apple Silicon via MLX framework)
       5. CPU   (fallback)
     """
+    with _DETECT_LOCK:
+        return _detect_hardware_locked()
+
+
+def ensure_hardware_detected() -> DeviceType:
+    """Detect once, from any thread. Callers that only need the result (rather
+    than a forced re-detect) should use this: it collapses the startup warm
+    thread and an early request into a single detection, and a caller arriving
+    mid-detection waits for it instead of starting a second one."""
+    with _DETECT_LOCK:
+        if DEVICE is None:
+            _detect_hardware_locked()
+        return DEVICE
+
+
+def _detect_hardware_locked() -> DeviceType:
+    """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
@@ -308,10 +334,7 @@ def get_device() -> DeviceType:
     Return the detected device, auto-detecting if detect_hardware() hasn't run.
     Prefer calling detect_hardware() explicitly at startup.
     """
-    global DEVICE
-    if DEVICE is None:
-        detect_hardware()
-    return DEVICE
+    return ensure_hardware_detected()
 
 
 def export_capability() -> dict:

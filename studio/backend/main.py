@@ -333,13 +333,14 @@ from routes.prompts import router as prompts_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
-    detect_hardware,
+    ensure_hardware_detected,
     get_device,
     DeviceType,
     get_backend_visible_gpu_info,
 )
 import utils.hardware.hardware as _hw_module
 
+from utils.torch_warmup import start_background_warm
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
@@ -512,13 +513,12 @@ async def lifespan(app: FastAPI):
     if overlay_dir.is_dir():
         shutil.rmtree(overlay_dir, ignore_errors = True)
 
-    # Detect hardware first — sets the DEVICE global used everywhere.
-    detect_hardware()
-
-    _lifespan_log.info(
-        "lifespan hardware detection completed in %.1fms",
-        (_time.perf_counter() - _lifespan_started) * 1000,
-    )
+    # Hardware detection is NOT here any more. It imports torch, and uvicorn
+    # only binds the socket once this lifespan returns, so it used to keep the
+    # login screen behind a ~1.4s torch import. It now runs first on the warm
+    # thread started at the end of this function; the handful of endpoints that
+    # read DEVICE / CHAT_ONLY go through ensure_hardware_detected() and wait for
+    # that same detection rather than reading a half-set global.
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
     # Reinstall mlx by name on a background thread (off the critical path) and
@@ -599,6 +599,12 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = (
             None if _suppress_bootstrap else storage.get_bootstrap_password()
         )
+
+    # Last, so it never competes with the work above for the GIL: import torch
+    # (via hardware detection), then transformers and unsloth_zoo. The socket
+    # binds as soon as this returns, so the login screen is up while the ML
+    # stack loads behind it.
+    start_background_warm()
 
     _lifespan_log.info(
         "lifespan startup completed in %.1fms",
@@ -1095,6 +1101,11 @@ async def health_check(request: Request):
     backend and gate UI before a token exists. version / studio_version /
     device_type require a bearer since they fingerprint the host.
     """
+    # chat_only comes from hardware detection, which the warm thread may still
+    # be doing. Wait for it rather than publish the pre-detection default (True)
+    # and grey out Train/Export on a GPU host for the first second. Off-loop so
+    # the login screen and /api/auth/status keep answering while we wait.
+    await asyncio.to_thread(ensure_hardware_detected)
     base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),

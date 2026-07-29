@@ -30,8 +30,20 @@ from typing import Any, Generator, Optional, Tuple, Union
 from utils.hardware import get_device, prepare_gpu_selection
 
 # Re-exported from the shared helper so GGUF, training, and inference share one
-# type; kept importable here for backwards compatibility.
-from utils.hf_xet_fallback import DownloadStallError
+# type; kept importable here for backwards compatibility. Resolved through PEP
+# 562 rather than a module-level import: the shim resolves the name by importing
+# unsloth_zoo, which imports torch, and routes/inference.py imports this module
+# at startup purely for the two GenStream* classes below.
+DownloadStallError: type
+
+
+def __getattr__(name: str):
+    if name == "DownloadStallError":
+        from utils.hf_xet_fallback import DownloadStallError as _exc
+
+        return _exc
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 logger = get_logger(__name__)
 
@@ -440,6 +452,11 @@ class InferenceOrchestrator:
         message, so long-running operations (large downloads, slow loads)
         survive as long as the subprocess keeps reporting progress.
         """
+        # Local: resolving this name on the shim runs its lazy unsloth_zoo load,
+        # which pulls torch. The shim caches the class it picked, so this site
+        # and the `except` in load_model() always see the same object.
+        from utils.hf_xet_fallback import DownloadStallError
+
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
@@ -1117,6 +1134,8 @@ class InferenceOrchestrator:
         stale unsloth patches, torch.compile caches, or getsource failures).
         """
         from utils.transformers_version import needs_transformers_5
+        # Same lazy-shim reason as _wait_response(); see the note there.
+        from utils.hf_xet_fallback import DownloadStallError
 
         model_name = config.identifier
         self.loading_models.add(model_name)

@@ -3,10 +3,17 @@
 
 """Shared helpers for raw-text dataset preparation."""
 
-from dataclasses import dataclass
-from typing import Literal
+# `Dataset` is only ever an annotation here, and importing `datasets` at module
+# scope drags torch in through datasets.formatting.torch_formatter -- the last
+# thing keeping torch on the backend's startup path. Deferred annotations keep
+# the names for type checkers without evaluating them at import.
+from __future__ import annotations
 
-from datasets import Dataset
+from dataclasses import dataclass
+from typing import Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 
 
 @dataclass(frozen = True)
