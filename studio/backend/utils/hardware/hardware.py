@@ -79,12 +79,11 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 CHAT_ONLY_REASON: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
-# Detection is no longer reached from one place at one time: the startup warm
-# thread runs it while the lifespan (and any early request through get_device())
-# may ask for it too. Without this lock two runs interleave on the globals above
-# -- detect_hardware() resets CHAT_ONLY/IS_ROCM at entry, so a reader between the
-# reset and the CUDA branch sees "chat only" on a GPU host. Re-entrant because
-# get_device() -> detect_hardware() is a nested acquire on the same thread.
+# Detection now has several callers at once: the startup warm thread, plus any
+# early request through get_device(). Without this lock two runs interleave on
+# the globals above -- detect_hardware() resets CHAT_ONLY/IS_ROCM at entry, so a
+# reader between the reset and the CUDA branch sees "chat only" on a GPU host.
+# Re-entrant: get_device() -> detect_hardware() nests on the same thread.
 _DETECT_LOCK = threading.RLock()
 
 
@@ -110,26 +109,22 @@ def is_apple_silicon() -> bool:
 def _has_torch() -> bool:
     """True if PyTorch is importable.
 
-    Any failure counts as "no torch", not just ImportError. A wheel whose CUDA
-    libs don't resolve raises OSError from `import torch`, and that used to
-    escape into detect_hardware(). It mattered less when detection ran once in
-    the lifespan; now that ensure_hardware_detected() re-runs while DEVICE is
-    None, an escaping error would make every request retry the import -- and a
-    retry after a partial import is the zombie-module case: CPython evicts the
-    parent from sys.modules but keeps the submodules it already loaded, so
-    torch/__init__ re-executes with its own `from .x import y` served from
-    cache. Treat a broken torch like an absent one and take the CPU path.
+    Any failure counts as "no torch", not just ImportError: a wheel whose CUDA
+    libs don't resolve raises OSError, which used to escape into
+    detect_hardware(). That mattered less when detection ran once in the
+    lifespan; ensure_hardware_detected() re-runs while DEVICE is None, so an
+    escaping error would make every request retry the import. Treat a broken
+    torch like an absent one and take the CPU path.
     """
     try:
         import torch
         return True
     except Exception:
         # A failure part-way through torch/__init__ leaves its submodules in
-        # sys.modules with the parent evicted; the next importer (transformers,
-        # on the warm's second stage) would then re-run __init__ against those
-        # cache hits and get a torch that imports but is missing pieces. Worth
-        # clearing when the import died early -- but purge_partial_import()
-        # declines once any compiled submodule is loaded, because re-importing
+        # sys.modules with the parent evicted, so the next importer
+        # (transformers, warm stage two) re-runs __init__ against those cache
+        # hits and gets a torch missing pieces. purge_partial_import() clears
+        # that, and declines once a compiled submodule is loaded -- re-importing
         # one aborts the process. See the note there.
         from utils.torch_warmup import purge_partial_import
         purge_partial_import("torch")
@@ -219,17 +214,17 @@ def detect_hardware() -> DeviceType:
 
 
 def ensure_hardware_detected() -> DeviceType:
-    """Detect once, from any thread. Callers that only need the result (rather
-    than a forced re-detect) should use this: it collapses the startup warm
-    thread and an early request into a single detection, and a caller arriving
-    mid-detection waits for it instead of starting a second one.
+    """Detect once, from any thread. Use this rather than detect_hardware()
+    unless you want a forced re-detect: it collapses the startup warm thread and
+    an early request into one detection, and a caller arriving mid-detection
+    waits for it instead of starting a second.
 
     Never raises. Detection used to run in the lifespan, where a failure killed
-    startup loudly; it now runs on the warm thread, where a raise would be
-    swallowed and leave DEVICE None -- so every later request would retry the
-    same failing import and /api/health, which waits on this, would 500. Record
-    the failure as CPU + chat-only with a reason instead, so the UI can explain
-    the greyed-out Train/Export and the retry never happens."""
+    startup loudly; on the warm thread a raise is swallowed and leaves DEVICE
+    None, so every later request would retry the same failing import and
+    /api/health, which waits on this, would 500. Record CPU + chat-only with a
+    reason instead: the UI can explain the greyed-out Train/Export and the retry
+    never happens."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON
     with _DETECT_LOCK:
         if DEVICE is None:

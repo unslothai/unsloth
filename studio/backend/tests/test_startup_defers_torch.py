@@ -4,11 +4,11 @@
 """Invariant: ``import main`` must not import torch, and the warm that replaces
 it must be safe.
 
-uvicorn binds the listening socket only after ``import main`` and the lifespan
-have both finished, so anything either of them imports is time the login screen
-does not exist. torch (plus the sympy/scipy/pandas/sklearn it drags in through
-transformers) was about 5s of that on a GPU host, for data no request needs
-before it is asked for. Four eager edges caused it:
+uvicorn binds the socket only after ``import main`` and the lifespan both
+finish, so anything they import is time the login screen does not exist. torch
+(plus the sympy/scipy/pandas/sklearn transformers drags in) was about 5s of that
+on a GPU host, for data no request needs until it is asked for. Four eager edges
+caused it:
 
   utils/models/model_config.py  _build_detection_sets() at module scope
   routes/models.py              from core.inference import get_inference_backend

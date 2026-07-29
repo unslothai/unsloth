@@ -104,9 +104,8 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     """
     from utils.hardware import get_gpu_utilization
 
-    # Off the event loop for the same reason as /hardware/visible below, plus
-    # the first call blocks on hardware detection while the startup warm is
-    # still importing torch.
+    # Off-loop for the same reason as /hardware/visible below, plus the first
+    # call blocks on hardware detection while the warm is still importing torch.
     return await asyncio.to_thread(get_gpu_utilization)
 
 

@@ -3,34 +3,32 @@
 
 """Import the ML stack on a background thread while the backend finishes booting.
 
-torch (plus the sympy/scipy/pandas it drags in) used to be imported as a side
-effect of `import main`, so the port could not bind until it finished. Those
-imports are deferred now, which would only move the cost to the first request
-that needs them -- this module pays it concurrently instead.
+torch (plus the sympy/scipy/pandas it drags in) used to be imported by
+`import main`, so the port could not bind until it finished. Deferring it alone
+would just move that cost to the first request; this module pays it
+concurrently instead.
 
-Started from the last line of main.py's lifespan, deliberately: everything
-above it in the lifespan is on the critical path to binding the socket, and a
-warm thread started earlier would compete with that work for the GIL. Uvicorn
-binds as soon as the lifespan returns, so the warm overlaps the serving window
-instead of the boot.
+Started from the last line of main.py's lifespan: everything above is on the
+critical path to binding the socket and would contend with the warm for the
+GIL. Uvicorn binds as soon as the lifespan returns, so the warm overlaps the
+serving window, not the boot.
 
 Contract:
-  * idempotent -- repeat calls are no-ops, one thread per process
-  * never fatal -- every stage is isolated; a failure is logged and leaves the
-    stage un-warmed, to be retried by whoever actually needs it
-  * no half-initialised state -- each stage delegates to the module that owns
-    the cache (utils.hardware, model_config, hf_xet_fallback), all of which
-    cache under a lock and only on success, so a request racing the warm waits
-    rather than duplicating or observing a partial result
-  * same end state -- the stages import what `import main` used to import, in
-    the order it used to import them, and through the same call sites. A stage
-    that shortcuts to a bare `import x` can behave differently from the edge it
-    replaced; see _warm_unsloth_zoo.
+  * idempotent -- one thread per process, repeat calls are no-ops
+  * never fatal -- each stage is isolated; a failure is logged and leaves the
+    stage cold, to be retried by whoever needs it
+  * no half-initialised state -- stages delegate to the module owning the cache
+    (utils.hardware, model_config, hf_xet_fallback), each of which caches under
+    a lock and only on success, so a racing request waits instead of seeing a
+    partial result
+  * same end state -- same imports, same order, same call sites as `import
+    main`. A stage shortcutting to a bare `import x` can behave differently
+    from the edge it replaced; see _warm_unsloth_zoo.
 
-What this does NOT do: make the endpoints that need torch cheap while it runs.
+What this does NOT do: make torch-dependent endpoints cheap while it runs.
 Anything reaching get_device() blocks until the hardware stage finishes, so
-`async def` handlers on that path must go through asyncio.to_thread or they
-stall the event loop for the whole import (see main.py's /api/health).
+`async def` handlers on that path must use asyncio.to_thread or they stall the
+event loop for the whole import (see main.py's /api/health).
 """
 
 from __future__ import annotations
@@ -58,10 +56,10 @@ _status: dict = {"started": False, "finished": False, "stages": {}}
 def _torch_installed() -> bool:
     """True if torch is importable, without importing it.
 
-    find_spec resolves the module but never runs it, so this stays free. Used to
-    skip the stages that hard-require torch on a --no-torch install (install.sh
-    --no-torch, and the api-smoke CI job) rather than log an import error for a
-    dependency that host deliberately does not have.
+    find_spec resolves the module but never runs it, so this stays free. Lets
+    the torch-requiring stages be skipped on a --no-torch install (install.sh
+    --no-torch, the api-smoke CI job) instead of logging an import error for a
+    dependency that host deliberately lacks.
     """
     try:
         return importlib.util.find_spec("torch") is not None
@@ -83,24 +81,22 @@ def _is_extension_module(name: str) -> bool:
 def purge_partial_import(package: str) -> list:
     """Drop the submodules a failed package import left behind in sys.modules.
 
-    When ``package/__init__.py`` raises, CPython removes only the parent from
-    sys.modules and keeps every submodule it had already executed. The next
-    import then re-runs ``__init__`` while each of its ``from .x import y`` is
-    served from that cache, so the attributes are never rebound: the package
-    imports "successfully" but is missing pieces (the bitsandbytes case fixed in
-    #7580). The warm makes this reachable -- it imports these packages on a
-    thread and swallows the failure, so the retry is somebody else's request.
+    When ``package/__init__.py`` raises, CPython evicts only the parent and
+    keeps every submodule it already executed. The next import re-runs
+    ``__init__`` with each ``from .x import y`` served from that cache, so the
+    attributes are never rebound: the package imports "successfully" but is
+    missing pieces (the bitsandbytes case fixed in #7580). The warm makes this
+    reachable -- it imports on a thread and swallows the failure, so the retry
+    is somebody else's request.
 
-    Only acts on that exact signature (parent gone, submodules present), so a
+    Acts only on that exact signature (parent gone, submodules present), so a
     concurrent, still-running import is left alone. Returns what it removed.
 
-    Refuses to touch a package that has already-initialised C extension
-    submodules. Evicting one only makes the next import re-run its module init,
-    and a second registration of the same pybind11 type calls std::terminate:
-    purging torch.* on this box and re-importing killed the process outright
-    with 'generic_type: type "GradBucket" is already registered!'. Leaving the
-    zombie gives a torch that is missing attributes, which is bad; SIGABRT in
-    the middle of serving is worse.
+    Declines when any submodule is a loaded C extension: evicting one makes the
+    next import re-run its module init, and pybind11 answers a duplicate type
+    registration with std::terminate -- purging and re-importing torch.* on this
+    box died with 'generic_type: type "GradBucket" is already registered!'. A
+    torch missing attributes is bad; SIGABRT mid-serve is worse.
     """
     if package in sys.modules:
         return []
@@ -136,8 +132,7 @@ def _run_stage(name: str, fn) -> None:
     except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
         _status["stages"][name] = {"ok": False, "error": repr(exc)}
         # warning, not debug: the stage stays cold and the first request pays
-        # for it, so this needs to be greppable when someone reports a slow
-        # first inference.
+        # for it, so it must be greppable on a "slow first inference" report.
         logger.warning("torch warm stage %r failed: %r", name, exc)
     else:
         _status["stages"][name] = {
@@ -147,67 +142,64 @@ def _run_stage(name: str, fn) -> None:
 
 
 def _warm_hardware() -> None:
-    # Imports torch and enumerates devices. The lifespan waits on this same
-    # call, so it either finds the result cached or blocks on the lock the warm
-    # thread holds -- never a second, racing detection.
+    # Imports torch and enumerates devices. Requests wait on this same call, so
+    # they hit the cached result or block on the lock this thread holds -- never
+    # a second, racing detection.
     from utils.hardware import ensure_hardware_detected
     ensure_hardware_detected()
 
 
 def _warm_transformers() -> None:
-    # The registry read that used to happen at `import main`. Kept ahead of the
-    # unsloth_zoo stage: that is the order the eager imports ran in, and
-    # unsloth_zoo patches transformers on import.
+    # The registry read `import main` used to do. Kept ahead of unsloth_zoo:
+    # that is the eager order, and unsloth_zoo patches transformers on import.
     from utils.models.model_config import _detection_sets
     _detection_sets()
 
 
 def _warm_datasets() -> None:
-    # utils/datasets/raw_text.py used to import this for an annotation alone,
-    # and `datasets` reaches torch through datasets.formatting.torch_formatter.
-    # Nothing depends on it being imported early, but it was, so warm it and
-    # keep the first dataset operation as cheap as it used to be. 0.3s once
-    # transformers is loaded. Ungated: datasets imports without torch.
+    # raw_text.py used to import this for an annotation alone, and `datasets`
+    # reaches torch via datasets.formatting.torch_formatter. Nothing needs it
+    # early, but it was imported early, so warm it and keep the first dataset
+    # operation as cheap as before. 0.3s once transformers is loaded. Ungated:
+    # datasets imports without torch.
     importlib.import_module("datasets")
 
 
 def _warm_unsloth_zoo() -> None:
     """Prime the download stall watchdog, the way the eager import primed it.
 
-    Through utils.hf_xet_fallback rather than a bare ``import unsloth_zoo``,
-    because the edge this replaces was orchestrator.py's ``from
-    utils.hf_xet_fallback import DownloadStallError``. The shim does not just
-    import: when unsloth_zoo's GPU init raises it retries under
-    UNSLOTH_ZOO_DISABLE_GPU_INIT=1, which makes unsloth_zoo skip that init and
-    inject its triton/bitsandbytes stubs. A bare import skips the retry, so on a
-    host whose bitsandbytes wheel cannot find libcudart -- where unsloth_zoo
-    raises "CUDA Setup failed despite GPU being available" -- the warm reported
-    a failed stage for something startup used to complete. Measured on this box
-    before the fix; a bare import fails there and the shim succeeds.
+    Through utils.hf_xet_fallback, not a bare ``import unsloth_zoo``: the edge
+    this replaces was orchestrator.py's ``from utils.hf_xet_fallback import
+    DownloadStallError``, and the shim does more than import. When unsloth_zoo's
+    GPU init raises it retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, which skips
+    that init and injects the triton/bitsandbytes stubs. A bare import skips the
+    retry, so on a host whose bitsandbytes wheel cannot find libcudart --
+    unsloth_zoo raising "CUDA Setup failed despite GPU being available" -- the
+    warm failed a stage that startup used to complete. Measured on this box: the
+    bare import fails, the shim succeeds.
 
     Skipped without torch: unsloth_zoo hard-requires it, and the shim already
-    degrades to its own stubs on such a host.
+    degrades to its own stubs there.
     """
     if not _torch_installed():
         return
     # Private, deliberately: this is the exact function the removed eager import
-    # drove, and the public names reach it only by resolving an attribute whose
-    # degraded fallback is indistinguishable from success.
+    # drove. The public names reach it only through an attribute whose degraded
+    # fallback is indistinguishable from success.
     from utils.hf_xet_fallback import _load_shared
 
     if not _load_shared():
-        # _load_shared() has already logged why and left the shim on its
-        # degraded stubs, so downloads still work -- but the stage is not warm,
-        # and that has to show up in warm_status(). Leave nothing half-imported
-        # behind first: whoever imports unsloth_zoo next must re-run __init__
-        # against an empty cache. See purge_partial_import().
+        # _load_shared() already logged why and left the shim on its degraded
+        # stubs, so downloads still work -- but the stage is cold and that must
+        # show in warm_status(). Purge first so the next importer re-runs
+        # unsloth_zoo/__init__ against an empty cache.
         purge_partial_import("unsloth_zoo")
         raise RuntimeError("unsloth_zoo unavailable; the download stall watchdog stays degraded")
 
 
-# Order matters: it is the order the eager imports ran in. transformers before
-# unsloth_zoo because unsloth_zoo patches transformers on import, and datasets
-# between them because that is where `import main` reached it.
+# Order matters -- it is the eager import order: transformers before unsloth_zoo
+# (which patches transformers on import), datasets between them because that is
+# where `import main` reached it.
 _STAGES = (
     ("hardware", _warm_hardware),
     ("transformers", _warm_transformers),
@@ -228,10 +220,10 @@ def _warm() -> None:
 def start_background_warm() -> bool:
     """Start the warm thread once. Returns True iff this call started it.
 
-    Runs on every host, torch or not: the first stage is hardware detection,
-    which the lifespan used to do inline and which still has to happen without
-    waiting for a request (it is what prints the "Hardware detected: ..." line
-    and what /api/health reports as chat_only).
+    Runs on every host, torch or not: stage one is hardware detection, which the
+    lifespan used to do inline and which must still happen without waiting for a
+    request (it prints "Hardware detected: ..." and feeds /api/health's
+    chat_only).
     """
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":

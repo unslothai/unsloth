@@ -31,9 +31,9 @@ from utils.hardware import get_device, prepare_gpu_selection
 
 # Re-exported from the shared helper so GGUF, training, and inference share one
 # type; kept importable here for backwards compatibility. Resolved through PEP
-# 562 rather than a module-level import: the shim resolves the name by importing
-# unsloth_zoo, which imports torch, and routes/inference.py imports this module
-# at startup purely for the two GenStream* classes below.
+# 562, not a module-level import: the shim resolves the name by importing
+# unsloth_zoo, hence torch, and routes/inference.py imports this module at
+# startup purely for the two GenStream* classes below.
 DownloadStallError: type
 
 
@@ -451,9 +451,9 @@ class InferenceOrchestrator:
         message, so long-running operations (large downloads, slow loads)
         survive as long as the subprocess keeps reporting progress.
         """
-        # Local: resolving this name on the shim runs its lazy unsloth_zoo load,
+        # Local: resolving this name runs the shim's lazy unsloth_zoo load,
         # which pulls torch. The shim caches the class it picked, so this site
-        # and the `except` in load_model() always see the same object.
+        # and the `except` in load_model() see the same object.
         from utils.hf_xet_fallback import DownloadStallError
 
         deadline = time.monotonic() + timeout

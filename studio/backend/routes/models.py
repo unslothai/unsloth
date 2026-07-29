@@ -1744,9 +1744,9 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
         # Off-loop: constructing the orchestrator singleton reads the default
-        # model list, which calls get_device(). The frontend fetches this route
-        # on load, so before the startup warm finishes an inline call would
-        # freeze the whole server for the length of the torch import.
+        # model list, which calls get_device(). The frontend fetches this on
+        # load, so before the warm finishes an inline call would freeze the
+        # whole server for the length of the torch import.
         inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models

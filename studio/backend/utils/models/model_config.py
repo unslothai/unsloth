@@ -583,12 +583,11 @@ def _build_detection_sets():
         )
 
 
-# Reading the registry imports transformers, which imports torch: on a GPU host
-# that is most of the backend's `import main` time, spent before the port can
-# even bind. The sets are needed only by the capability checks below, so build
-# them on first use. Double-checked under a lock because two requests can race
-# here; _build_detection_sets() never raises (it falls back), so a failure
-# caches the same curated fallback the eager version did.
+# Reading the registry imports transformers, hence torch: on a GPU host that is
+# most of `import main`, spent before the port can bind. Only the capability
+# checks below need the sets, so build them on first use. Double-checked under a
+# lock because requests race here; _build_detection_sets() never raises (it
+# falls back), so a failure caches the curated fallback the eager version did.
 _DETECTION_SETS: Optional[Tuple[frozenset, frozenset, frozenset]] = None
 _DETECTION_SETS_LOCK = threading.Lock()
 
@@ -679,8 +678,8 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays
 # self-contained and does not import the parent backend module graph.
-# Built on demand (and memoised) because interpolating the sets would otherwise
-# force the eager registry read this module now defers.
+# Built on demand (and memoised): interpolating the sets would otherwise force
+# the eager registry read this module now defers.
 def _build_vision_check_inline_helpers() -> str:
     vlm_types, vlm_classes, audio_types = _detection_sets()
     return (
@@ -770,10 +769,10 @@ except Exception as exc:
     )
 
 
-# The two script strings above and the three detection sets stay reachable under
-# their original module-level names (tests and callers import them directly) via
-# PEP 562, which also covers `from utils.models.model_config import _VLM_...`.
-# Memoised so repeated access does not rebuild the ~40 KB script each time.
+# PEP 562 keeps the two script strings and three detection sets reachable under
+# their original module-level names, including `from utils.models.model_config
+# import _VLM_...` (tests and callers do that). Memoised so repeated access does
+# not rebuild the ~40 KB script.
 _LAZY_MODULE_ATTRS = {
     "_VLM_MODEL_TYPES": lambda: _detection_sets()[0],
     "_VLM_CLASS_NAMES": lambda: _detection_sets()[1],
@@ -786,8 +785,8 @@ _LAZY_MODULE_LOCK = threading.Lock()
 
 
 def _lazy_module_attr(name: str) -> Any:
-    """Build-once accessor. Used by __getattr__ and by callers inside this
-    module, where a bare global read would not reach PEP 562."""
+    """Build-once accessor. Used by __getattr__ and by in-module callers, where
+    a bare global read would not reach PEP 562."""
     with _LAZY_MODULE_LOCK:
         if name not in _LAZY_MODULE_CACHE:
             _LAZY_MODULE_CACHE[name] = _LAZY_MODULE_ATTRS[name]()

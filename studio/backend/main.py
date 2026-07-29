@@ -514,11 +514,11 @@ async def lifespan(app: FastAPI):
         shutil.rmtree(overlay_dir, ignore_errors = True)
 
     # Hardware detection is NOT here any more. It imports torch, and uvicorn
-    # only binds the socket once this lifespan returns, so it used to keep the
-    # login screen behind a ~1.4s torch import. It now runs first on the warm
-    # thread started at the end of this function; the handful of endpoints that
-    # read DEVICE / CHAT_ONLY go through ensure_hardware_detected() and wait for
-    # that same detection rather than reading a half-set global.
+    # binds only once this lifespan returns, so it kept the login screen behind
+    # a ~1.4s torch import. It runs first on the warm thread started at the end
+    # of this function; endpoints reading DEVICE / CHAT_ONLY go through
+    # ensure_hardware_detected() and wait for that same detection instead of
+    # reading a half-set global.
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
     # Reinstall mlx by name on a background thread (off the critical path) and
@@ -600,11 +600,10 @@ async def lifespan(app: FastAPI):
             None if _suppress_bootstrap else storage.get_bootstrap_password()
         )
 
-    # Last, so it never competes with the work above for the GIL: import torch
-    # (via hardware detection), then transformers, datasets and unsloth_zoo --
-    # everything `import main` used to pull in before the port could bind. The
-    # socket binds as soon as this returns, so the login screen is up while the
-    # ML stack loads behind it.
+    # Last, so it never contends with the work above for the GIL: torch (via
+    # hardware detection), transformers, datasets, unsloth_zoo -- everything
+    # `import main` used to pull in before the port could bind. The socket binds
+    # as soon as this returns, so the login screen is up while the stack loads.
     start_background_warm()
 
     _lifespan_log.info(
@@ -1103,9 +1102,9 @@ async def health_check(request: Request):
     device_type require a bearer since they fingerprint the host.
     """
     # chat_only comes from hardware detection, which the warm thread may still
-    # be doing. Wait for it rather than publish the pre-detection default (True)
-    # and grey out Train/Export on a GPU host for the first second. Off-loop so
-    # the login screen and /api/auth/status keep answering while we wait.
+    # be running. Wait rather than publish the pre-detection default (True) and
+    # grey out Train/Export on a GPU host for a second. Off-loop so the login
+    # screen and /api/auth/status keep answering meanwhile.
     await asyncio.to_thread(ensure_hardware_detected)
     base = {
         "status": "healthy",
@@ -1421,9 +1420,9 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
 @app.get("/api/system/gpu-visibility")
 async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)):
-    # Off-loop: this reaches get_device(), which blocks on hardware detection
-    # while the startup warm is still importing torch. Called inline it would
-    # stall every other request for the length of that import.
+    # Off-loop: reaches get_device(), which blocks on hardware detection while
+    # the warm is still importing torch. Inline it would stall every other
+    # request for that whole import.
     return await asyncio.to_thread(get_backend_visible_gpu_info)
 
 
