@@ -2901,9 +2901,9 @@ html[data-chat-font] .aui-root {
 }
 
 .elevated-card {
-	border: 1px solid #ebeae6;
+	border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 	border-radius: 20px;
-	box-shadow: 0 0 60px 8px #f5f5f4;
+	box-shadow: 0 0 60px 8px color-mix(in srgb, var(--foreground) 5%, transparent);
 }
 
 @media (min-width: 640px) {
@@ -2925,9 +2925,9 @@ html[data-chat-font] .aui-root {
 
 .page-title-halo {
 	text-shadow:
-		0 0 24px #e4e3df,
-		0 0 56px #ebeae6,
-		0 0 96px #efeeea;
+		0 0 24px color-mix(in srgb, var(--foreground) 13%, transparent),
+		0 0 56px color-mix(in srgb, var(--foreground) 10%, transparent),
+		0 0 96px color-mix(in srgb, var(--foreground) 8%, transparent);
 }
 
 .dark .page-title-halo {

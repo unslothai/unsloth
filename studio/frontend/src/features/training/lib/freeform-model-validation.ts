@@ -11,6 +11,16 @@ import type { TranslationKey } from "@/i18n";
 const ADAPTER_ARTIFACT_PATTERN =
   /(?:^|[/\\])adapter_(?:config\.json|model\.safetensors)$/i;
 
+function hasPeftMetadata({
+  tags,
+  libraryName,
+}: Pick<TrainingModelValidationCandidate, "tags" | "libraryName">): boolean {
+  if (libraryName?.trim().toLowerCase() === "peft") {
+    return true;
+  }
+  return tags?.some((tag) => tag.trim().toLowerCase() === "peft") ?? false;
+}
+
 export type TrainingModelValidationCandidate = {
   id: string;
   modelFormat?: ModelInventoryFormat | null;
@@ -38,7 +48,8 @@ export function validateTrainingModelCandidate(
   }
   if (
     candidate.modelFormat === "adapter" ||
-    ADAPTER_ARTIFACT_PATTERN.test(id)
+    ADAPTER_ARTIFACT_PATTERN.test(id) ||
+    hasPeftMetadata(candidate)
   ) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonAdapter" };
   }

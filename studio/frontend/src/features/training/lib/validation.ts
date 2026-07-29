@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { translate } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
+import { isUntrainableModelFormat } from "./model-support";
 
 export interface StartValidationResult {
   ok: boolean;
@@ -48,6 +50,16 @@ export function validateTrainingConfig(
 ): StartValidationResult {
   if (!config.selectedModel) {
     return { ok: false, message: "Select a base model first." };
+  }
+  if (isUntrainableModelFormat(config.modelFormat)) {
+    return {
+      ok: false,
+      message: translate(
+        config.modelFormat === "gguf"
+          ? "studio.modelPicker.reasonGguf"
+          : "studio.modelPicker.reasonAdapter",
+      ),
+    };
   }
 
   if (config.datasetSource === "huggingface") {

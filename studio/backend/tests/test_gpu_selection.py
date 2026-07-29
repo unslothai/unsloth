@@ -1410,6 +1410,11 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route,
+                "_remote_model_is_adapter",
+                return_value = False,
+            ),
             patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(
                 "routes.training_vram.summarize_resident_chat",
@@ -1451,6 +1456,11 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route,
+                "_remote_model_is_adapter",
+                return_value = False,
+            ),
             patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(
                 "routes.training_vram.summarize_resident_chat",

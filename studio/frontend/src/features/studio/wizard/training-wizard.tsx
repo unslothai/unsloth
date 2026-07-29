@@ -18,6 +18,7 @@ import {
   TRAIN_PICKER_TRIGGER_CLASS,
   TrainModelSelector,
 } from "@/features/model-picker";
+import { useSettingsDialogStore } from "@/features/settings";
 import {
   TRAINING_METHOD_META,
   TRAINING_METHOD_ORDER,
@@ -279,6 +280,7 @@ function TrainingMethodSelect() {
 
 function ModelPanel() {
   const t = useT();
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   return (
     <div className="grid grid-cols-1 gap-4 @md/train-section:grid-cols-2 @2xl/train-section:grid-cols-[minmax(0,1fr)_180px_200px]">
       <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-1">
@@ -290,7 +292,10 @@ function ModelPanel() {
         <TrainingMethodSelect />
       </SetupField>
       <SetupField label={t("studio.wizard.hfTokenLabel")}>
-        <HfTokenIndicator showLabel={true} />
+        <HfTokenIndicator
+          showLabel={true}
+          onOpenSettings={() => openSettings("general")}
+        />
       </SetupField>
     </div>
   );

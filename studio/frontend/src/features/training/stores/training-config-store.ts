@@ -12,6 +12,7 @@ import {
 } from "@/config/training";
 import { authFetch } from "@/features/auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
+import { translate } from "@/i18n";
 import { isAdapterMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
@@ -425,6 +426,26 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             _trainOnCompletionsManuallySet = false;
             _learningRateManuallySet = false;
             _yamlLearningRate = undefined;
+
+            if (modelDetails.is_lora) {
+              set({
+                modelType: null,
+                modelFormat: "adapter",
+                isVisionModel: false,
+                isEmbeddingModel: false,
+                isAudioModel: false,
+                isLoadingModelDefaults: false,
+                isCheckingVision: false,
+                modelDefaultsError: null,
+                modelDefaultsAppliedFor: modelName,
+                maxPositionEmbeddings: null,
+              });
+              toast.error(translate("studio.modelPicker.cantUseModel"), {
+                description: translate("studio.modelPicker.reasonAdapter"),
+              });
+              return;
+            }
+
             const patch = mapBackendModelConfigToTrainingPatch(
               modelDetails.config,
             );
@@ -742,7 +763,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         modelType: ModelType | null,
         options?: ModelCacheReferenceOptions,
       ) => {
-        const previousModel = get().selectedModel;
+        const currentState = get();
+        const previousModel = currentState.selectedModel;
+        const previousAdapterFormat =
+          selectedModel === previousModel &&
+          currentState.modelFormat === "adapter"
+            ? currentState.modelFormat
+            : null;
         const patch: {
           selectedModel: string | null;
           modelDefaultsError: null;
@@ -763,7 +790,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ? (options?.knownCached ?? false)
             : false,
           modelLocalPath: selectedModel ? (options?.localPath ?? null) : null,
-          modelFormat: selectedModel ? (options?.modelFormat ?? null) : null,
+          modelFormat: selectedModel
+            ? (previousAdapterFormat ?? options?.modelFormat ?? null)
+            : null,
         };
         if (modelType) {
           patch.modelType = modelType;

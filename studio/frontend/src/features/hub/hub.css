@@ -480,14 +480,6 @@
     color: var(--foreground);
   }
 
-  .hub-page .page-title-halo {
-    text-shadow: 0 0 24px #e4e3df, 0 0 56px #ebeae6, 0 0 96px #efeeea;
-  }
-
-  html.dark .hub-page .page-title-halo {
-    text-shadow: none;
-  }
-
   html:not(.dark) .hub-page {
     background-color: var(--background);
   }

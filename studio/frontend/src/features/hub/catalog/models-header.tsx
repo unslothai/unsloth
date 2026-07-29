@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { HfTokenIndicator } from "@/features/hub/components/hf-token-indicator";
-import { PageHeading } from "@/features/hub/components/page-heading";
+import { useSettingsDialogStore } from "@/features/settings";
+import { HfTokenIndicator } from "../components/hf-token-indicator";
+import { PageHeading } from "../components/page-heading";
 import { TransportToggle } from "./transport-toggle";
 import {
   Tooltip,
@@ -61,6 +62,7 @@ export function ModelsHeader({
   onTitleClick: () => void;
   onEject: () => void;
 }) {
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
@@ -74,7 +76,9 @@ export function ModelsHeader({
       />
 
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
-        <HfTokenIndicator />
+        <HfTokenIndicator
+          onOpenSettings={() => openSettings("general")}
+        />
         <TransportToggle />
         <StatPill
           icon={PackageIcon}

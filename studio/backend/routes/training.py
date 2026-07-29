@@ -51,7 +51,7 @@ except ImportError:
 # Auth
 from auth.authentication import authenticated_via_api_key, get_current_subject
 
-from utils.utils import log_and_http_error
+from utils.utils import hf_env_offline, log_and_http_error
 
 from models import (
     TrainingStartRequest,
@@ -76,6 +76,11 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 _LOCAL_MODEL_PROBE_LIMIT = 2000
+_REMOTE_MODEL_METADATA_TIMEOUT_SECONDS = 5.0
+
+
+class _LocalModelProbeIncomplete(RuntimeError):
+    pass
 
 # Consecutive 1s polls without a step update that count as a stall. Applied only
 # once stepping: the pre-first-step phase (model load + tokenization) can take far
@@ -104,58 +109,121 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
     return validated
 
 
+def _is_trainable_weight_name(name: str) -> bool:
+    lower = name.lower()
+    if lower.endswith(".safetensors") and not lower.startswith(
+        ("adapter_model", "optimizer", "scheduler", "rng_state", "scaler")
+    ):
+        return True
+    if lower.endswith((".pt", ".pth", ".ckpt")) and lower.startswith(
+        ("model", "pytorch_model", "consolidated", "lit_model")
+    ):
+        return True
+    if lower.endswith(".h5") and lower.startswith(("model", "tf_model")):
+        return True
+    if lower.endswith(".msgpack") and lower.startswith(("model", "flax_model")):
+        return True
+    if lower.endswith(".npz") and lower.startswith("model"):
+        return True
+    if lower.endswith(".bin") and lower.startswith(
+        ("pytorch_model", "model", "consolidated")
+    ):
+        return True
+    return False
+
+
 def _has_trainable_local_weights(path: Path) -> bool:
-    if not path.is_dir():
-        return False
     try:
-        files = [entry for entry in path.iterdir() if entry.is_file()]
+        if not path.is_dir():
+            return False
+        if not (path / "config.json").is_file():
+            return False
+        return any(
+            _is_trainable_weight_name(entry.name)
+            for entry in path.iterdir()
+            if entry.is_file()
+        )
     except OSError:
         return False
-    has_config = (path / "config.json").is_file()
-    if not has_config:
-        return False
-    for file in files:
-        lower = file.name.lower()
-        if lower.endswith(".safetensors") and not lower.startswith(
-            ("adapter_model", "optimizer", "scheduler", "rng_state", "scaler")
-        ):
-            return True
-        if lower.endswith((".pt", ".pth", ".ckpt")) and lower.startswith(
-            ("model", "pytorch_model", "consolidated", "lit_model")
-        ):
-            return True
-        if lower.endswith(".h5") and lower.startswith(("model", "tf_model")):
-            return True
-        if lower.endswith(".msgpack") and lower.startswith(("model", "flax_model")):
-            return True
-        if lower.endswith(".npz") and lower.startswith("model"):
-            return True
-        if lower.endswith(".bin") and lower.startswith(
-            ("pytorch_model", "model", "consolidated")
-        ):
-            return True
-    return False
 
 
 def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
+def _remote_model_is_adapter(
+    model_name: str,
+    hf_token: Optional[str],
+) -> bool:
+    repo_id = model_name.strip()
+    if "/" not in repo_id:
+        repo_id = f"unsloth/{repo_id}"
+    try:
+        from huggingface_hub import model_info as hf_model_info
+
+        info = hf_model_info(
+            repo_id,
+            token = hf_token,
+            timeout = _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        logger.warning(
+            "Could not inspect remote model files for %s (%s)",
+            model_name,
+            type(error).__name__,
+        )
+        from hub.utils.hf_errors import hf_error_status
+
+        status_code = hf_error_status(error)
+        if status_code is not None:
+            raise HTTPException(
+                status_code = status_code,
+                detail = (
+                    "The Hugging Face model could not be verified. "
+                    "Check the repository ID and your access token."
+                ),
+            ) from error
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "Hugging Face model metadata is temporarily unavailable. "
+                "Retry before starting training."
+            ),
+        ) from error
+
+    root_files: set[str] = set()
+    for sibling in getattr(info, "siblings", None) or ():
+        name = getattr(sibling, "rfilename", None)
+        if not isinstance(name, str):
+            continue
+        normalized = name.replace("\\", "/")
+        if "/" not in normalized:
+            root_files.add(normalized)
+    return "adapter_config.json" in root_files
+
+
 def _detect_local_gguf(path: Path) -> Optional[str]:
     try:
-        detected = detect_gguf_model(str(path))
-        if detected is not None or not path.is_dir():
-            return detected
+        try:
+            is_directory = path.is_dir()
+        except OSError:
+            if path.suffix.lower() == ".gguf":
+                return detect_gguf_model(str(path))
+            raise
+        if not is_directory:
+            return detect_gguf_model(str(path))
         for index, entry in enumerate(path.rglob("*"), start = 1):
             if index > _LOCAL_MODEL_PROBE_LIMIT:
-                break
+                raise _LocalModelProbeIncomplete
             if entry.suffix.lower() != ".gguf":
                 continue
             detected = detect_gguf_model(str(entry))
             if detected is not None:
                 return detected
-    except (OSError, RuntimeError):
-        return None
+    except _LocalModelProbeIncomplete:
+        raise
+    except (OSError, RuntimeError) as error:
+        raise _LocalModelProbeIncomplete from error
     return None
 
 
@@ -187,7 +255,7 @@ def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
                 request.model_name,
                 ("config.json", "adapter_config.json"),
             )
-        elif request.model_known_cached or request.model_local_path:
+        elif request.model_known_cached or request.model_local_path or hf_env_offline():
             from core.training.training import _resolve_model_snapshot
 
             snapshot = _resolve_model_snapshot(
@@ -199,17 +267,35 @@ def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
         if snapshot:
             path = Path(snapshot)
     if path is None:
+        if _remote_model_is_adapter(request.model_name, request.hf_token or None):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "Adapter models are inference-only and cannot be trained as base models."
+                ),
+            )
         return
     has_trainable_weights = _has_trainable_local_weights(path)
-    if _has_adapter_metadata(path) and not has_trainable_weights:
+    if has_trainable_weights:
+        return
+    if _has_adapter_metadata(path):
         raise HTTPException(
             status_code = 400,
             detail = (
                 "Adapter-only local models are inference-only and cannot be trained as base models."
             ),
         )
-    has_gguf = _detect_local_gguf(path) is not None
-    if has_gguf and not has_trainable_weights:
+    try:
+        has_gguf = _detect_local_gguf(path) is not None
+    except _LocalModelProbeIncomplete:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "The local model directory is too large or could not be read safely. "
+                "Select its snapshot directory containing config.json and trainable weights."
+            ),
+        )
+    if has_gguf:
         raise HTTPException(
             status_code = 400,
             detail = "GGUF-only local models are inference-only and cannot be trained.",
@@ -269,14 +355,20 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
     return value or None
 
 
-def _apply_resume_resource_provenance(
+def _prepare_resume_resource_provenance(
     request: TrainingStartRequest,
     resume_run: dict,
-) -> Optional[str]:
+) -> tuple[Optional[str], bool, bool, bool]:
     stored = training_run_config(resume_run)
-    from core.training.provenance import resource_provenance_allows_resume
+    from core.training.provenance import (
+        ExactResumeResourcesUnavailable,
+        exact_resume_resource_requirements,
+        resource_provenance_is_complete,
+    )
 
-    if not resource_provenance_allows_resume(stored):
+    try:
+        requires_exact_model, requires_exact_dataset = exact_resume_resource_requirements(stored)
+    except ExactResumeResourcesUnavailable:
         raise HTTPException(
             status_code = 409,
             detail = (
@@ -347,7 +439,20 @@ def _apply_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
-    return _normalized_optional_string(stored.get("actual_model_repo_id"))
+    return (
+        _normalized_optional_string(stored.get("actual_model_repo_id")),
+        requires_exact_model,
+        requires_exact_dataset,
+        resource_provenance_is_complete(stored),
+    )
+
+
+def _apply_resume_resource_provenance(
+    request: TrainingStartRequest,
+    resume_run: dict,
+) -> Optional[str]:
+    actual_model_repo_id, _, _, _ = _prepare_resume_resource_provenance(request, resume_run)
+    return actual_model_repo_id
 
 
 @router.get("/hardware")
@@ -470,18 +575,16 @@ async def start_training(
                     detail = "Resume checkpoint must include saved trainer state.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
-            resume_actual_model_repo_id = _apply_resume_resource_provenance(request, resume_run)
-            from core.training.provenance import (
-                exact_resume_resource_requirements,
-                resource_provenance_is_complete,
-            )
-
-            resume_config = training_run_config(resume_run)
             (
+                resume_actual_model_repo_id,
                 resume_requires_exact_model,
                 resume_requires_exact_dataset,
-            ) = exact_resume_resource_requirements(resume_config)
-            resume_requires_exact_resources = resource_provenance_is_complete(resume_config)
+                resume_requires_exact_resources,
+            ) = await asyncio.to_thread(
+                _prepare_resume_resource_provenance,
+                request,
+                resume_run,
+            )
 
         if request.local_datasets:
             request.local_datasets = _validate_local_dataset_paths(
@@ -491,7 +594,6 @@ async def start_training(
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
-        _reject_untrainable_model_request(request)
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
@@ -562,6 +664,8 @@ async def start_training(
                         "dataset cache; disable streaming to train from the cached copy."
                     ),
                 )
+
+        await asyncio.to_thread(_reject_untrainable_model_request, request)
 
         # Convert request to backend kwargs.
         training_kwargs = {

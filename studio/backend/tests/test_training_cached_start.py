@@ -129,6 +129,20 @@ def test_start_rejects_nested_gguf_only_local_dir(tmp_path):
     assert "GGUF-only local models" in exc_info.value.detail
 
 
+def test_untrainable_gate_rejects_incomplete_local_probe(tmp_path):
+    route = _load_route_module("training_route_incomplete_local_probe")
+    for index in range(3):
+        (tmp_path / f"artifact-{index}.txt").write_text("x")
+    request = _request(model_name = str(tmp_path))
+
+    with patch.object(route, "_LOCAL_MODEL_PROBE_LIMIT", 2):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    assert "too large or could not be read safely" in exc_info.value.detail
+
+
 def test_untrainable_gate_passes_trainable_local_dir(tmp_path):
     route = _load_route_module("training_route_pass_trainable_dir")
     (tmp_path / "config.json").write_text("{}")
@@ -184,6 +198,34 @@ def test_untrainable_gate_inspects_discovered_known_cache(tmp_path):
 
     assert exc_info.value.status_code == 400
     assert "Adapter-only local models" in exc_info.value.detail
+
+
+def test_untrainable_gate_rejects_remote_adapter():
+    route = _load_route_module("training_route_remote_adapter")
+    request = _request()
+
+    with patch.object(route, "_remote_model_is_adapter", return_value = True):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    assert "Adapter models are inference-only" in exc_info.value.detail
+
+
+def test_remote_adapter_probe_uses_token_and_shorthand():
+    route = _load_route_module("training_route_remote_adapter_metadata")
+    info = SimpleNamespace(
+        siblings = [SimpleNamespace(rfilename = "adapter_config.json")]
+    )
+
+    with patch("huggingface_hub.model_info", return_value = info) as model_info:
+        assert route._remote_model_is_adapter("test", "hf-token") is True
+
+    model_info.assert_called_once_with(
+        "unsloth/test",
+        token = "hf-token",
+        timeout = route._REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
+    )
 
 
 def test_optimizer_checkpoint_does_not_make_adapter_trainable(tmp_path):
@@ -244,6 +286,7 @@ def test_route_forwards_cache_reference_fields():
 
     with (
         patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route, "_remote_model_is_adapter", return_value = False),
         patch.object(route, "load_model_defaults", return_value = {}),
         patch.object(route.asyncio, "to_thread", _inline_to_thread),
         patch("utils.transformers_version.latest_tier_active_for", return_value = False),

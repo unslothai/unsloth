@@ -370,6 +370,11 @@ def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
 
     with (
         patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(
+            training_route,
+            "_remote_model_is_adapter",
+            return_value = False,
+        ),
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
         patch.object(training_route, "load_model_defaults", return_value = {}),
     ):
@@ -413,6 +418,11 @@ def test_streaming_start_happy_path_reaches_backend():
 
     with (
         patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(
+            training_route,
+            "_remote_model_is_adapter",
+            return_value = False,
+        ),
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
         patch.object(training_route, "load_model_defaults", return_value = {}),
     ):

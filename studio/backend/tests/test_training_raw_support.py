@@ -333,6 +333,11 @@ class TestTrainingRawSupport(unittest.TestCase):
                 "to_thread",
                 new = _inline_to_thread,
             ),
+            patch.object(
+                training_route,
+                "_remote_model_is_adapter",
+                return_value = False,
+            ),
             patch.object(training_route, "load_model_defaults", return_value = {}),
             patch(
                 "core.inference.get_inference_backend",
