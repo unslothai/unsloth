@@ -124,14 +124,23 @@ def main(argv: list[str]) -> int:
     # "absent" (studio_install_ok predates the install-manifest work) and "unparseable"
     # are split apart only for a readable artefact: the desktop reports Stale for both
     # ("desktop_capability_probe_failed", managed.rs:521).
+    # The field is Option<bool> (managed.rs:43), so serde rejects a non-boolean and the
+    # WHOLE payload fails to deserialize -> Stale. bool() instead read a JSON string
+    # "false" as True and reported HEALTHY over a torn install, skipping the repair
+    # assertion. Only a literal JSON true counts.
     install_ok: object = "absent"
     try:
         parsed = json.loads(caps_out)
-        if isinstance(parsed, dict):
-            v = parsed.get("studio_install_ok")
-            install_ok = "absent" if v is None else bool(v)
-        else:
+        if not isinstance(parsed, dict):
             install_ok = "unparseable"
+        else:
+            v = parsed.get("studio_install_ok")
+            if v is None:
+                install_ok = "absent"
+            elif isinstance(v, bool):
+                install_ok = v
+            else:
+                install_ok = "non-boolean"
     except json.JSONDecodeError:
         install_ok = "unparseable"
     say("capabilities.studio_install_ok", install_ok)

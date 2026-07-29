@@ -46,15 +46,26 @@ echo "[interrupt] installer pid/pgid=$PID marker='${MARKER}' deadline=${KILL_AT_
 
 killed=false
 reason=""
-for i in $(seq 1 "$KILL_AT_SECONDS"); do
+# Half-second slices, not one-second: a step that lasts under a second is over by the time
+# a 1s poll notices its line, and the beat below then cannot help.
+for i in $(seq 1 $(( KILL_AT_SECONDS * 2 ))); do
   if ! kill -0 "$PID" 2>/dev/null; then
     reason="exited-before-marker"
     break
   fi
   if [ -n "$MARKER" ] && grep -qE "$MARKER" "$LOG" 2>/dev/null; then
     # A beat into the step, so the kill lands mid-work rather than on the boundary
-    # before the step has touched the venv.
-    sleep "${KILL_AFTER_MARKER_SECONDS:-3}"
+    # before the step has touched the venv. Waited in slices and cut short the moment a
+    # later [TAURI:STEP] line appears: creating the venv takes ~0.1s, so a flat 3s sleep
+    # sent the venv leg's signal into "Installing PyTorch" and made it a duplicate of the
+    # torch leg. Sub-step markers ("studio deps") print no step line of their own, so
+    # they still get the whole beat.
+    _steps_at_marker="$(grep -cE '^\[TAURI:STEP\]' "$LOG" 2>/dev/null || true)"
+    for _ in $(seq 1 $(( ${KILL_AFTER_MARKER_SECONDS:-3} * 5 ))); do
+      sleep 0.2
+      kill -0 "$PID" 2>/dev/null || break
+      [ "$(grep -cE '^\[TAURI:STEP\]' "$LOG" 2>/dev/null || true)" = "$_steps_at_marker" ] || break
+    done
     # ...but a cached step can FINISH inside that beat. Recording marker-hit before the
     # sleep handed the landing assertion a COMPLETED install: the signal reached no
     # process and the leg passed green having interrupted nothing.
@@ -66,7 +77,7 @@ for i in $(seq 1 "$KILL_AT_SECONDS"); do
     killed=true
     break
   fi
-  sleep 1
+  sleep 0.5
 done
 
 if [ "$killed" != "true" ] && kill -0 "$PID" 2>/dev/null; then
@@ -113,6 +124,18 @@ tail -15 "$LOG" || true
 # than passing for the wrong reason.
 if [ -n "$MARKER" ] && ! grep -qE "$MARKER" "$LOG" 2>/dev/null; then
   echo "::warning::marker '$MARKER' never appeared -- this leg killed at the deadline, not at the intended step"
+fi
+# Which step the signal actually landed in. A sub-second step (creating the venv takes
+# ~0.1s) can be over before any log poll notices its line, and the leg then silently kills
+# the NEXT step while its matrix label still claims the marked one. Only steps say where
+# they landed: sub-step markers ("studio deps") print no [TAURI:STEP] line of their own, so
+# the test skips them rather than warning on every leg.
+_last_step="$(grep -E '^\[TAURI:STEP\]' "$LOG" 2>/dev/null | tail -1)"
+echo "[interrupt] step at kill: $_last_step"
+if [ -n "$MARKER" ] &&
+   grep -E '^\[TAURI:STEP\]' "$LOG" 2>/dev/null | grep -qE "$MARKER" &&
+   ! printf '%s\n' "$_last_step" | grep -qE "$MARKER"; then
+  echo "::warning::killed in '$_last_step', not the marked step -- that step was already over"
 fi
 {
   echo "interrupt_reason=$reason"

@@ -65,14 +65,28 @@ function Stop-Tree([int]$RootId) {
   catch { }
 }
 
+function Get-StepCount([string]$Path) {
+  @(Select-String -Path $Path -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue).Count
+}
+
 $killed = $false
 $reason = ''
-for ($i = 0; $i -lt $KillAtSeconds; $i++) {
+# Half-second slices: a step lasting under a second is over by the time a 1s poll notices
+# its line, and the beat below then cannot help.
+for ($i = 0; $i -lt ($KillAtSeconds * 2); $i++) {
   if ($proc.HasExited) { $reason = 'exited-before-marker'; break }
   if ($Marker) {
     $hit = Select-String -Path $LogPath -Pattern $Marker -SimpleMatch:$false -ErrorAction SilentlyContinue
     if ($hit) {
-      Start-Sleep -Seconds $KillAfterMarkerSeconds
+      # Same beat as the POSIX driver, waited in slices and cut short once a later
+      # [TAURI:STEP] line appears, so a fast step finishing inside the beat does not send
+      # the signal into the step after it.
+      $stepsAtMarker = Get-StepCount $LogPath
+      for ($j = 0; $j -lt ($KillAfterMarkerSeconds * 5); $j++) {
+        Start-Sleep -Milliseconds 200
+        if ($proc.HasExited) { break }
+        if ((Get-StepCount $LogPath) -ne $stepsAtMarker) { break }
+      }
       # The installer can finish inside the delay; recording marker-hit before it
       # let a COMPLETED install satisfy the landing assertion and probe HEALTHY.
       if ($proc.HasExited) { $reason = 'exited-during-marker-delay'; break }
@@ -81,7 +95,7 @@ for ($i = 0; $i -lt $KillAtSeconds; $i++) {
       break
     }
   }
-  Start-Sleep -Seconds 1
+  Start-Sleep -Milliseconds 500
 }
 if (-not $killed -and -not $proc.HasExited) { if (-not $reason) { $reason = 'deadline' }; $killed = $true }
 
@@ -117,6 +131,16 @@ Get-Content $LogPath -Tail 15 -ErrorAction SilentlyContinue
 
 if ($Marker -and -not (Select-String -Path $LogPath -Pattern $Marker -ErrorAction SilentlyContinue)) {
   Write-Host "::warning::marker '$Marker' never appeared -- killed at the deadline, not the intended step"
+}
+# Which step the signal actually landed in. A sub-second step can be over before any log
+# poll notices its line, and the leg then silently kills the NEXT step while its matrix
+# label still claims the marked one. Sub-step markers ('studio deps') print no
+# [TAURI:STEP] line of their own, so the test skips them rather than warning every leg.
+$steps = @(Select-String -Path $LogPath -Pattern '^\[TAURI:STEP\]' -ErrorAction SilentlyContinue)
+$lastStep = if ($steps.Count) { $steps[-1].Line } else { '' }
+Write-Host "[interrupt] step at kill: $lastStep"
+if ($Marker -and ($steps | Where-Object { $_.Line -match $Marker }) -and $lastStep -notmatch $Marker) {
+  Write-Host "::warning::killed in '$lastStep', not the marked step -- that step was already over"
 }
 @(
   "interrupt_reason=$reason"
