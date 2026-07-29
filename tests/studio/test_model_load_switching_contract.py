@@ -131,8 +131,7 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     assert "if (sharedModelLoadHandle?.run === run)" in runtime
     assert "const stopped = await shared.cancel(true);" in runtime
     assert runtime.count("inheritCancelledRunRollback(shared.run);") >= 2
-    assert "supersedeOwnerIntent: () => void;" in runtime
-    assert "shared.supersedeOwnerIntent();" in runtime
+    assert "supersedeOwnerIntent" not in runtime
     assert "modelSelectionIntentEpoch += 1;" in runtime
     assert "!initialSharedRun?.cancelPromise" in runtime
     assert "!sharedRun?.cancelPromise" in runtime
@@ -197,12 +196,14 @@ def test_shared_loading_pick_stays_visible_until_cancel_settles():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
     cancel = cancel.split("const cancelLoading = useCallback(", 1)[0]
-    assert cancel.count("clearLoadingModelPick(pickOf(model))") == 1
+    assert cancel.count("clearLoadingModelPick(pickOf(model))") == 2
     assert cancel.index("await run.completionPromise;") < cancel.index(
         "clearLoadingModelPick(pickOf(model))"
     )
     failed_unload = cancel.split("} catch (error) {", 1)[1].split("} finally {", 1)[0]
     assert "await run.completionPromise;" in failed_unload
+    assert "clearLoadingModelPick(pickOf(model))" in failed_unload
+    assert "setModelLoading(false)" in failed_unload
 
 
 def test_backend_load_request_settles_before_cancellation_releases_its_slot():

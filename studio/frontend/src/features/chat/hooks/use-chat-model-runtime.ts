@@ -140,7 +140,6 @@ type ActiveModelLoadRun = {
 
 type SharedModelLoadHandle = {
   run: ActiveModelLoadRun;
-  supersedeOwnerIntent: () => void;
   cancel: (preserveCheckpoint?: boolean) => Promise<boolean>;
 };
 
@@ -594,6 +593,12 @@ export function useChatModelRuntime() {
           // The request failed, so reconcile against the backend before
           // releasing the UI slot. The caller still receives false and will
           // not start a replacement load from an uncertain backend state.
+          if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
+            useChatRuntimeStore
+              .getState()
+              .clearLoadingModelPick(pickOf(model));
+            useChatRuntimeStore.getState().setModelLoading(false);
+          }
           try {
             await refresh();
             // refresh() begins by clearing catalog errors. Keep the primary
@@ -804,7 +809,6 @@ export function useChatModelRuntime() {
           const shared = sharedModelLoadHandle;
           if (shared) {
             inheritCancelledRunRollback(shared.run);
-            shared.supersedeOwnerIntent();
             const stopped = await shared.cancel(true);
             inheritCancelledRunRollback(shared.run);
             if (modelSelectionIntentEpoch !== loadIntentId) {
@@ -1024,9 +1028,6 @@ export function useChatModelRuntime() {
       pendingReplacementRollback = null;
       sharedModelLoadHandle = {
         run,
-        supersedeOwnerIntent: () => {
-          modelSelectionIntentEpoch += 1;
-        },
         cancel: (preserveCheckpoint = false) =>
           cancelLoadRun(run, preserveCheckpoint),
       };
