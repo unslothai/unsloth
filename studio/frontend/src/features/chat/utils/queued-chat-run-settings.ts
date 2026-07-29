@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+
+const QUEUED_SETTING_KEYS = [
+  "supportsTools",
+  "reasoningEnabled",
+  "reasoningEffort",
+  "preserveThinking",
+  "toolsEnabled",
+  "codeToolsEnabled",
+  "imageToolsEnabled",
+  "artifactsEnabled",
+  "mcpEnabledForChat",
+  "confirmToolCalls",
+  "bypassPermissions",
+  "permissionMode",
+  "webFetchToolsEnabled",
+  "ragEnabled",
+  "ragSource",
+  "ragMode",
+  "ragTopK",
+  "ragAutoInject",
+  "ragAutoInjectMinScore",
+  "ggufContextLength",
+  "autoHealToolCalls",
+  "nudgeToolCalls",
+  "maxToolCallsPerMessage",
+  "toolCallTimeout",
+] as const;
+
+type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
+
+export type QueuedChatRunSettings = Pick<
+  ChatRuntimeState,
+  (typeof QUEUED_SETTING_KEYS)[number]
+> & {
+  params: ChatRuntimeState["params"];
+};
+
+type PendingSettings = {
+  id: number;
+  threadIds: Set<string>;
+  settings: QueuedChatRunSettings;
+};
+
+let nextPendingSettingsId = 1;
+const pendingSettings: PendingSettings[] = [];
+
+export function snapshotQueuedChatRunSettings(
+  state: ChatRuntimeState,
+): QueuedChatRunSettings {
+  const snapshot = {
+    params: { ...state.params },
+  } as QueuedChatRunSettings;
+  for (const key of QUEUED_SETTING_KEYS) {
+    Object.assign(snapshot, { [key]: state[key] });
+  }
+  return snapshot;
+}
+
+export function registerQueuedChatRunSettings(
+  threadIds: string[],
+  settings: QueuedChatRunSettings,
+): number {
+  const id = nextPendingSettingsId++;
+  pendingSettings.push({
+    id,
+    threadIds: new Set(threadIds),
+    settings,
+  });
+  return id;
+}
+
+export function discardQueuedChatRunSettings(id: number): void {
+  const index = pendingSettings.findIndex((entry) => entry.id === id);
+  if (index >= 0) {
+    pendingSettings.splice(index, 1);
+  }
+}
+
+export function discardQueuedChatRunSettingsForThread(
+  threadId?: string | null,
+): void {
+  if (!threadId) {
+    return;
+  }
+  for (let index = pendingSettings.length - 1; index >= 0; index -= 1) {
+    if (pendingSettings[index].threadIds.has(threadId)) {
+      pendingSettings.splice(index, 1);
+    }
+  }
+}
+
+export function consumeQueuedChatRunSettings(
+  threadId?: string | null,
+): QueuedChatRunSettings | null {
+  const index = threadId
+    ? pendingSettings.findIndex((entry) => entry.threadIds.has(threadId))
+    : -1;
+  // Never consume another chat's snapshot as a fallback. Multiple queued
+  // chats can start concurrently, so a "sole pending entry" is not proof that
+  // it belongs to this adapter run.
+  if (index < 0) {
+    return null;
+  }
+  return pendingSettings.splice(index, 1)[0].settings;
+}

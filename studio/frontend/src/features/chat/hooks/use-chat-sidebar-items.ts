@@ -6,8 +6,8 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useChatArtifactsStore } from "../artifacts/store";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -22,6 +22,7 @@ import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
+import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -58,6 +59,7 @@ export function groupThreads(
     if (t.pairId) {
       const existing = pairItems.get(t.pairId);
       if (existing) {
+        existing.createdAt = Math.max(existing.createdAt, t.createdAt);
         existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
         existing.threadIds?.push(t.id);
         continue;
@@ -77,6 +79,7 @@ export function groupThreads(
       items.push({
         type: "single",
         id: t.id,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
@@ -207,7 +210,11 @@ export async function archiveChatItem(
           })
         ).map((t) => t.id);
 
-  for (const id of threadIds) cancelIfRunning(id);
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   await Promise.all(
     threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
@@ -231,6 +238,7 @@ export async function archiveAllChatItems(
   const toArchive = threads.filter((t) => !t.archived);
   if (toArchive.length === 0) return 0;
 
+  requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
   await Promise.all(
@@ -283,9 +291,12 @@ export async function deleteChatItem(
       ? [item.id]
       : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
 
-  // Stop any in-flight streams before deleting, so the model doesn't keep
-  // generating against a thread that no longer exists.
-  for (const id of threadIds) cancelIfRunning(id);
+  // Stop queued prompts and in-flight streams before deleting.
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   // Drop saved composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);

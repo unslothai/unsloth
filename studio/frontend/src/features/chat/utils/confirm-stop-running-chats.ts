@@ -3,6 +3,7 @@
 
 import { getActiveGenerations } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
 import {
   type StopRunningChatsEffect,
   useStopRunningChatsDialogStore,
@@ -14,12 +15,15 @@ export interface StopRunningChatsDecision {
   proceed: boolean;
   /** Pass as `force_cancel_active`. True only after an explicit confirmation, so the backend's 409 still guards every other caller. */
   forceCancelActive: boolean;
+  /** Local-model prompt queues to stop immediately before the model-changing request. */
+  promptQueueThreadIds: string[];
 }
 
 /**
- * Gate a model load / reload on the chats still generating: they share one llama-server,
- * so a reload ends all of them. Ask first, then let the backend cancel them once the load
- * is past preflight. External-provider chats are left out of both.
+ * Gate a model load / reload on local chats still generating or queued: they share one
+ * llama-server, so a reload ends all of them. Ask first, then let the backend cancel active
+ * runs and return the pending queue targets for the caller to stop after preflight.
+ * External-provider chats and queues are left out of both.
  */
 export async function confirmStopRunningChatsIfNeeded(
   action = "Loading a different model",
@@ -32,6 +36,21 @@ export async function confirmStopRunningChatsIfNeeded(
   let running = Object.entries(runningByThreadId)
     .filter(([threadId, on]) => on && localRunByThreadId[threadId])
     .map(([threadId]) => threadId);
+  const promptQueueThreadIds: string[] = [];
+  const queuedRunIds = new Set<string>();
+  for (const [threadId, entry] of Object.entries(
+    usePromptQueueUI.getState().byThreadId,
+  )) {
+    if (!entry.local) {
+      continue;
+    }
+    promptQueueThreadIds.push(threadId);
+    if (!queuedRunIds.has(entry.runId)) {
+      queuedRunIds.add(entry.runId);
+      running.push(threadId);
+    }
+  }
+  running = [...new Set(running)];
   let count = running.length;
   let hasNonChat = false;
 
@@ -62,7 +81,11 @@ export async function confirmStopRunningChatsIfNeeded(
   }
 
   if (count === 0) {
-    return { proceed: true, forceCancelActive: false };
+    return {
+      proceed: true,
+      forceCancelActive: false,
+      promptQueueThreadIds: [],
+    };
   }
 
   let titles: string[] = [];
@@ -91,10 +114,14 @@ export async function confirmStopRunningChatsIfNeeded(
     .requestConfirm({ count, titles, action, hasNonChat, effect });
 
   if (!confirmed) {
-    return { proceed: false, forceCancelActive: false };
+    return {
+      proceed: false,
+      forceCancelActive: false,
+      promptQueueThreadIds: [],
+    };
   }
 
   // Deliberately no local stop: the backend holds the cancel until the load clears preflight,
   // so stopping now would truncate every chat even for a rejected load.
-  return { proceed: true, forceCancelActive: true };
+  return { proceed: true, forceCancelActive: true, promptQueueThreadIds };
 }

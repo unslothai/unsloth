@@ -8,6 +8,8 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
+import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
+import { consumeQueuedChatRunSettings } from "../utils/queued-chat-run-settings";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -2362,6 +2364,11 @@ export function createOpenAIStreamAdapter(
         }
         return;
       }
+      const queuedRunSettings =
+        consumeQueuedChatRunSettings(resolvedThreadId);
+      if (queuedRunSettings) {
+        runtime = { ...runtime, ...queuedRunSettings };
+      }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
@@ -2405,6 +2412,13 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
+      const notifyQueuedRunFailed = () => {
+        // A queued dispatch can fail validation before runningByThreadId turns
+        // on. Remove only that chat's queue; unrelated queues keep running.
+        if (queuedRunSettings) {
+          notifyPromptQueueRunFailed(resolvedThreadId ?? null);
+        }
+      };
 
       // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
@@ -2413,11 +2427,12 @@ export function createOpenAIStreamAdapter(
           await waitForModelReady(abortSignal);
         } catch (error) {
           clearSelectedImageEditReference();
+          notifyQueuedRunFailed();
           throw error;
         }
       }
 
-      if (!useChatRuntimeStore.getState().params.checkpoint) {
+      if (!runtime.params.checkpoint) {
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
@@ -2426,6 +2441,7 @@ export function createOpenAIStreamAdapter(
             await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
+          notifyQueuedRunFailed();
           throw error;
         }
         if (!loaded) {
@@ -2440,12 +2456,22 @@ export function createOpenAIStreamAdapter(
             },
           );
           clearSelectedImageEditReference();
+          notifyQueuedRunFailed();
           throw new Error("Load a model first.");
         }
       }
 
       // Re-read store after auto-load / model-ready wait.
-      runtime = useChatRuntimeStore.getState();
+      const liveRuntime = useChatRuntimeStore.getState();
+      runtime = queuedRunSettings
+        ? queuedRunSettings.params.checkpoint
+          ? {
+            ...liveRuntime,
+            ...queuedRunSettings,
+            params: queuedRunSettings.params,
+          }
+          : liveRuntime
+        : liveRuntime;
       const { params } = runtime;
       const {
         supportsTools,
@@ -2483,6 +2509,7 @@ export function createOpenAIStreamAdapter(
             "Turn on Enable connections in Settings → Connections to use hosted models.",
         });
         clearSelectedImageEditReference();
+        notifyQueuedRunFailed();
         throw new Error("Connections disabled.");
       }
       const externalProvider = isExternalRequest
@@ -2502,6 +2529,7 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and add it again.",
         });
         clearSelectedImageEditReference();
+        notifyQueuedRunFailed();
         throw new Error("Connection not found.");
       }
       // Local providers and custom Gemini bases allow an empty key.
@@ -2523,6 +2551,7 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and set the API key again.",
         });
         clearSelectedImageEditReference();
+        notifyQueuedRunFailed();
         throw new Error("Missing connection API key.");
       }
 
@@ -2583,6 +2612,7 @@ export function createOpenAIStreamAdapter(
           description:
             "Select an OpenAI image-generation model, then retry the edit.",
         });
+        notifyQueuedRunFailed();
         throw new Error("Image generation edit unavailable.");
       }
 
@@ -2618,6 +2648,7 @@ export function createOpenAIStreamAdapter(
             description:
               "The original image reference is missing. Generate the image again, then retry the edit.",
           });
+          notifyQueuedRunFailed();
           throw new Error("Generated image edit reference missing.");
         }
         let insertAt = outboundMessages.length;
@@ -3583,13 +3614,11 @@ export function createOpenAIStreamAdapter(
                         },
                       }
                     : {}),
-                  auto_heal_tool_calls:
-                    useChatRuntimeStore.getState().autoHealToolCalls,
-                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
-                  max_tool_calls_per_message:
-                    useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  auto_heal_tool_calls: runtime.autoHealToolCalls,
+                  nudge_tool_calls: runtime.nudgeToolCalls,
+                  max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
-                    const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                    const mins = runtime.toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }

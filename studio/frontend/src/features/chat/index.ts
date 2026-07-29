@@ -68,6 +68,27 @@ export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
+  usePromptQueueUI,
+  type PromptQueueUIEntry,
+  type PromptQueueUIItem,
+  type PromptQueueUIItemStatus,
+  type PromptQueueUIState,
+} from "./stores/prompt-queue-ui-store";
+export {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+  type PromptQueueRunFailedEventDetail,
+  type PromptQueueStopEventDetail,
+} from "./utils/prompt-queue-boundary";
+export {
+  consumeQueuedChatRunSettings,
+  discardQueuedChatRunSettings,
+  discardQueuedChatRunSettingsForThread,
+  registerQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
+  type QueuedChatRunSettings,
+} from "./utils/queued-chat-run-settings";
+export {
   PLUS_MENU_ORDER,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
@@ -90,7 +111,10 @@ export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
-export { listStoredChatThreads } from "./utils/chat-history-storage";
+export {
+  listStoredChatThreads,
+  markThreadIncognito,
+} from "./utils/chat-history-storage";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export { ArtifactCard } from "./artifacts/artifact-card";
