@@ -27,9 +27,9 @@ def _read(rel: str) -> str:
 
 
 def test_models_api_sends_token_via_header_not_query():
-    """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
-    token through hubTokenHeader, never as a ?hf_token= query param (which leaks
-    the credential into server/proxy access logs)."""
+    """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF token
+    through hubTokenHeader, never as a ?hf_token= query param (which leaks the
+    credential into server/proxy access logs)."""
     src = _read("features/training/api/models-api.ts")
     assert src.count("hubTokenHeader(") >= 3
     assert "hf_token=" not in src
@@ -43,27 +43,27 @@ def test_model_metadata_probe_never_puts_token_in_query():
 
 
 def test_model_config_page_floors_the_context_ceiling():
-    """The model's native max-context must be FLOORED to the step grid, never
-    rounded up (rounding up can offer/persist a length above the model's real
-    ceiling and break loading)."""
+    """The model's native max-context must be FLOORED to the step grid, never rounded up
+    (rounding up can offer/persist a length above the model's real ceiling and break
+    loading)."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" in src
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
 def test_compare_load_clears_stale_native_lease():
-    """A compare-pane load never comes from the desktop file picker, so it must
-    clear any prior picked file's lease token + expiry, otherwise a reload can
-    send a stale lease for the now-active model."""
+    """A compare-pane load never comes from the desktop file picker, so it must clear any
+    prior picked file's lease token + expiry, otherwise a reload can send a stale lease
+    for the now-active model."""
     src = _read("features/chat/shared-composer.tsx")
     assert "activeNativePathToken: null" in src
     assert "activeNativePathExpiresAtMs: null" in src
 
 
 def test_autoload_records_backend_loaded_model_identity():
-    """An inactive-cache inventory row loads by local path, so startup autoload
-    must key both the active checkpoint and its summary by the backend's loaded
-    model identity instead of the catalog repo id."""
+    """An inactive-cache inventory row loads by local path, so startup autoload must key
+    both the active checkpoint and its summary by the backend's loaded model identity
+    instead of the catalog repo id."""
     src = _read("features/chat/api/chat-adapter.ts")
     autoload = src.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("\n  try {", 1)[0]
@@ -74,8 +74,8 @@ def test_autoload_records_backend_loaded_model_identity():
 
 
 def test_chat_autoload_toast_is_persistent_and_dismissible():
-    """Send-triggered autoload stays visible until it settles but remains
-    dismissible, matching the explicit model-loading toast's lifetime."""
+    """Send-triggered autoload stays visible until it settles but remains dismissible,
+    matching the explicit model-loading toast's lifetime."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
     auto_load = auto_load.split("export function createOpenAIStreamAdapter", 1)[0]
@@ -101,8 +101,8 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
 
 
 def test_recipe_model_load_toast_is_persistent_and_dismissible():
-    """Recipe model loading uses the same dismissible persistent lifecycle as
-    chat loading because both call the non-abortable loadModel API."""
+    """Recipe model loading uses the same dismissible persistent lifecycle as chat loading
+    because both call the non-abortable loadModel API."""
     src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
     model_load = src.split("async function loadLocalModelSelection", 1)[1]
     model_load = model_load.split("function getLocalModelLoadPlanForPayload", 1)[0]
@@ -125,9 +125,9 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
 
 
 def test_rollback_restores_native_lease_expiry_with_token():
-    """A failed model switch that rolls back to a previously loaded picked GGUF
-    must restore the lease expiry paired with the token, never the token alone
-    (which would look non-expiring and skip the expiry guard)."""
+    """A failed model switch that rolls back to a previously loaded picked GGUF must
+    restore the lease expiry paired with the token, never the token alone (which would
+    look non-expiring and skip the expiry guard)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
     assert re.search(
@@ -136,17 +136,17 @@ def test_rollback_restores_native_lease_expiry_with_token():
 
 
 def test_default_caches_keyed_on_inventory_version():
-    """The chat-template and max-position caches must key on the inventory
-    version so a model update in the same session invalidates the cached value
-    instead of showing the stale revision."""
+    """The chat-template and max-position caches must key on the inventory version so a
+    model update in the same session invalidates the cached value instead of showing the
+    stale revision."""
     src = _read("features/model-picker/hooks/use-model-defaults.ts")
     # Both cache keys (template + max-position) end with the inventory version.
     assert src.count("${inventoryVersion}") >= 2
 
 
 def test_hidden_infra_model_needles_present():
-    """The frontend static needle list must keep hiding the RAG embedder and the
-    llama.cpp validation probe."""
+    """The frontend static needle list must keep hiding the RAG embedder and the llama.cpp
+    validation probe."""
     src = _read("features/hub/lib/hidden-models.ts")
     assert '"bge-small-en-v1.5"' in src
     assert '"ggml-org/models"' in src
@@ -154,9 +154,9 @@ def test_hidden_infra_model_needles_present():
 
 
 def test_hidden_models_dynamic_exact_ids_wired():
-    """The configured embedder arrives from /api/hub/hidden-models as exact
-    repo ids; a substring needle would let a generic basename like "model"
-    hide unrelated chat models."""
+    """The configured embedder arrives from /api/hub/hidden-models as exact repo ids; a
+    substring needle would let a generic basename like "model" hide unrelated chat
+    models."""
     src = _read("features/hub/lib/hidden-models.ts")
     assert "toLowerStrings(data.exact_ids)" in src
     assert "dynamicExactIds.includes(lower)" in src
@@ -170,9 +170,9 @@ def test_hidden_model_matchers_refresh_with_inventory_version():
 
 
 def test_diffusion_capability_labeled_image_generation():
-    """The diffusion capability detects image GENERATORS (FLUX, SDXL,
-    text-to-image tags); labeling it "Image to text" showed generators when
-    users asked for captioning models."""
+    """The diffusion capability detects image GENERATORS (FLUX, SDXL, text-to-image tags);
+    labeling it "Image to text" showed generators when users asked for captioning
+    models."""
     for rel in (
         "features/hub/lib/model-capabilities.ts",
         "features/hub/lib/model-type-filter.ts",
@@ -184,9 +184,9 @@ def test_diffusion_capability_labeled_image_generation():
 
 
 def test_active_model_config_round_trips_gpu_fields():
-    """The active model's config must carry the GPU Memory knobs (GGUF only) so
-    a sidebar/hub-gear reload cannot silently reset manual GPU settings, and
-    "Remember settings" cannot persist a GPU-less config over a saved one."""
+    """The active model's config must carry the GPU Memory knobs (GGUF only) so a
+    sidebar/hub-gear reload cannot silently reset manual GPU settings, and "Remember
+    settings" cannot persist a GPU-less config over a saved one."""
     src = _read("features/model-picker/hooks/use-active-model-config.ts")
     for field in ("gpuMemoryMode", "gpuLayers", "nCpuMoe", "selectedGpuIds"):
         assert field in src, field
@@ -196,9 +196,8 @@ def test_active_model_config_round_trips_gpu_fields():
         "features/hub/catalog/sampling-settings-dialog.tsx",
     ):
         assert "useActiveModelConfig(" in _read(rel), rel
-    # The GPU knobs are part of the editor's instance key, so a reload that lands
-    # on different placement re-seeds the editor instead of leaving it on the old
-    # values. Shared by every host that mounts ModelConfigPage.
+    # The GPU knobs are part of the editor's instance key, so a reload that lands on
+    # different placement re-seeds the editor instead of leaving it on the old values.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
     assert "gpuFieldsSignature(config)," in shared
@@ -214,8 +213,8 @@ def test_active_model_config_round_trips_gpu_fields():
 
 
 def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
-    """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep
-    [0, 1] as the editable pool so a later reload can grow back onto GPU 1."""
+    """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep [0, 1] as
+    the editable pool so a later reload can grow back onto GPU 1."""
     types = _read("features/chat/types/api.ts")
     assert types.count("requested_gpu_ids?: number[] | null") >= 2
 
@@ -256,9 +255,9 @@ def test_model_default_hooks_do_not_reset_state_in_effect():
 
 
 def test_variant_expander_refreshes_after_delete():
-    """Deleting a downloaded quant from an expanded repo that still has other
-    cached quants must bump the expander refresh key, or the deleted quant stays
-    shown as downloaded and clickable and tries to reload the removed file."""
+    """Deleting a downloaded quant from an expanded repo that still has other cached quants
+    must bump the expander refresh key, or the deleted quant stays shown as downloaded
+    and clickable and tries to reload the removed file."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     del_confirm = re.search(
         r"await onDeleteVariant\(v\.quant\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
@@ -269,10 +268,7 @@ def test_variant_expander_refreshes_after_delete():
 
 
 def test_local_picker_rows_require_chat_capability():
-    """Local inventory rows can be classified non-chat (canChat false, e.g. a
-    folder with only config.json). The picker must filter those out, or selecting
-    one loads a weightless path; toLocalModelInfo drops capabilities so the memo
-    is the only place the guard can live."""
+    """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
     memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows\]", src, re.S)
     assert memo, "localModels memo not found"
@@ -280,8 +276,8 @@ def test_local_picker_rows_require_chat_capability():
 
 
 def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
-    """The content-sized section tabs and fixed-width dropdowns must reflow,
-    while an oversized tab group must shrink labels but preserve its icons."""
+    """The content-sized section tabs and fixed-width dropdowns must reflow, while an
+    oversized tab group must shrink labels but preserve its icons."""
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert '"flex flex-wrap items-center gap-2"' in picker
     assert 'hasConnected ? "-mr-4" : "-mr-2"' in picker
@@ -298,12 +294,10 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
 
 
 def test_native_picked_gguf_template_read_through_lease():
-    """A native (picked / drag-drop) GGUF's path lives only in its signed lease,
-    and the picker chat-template GET has no lease plumbing, so the default
-    template must be read through the lease-aware validate probe: mint a
-    validate-model lease and post include_chat_template. The native token also
-    has to reach the fetch (threaded through the hook) and be part of the cache
-    key so two picks of the same basename don't share a template."""
+    """A native (picked / drag-drop) GGUF's path lives only in its signed lease, and the
+    picker chat-template GET has no lease plumbing, so the default template must be read
+    through the lease-aware validate probe: mint a validate-model lease and post
+    include_chat_template."""
     api = _read("features/model-picker/api/templates.ts")
     assert 'consumeNativePathToken(nativePathToken, "validate-model")' in api
     assert "include_chat_template: true" in api
@@ -314,10 +308,9 @@ def test_native_picked_gguf_template_read_through_lease():
 
 
 def test_model_load_guard_is_cross_instance():
-    """The in-flight load guard must consult the shared store pick (not only the
-    per-hook ref) and ejectModel must refuse while any instance is loading:
-    three live useChatModelRuntime instances exist (chat page, hub page, hub
-    gear dialog)."""
+    """The in-flight load guard must consult the shared store pick (not only the per-hook
+    ref) and ejectModel must refuse while any instance is loading: three live
+    useChatModelRuntime instances exist (chat page, hub page, hub gear dialog)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "useChatRuntimeStore.getState().loadingModelPick" in src
     assert "clearLoadingModelPick" in src
@@ -326,23 +319,17 @@ def test_model_load_guard_is_cross_instance():
 
 
 def test_partial_safetensors_download_keeps_delete_menu():
-    """A stopped partial safetensors download must keep its options menu (the
-    Delete affordance) like the GGUF card does, or partial downloads can only
-    be cleaned up by finishing or leaving them. During an ACTIVE download the
-    menu stays hidden (every item would be disabled: no Copy path while not
-    downloaded, no Delete while downloading, pin suppressed in the run bar)."""
+    """A stopped partial safetensors download must keep its options menu (the Delete
+    affordance) like the GGUF card does, or partial downloads can only be cleaned up by
+    finishing or leaving them."""
     src = _read("features/hub/catalog/safetensors-download-card.tsx")
     assert "(isDownloaded || (isPartial && !downloading))" in src
 
 
 def test_pinned_validation_uses_cached_local_variant_listing():
-    """Pinned-quant validation must use the TTL-cached hub client with
-    preferLocalCache (downloaded-ness is local state) instead of one uncached
-    round-trip per pinned repo on every picker open. Picker deletes must go
-    through the hub inventory client, whose delete invalidates both the
-    variants TTL cache and the server-side HF cache scan (the legacy
-    /api/models/delete-cached route invalidates neither, so a post-delete
-    inventory refresh would resurrect the deleted row until the scan TTL)."""
+    """Pinned-quant validation must use the TTL-cached hub client with preferLocalCache
+    (downloaded-ness is local state) instead of one uncached round-trip per pinned repo
+    on every picker open."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "listGgufVariantsCached(" in src
     assert "preferLocalCache: true" in src
@@ -355,8 +342,8 @@ def test_pinned_validation_uses_cached_local_variant_listing():
 
 
 def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
-    """Autoload must probe the exact cache row it will load, including rows
-    retained from a previously selected Hugging Face cache."""
+    """Autoload must probe the exact cache row it will load, including rows retained from a
+    previously selected Hugging Face cache."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
     assert auto_load.count("preferLocalCache: true") >= 2
@@ -370,8 +357,8 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
 
 
 def test_cache_location_update_invalidates_frontend_inventory():
-    """A successful cache switch must refresh both inventory rows and cached
-    GGUF variant results before any stale active-cache identity can be reused."""
+    """A successful cache switch must refresh both inventory rows and cached GGUF variant
+    results before any stale active-cache identity can be reused."""
     src = _read("features/settings/api/hugging-face-cache.ts")
     update_fn = src.split("export async function updateHuggingFaceCacheSettings", 1)[1]
     assert "bumpInventoryVersion();" in update_fn
@@ -379,18 +366,17 @@ def test_cache_location_update_invalidates_frontend_inventory():
 
 
 def test_downloaded_list_offsets_virtual_rows():
-    """The On Device virtualized list sits below the Pinned block in the same
-    scroll element, so it must pass its measured offset as scrollMargin or rows
-    past the overscan render blank."""
+    """The On Device virtualized list sits below the Pinned block in the same scroll
+    element, so it must pass its measured offset as scrollMargin or rows past the
+    overscan render blank."""
     src = _read("features/hub/catalog/models-catalog-lists.tsx")
     assert "scrollMargin={scrollMargin}" in src
 
 
 def test_local_gguf_diagnostics_gate_on_broad_is_gguf():
-    """The MTP fallback note and the context/VRAM warning must gate on the broad
-    isGguf (variant, loaded gguf context, or .gguf suffix), not the variant-only
-    isLoadedGguf, so direct-file and custom-folder GGUF loads keep those
-    diagnostics."""
+    """The MTP fallback note and the context/VRAM warning must gate on the broad isGguf
+    (variant, loaded gguf context, or .gguf suffix), not the variant-only isLoadedGguf,
+    so direct-file and custom-folder GGUF loads keep those diagnostics."""
     src = _read("features/chat/chat-settings-sheet.tsx")
     spec = re.search(r"const showSpecFallback =.*?;", src, re.S)
     vram = re.search(r"const showContextVramWarning =.*?;", src, re.S)
@@ -399,9 +385,9 @@ def test_local_gguf_diagnostics_gate_on_broad_is_gguf():
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
-    """An already-loaded auto-fit GGUF saved with Manual fixed GPU layers must
-    pin the shown context, so a later fresh load keeps the fitted placement
-    instead of sending native/0 and recreating the OOM."""
+    """An already-loaded auto-fit GGUF saved with Manual fixed GPU layers must pin the
+    shown context, so a later fresh load keeps the fitted placement instead of sending
+    native/0 and recreating the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const pinFixedLayerContext =" in src
     assert 'config.gpuMemoryMode === "manual"' in src
@@ -409,11 +395,8 @@ def test_fixed_layer_gguf_pins_displayed_context():
 
 
 def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
-    """pinFixedLayerContext is computed from the render-time config, before a
-    same-click GPU Layers draft is committed. handleRun must recompute it from the
-    committed effectiveConfig; otherwise typing a positive GPU Layers value on an
-    auto-fit GGUF and clicking Reload saves customContextLength: null, so a later
-    fresh load sends the native context with fixed layers (the OOM the pin avoids)."""
+    """pinFixedLayerContext is computed from the render-time config, before a same-click
+    GPU Layers draft is committed."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectivePinFixedLayerContext =" in src
     assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
@@ -424,11 +407,7 @@ def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
 
 def test_blur_cache_cleared_on_every_settled_render():
     """The lastBlurCommittedRef bridge is valid only across the single synchronous
-    same-click gesture that set it. Keying its clear on [value] missed a Reset (or
-    external edit) that restores the shown value unchanged after the blur dispatched
-    onChange: value nets back to its prior number, the effect never re-ran, and a
-    later Load/Save replayed the override Reset removed. Clear it on every settled
-    render instead."""
+    same-click gesture that set it."""
     src = _read("features/model-picker/components/numeric-value-input.tsx")
     # The clearing effect must run on every commit, not be gated on [value] alone.
     assert not re.search(r"lastBlurCommittedRef\.current = null;\s*\}, \[value\]\);", src)
@@ -439,9 +418,9 @@ def test_blur_cache_cleared_on_every_settled_render():
 
 
 def test_auto_defaults_not_persisted_as_overrides():
-    """Auto GPU memory mode and Auto/default speculative type are follow-global
-    defaults; normalization must not persist them as per-model overrides, else a
-    model stops following later changes to the global preference."""
+    """Auto GPU memory mode and Auto/default speculative type are follow-global defaults;
+    normalization must not persist them as per-model overrides, else a model stops
+    following later changes to the global preference."""
     src = _read("features/model-picker/model-config/per-model-config.ts")
     assert 'if (partial.gpuMemoryMode === "manual") {' in src
     assert 'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"' not in src
@@ -450,18 +429,18 @@ def test_auto_defaults_not_persisted_as_overrides():
 
 
 def test_compare_pane_context_from_own_config_only():
-    """A compare pane's context comes from its own config only (a saved pin, else
-    null for Auto/native); it must not inherit the active model's shared snapshot,
-    which resolveFitMaxSeqLength would treat as an explicit pin (VRAM/OOM)."""
+    """A compare pane's context comes from its own config only (a saved pin, else null for
+    Auto/native); it must not inherit the active model's shared snapshot, which
+    resolveFitMaxSeqLength would treat as an explicit pin (VRAM/OOM)."""
     src = _read("features/chat/shared-composer.tsx")
     assert "const effectiveCustomContextLength = ownConfig.customContextLength;" in src
     assert "compareLoadKnobs.customContextLength" not in src
 
 
 def test_reset_max_seq_length_falls_back_to_app_default():
-    """After Reset clears maxSeqLength (null), a non-GGUF active model's shown
-    max sequence length must fall back to the app default, never the loaded
-    runtime snapshot, or a remembered/active override can never be cleared."""
+    """After Reset clears maxSeqLength (null), a non-GGUF active model's shown max sequence
+    length must fall back to the app default, never the loaded runtime snapshot, or a
+    remembered/active override can never be cleared."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     # The null fallback resolves to the app-default constant, not a runtime value.
     assert "clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength)" in src
@@ -470,9 +449,9 @@ def test_reset_max_seq_length_falls_back_to_app_default():
 
 
 def test_reset_persists_null_max_length_and_substitutes_only_for_load():
-    """The persisted per-model record must keep config.maxSeqLength (null after
-    Reset) so isDefaultConfig can clear a remembered override; the concrete
-    fallback is substituted only into the load request, not the saved record."""
+    """The persisted per-model record must keep config.maxSeqLength (null after Reset) so
+    isDefaultConfig can clear a remembered override; the concrete fallback is
+    substituted only into the load request, not the saved record."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
@@ -485,8 +464,8 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
 
 
 def test_initial_load_uses_staged_config_payload():
-    """Run-settings Load must pass the staged config through to /load even when
-    React has not flushed NumericValueInput blur commits into the store yet."""
+    """Run-settings Load must pass the staged config through to /load even when React has
+    not flushed NumericValueInput blur commits into the store yet."""
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "const pendingLoadConfig =" in runtime
     assert "pendingLoadConfig?.kvCacheDtype" in runtime
@@ -522,11 +501,8 @@ def test_initial_load_uses_staged_config_payload():
 
 
 def test_same_click_commit_covers_all_numeric_inputs():
-    """The same-click blur bridge must flush every NumericValueInput-backed
-    setting, not just Context Length. Max Seq Length (non-GGUF), GPU Layers and
-    MoE Layers (GGUF) also stage their draft only on blur, so handleRun must
-    imperatively commit each and fold the value into the staged load config;
-    otherwise a value the user typed right before clicking Load/Reload is lost."""
+    """The same-click blur bridge must flush every NumericValueInput-backed setting, not
+    just Context Length."""
     page = _read("features/model-picker/components/model-config-page.tsx")
     # Each numeric input owns an imperative handle that handleRun commits, and the
     # handle is forwarded down to the actual NumericValueInput.
@@ -559,10 +535,8 @@ def test_context_commit_rechecks_persistence_only_shortcut():
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
-    """An explicit customContextLength that equals the native ceiling is still a
-    user override, so contextAtDefault must require customContextLength == null.
-    The buggy form treated `contextValue === native` alone as default, wedging
-    the Reset button disabled for a deliberate pin-to-native."""
+    """An explicit customContextLength that equals the native ceiling is still a user
+    override, so contextAtDefault must require customContextLength == null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
         "const contextAtDefault = !target.isGguf || "
@@ -580,9 +554,9 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
 
 
 def test_compare_pane_non_gguf_falls_back_to_app_default():
-    """A non-GGUF compare pane with no saved maxSeqLength must fall back to the
-    shared app default, not the active model's runtime snapshot; otherwise an
-    unconfigured pane inherits a saved 128K neighbor's context and can OOM."""
+    """A non-GGUF compare pane with no saved maxSeqLength must fall back to the shared app
+    default, not the active model's runtime snapshot; otherwise an unconfigured pane
+    inherits a saved 128K neighbor's context and can OOM."""
     per_model = _read("features/model-picker/model-config/per-model-config.ts")
     assert "export const DEFAULT_MAX_SEQ_LENGTH = 4096;" in per_model
     barrel = _read("features/model-picker/index.ts")
@@ -601,8 +575,8 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
 
 def test_default_gpu_mode_clears_manual_knobs():
     """Switching GPU Memory back to Default must clear the Manual-only knobs
-    (gpuLayers/nCpuMoe/selectedGpuIds); otherwise a remembered config keeps stale
-    pins that a later load re-applies when the global preference is Manual."""
+    (gpuLayers/nCpuMoe/selectedGpuIds); otherwise a remembered config keeps stale pins
+    that a later load re-applies when the global preference is Manual."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert 'gpuMemoryMode: "auto",' in src
     assert "gpuLayers: undefined," in src
@@ -611,13 +585,10 @@ def test_default_gpu_mode_clears_manual_knobs():
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():
-    """The v1->v2 localStorage migration (unsloth_load_settings ->
-    unsloth_model_configs) is invoked on every store read, so it must be
-    idempotent: repeated reads, browser reloads, and Studio restarts must never
-    re-migrate, duplicate records, or overwrite a newer per-model config. This
-    was the class of regression that reverted the predecessor PR, so pin all
-    three idempotency layers at source level; dropping any of them reddens here.
-    """
+    """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
+    is invoked on every store read, so it must be idempotent: repeated reads, browser
+    reloads, and Studio restarts must never re-migrate, duplicate records, or overwrite
+    a newer per-model config."""
     raw = _read("features/model-picker/model-config/per-model-config.ts")
     src = " ".join(raw.split())
     # Migration runs from readMap (every store read), so it must be safe to repeat.
@@ -630,10 +601,7 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     assert "let legacyMigrationChecked = false;" in src
     assert "if (legacyMigrationChecked || !canUseStorage()) {" in src
     assert "legacyMigrationChecked = true;" in src
-    # Layer 2: persistent cross-session flag so a completed migration is never
-    # redone. Set in every terminal branch (malformed data, nothing to migrate,
-    # successful write); a failed quota write leaves it unset so the next session
-    # retries. Three set-sites encode exactly that.
+    # Layer 2: persistent cross-session flag so a completed migration is never redone.
     assert 'const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";' in src
     assert "if (localStorage.getItem(LEGACY_MIGRATION_FLAG)) {" in src
     assert src.count('localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");') >= 3
@@ -643,10 +611,10 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
 
 
 def test_parallel_slots_setting_wired_end_to_end():
-    """The per-load Parallel Slots knob (llama-server --parallel) must flow from
-    the run-settings form through persistence, every /load builder, the validate
-    preflight and the cross-model reset; a lost hop silently reverts the model to
-    the server-wide slot default."""
+    """The per-load Parallel Slots knob (llama-server --parallel) must flow from the
+    run-settings form through persistence, every /load builder, the validate preflight
+    and the cross-model reset; a lost hop silently reverts the model to the server-wide
+    slot default."""
     config = _read("features/model-picker/model-config/per-model-config.ts")
     # Persisted per model, clamped on every read/write, and null (= server
     # default) counts as default so blank configs are not stored.
@@ -684,9 +652,7 @@ def test_parallel_slots_setting_wired_end_to_end():
     # the control would pin a blank "server default" to a number.
     assert "loadedNParallel: status.requested_parallel_slots," in status
     assert "nParallel: status.requested_parallel_slots," not in status
-    # The sidebar form remounts when an external change lands. The signature it
-    # keys on is shared with the hub and the model config page now, so the slot
-    # count has to be in that one definition rather than the sidebar's own copy.
+    # The sidebar form remounts when an external change lands.
     signature = _read("features/model-picker/model-config/config-signature.ts")
     assert 'config.nParallel ?? "",' in signature
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
@@ -694,13 +660,8 @@ def test_parallel_slots_setting_wired_end_to_end():
 
 
 def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
-    """The server mirror is the hop an OpenAI-compatible auto-switch load reads,
-    and it is the browser's only way to express a per-model setting to a load no
-    browser makes. A slot count missing from it silently reverts that load to the
-    server-wide --parallel default, and llama_extra_args cannot stand in because
-    --parallel is denylisted. A config whose only change is the slot count also
-    serializes to an empty payload, so the one-time backfill sends nothing and
-    still marks itself done."""
+    """The server mirror is the hop an OpenAI-compatible auto-switch load reads, and it is
+    the browser's only way to express a per-model setting to a load no browser makes."""
     api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert "n_parallel?: number;" in api
     assert (
@@ -725,16 +686,11 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
 
 
 def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
-    """`nParallel` is the editable control ("blank = follow the server default")
-    and `loadedNParallel` the rollback baseline. A success path that sends no
-    slot count must blank the control, or a value staged for another model shows
-    as applied, is persisted into this model's config (`isDefaultConfig` keys on
-    nParallel) and is re-sent by the next Apply. Each assertion below is the only
-    thing pinning one such path."""
+    """`nParallel` is the editable control ("blank = follow the server default") and
+    `loadedNParallel` the rollback baseline."""
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    # A model/variant swap underneath this tab must reset the control like
-    # performLoad's cross-model reset, or model A's count follows onto model B.
-    # Narrowly gated -- see test_hydration_keeps_the_slot_control_when_readopting_the_running_model.
+    # A model/variant swap underneath this tab must reset the control like performLoad's
+    # cross-model reset, or model A's count follows onto model B.
     assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
     # ... while still never adopting the RESOLVED echo into the control.
     assert "nParallel: status.requested_parallel_slots," not in status
@@ -750,8 +706,7 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # The cached-GGUF branch keeps the remembered override via the gated local...
     assert "nParallel: committedSlots," in gguf_branch
     assert "nParallel: null," not in gguf_branch
-    # ... the safetensors fallback sends no slots, so it clears both, or the count
-    # survives on a model whose form does not even render the field.
+    # ...
     assert "nParallel: null," in non_gguf_branch
     assert "loadedNParallel: null," in non_gguf_branch
 
@@ -766,10 +721,8 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
 
 
 def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
-    """The baseline is what a rollback re-sends and what preset capture reads, so
-    a model that cannot have slots must not inherit the previous GGUF's count.
-    /status omits the echo for non-GGUF and sends an explicit null for diffusion;
-    an absent field on a GGUF is an older backend and must NOT wipe it."""
+    """The baseline is what a rollback re-sends and what preset capture reads, so a model
+    that cannot have slots must not inherit the previous GGUF's count."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     assert (
         "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
@@ -781,17 +734,10 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
 
 
 def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
-    """`hydratingExistingModel` is true whenever the incoming status disagrees
-    with what this tab last recorded, which includes RE-ADOPTING a model the tab
-    never lost: the resident-adopt branch restores the model's own per-model
-    config and only then hydrates, passing the EXTERNAL id as
-    `previousCheckpoint`. An ungated clear there wipes the slot count that branch
-    just restored, and the blank persists into `savePerModelConfig`, so a Save
-    the user reads as a no-op erases their remembered override.
-
-    Only that branch knows the model is unchanged, so it says so explicitly.
-    Slot counts cannot stand in: the echo falls back to the server-wide default,
-    so a genuine A->B swap can echo exactly A's explicit count."""
+    """`hydratingExistingModel` is true whenever the incoming status disagrees with what
+    this tab last recorded, which includes RE-ADOPTING a model the tab never lost: the
+    resident-adopt branch restores the model's own per-model config and only then
+    hydrates, passing the EXTERNAL id as `previousCheckpoint`."""
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert (
         "const slotsModelChanged = hydratingExistingModel && !options.readoptingSameModel;"
@@ -825,14 +771,7 @@ def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
 
 def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
     """A DiffusionGemma GGUF answers ``is_gguf: true``, but its runner ignores
-    ``--parallel``, so ``_parallel_slot_echo`` reports null slots for it. The
-    three load success paths must gate on ``is_diffusion`` too, or they record a
-    click-time count the load never committed.
-
-    That phantom does not stay put: ``capturePresetLoadConfig`` snapshots
-    ``nParallel`` with no model gate and a preset carries no model identity, so
-    applying it over a TEXT GGUF sends the count as a real ``n_parallel``.
-    """
+    ``--parallel``, so ``_parallel_slot_echo`` reports null slots for it."""
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     # One gated local feeds the control and the baseline, so they cannot drift.
     assert "(loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)" in runtime
@@ -854,17 +793,9 @@ def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
 
 
 def test_hydration_restores_a_remembered_slot_override():
-    """The control is never seeded from the status echo, so a model running on a
-    remembered override shows a BLANK slot control after a browser reload or a
-    tab move to another GGUF. `ModelConfigPage.resolveInitial` prefers the live
-    store for the active model, so that blank is what the form edits: the next
-    Apply reloads at the server default and a Save writes the blank over the
-    remembered count.
-
-    The seed is deliberately narrow: storage is read only on a fresh store or a
-    model change, never on a steady poll, and the value is adopted only when the
-    server already runs that exact count, which proves it is this model's own.
-    """
+    """The control is never seeded from the status echo, so a model running on a remembered
+    override shows a BLANK slot control after a browser reload or a tab move to another
+    GGUF."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
     assert (
@@ -892,16 +823,11 @@ def test_hydration_restores_a_remembered_slot_override():
 
 
 def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
-    """`loadedNParallel` holds a RESOLVED count even for a load that sent no
-    slots (the echo falls back to the server-wide default), so it is the right
-    value to re-send when recreating the previous server and the wrong one to put
-    back in the control: it turns "follow the server default" into an explicit
-    override that a later Save or preset capture pins. The outer catch only
-    repairs that for a staged config, so a plain string pick keeps the phantom.
-
-    The intent comes from the picker's own pre-switch snapshot when there is one:
-    chat-page pre-applies the TARGET's config before calling selectModel, so the
-    live control describes the outgoing model only for a bare pick."""
+    """`loadedNParallel` holds a RESOLVED count even for a load that sent no slots (the
+    echo falls back to the server-wide default), so it is the right value to re-send
+    when recreating the previous server and the wrong one to put back in the control: it
+    turns "follow the server default" into an explicit override that a later Save or
+    preset capture pins."""
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert (
         'const previousNParallel = typeof selection !== "string" && '
@@ -925,12 +851,9 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
 
 
 def test_vulkan_inference_devices_are_the_pickable_set():
-    """GGUF loads run through llama-server, so on a Vulkan build the picker must
-    offer the inference inventory (ggml ordinals, the space `--device Vulkan<i>`
-    pins) rather than the torch view, which can miss cards llama-server drives.
-    The XPU ban must not apply there: it is about torch-xpu ordinals no
-    applicator speaks, and a Vulkan pick does not use them.
-    """
+    """GGUF loads run through llama-server, so on a Vulkan build the picker must offer the
+    inference inventory (ggml ordinals, the space `--device Vulkan<i>` pins) rather than
+    the torch view, which can miss cards llama-server drives."""
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
     # The Vulkan inventory is consulted first, and only when it has devices.
     assert (
@@ -946,12 +869,8 @@ def test_vulkan_inference_devices_are_the_pickable_set():
 
 
 def test_only_gguf_configs_are_mirrored_to_the_server():
-    """The server override map is read by the OpenAI-compatible auto-switch, and
-    its resolver indexes GGUFs only. Mirroring a safetensors config there would
-    advertise settings on the monitor's applied-on-API-load list that no API
-    request can ever apply. The local write stays unconditional: the picker
-    loads safetensors models and must honour their config.
-    """
+    """The server override map is read by the OpenAI-compatible auto-switch, and its
+    resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
         "if ( !saveFailed && (target.apiLoadable ?? target.isGguf) && !nativePathToken ) "
@@ -963,15 +882,8 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     """A dropped or file-picked GGUF loads through a signed native-path lease, and
-    /api/inference/status reports model_identifier as null for it, so the checkpoint
-    the browser keys settings by is the bare file name the backend echoes back.
-    _build_index keys a standalone GGUF by its on-disk path and by its .gguf-stripped
-    stem, so that name is never an index key: mirroring it wrote an override no load
-    can read, which the monitor's applied-on-API-load list then advertised as live.
-
-    The live save gates on the lease token rather than the name, because the label
-    falls back to a plain string with no suffix when the host reports none.
-    """
+    /api/inference/status reports model_identifier as null for it, so the checkpoint the
+    browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "&& !nativePathToken ) { syncModelOverride(" in page
     assert (
@@ -996,14 +908,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
 
 
 def test_evicted_local_configs_drop_their_server_overrides():
-    """savePerModelConfig evicts older models when the map exceeds its budget.
-    Those models keep a server override that API loads still apply, with nothing
-    left in the UI showing it or able to forget it, so eviction has to propagate.
-
-    It propagates as a clear, not a Forget: saving one model silently drops the
-    oldest OTHER model, and sending the full remove would also take llama_extra_args
-    that only the settings API writes and no UI can show or restore.
-    """
+    """savePerModelConfig evicts older models when the map exceeds its budget."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "const evicted: { modelId: string; ggufVariant: string | null }[] = [];" in src
     assert (
@@ -1030,13 +935,8 @@ def test_evicted_local_configs_drop_their_server_overrides():
 
 
 def test_backfill_compares_server_keys_by_normalized_identity():
-    """app_settings has no schema version, so an install predating identity
-    normalization holds rows keyed by whatever id was typed, e.g.
-    "Unsloth/Repo-GGUF:Q4_K_M". This browser only ever stores the folded form,
-    so an exact property lookup reports "not on the server" for a row that is,
-    and the one-time backfill then overwrites settings it documents as the newer
-    authority. The comparison has to fold the same way the backend resolves.
-    """
+    """app_settings has no schema version, so an install predating identity normalization
+    holds rows keyed by whatever id was typed, e.g."""
     src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "function normalizedOverrideKey(" in src
     # Folded on both sides: the older `id::variant` local keys are not.
@@ -1049,13 +949,7 @@ def test_backfill_compares_server_keys_by_normalized_identity():
 
 
 def test_monitor_stats_exclude_model_lifecycle_rows():
-    """A load, unload or download is recorded as a monitor entry but is not an
-    HTTP call. It reads as "running" for as long as the load takes, so counting
-    it reports an in-flight request with no client waiting and folds a
-    multi-minute download into "Avg latency". The backend already leaves these
-    out of active_count, so counting them here also makes the page disagree with
-    the number the API itself reports.
-    """
+    """A load, unload or download is recorded as a monitor entry but is not an HTTP call."""
     src = " ".join(_read("features/api-monitor/use-api-monitor.ts").split())
     assert 'if (entry.kind === "lifecycle") { continue; }' in src
     # "Requests" is a request count too, so it cannot stay entries.length.
@@ -1069,23 +963,17 @@ def test_monitor_stats_exclude_model_lifecycle_rows():
 
 
 def test_api_reach_copy_is_limited_to_gguf_models():
-    """The Hub opens this page for every downloaded model, but ModelConfigPage
-    mirrors settings to the server only when target.isGguf, because API
-    auto-switch indexes GGUFs only. Telling a safetensors user the settings
-    apply to an API request describes a load that cannot happen.
-    """
+    """The Hub opens this page for every downloaded model, but ModelConfigPage mirrors
+    settings to the server only when target.isGguf, because API auto-switch indexes
+    GGUFs only."""
     src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
     assert "{(target.apiLoadable ?? target.isGguf)" in src
     assert "Saved settings apply everywhere Studio loads this model." in src
 
 
 def test_backfill_includes_a_standalone_gguf_with_no_variant():
-    """A standalone .gguf picked directly has no quant to choose between, so it
-    is stored with a null variant. The quant filter classified it like
-    safetensors and skipped it, and since the done flag is set on the same pass
-    those settings stayed browser-only permanently while API auto-switch, which
-    does resolve that model, kept loading it with defaults.
-    """
+    """A standalone .gguf picked directly has no quant to choose between, so it is stored
+    with a null variant."""
     src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert 'entry.modelId.toLowerCase().endsWith(".gguf")' in src
     # Still excluded for safetensors, which auto-switch does not resolve.
@@ -1093,13 +981,9 @@ def test_backfill_includes_a_standalone_gguf_with_no_variant():
 
 
 def test_monitor_overlay_does_not_pull_in_the_lazy_page():
-    """The overlay is mounted from __root.tsx, so a static import of the page
-    for two label helpers drags the whole 900-line page and its dependency
-    graph into the eagerly loaded bundle and undoes the route's
-    lazyRouteComponent. Measured: the async api-monitor chunk was 0.20 kB with
-    the page in the main bundle, and 18.83 kB after the helpers moved, with the
-    main bundle 18 kB smaller.
-    """
+    """The overlay is mounted from __root.tsx, so a static import of the page for two label
+    helpers drags the whole 900-line page and its dependency graph into the eagerly
+    loaded bundle and undoes the route's lazyRouteComponent."""
     overlay = _read("features/api-monitor/api-monitor-overlay.tsx")
     assert 'from "./lifecycle"' in overlay
     assert "api-monitor-page" not in overlay, "the overlay must not reach the page"
@@ -1110,17 +994,12 @@ def test_monitor_overlay_does_not_pull_in_the_lazy_page():
 
 
 def test_override_writes_are_ordered_per_model():
-    """Two saves for one model, or a save racing the one-time backfill, started
-    independent requests with no sequencing, so the older response could commit
-    last and resurrect the entry the newer one meant to replace. An API load
-    then applies settings the user has already changed. Different models still
-    overlap, so a slow write for one cannot hold up another.
-    """
+    """Two saves for one model, or a save racing the one-time backfill, started independent
+    requests with no sequencing, so the older response could commit last and resurrect
+    the entry the newer one meant to replace."""
     src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert "const writesByKey = new Map<string, Promise<void>>();" in src
     # Keyed by the same override key the server stores under.
-    # Folded, not literal: the backfill uses a legacy casing and a UI save the
-    # normalized one, and the backend resolves both to one row.
     assert (
         "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );"
         in src
@@ -1132,23 +1011,16 @@ def test_override_writes_are_ordered_per_model():
 
 
 def test_backfill_skips_future_schema_local_records():
-    """loadPerModelConfig refuses to apply a record written by a newer Studio and
-    eviction refuses to drop one, because this client cannot interpret that
-    schema. The enumeration the backfill uses had no such guard, so it would
-    persist this client's partial reading server-side and an API-triggered load
-    would then apply settings the same client will not apply locally.
-    """
+    """loadPerModelConfig refuses to apply a record written by a newer Studio and eviction
+    refuses to drop one, because this client cannot interpret that schema."""
     src = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     listing = src[src.index("export function listPerModelConfigs()") :]
     assert "storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION" in listing[:900]
 
 
 def test_detail_settings_need_a_resolved_quant():
-    """The on-device card passes a null variant while its own lookup is pending
-    or after it failed. Opening the editor then saves a bare-model config, which
-    the picker never finds because it matches variants exactly, while the API's
-    bare-key fallback would apply it. openModelSettings already refuses; this
-    entry point has to refuse the same way."""
+    """The on-device card passes a null variant while its own lookup is pending or after it
+    failed."""
     src = " ".join(_read("features/hub/hub-page.tsx").split())
     # `variant`, not the argument: a derived quant may have been replaced by the
     # resident one first, and the guard has to judge what will actually be saved.
@@ -1158,11 +1030,9 @@ def test_detail_settings_need_a_resolved_quant():
 
 
 def test_a_failed_detail_fetch_is_retried():
-    """A terminal row's updated_at never advances and selectedIsMissing stays
-    true, so a fetch that failed had nothing left to re-run the effect and the
-    payload stayed unavailable until another row was selected. The retry is
-    bounded because the usual failure is an entry aged out of the ring buffer,
-    which never arrives however often it is asked for."""
+    """A terminal row's updated_at never advances and selectedIsMissing stays true, so a
+    fetch that failed had nothing left to re-run the effect and the payload stayed
+    unavailable until another row was selected."""
     src = " ".join(_read("features/api-monitor/api-monitor-page.tsx").split())
     assert "const DETAIL_FETCH_ATTEMPTS = 3;" in src
     assert "const detailInFlight = selectedId_ != null && loadingDetails.has(selectedId_);" in src
@@ -1170,10 +1040,8 @@ def test_a_failed_detail_fetch_is_retried():
 
 
 def test_ollama_models_are_not_advertised_as_api_loadable():
-    """local_model_resolver skips Ollama's scanner, so an Ollama GGUF is never in
-    the auto-switch index and no OpenAI request can resolve it. target.isGguf is
-    still true for one, so gating on that alone mirrored settings the API can
-    never apply and told the user the opposite."""
+    """local_model_resolver skips Ollama's scanner, so an Ollama GGUF is never in the
+    auto-switch index and no OpenAI request can resolve it."""
     types_src = " ".join(_read("features/model-picker/components/model-selector/types.ts").split())
     assert "apiLoadable?: boolean;" in types_src
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
@@ -1188,10 +1056,9 @@ def test_ollama_models_are_not_advertised_as_api_loadable():
 
 
 def test_cached_repo_settings_are_keyed_by_the_repo_id():
-    """A repo cached outside the active HF cache reports load_id = the snapshot
-    path (hub/services/cache_inventory.py), while the chat picker and the
-    auto-switch index key it by repo_id. Keying the Hub's settings by the load id
-    saved them where no other load looks, so they silently never applied."""
+    """A repo cached outside the active HF cache reports load_id = the snapshot path
+    (hub/services/cache_inventory.py), while the chat picker and the auto-switch index
+    key it by repo_id."""
     config_page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "const configId = target.configId ?? target.id;" in config_page
     for call in (
@@ -1220,11 +1087,10 @@ def test_cached_repo_settings_are_keyed_by_the_repo_id():
 
 
 def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
-    """The backfill compared server keys under an identity taken by splitting on
-    the last colon, so a Windows drive letter and an ordinary colon inside a POSIX
-    filename were read as quant separators: `/models/foo:Bar.gguf` and
-    `/models/foo:bar.gguf` folded to one key, and whichever was already on the
-    server made the other look migrated."""
+    """The backfill compared server keys under an identity taken by splitting on the last
+    colon, so a Windows drive letter and an ordinary colon inside a POSIX filename were
+    read as quant separators: `/models/foo:Bar.gguf` and `/models/foo:bar.gguf` folded
+    to one key, and whichever was already on the server made the other look migrated."""
     identity = " ".join(_read("features/model-picker/model-config/model-identity.ts").split())
     assert "export function splitQuantSuffix(" in identity
     # The two rules that keep a path out: no separator in the tail, and a head
@@ -1264,13 +1130,11 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "_FLOAT_PRECISION_QUANTS" in gguf and "FLOAT_PRECISION_QUANTS" in identity
     # The executable half of this contract, checked case by case against the
     # answers split_quant_suffix gives.
-    assert (WORKDIR / "studio" / "frontend" / "tests" / "quant-suffix-split.test.ts").is_file()
+    assert (WORKDIR / "studio" / "frontend" / "tests" / "model-identity.test.ts").is_file()
 
 
 def test_the_detail_card_also_gates_ollama_out_of_the_api_promise():
-    """Settings opens from two places in the Hub. The row menu gated Ollama out of
-    the server mirror and the "API loads use these" copy; the detail card did not,
-    so the same model made the same false promise from the other entry point."""
+    """Settings opens from two places in the Hub."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     assert hub.count("LOCAL_MODEL_SOURCE.OLLAMA") == 2
     assert "selectedModel.localSource !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
@@ -1278,11 +1142,8 @@ def test_the_detail_card_also_gates_ollama_out_of_the_api_promise():
 
 
 def test_the_settings_page_judges_the_config_storage_actually_keeps():
-    """savePerModelConfig normalizes before deciding, and the runtime hands this
-    page Speculative Decoding "auto", which canonicalizes to null. Judging the raw
-    object called a default config non-default, so Remember reported saved while
-    the local write had dropped the entry, and the mirror sent the server an
-    "auto" override the browser did not have."""
+    """savePerModelConfig normalizes before deciding, and the runtime hands this page
+    Speculative Decoding "auto", which canonicalizes to null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
         "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );" in src
@@ -1300,11 +1161,8 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
 
 
 def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
-    """A settings target opened from the Chat model picker carried no apiLoadable,
-    so the `?? target.isGguf` fallback mirrored an Ollama GGUF to the server.
-    local_model_resolver.py refuses every path under a .studio_links/ollama_links
-    link dir, which is exactly how Ollama's blobs reach this picker, so the mirror
-    advertised a load the API can never make."""
+    """A settings target opened from the Chat model picker carried no apiLoadable, so the
+    `??"""
     picker = " ".join(_read("features/model-picker/components/model-selector.tsx").split())
     assert "apiLoadable: isGguf && !isOllamaLinkPath(id)," in picker
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
@@ -1323,13 +1181,9 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
 
 
 def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
-    """The backfill reads the override map once and then writes each model in turn,
-    so a save by another tab during that pass was overwritten by this browser's
-    older localStorage copy. The server reads and writes under one transaction
-    rather than this re-fetching per model, and it does so field by field: the
-    override map shipped before this browser mirror did, holding only
-    llama_extra_args and max_seq_length, so an entry-level skip would strand the
-    context, KV cache, speculative and GPU settings this migration exists to carry."""
+    """The backfill reads the override map once and then writes each model in turn, so a
+    save by another tab during that pass was overwritten by this browser's older
+    localStorage copy."""
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "{ fillAbsentFields: true }," in backfill
     # Key presence alone is not "done": what the server lacks decides.
@@ -1363,10 +1217,10 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
 
 
 def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
-    """A GGUF loaded from an inactive HF cache or straight off disk loads by path,
-    but /status reports the clean public id, so comparing it to settingsTarget.id
-    said "not loaded" and the page showed saved or default values instead of the
-    live launch config."""
+    """A GGUF loaded from an inactive HF cache or straight off disk loads by path, but
+    /status reports the clean public id, so comparing it to settingsTarget.id said "not
+    loaded" and the page showed saved or default values instead of the live launch
+    config."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     assert (
         "residentModelIdMatches( activeCheckpoint, settingsTarget.id, settingsTarget.configId, )"
@@ -1374,9 +1228,7 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     )
     assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
     assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
-    # The loadable identifier, as every other status reader records it. active_model
-    # is the clean public id, and two files sharing a filename collapse onto one, so
-    # storing it would let the wrong catalog row look loaded.
+    # The loadable identifier, as every other status reader records it.
     assert "checkpointId: resolveInferenceCheckpointId(status)," in hub
     assert "setCheckpoint(status.active_model" not in hub
     chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
@@ -1395,12 +1247,9 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
 
 
 def test_the_hub_hydrates_the_live_settings_before_it_offers_them():
-    """The Hub builds activeModelConfig out of the chat runtime store, and landing
-    straight on /hub is the one entry point where nothing has applied
-    /api/inference/status yet: useChatModelRuntime has no mount sync and the chat
-    page is a different route. Pinning only the checkpoint left every other field
-    at its default, so the settings page passed those defaults on as the resident
-    model's live config and Apply reloaded the model with them."""
+    """The Hub builds activeModelConfig out of the chat runtime store, and landing straight
+    on /hub is the one entry point where nothing has applied /api/inference/status yet:
+    useChatModelRuntime has no mount sync and the chat page is a different route."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     assert "adoptResidentModelStatus(" in hub
     assert "applyActiveModelStatusToStore(status, {" in hub
@@ -1423,17 +1272,11 @@ def test_the_hub_hydrates_the_live_settings_before_it_offers_them():
 
 
 def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
-    """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds
-    once per mounted instance. Opening the Hub's settings page before
-    /api/inference/status has hydrated (or while the target is still loading)
-    flips loadedConfig from null to the live config after mount, and without the
-    config in the React key the editor kept the saved/default values for a model
-    running with something else, which Apply then wrote back over it."""
+    """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds once per
+    mounted instance."""
     view = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
     assert "key={modelConfigInstanceKey( target.id, target.ggufVariant, loadedConfig, )}" in view
-    # Same key the sidebar entry uses; that parity is the point. It keys by the
-    # settings variant, which is the loader's filename label nulled out for a
-    # standalone .gguf, so both surfaces name one config per file.
+    # Same key the sidebar entry uses; that parity is the point.
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
 
@@ -1457,9 +1300,9 @@ def test_the_hub_settings_editor_reseeds_when_the_live_config_lands():
 
 
 def test_a_standalone_gguf_has_one_settings_key():
-    """The inventory labels a single scanned .gguf from its filename, so the Hub row
-    menu keyed its settings to `<path>:Q4_K_M` while the Chat picker, the detail
-    card and the backfill all use the bare path: two surfaces, two configs."""
+    """The inventory labels a single scanned .gguf from its filename, so the Hub row menu
+    keyed its settings to `<path>:Q4_K_M` while the Chat picker, the detail card and the
+    backfill all use the bare path: two surfaces, two configs."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     assert "let ggufVariant = settingsGgufVariantForRow(row);" in hub
     assert "row.formatVariant" not in hub, "the row's raw label is not a settings key"
@@ -1476,11 +1319,10 @@ def test_a_standalone_gguf_has_one_settings_key():
 
 
 def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
-    """A loose .gguf keys its settings by the bare path with no variant, but the
-    loader derives one from the filename (llama_cpp sets _hf_variant from
-    _extract_quant_label) and /status reports it, so an equality between the two
-    could never hold and the settings page withheld the live launch config from
-    the very file that was loaded."""
+    """A loose .gguf keys its settings by the bare path with no variant, but the loader
+    derives one from the filename (llama_cpp sets _hf_variant from _extract_quant_label)
+    and /status reports it, so an equality between the two could never hold and the
+    settings page withheld the live launch config from the very file that was loaded."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     assert "const settingsTargetIsStandaloneFile =" in hub
     assert 'settingsTarget.id.toLowerCase().endsWith(".gguf")' in hub
@@ -1498,12 +1340,8 @@ def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
 
 def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     """A loose .gguf has no quant to choose between, but llama_cpp falls back to
-    _extract_quant_label(gguf_path) when a load names no variant, and /status
-    echoes that as gguf_variant. The sidebar took it straight from the store, so
-    an edit there landed under "<path>:Q4_K_M" while the Hub row, the picker and
-    the backfill all wrote the bare path. The auto-switch lookup reads the bare
-    path BEFORE "<path>:<file_variant>", so the sidebar's entry was never the one
-    an API load applied: the user edited settings that could not take effect."""
+    _extract_quant_label(gguf_path) when a load names no variant, and /status echoes
+    that as gguf_variant."""
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     # Nulled for the settings identity, and used for every field that keys it.
     assert (
@@ -1532,12 +1370,9 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
 
 
 def test_monitor_unload_clears_only_the_model_it_freed():
-    """Unload targets the resident local model from /status, but the store may
-    hold either spelling: status reports the concrete load path while the store
-    can hold the advertised repo id. Matching one spelling leaves the store
-    pinned to a model just freed; matching none of them, or matching an external
-    pick, deletes a selection this button never touched, because clearCheckpoint
-    also drops the persisted external checkpoint."""
+    """Unload targets the resident local model from /status, but the store may hold either
+    spelling: status reports the concrete load path while the store can hold the
+    advertised repo id."""
     page = " ".join(_read("features/api-monitor/api-monitor-page.tsx").split())
     assert "const unloadedAliases = [checkpoint, status.active_model];" in page
     assert "!isExternalModelId(selected)" in page
@@ -1546,13 +1381,8 @@ def test_monitor_unload_clears_only_the_model_it_freed():
 
 
 def test_settings_open_reads_status_before_resolving_the_quant():
-    """A cache row carries no quant, so opening its settings resolves one from
-    the store's active variant. The effect that re-reads /status watches
-    settingsTarget and so cannot run until the target already exists, and the
-    Hub has no polling timer: it re-reads on focus and visibility only. Without
-    a read of its own the resolution therefore sees a checkpoint from before any
-    API-driven switch, for as long as the window has kept focus, and opens the
-    editor on the quant of whichever model that switch displaced."""
+    """A cache row carries no quant, so opening its settings resolves one from the store's
+    active variant."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
     assert "const refreshResidentModelStatus = useCallback((): Promise<void> => {" in page
     assert "const [res] = await Promise.all([ listGgufVariants(" in page
@@ -1560,22 +1390,16 @@ def test_settings_open_reads_status_before_resolving_the_quant():
 
 
 def test_cached_repo_settings_key_follows_the_row_not_the_view():
-    """A repo in an inactive HF cache loads by snapshot path while its settings
-    are keyed by repo id. The same row is reachable from Discover, where the view
-    kind is "discover" and only the resource says it is a cache row, so keying
-    off the kind stranded the settings for exactly the case the helper exists to
-    handle: Run from Discover looked up the snapshot path, found nothing, and
-    loaded with default context, GPU and template."""
+    """A repo in an inactive HF cache loads by snapshot path while its settings are keyed
+    by repo id."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
     assert 'if (kind !== "cache" && resource.source !== "hub_cache") {' in page
 
 
 def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():
-    """The on-device card resolves the quant it shows from the store's active
-    variant, and nothing re-reads status while the window keeps focus, so an
-    API-driven switch leaves that quant naming the model it displaced. A quant
-    the user picked in the card's selector is a choice and must survive; only a
-    derived one defers to the read."""
+    """The on-device card resolves the quant it shows from the store's active variant, and
+    nothing re-reads status while the window keeps focus, so an API-driven switch leaves
+    that quant naming the model it displaced."""
     page = " ".join(_read("features/hub/hub-page.tsx").split())
     card = " ".join(_read("features/hub/catalog/local-on-device-card.tsx").split())
     assert "if (!quantIsUserPicked) { await refreshResidentModelStatus();" in page

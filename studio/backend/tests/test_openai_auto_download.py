@@ -112,8 +112,7 @@ def _hub_error(error_type, status_code: int, message: str):
 
 def test_the_hub_error_helper_carries_a_status_on_both_majors():
     # CI runs huggingface_hub 1.x and this box 0.x, and each takes only one of the
-    # constructor shapes. A helper that silently dropped the response would make an
-    # error-mapping test pass here and fail there.
+    # constructor shapes.
     from hub.utils.hf_errors import hf_error_status
 
     class _Legacy(Exception):
@@ -607,8 +606,7 @@ def test_a_hanging_auth_check_falls_through_to_the_download(hub, monkeypatch):
 
 def test_a_companion_only_repo_is_not_held_at_busy(hub):
     # mmproj and MTP files are companions, not quants, so such a repo is non-servable
-    # and falls through to the resident model. The busy probe accepted any .gguf, which
-    # stranded that ordinary traffic behind an unrelated multi-hour download.
+    # and falls through to the resident model.
     assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
     gb = 1024**3
     hub["info"] = _Info([_Sibling("mmproj-F16.gguf", gb), _Sibling("mtp-model.gguf", gb)])
@@ -1399,8 +1397,7 @@ def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch
 
 def test_a_refusal_is_never_swallowed_by_the_cannot_verify_handler(monkeypatch):
     # The checks run inside a broad `except Exception` that turns a failure to decide
-    # into a fallthrough. An HTTPException there is a decision, but was logged as a
-    # failure and answered by the resident model.
+    # into a fallthrough.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -1466,8 +1463,7 @@ def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatc
 
 
 def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeypatch):
-    # /v1/models can advertise an unloaded local GGUF while the resolver index is cold. A bare
-    # id has no quant to refuse on, so without that evidence the resident model would answer.
+    # /v1/models can advertise an unloaded local GGUF while the resolver index is cold.
     from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
@@ -1522,8 +1518,7 @@ def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatc
 
 
 def test_a_rejected_token_says_so_instead_of_asking_for_a_retry(hub):
-    # Hugging Face 401s an expired X-Unsloth-HF-Token. Only 403/404 were handled, so it
-    # fell through to a 503 telling the caller to retry something that cannot work.
+    # Hugging Face 401s an expired X-Unsloth-HF-Token.
     from huggingface_hub.utils import HfHubHTTPError
 
     hub["raise"] = _hub_error(HfHubHTTPError, 401, "unauthorized")
@@ -1598,8 +1593,7 @@ def test_a_quant_request_is_not_satisfied_by_transformers_weights(monkeypatch):
 
 
 def test_a_timed_out_download_keeps_the_slot_while_it_is_still_running(monkeypatch):
-    # The watch window only bounds progress reporting. Releasing on the clock while
-    # the worker is alive would admit a second multi-GB download beside it.
+    # The watch window only bounds progress reporting.
     monkeypatch.setattr(auto_dl, "_MAX_WATCH_S", 0.0)
     monkeypatch.setattr(auto_dl, "_WATCH_POLL_S", 0.001)
     monkeypatch.setattr(auto_dl, "_TIMED_OUT_POLL_S", 0.001)
@@ -1691,8 +1685,7 @@ def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
 
 def test_a_generic_gguf_advertises_the_label_the_worker_resolves(hub):
     # With no recognized quant token the extractors part ways: one takes the last
-    # hyphenated segment, the plan and worker key the whole stem. Dispatching ours
-    # made the worker exit with "No GGUF shards matching variant".
+    # hyphenated segment, the plan and worker key the whole stem.
     from hub.utils.gguf import extract_quant_label as canonical
     from hub.utils.gguf_plan import build_gguf_variant_plans
 
@@ -1780,8 +1773,7 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
 
 def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatch):
     # huggingface_hub treats None as "use the cached login", so only an explicit False
-    # is anonymous. This probe passed None, so a caller-named repo was read with the
-    # server's identity.
+    # is anonymous.
     seen: list = []
 
     def _probe(model_name, hf_token = None):
@@ -1851,8 +1843,7 @@ def test_the_retry_after_a_failure_is_told_instead_of_restarting_it(hub, monkeyp
 
 
 def test_a_completed_download_does_not_restage_the_scan_it_just_warmed(monkeypatch):
-    # finalize_worker_exit invalidates and warms. A second invalidation here marks
-    # that fresh scan stale and pushes a synchronous rescan onto the client's retry.
+    # finalize_worker_exit invalidates and warms.
     import inspect
 
     src = inspect.getsource(auto_dl._watch)
