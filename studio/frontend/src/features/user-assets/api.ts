@@ -112,7 +112,12 @@ function assetPathSegment(id: string): string {
 
 export type UserAssetsBootstrap = {
   subject: string;
-  importLedger: { source: string; recipes: string[]; executions: string[] };
+  importLedger: {
+    source: string;
+    recipes: string[];
+    executions: string[];
+    nextCursor?: string | null;
+  };
 };
 
 export type LegacyImportItemResult = {
@@ -147,14 +152,47 @@ export type RecipeAssetRecord<TPayload> = {
 
 export type RecipeAssetSummary = Omit<RecipeAssetRecord<never>, "payload">;
 
-export function bootstrapUserAssets(
+export async function bootstrapUserAssets(
   options: { signal?: AbortSignal; expectedSubjectKey?: string } = {},
 ): Promise<UserAssetsBootstrap> {
-  return requestJson<UserAssetsBootstrap>(
-    "/bootstrap",
-    { signal: options.signal },
-    options,
-  );
+  const recipes: string[] = [];
+  const executions: string[] = [];
+  const seenCursors = new Set<string>();
+  let subject: string | null = null;
+  let source: string | null = null;
+  let cursor: string | null = null;
+  do {
+    const query: string = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    const page: UserAssetsBootstrap = await requestJson<UserAssetsBootstrap>(
+      `/bootstrap${query}`,
+      { signal: options.signal },
+      options,
+    );
+    if (subject !== null && page.subject !== subject) {
+      throw new Error("The bootstrap account changed between ledger pages.");
+    }
+    if (source !== null && page.importLedger.source !== source) {
+      throw new Error("The bootstrap ledger source changed between pages.");
+    }
+    subject = page.subject;
+    source = page.importLedger.source;
+    recipes.push(...page.importLedger.recipes);
+    executions.push(...page.importLedger.executions);
+    const nextCursor: string | null = page.importLedger.nextCursor ?? null;
+    if (nextCursor && seenCursors.has(nextCursor)) {
+      throw new Error("The bootstrap ledger returned a repeated cursor.");
+    }
+    if (nextCursor) seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  } while (cursor);
+
+  if (subject === null || source === null) {
+    throw new Error("The bootstrap ledger returned no pages.");
+  }
+  return {
+    subject,
+    importLedger: { source, recipes, executions, nextCursor: null },
+  };
 }
 
 export async function listServerRecipes(

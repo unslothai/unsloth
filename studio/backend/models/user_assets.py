@@ -113,6 +113,7 @@ class ImportLedger(StrictModel):
     source: str
     recipes: list[str]
     executions: list[str]
+    nextCursor: str | None = None
 
 
 class BootstrapResponse(StrictModel):

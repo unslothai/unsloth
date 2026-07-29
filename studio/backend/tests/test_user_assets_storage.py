@@ -2,11 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import pytest
+from fastapi import HTTPException
 
 from core.user_assets_validation import MAX_TIMESTAMP_MS, UserAssetValidationError
 from models.user_assets import ExecutionUpsertRequest, RecipeUpdateRequest
 from models.data_recipe import PublishDatasetRequest
 from routes.data_recipe import jobs as data_recipe_jobs
+from routes.user_assets import legacy_import as user_assets_legacy_import
 from routes.user_assets import recipes as user_assets_recipes
 from routes.user_assets.recipes import _recipe_input
 from storage import studio_db, user_assets_db
@@ -105,6 +107,38 @@ def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch
         user_assets_db.upsert_recipe_execution(
             "owner", "r1", "bad", execution("bad", createdAt = 100, finishedAt = 99)
         )
+
+
+def test_execution_update_uses_immutable_stored_creation_timestamp():
+    user_assets_db.create_recipe("owner", recipe())
+    inserted = user_assets_db.upsert_recipe_execution(
+        "owner",
+        "r1",
+        "e1",
+        execution(createdAt = 1_000, finishedAt = None, status = "active"),
+    )
+
+    with pytest.raises(UserAssetValidationError, match = "stored createdAt"):
+        user_assets_db.upsert_recipe_execution(
+            "owner",
+            "r1",
+            "e1",
+            execution(createdAt = 0, finishedAt = 500),
+            expected_revision = inserted["revision"],
+        )
+
+    unchanged = user_assets_db.get_recipe_execution("owner", "r1", "e1")
+    assert unchanged["revision"] == inserted["revision"]
+    assert unchanged["createdAt"] == 1_000
+    normalized = user_assets_db.upsert_recipe_execution(
+        "owner",
+        "r1",
+        "e1",
+        execution(createdAt = 0, finishedAt = 1_500),
+        expected_revision = inserted["revision"],
+    )
+    assert normalized["createdAt"] == 1_000
+    assert normalized["finishedAt"] == 1_500
 
 
 def test_monotonic_updates_stay_within_the_timestamp_limit():
@@ -501,6 +535,55 @@ def test_corrected_legacy_rejection_retries_after_restart(monkeypatch):
         "owner", source, [{**recipe("retry-me"), "createdAt": 1}], []
     )
     assert corrected["recipes"][0]["outcome"] == "imported"
+
+
+def test_legacy_import_ledger_is_keyset_paginated():
+    source = "recipe-indexeddb-v1"
+    conn = studio_db.get_connection()
+    conn.executemany(
+        """
+        INSERT INTO user_asset_legacy_imports
+            (owner_subject, source, entity_kind, legacy_id, outcome, reason, imported_at)
+        VALUES (?, ?, ?, ?, 'imported', NULL, ?)
+        """,
+        [
+            ("owner", source, "execution", "e1", 1),
+            ("owner", source, "execution", "e2", 2),
+            ("owner", source, "recipe", "r1", 3),
+            ("owner", source, "recipe", "r2", 4),
+            ("owner", source, "recipe", "r3", 5),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    pages = []
+    cursor = None
+    while True:
+        page = user_assets_db.list_legacy_imports(
+            "owner", source, cursor = cursor, limit = 2
+        )
+        pages.append(page)
+        cursor = page["nextCursor"]
+        if cursor is None:
+            break
+
+    assert [len(page["recipes"]) + len(page["executions"]) for page in pages] == [
+        2,
+        2,
+        1,
+    ]
+    assert [item for page in pages for item in page["executions"]] == ["e1", "e2"]
+    assert [item for page in pages for item in page["recipes"]] == ["r1", "r2", "r3"]
+    assert pages[-1]["nextCursor"] is None
+    with pytest.raises(UserAssetValidationError, match = "cursor"):
+        user_assets_db.list_legacy_imports("owner", source, cursor = "not-a-cursor")
+    with pytest.raises(HTTPException) as route_error:
+        user_assets_legacy_import.bootstrap(
+            cursor = "not-a-cursor", limit = 2, current_subject = "owner"
+        )
+    assert route_error.value.status_code == 422
+    assert route_error.value.detail["code"] == "invalid_cursor"
 
 
 def test_route_unsafe_ids_are_never_persisted():

@@ -57,7 +57,7 @@ test("guarded recipe reads stop when the authenticated subject changes", async (
   const { getAuthSubjectKey, storeAuthTokens } = await import(
     "../src/features/auth/session.ts"
   );
-  const { listServerRecipeExecutions } = await import(
+  const { bootstrapUserAssets, listServerRecipeExecutions } = await import(
     "../src/features/user-assets/api.ts"
   );
   const { getRecipeJobStatus } = await import(
@@ -115,4 +115,39 @@ test("guarded recipe reads stop when the authenticated subject changes", async (
     () => getRecipeJobStatus("job-A"),
     "recipe job status read",
   );
+
+  select("A");
+  const bootstrapUrls: string[] = [];
+  const bootstrapPages = [
+    {
+      subject: "subject:A",
+      importLedger: {
+        source: "recipe-indexeddb-v1",
+        recipes: ["r1"],
+        executions: ["e1"],
+        nextCursor: "page-2",
+      },
+    },
+    {
+      subject: "subject:A",
+      importLedger: {
+        source: "recipe-indexeddb-v1",
+        recipes: ["r2"],
+        executions: ["e2"],
+        nextCursor: null,
+      },
+    },
+  ];
+  globalThis.fetch = (async (input) => {
+    bootstrapUrls.push(String(input));
+    return Response.json(bootstrapPages.shift());
+  }) as typeof fetch;
+
+  const bootstrap = await bootstrapUserAssets();
+  assert.deepEqual(bootstrap.importLedger.recipes, ["r1", "r2"]);
+  assert.deepEqual(bootstrap.importLedger.executions, ["e1", "e2"]);
+  assert.deepEqual(bootstrapUrls, [
+    "/api/user-assets/bootstrap",
+    "/api/user-assets/bootstrap?cursor=page-2",
+  ]);
 });

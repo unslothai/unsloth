@@ -9,6 +9,10 @@ const sourceRoot = fileURLToPath(new URL("../src/", import.meta.url));
 const authTestEntry = new URL("./auth-runtime-entry.mjs", import.meta.url).href;
 const trackerFixture = new URL("./tracker-runtime-fixture.ts", import.meta.url)
   .href;
+const executionWriteRaceFixture = new URL(
+  "./execution-write-race-fixture.ts",
+  import.meta.url,
+).href;
 
 function resolveSourcePath(candidate) {
   for (const file of [
@@ -26,6 +30,14 @@ function resolveSourcePath(candidate) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
+  if (
+    context.parentURL?.endsWith("/recipe-studio/data/executions-db.ts") &&
+    (specifier === "@/features/auth" ||
+      specifier === "@/features/user-assets" ||
+      specifier === "@/features/user-assets/persistence-policy")
+  ) {
+    return { url: executionWriteRaceFixture, shortCircuit: true };
+  }
   if (specifier === "@/shared/toast") {
     return { url: trackerFixture, shortCircuit: true };
   }

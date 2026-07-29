@@ -24,12 +24,21 @@ import {
 
 const revisions = new Map<string, number>();
 const persistedExecutions = new Map<string, PersistedRecipeExecution>();
+type PendingWrite = {
+  record: RecipeExecutionRecord;
+  survivesViewChange: boolean;
+};
+type WriteWaiter = {
+  survivesViewChange: boolean;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
 type WriteState = {
   owner: RecipeExecutionPersistenceOwner;
-  latest: RecipeExecutionRecord | null;
+  latest: PendingWrite | null;
   running: boolean;
   timer: ReturnType<typeof setTimeout> | null;
-  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+  waiters: WriteWaiter[];
 };
 const writeStates = new Map<string, WriteState>();
 let activeSubjectKey: string | null = null;
@@ -38,6 +47,10 @@ const TERMINAL = new Set<RecipeExecutionStatus>([
   "completed",
   "error",
 ]);
+
+function latestPendingWrite(state: WriteState): PendingWrite | null {
+  return state.latest;
+}
 
 export type RecipeExecutionPersistenceOwner = {
   subjectKey: string;
@@ -82,6 +95,20 @@ function assertOwnerCurrent(
     throw new Error("Execution persistence owner changed.");
   }
   if (record && record.recipeId !== owner.recipeId) {
+    throw new Error("Execution persistence recipe changed.");
+  }
+}
+
+function assertWriteAllowed(
+  owner: RecipeExecutionPersistenceOwner,
+  record: RecipeExecutionRecord,
+  survivesViewChange: boolean,
+): void {
+  assertSubjectUnchanged(owner.subjectKey);
+  if (!survivesViewChange && !owner.isCurrent()) {
+    throw new Error("Execution persistence owner changed.");
+  }
+  if (record.recipeId !== owner.recipeId) {
     throw new Error("Execution persistence recipe changed.");
   }
 }
@@ -367,8 +394,9 @@ async function persistOnce(
   record: RecipeExecutionRecord,
   key: string,
   owner: RecipeExecutionPersistenceOwner,
+  survivesViewChange: boolean,
 ): Promise<void> {
-  assertOwnerCurrent(owner, record);
+  assertWriteAllowed(owner, record, survivesViewChange);
   let metadata = serializeExecutionMetadata(record);
   const knownCurrent = persistedExecutions.get(key);
   if (knownCurrent) {
@@ -381,7 +409,7 @@ async function persistOnce(
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       // Debounced writes recheck ownership before sending and after receiving.
-      assertOwnerCurrent(owner, record);
+      assertWriteAllowed(owner, record, survivesViewChange);
       const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>(
         {
           recipeId: record.recipeId,
@@ -391,12 +419,12 @@ async function persistOnce(
         },
         { expectedSubjectKey: owner.subjectKey },
       );
-      assertOwnerCurrent(owner, record);
+      assertWriteAllowed(owner, record, survivesViewChange);
       revisions.set(key, saved.revision);
       persistedExecutions.set(key, saved);
       return;
     } catch (error) {
-      assertOwnerCurrent(owner, record);
+      assertWriteAllowed(owner, record, survivesViewChange);
       if (!(error instanceof UserAssetApiError) || error.status !== 409)
         throw error;
       const current = error.detail.current as
@@ -489,13 +517,34 @@ async function drainWrites(key: string, state: WriteState): Promise<void> {
     while (state.latest) {
       const next = state.latest;
       state.latest = null;
-      assertOwnerCurrent(state.owner, next);
       const revisionKey = executionKey(
         state.owner.subjectKey,
         state.owner.recipeId,
-        next.id,
+        next.record.id,
       );
-      await persistOnce(next, revisionKey, state.owner);
+      try {
+        await persistOnce(
+          next.record,
+          revisionKey,
+          state.owner,
+          next.survivesViewChange,
+        );
+      } catch (error) {
+        const durablePending = latestPendingWrite(state);
+        if (
+          !durablePending?.survivesViewChange ||
+          getAuthSubjectKey() !== state.owner.subjectKey ||
+          durablePending.record.recipeId !== state.owner.recipeId
+        ) {
+          throw error;
+        }
+        const retained: WriteWaiter[] = [];
+        for (const waiter of state.waiters.splice(0)) {
+          if (waiter.survivesViewChange) retained.push(waiter);
+          else waiter.reject(error);
+        }
+        state.waiters.push(...retained);
+      }
     }
     for (const waiter of state.waiters.splice(0)) waiter.resolve();
   } catch (error) {
@@ -530,12 +579,18 @@ export function saveRecipeExecution(
     waiters: [],
   };
   const previousJobId =
-    state.latest?.jobId ?? persistedExecutions.get(persistedKey)?.jobId;
+    state.latest?.record.jobId ?? persistedExecutions.get(persistedKey)?.jobId;
   const jobAttached = Boolean(execution.jobId) && !previousJobId;
-  state.latest = execution;
+  const survivesViewChange =
+    jobAttached ||
+    Boolean(
+      state.latest?.survivesViewChange &&
+        state.latest.record.jobId === execution.jobId,
+    );
+  state.latest = { record: execution, survivesViewChange };
   writeStates.set(key, state);
   const promise = new Promise<void>((resolve, reject) => {
-    state.waiters.push({ resolve, reject });
+    state.waiters.push({ survivesViewChange, resolve, reject });
   });
   const terminal = TERMINAL.has(execution.status);
   if ((terminal || jobAttached) && state.timer) {

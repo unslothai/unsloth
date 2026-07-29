@@ -34,6 +34,8 @@ from storage import studio_db
 
 DEFAULT_EXECUTION_PAGE_LIMIT = 100
 MAX_EXECUTION_PAGE_LIMIT = 100
+DEFAULT_LEGACY_IMPORT_PAGE_LIMIT = 500
+MAX_LEGACY_IMPORT_PAGE_LIMIT = 1_000
 DEFAULT_RECIPE_PAGE_LIMIT = 100
 MAX_RECIPE_PAGE_LIMIT = 100
 MAX_CURSOR_CHARS = 2048
@@ -635,15 +637,10 @@ def upsert_recipe_execution(
     asset_id = validate_id(execution_id, "execution id")
     expected_revision = _validate_expected_revision(expected_revision, optional = True)
     projected = project_execution_metadata(metadata)
-    metadata_json = canonical_json(projected, MAX_EXECUTION_JSON_BYTES, "execution metadata")
     created_at = validate_timestamp(projected.get("createdAt"), "createdAt")
     finished_at = projected.get("finishedAt")
     if finished_at is not None:
         finished_at = validate_timestamp(finished_at, "finishedAt")
-        if finished_at < created_at:
-            raise UserAssetValidationError(
-                "invalid_timestamp", "finishedAt must not be earlier than createdAt"
-            )
     now = _now_ms()
     conn = studio_db.get_connection()
     try:
@@ -669,6 +666,13 @@ def upsert_recipe_execution(
             if expected_revision not in (None, 0):
                 conn.rollback()
                 return None
+            if finished_at is not None and finished_at < created_at:
+                raise UserAssetValidationError(
+                    "invalid_timestamp", "finishedAt must not be earlier than createdAt"
+                )
+            metadata_json = canonical_json(
+                projected, MAX_EXECUTION_JSON_BYTES, "execution metadata"
+            )
             conn.execute(
                 """
                 INSERT INTO data_recipe_executions
@@ -693,6 +697,15 @@ def upsert_recipe_execution(
             if expected_revision is None or current["revision"] != expected_revision:
                 conn.rollback()
                 raise RevisionConflictError(_execution_from_row(current))
+            stored_created_at = current["created_at"]
+            if finished_at is not None and finished_at < stored_created_at:
+                raise UserAssetValidationError(
+                    "invalid_timestamp", "finishedAt must not be earlier than stored createdAt"
+                )
+            projected["createdAt"] = stored_created_at
+            metadata_json = canonical_json(
+                projected, MAX_EXECUTION_JSON_BYTES, "execution metadata"
+            )
             conn.execute(
                 """
                 UPDATE data_recipe_executions
@@ -729,28 +742,118 @@ def upsert_recipe_execution(
         conn.close()
 
 
-def list_legacy_imports(owner_subject: str, source: str) -> dict[str, list[str]]:
+def _encode_legacy_import_cursor(entity_kind: str, legacy_id: str) -> str:
+    payload = json.dumps(
+        {"v": 1, "kind": entity_kind, "id": legacy_id},
+        separators = (",", ":"),
+        ensure_ascii = False,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_legacy_import_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_CHARS:
+            raise ValueError
+        decoded = base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4),
+            altchars = b"-_",
+            validate = True,
+        )
+        value = json.loads(decoded.decode("utf-8"))
+        if not isinstance(value, dict) or value.get("v") != 1:
+            raise ValueError
+        entity_kind = value.get("kind")
+        if entity_kind not in ("execution", "recipe"):
+            raise ValueError
+        legacy_id = validate_id(value.get("id"), "legacy import cursor id")
+        return entity_kind, legacy_id
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        UserAssetValidationError,
+        ValueError,
+    ) as error:
+        raise UserAssetValidationError(
+            "invalid_cursor", "legacy import cursor is invalid"
+        ) from error
+
+
+def list_legacy_imports(
+    owner_subject: str,
+    source: str,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LEGACY_IMPORT_PAGE_LIMIT,
+) -> dict[str, Any]:
     owner = _require_owner(owner_subject)
     if not isinstance(source, str) or not source:
         raise ValueError("source must be a non-empty string")
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= MAX_LEGACY_IMPORT_PAGE_LIMIT
+    ):
+        raise UserAssetValidationError(
+            "invalid_page_limit",
+            f"legacy import page limit must be between 1 and {MAX_LEGACY_IMPORT_PAGE_LIMIT}",
+        )
+    cursor_values = _decode_legacy_import_cursor(cursor) if cursor is not None else None
     conn = studio_db.get_connection()
     try:
-        rows = conn.execute(
-            """
-            SELECT entity_kind, legacy_id FROM user_asset_legacy_imports
-            WHERE owner_subject = ? AND source = ?
-              AND outcome <> 'missing_parent'
-              AND (
-                outcome <> 'rejected'
-                OR reason IN ('already_exists', 'parent_retired')
-              )
-            ORDER BY entity_kind, legacy_id
-            """,
-            (owner, source),
-        ).fetchall()
+        if cursor_values is None:
+            rows = conn.execute(
+                """
+                SELECT entity_kind, legacy_id FROM user_asset_legacy_imports
+                WHERE owner_subject = ? AND source = ?
+                  AND outcome <> 'missing_parent'
+                  AND (
+                    outcome <> 'rejected'
+                    OR reason IN ('already_exists', 'parent_retired')
+                  )
+                ORDER BY entity_kind, legacy_id
+                LIMIT ?
+                """,
+                (owner, source, limit + 1),
+            ).fetchall()
+        else:
+            cursor_kind, cursor_id = cursor_values
+            rows = conn.execute(
+                """
+                SELECT entity_kind, legacy_id FROM user_asset_legacy_imports
+                WHERE owner_subject = ? AND source = ?
+                  AND outcome <> 'missing_parent'
+                  AND (
+                    outcome <> 'rejected'
+                    OR reason IN ('already_exists', 'parent_retired')
+                  )
+                  AND (
+                    entity_kind > ?
+                    OR (entity_kind = ? AND legacy_id > ?)
+                  )
+                ORDER BY entity_kind, legacy_id
+                LIMIT ?
+                """,
+                (owner, source, cursor_kind, cursor_kind, cursor_id, limit + 1),
+            ).fetchall()
+        page_rows = rows[:limit]
+        next_cursor = None
+        if len(rows) > limit and page_rows:
+            last = page_rows[-1]
+            next_cursor = _encode_legacy_import_cursor(
+                last["entity_kind"], last["legacy_id"]
+            )
         return {
-            "recipes": [row["legacy_id"] for row in rows if row["entity_kind"] == "recipe"],
-            "executions": [row["legacy_id"] for row in rows if row["entity_kind"] == "execution"],
+            "recipes": [
+                row["legacy_id"] for row in page_rows if row["entity_kind"] == "recipe"
+            ],
+            "executions": [
+                row["legacy_id"]
+                for row in page_rows
+                if row["entity_kind"] == "execution"
+            ],
+            "nextCursor": next_cursor,
         }
     finally:
         conn.close()

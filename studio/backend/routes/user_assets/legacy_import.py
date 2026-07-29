@@ -19,8 +19,20 @@ router = APIRouter(route_class = UserAssetsRoute)
 
 
 @router.get("/bootstrap", response_model = BootstrapResponse)
-def bootstrap(current_subject: str = Depends(get_current_subject)):
-    ledger = user_assets_db.list_legacy_imports(current_subject, DEFAULT_LEGACY_SOURCE)
+def bootstrap(
+    cursor: str | None = None,
+    limit: int = user_assets_db.DEFAULT_LEGACY_IMPORT_PAGE_LIMIT,
+    current_subject: str = Depends(get_current_subject),
+):
+    try:
+        ledger = user_assets_db.list_legacy_imports(
+            current_subject,
+            DEFAULT_LEGACY_SOURCE,
+            cursor = cursor,
+            limit = limit,
+        )
+    except UserAssetValidationError as error:
+        raise_validation(error)
     return {
         "subject": current_subject,
         "importLedger": {"source": DEFAULT_LEGACY_SOURCE, **ledger},
