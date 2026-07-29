@@ -43,7 +43,16 @@ TEMP = WORKDIR / "temp" / "new_chat_context_recount"
 SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME)
 
 # Every name the emulator can supply to a sliced dependency array.
-BOUND_NAMES = {"aui", "isLoading", "nonce", "checkpoint", "ggufContextLength", "modelLoading"}
+BOUND_NAMES = {
+    "activeThreadId",
+    "aui",
+    "checkpoint",
+    "enabled",
+    "ggufContextLength",
+    "isLoading",
+    "modelLoading",
+    "nonce",
+}
 
 
 def _refresh_module_body() -> str:
@@ -53,15 +62,11 @@ def _refresh_module_body() -> str:
     return text[text.index(marker) + len(marker) :]
 
 
-def _new_chat_effects() -> list[tuple[list[str], str]]:
-    """Every ``useEffect`` in ThreadNewChatSwitch as (dependency names, verbatim body)."""
-    component = slice_between(
-        read(PROVIDER),
-        "function ThreadNewChatSwitch(",
-        "\nfunction ActiveThreadSync(",
-    )
+def _component_effects(start: str, end: str) -> list[tuple[list[str], str]]:
+    """Every ``useEffect`` in one component as (dependency names, verbatim body)."""
+    component = slice_between(read(PROVIDER), start, end)
     matches = re.findall(r"useEffect\(\(\) => \{\n(.*?)\n  \}, \[([^\]]*)\]\);", component, re.S)
-    assert matches, "ThreadNewChatSwitch effects not found"
+    assert matches, f"{start} effects not found"
     effects = [
         ([name.strip() for name in deps.split(",") if name.strip()], body) for body, deps in matches
     ]
@@ -69,6 +74,17 @@ def _new_chat_effects() -> list[tuple[list[str], str]]:
         unknown = set(deps) - BOUND_NAMES
         assert not unknown, f"emulator does not bind {sorted(unknown)}"
     return effects
+
+
+def _new_chat_effects() -> list[tuple[list[str], str]]:
+    return _component_effects("function ThreadNewChatSwitch(", "\nfunction ActiveThreadSync(")
+
+
+def _thread_recount_effects() -> list[tuple[list[str], str]]:
+    return _component_effects(
+        "function ThreadContextUsageRecount(",
+        "\n// Exposes the current thread's cancelRun()",
+    )
 
 
 def _store_reducers() -> str:
@@ -208,8 +224,46 @@ const auiFixture: any = {
 
 HARNESS_RENDER = """
 
-// Replays ThreadNewChatSwitch's sliced effects with React's dependency rule: an
-// effect re-runs only when one of its own dependencies changed since last render.
+// Replays sliced effects with React's dependency rule: an effect re-runs only when one
+// of its own dependencies changed since the last render.
+function replayEffects(effects: any[], scope: any, memo: any[]): void {
+  effects.forEach((effect: any, index: number) => {
+    const next = effect.deps.map((name: string) => scope[name]);
+    const previous = memo[index];
+    if (
+      previous != null &&
+      previous.length === next.length &&
+      previous.every((value: any, i: number) => Object.is(value, next[i]))
+    ) {
+      return;
+    }
+    memo[index] = next;
+    effect.run();
+  });
+}
+
+const recountDeps: any[] = [];
+
+export function renderThreadContextUsageRecount(props: any = {}): void {
+  const enabled = props.enabled ?? true;
+  // Read through the store the way the component's selectors do.
+  const activeThreadId = state.activeThreadId;
+  const checkpoint = state.params.checkpoint;
+  const ggufContextLength = state.ggufContextLength;
+  const modelLoading = state.modelLoading;
+  const scope: any = {
+    activeThreadId,
+    checkpoint,
+    enabled,
+    ggufContextLength,
+    modelLoading,
+  };
+  const effects: any[] = [
+__RECOUNT_EFFECTS__
+  ];
+  replayEffects(effects, scope, recountDeps);
+}
+
 const renderedDeps: any[] = [];
 
 export function renderNewChatSwitch(props: any): void {
@@ -232,19 +286,7 @@ export function renderNewChatSwitch(props: any): void {
   const effects: any[] = [
 __EFFECTS__
   ];
-  effects.forEach((effect: any, index: number) => {
-    const next = effect.deps.map((name: string) => scope[name]);
-    const previous = renderedDeps[index];
-    if (
-      previous != null &&
-      previous.length === next.length &&
-      previous.every((value: any, i: number) => Object.is(value, next[i]))
-    ) {
-      return;
-    }
-    renderedDeps[index] = next;
-    effect.run();
-  });
+  replayEffects(effects, scope, renderedDeps);
 }
 """
 
@@ -276,9 +318,9 @@ __FAST_PATH__
 """
 
 
-def _rendered_effects() -> str:
+def _rendered_effects(effects: list[tuple[list[str], str]]) -> str:
     blocks = []
-    for deps, body in _new_chat_effects():
+    for deps, body in effects:
         blocks.append(
             "    {\n"
             f"      deps: {json.dumps(deps)},\n"
@@ -292,7 +334,9 @@ def _rendered_effects() -> str:
 
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
-    render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects())
+    render = HARNESS_RENDER.replace(
+        "__EFFECTS__", _rendered_effects(_new_chat_effects())
+    ).replace("__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects()))
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
     return prelude + _refresh_module_body() + render + resident
 
@@ -601,3 +645,133 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
         "already blanked the external provider's usage"
     )
     assert (out["cached"] or {}).get("totalTokens") == 62
+
+
+# Revisiting a thread that was NOT the one open when the model changed: setCheckpoint
+# emptied contextUsageByThreadId, setActiveThreadId has nothing to restore, and the
+# thread is already mounted so its history loader never runs again.
+REVISIT_AFTER_A_MODEL_SWITCH = """
+    seed({
+      activeThreadId: "thread-b",
+      contextUsage: { promptTokens: 700, completionTokens: 20, totalTokens: 720, cachedTokens: 0 },
+      contextUsageByThreadId: {
+        "thread-a": { promptTokens: 500, completionTokens: 10, totalTokens: 510, cachedTokens: 0 },
+        "thread-b": { promptTokens: 700, completionTokens: 20, totalTokens: 720, cachedTokens: 0 },
+      },
+    });
+    renderThreadContextUsageRecount();
+    const beforeSwitch = world.countedMessages.length;
+
+    // The user loads a different GGUF, then clicks back into thread-a in the sidebar.
+    useChatRuntimeStore.getState().setCheckpoint("unsloth/other-gguf");
+    useChatRuntimeStore.getState().setActiveThreadId("thread-a");
+    renderThreadContextUsageRecount();
+"""
+
+# A deep link to /chat/:id against an already-resident GGUF. The history loader's own
+# recount runs before /api/inference/status has answered, and the status response lands
+# before ThreadAutoSwitch has written activeThreadId, so neither of those counts.
+DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
+    renderThreadContextUsageRecount();
+    await refreshContextUsage({ threadId: "thread-a" });
+    const beforeSwitch = world.countedMessages.length;
+
+    // /api/inference/status answers while the thread is still not active.
+    seed({
+      params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
+      ggufContextLength: 8192,
+      modelLoading: false,
+    });
+    renderThreadContextUsageRecount();
+
+    // ThreadAutoSwitch finally writes the active thread.
+    useChatRuntimeStore.getState().setActiveThreadId("thread-a");
+    renderThreadContextUsageRecount();
+"""
+
+
+@pytest.mark.parametrize(
+    ("seed_script", "scenario"),
+    [
+        pytest.param(LOADED_MODEL, REVISIT_AFTER_A_MODEL_SWITCH, id = "revisit_a_cached_thread"),
+        pytest.param("", DEEP_LINK_HYDRATING_AFTER_THE_LOADER, id = "deep_link_hydrates_late"),
+    ],
+)
+def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scenario):
+    """#7450 again, from the two orderings the load-time and history-load recounts miss.
+    Both end with a thread the bar points at, a known model and window, and no usage to
+    show; the recount has to run off the thread becoming active rather than off either of
+    those independently timed callbacks."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage,
+              renderThreadContextUsageRecount,
+              seed,
+              snapshot,
+              useChatRuntimeStore,
+              world,
+            }} from "./harness.ts";
+            {seed_script}
+            {TWO_STORED_TURNS}
+            {scenario}
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            const after = snapshot();
+            console.log(JSON.stringify({{
+              beforeSwitch,
+              counts: world.countedMessages.length,
+              sent: world.countedMessages.at(-1) ?? [],
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
+            }}));
+            """
+        )
+    )
+    assert out["beforeSwitch"] == 0, "nothing to reprice until the thread is the active one"
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
+        "a thread the bar points at with no cached usage stays blank until the next "
+        "completion unless becoming active reprices it"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == 62
+    assert out["counts"] == 1
+    assert len(out["sent"]) == 2, "the thread's stored branch must be priced"
+
+
+def test_the_recount_leaves_a_thread_that_already_has_usage_alone():
+    """Switching back to a thread whose usage survived is the common case: the restored
+    value is a real completion's, and repricing it would replace an exact number with an
+    estimate of the same prompt."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              renderThreadContextUsageRecount,
+              seed,
+              snapshot,
+              useChatRuntimeStore,
+              world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            {TWO_STORED_TURNS}
+            seed({{
+              contextUsageByThreadId: {{
+                "thread-a": {{ promptTokens: 500, completionTokens: 10, totalTokens: 510, cachedTokens: 0 }},
+              }},
+            }});
+            useChatRuntimeStore.getState().setActiveThreadId("thread-a");
+            renderThreadContextUsageRecount();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 0
+    assert (out["contextUsage"] or {}).get("totalTokens") == 510

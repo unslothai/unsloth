@@ -1472,6 +1472,41 @@ function ActiveBranchRegistrar({
   return null;
 }
 
+// Price whichever thread the bar is pointed at whenever it has nothing to show. Two
+// paths reach this and no other: a model change empties contextUsageByThreadId, and a
+// thread already mounted in the runtime does not rerun its history loader on the way
+// back, so revisiting any thread other than the one that was open during the load
+// restores no usage; and on a deep link to /chat/:id the history loader can run before
+// /api/inference/status has a checkpoint, while the status response can land before the
+// thread is active, so neither of those two independently timed callbacks counts.
+// Reading the model fields here is what retries once they hydrate.
+function ThreadContextUsageRecount({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      !activeThreadId ||
+      modelLoading ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
+      return;
+    }
+    // Only into a blank bar: a usage the history loader restored or a completion wrote
+    // is the exact number, and this count would only ever be an estimate of it.
+    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    void refreshContextUsage({ threadId: activeThreadId });
+  }, [activeThreadId, checkpoint, enabled, ggufContextLength, modelLoading]);
+
+  return null;
+}
+
 // Exposes the current thread's cancelRun() via the shared store so external
 // surfaces (e.g. the sidebar trash button) can stop an in-flight stream before
 // deleting the thread, mirroring the Stop -> Trash sequence.
@@ -1655,6 +1690,7 @@ export function ChatRuntimeProvider({
           }
         />
         <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
+        <ThreadContextUsageRecount enabled={modelType === "base" && !pairId} />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
         <CancelRegistrar />
         {initialThreadId && (
