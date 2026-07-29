@@ -921,6 +921,18 @@ function Ensure-VCRedist {
         $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
         $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.x64.exe"
         substep "winget unavailable or failed; downloading the runtime directly..."
+        # Windows PowerShell 5.1 on an old image can carry a .NET default protocol set that
+        # predates TLS 1.2, which aka.ms refuses -- exactly the no-winget host this fallback
+        # exists for. SystemDefault (0) means "let the OS choose" and already covers TLS 1.2+,
+        # so only an explicit legacy set is upgraded, and it is restored afterwards.
+        $_prevProtocol = $null
+        try {
+            $_cur = [System.Net.ServicePointManager]::SecurityProtocol
+            if ([int]$_cur -ne 0 -and ([int]$_cur -band [int][System.Net.SecurityProtocolType]::Tls12) -eq 0) {
+                [System.Net.ServicePointManager]::SecurityProtocol = $_cur -bor [System.Net.SecurityProtocolType]::Tls12
+                $_prevProtocol = $_cur
+            }
+        } catch { $_prevProtocol = $null }
         try {
             Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing -TimeoutSec 300
             $p = Start-Process -FilePath $dst -ArgumentList '/quiet', '/norestart' -Wait -PassThru
@@ -932,6 +944,9 @@ function Ensure-VCRedist {
         } catch {
             substep "Direct VC++ runtime download failed: $($_.Exception.Message)" "Yellow"
         } finally {
+            if ($null -ne $_prevProtocol) {
+                try { [System.Net.ServicePointManager]::SecurityProtocol = $_prevProtocol } catch { }
+            }
             Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
         }
     }
