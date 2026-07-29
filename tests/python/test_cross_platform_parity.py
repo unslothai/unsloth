@@ -818,3 +818,120 @@ class TestPipNoIndexScrubParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "'PIP_NO_INDEX'" in text
         assert "'PIP_INDEX_URL'" in text
+
+
+class TestNoTorchPersistenceParity:
+    """No-torch mode must outlive the process that requested it.
+
+    install.sh / install.ps1 export UNSLOTH_NO_TORCH for their own run only.
+    `unsloth studio update` exports nothing, so both the PowerShell setup and the
+    shared Python stack have to recover the mode from the install manifest, or an
+    update reinstalls PyTorch into a GGUF-only venv. On Windows it is worse than
+    cosmetic: setup.ps1 reads the missing torch as a stale venv and tries to delete
+    the venv it is itself running out of, which fails on a locked python.exe."""
+
+    def test_the_stack_records_the_mode_it_installed(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "no_torch = NO_TORCH" in text
+        assert "install_manifest.recorded_no_torch()" in text
+        # Written after the manifest is dropped and before the dependency pass, so
+        # a pass killed part-way still leaves the mode recorded somewhere.
+        assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
+            "if not install_manifest.remove_manifest():"
+        )
+
+    def test_both_sides_use_the_same_marker_filename(self):
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_MARKER = ".unsloth-no-torch"' in manifest
+        assert '$NoTorchMarker = ".unsloth-no-torch"' in SETUP_PS1.read_text(encoding = "utf-8")
+
+    def test_setup_ps1_recovers_the_mode_when_no_env_var_is_exported(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "function Get-PersistedNoTorch" in text
+        assert "function Set-PersistedNoTorch" in text
+        # setup.ps1 drops the manifest before running install_python_stack.py, so
+        # the resolved answer has to be handed down through the environment.
+        assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(
+            '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
+        )
+
+    def test_both_sides_accept_the_same_spellings(self):
+        # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not
+        # be narrower, or a value one layer honours another silently ignores.
+        assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
+        assert "install_manifest.NO_TORCH_TRUTHY" in STACK_PY.read_text(encoding = "utf-8")
+
+
+class TestAmdBnbFloorParity:
+    """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
+    4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
+    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    must carry the same floor or an unreachable pre-release wheel silently reinstates
+    the broken range."""
+
+    FLOOR = "0.50.0"
+    PYPROJECT = REPO_ROOT / "pyproject.toml"
+
+    def test_amd_extra_floor(self):
+        text = self.PYPROJECT.read_text(encoding = "utf-8")
+        amd = re.search(r"^amd = \[(.*?)^\]", text, re.S | re.M)
+        assert amd, "pyproject.toml must define an `amd` extra"
+        specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
+        assert specs, "the amd extra must pin bitsandbytes"
+        for spec in specs:
+            assert spec.startswith(
+                f"bitsandbytes>={self.FLOOR}"
+            ), f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
+
+    def test_install_sh_pypi_fallback_floor(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            f'_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>={self.FLOOR}"' in text
+        ), f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
+
+    def test_stack_py_pypi_fallback_floor(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert (
+            f'_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>={self.FLOOR}"' in text
+        ), f"install_python_stack.py PyPI fallback must floor at {self.FLOOR}"
+
+    def test_no_installer_still_allows_the_broken_range(self):
+        for path in (INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY, self.PYPROJECT):
+            text = path.read_text(encoding = "utf-8")
+            for line in text.splitlines():
+                if "bitsandbytes>=0.49" in line and not line.lstrip().startswith(("#", "//")):
+                    raise AssertionError(
+                        f"{path.name} still floors bitsandbytes in the broken ROCm range: {line.strip()!r}"
+                    )
+
+    def test_fallback_is_not_reported_as_broken(self):
+        """The fallback now installs the first fixed release, so neither installer
+        may still call 4-bit decode broken on ROCm."""
+        for path in (INSTALL_SH, STACK_PY):
+            text = path.read_text(encoding = "utf-8")
+            assert (
+                "4-bit decode broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+            assert (
+                "4-bit decode will be broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+
+    def test_aarch64_is_not_told_it_has_a_rocm_backend(self):
+        """bitsandbytes ships no ROCm kernels in its aarch64 wheel at any version, so
+        neither installer may hand aarch64 the x86_64 "carries the ROCm 4-bit fix"
+        message, and both must warn that 4-bit needs a source build there."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_bnb_rocm_arch_has_binary()" in sh
+        assert "_warn_bnb_no_rocm_binary()" in sh
+        assert (
+            sh.count("_warn_bnb_no_rocm_binary\n") >= 2
+        ), "install.sh must warn on aarch64 after both the pre-release and the fallback install"
+        py = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _bnb_rocm_arch_has_binary(" in py
+        assert "_bnb_rocm_arch_has_binary()" in py
+        for text, name in ((sh, "install.sh"), (py, "install_python_stack.py")):
+            assert (
+                "4-bit QLoRA needs a source build" in text
+            ), f"{name} must tell aarch64 users 4-bit needs a source build"

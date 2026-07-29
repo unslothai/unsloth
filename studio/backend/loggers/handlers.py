@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-# Annotations only: importing at runtime would make the ASGI stack a hard
-# dependency of every CLI command.
+# Annotations only: a runtime import makes the ASGI stack a hard dependency of
+# every CLI command.
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 

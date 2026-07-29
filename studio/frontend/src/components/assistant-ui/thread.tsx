@@ -36,6 +36,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  pasteClipboardFiles,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat";
@@ -90,6 +91,7 @@ import {
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -177,6 +179,7 @@ import {
   type ChangeEvent,
   type ComponentProps,
   type CompositionEvent,
+  type ClipboardEvent,
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -724,10 +727,10 @@ function startPromptQueue(
   }
 }
 
-function stopPromptQueueRun() {
+function stopPromptQueueRun(cancelActiveRun = true) {
   const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
   const activeTarget = activeItem?.target;
-  const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+  const shouldCancelActiveRun = cancelActiveRun && Boolean(activeItem?.dispatched);
   resetPromptQueue();
   if (!shouldCancelActiveRun) {
     return;
@@ -740,7 +743,11 @@ function stopPromptQueueRun() {
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, () => stopPromptQueueRun());
+  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
+    // Navigation leaves the dispatched prompt streaming; an explicit stop cancels it too.
+    const detail = (event as CustomEvent<{ cancelActiveRun?: boolean }>).detail;
+    stopPromptQueueRun(detail?.cancelActiveRun ?? true);
+  });
 }
 
 interface PromptQueueCallbacks {
@@ -1524,6 +1531,24 @@ const Composer: FC<{
   );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true });
+  const handleFilePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      pasteClipboardFiles(
+        event,
+        async (files) => {
+          await Promise.all(
+            files.map((file) => aui.composer().addAttachment(file)),
+          );
+        },
+        () =>
+          toast.error("Could not paste files.", {
+            description: "The clipboard item is unsupported, unreadable, or over 20 MB.",
+          }),
+      );
+    },
+    [aui],
+  );
+
   const composerText = useAuiState(({ composer }) => composer.text);
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
@@ -2017,6 +2042,8 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
+              addAttachmentOnPaste={false}
+              onPaste={handleFilePaste}
             />
             <ComposerRightControls
               disabled={
@@ -2760,9 +2787,28 @@ const ArtifactsToggle: FC = () => {
 };
 
 const ToolStatusDisplay: FC = () => {
-  const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  // This conversation's tool call only: a global status would put one chat's "Running
+  // Python..." above every composer. remoteId, not id: the adapter keys this map by
+  // unstable_threadId, so reading id lost the status of every restored chat.
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
-  const [elapsed, setElapsed] = useState(0);
+  const entry = useChatRuntimeStore((s) => {
+    // A first turn starts before its id is persisted, so the adapter files it under
+    // "__default"; only this thread's own run may claim it. Two first turns share that key
+    // with nothing to tell them apart, so claim it only when it holds one run.
+    const unresolved = s.toolStatusByThreadId.__default;
+    const own =
+      s.toolStatusByThreadId[threadListItemId ?? ""] ??
+      (isThreadRunning && unresolved?.length === 1 ? unresolved : undefined);
+    // Newest of the runs behind this key: separate entries, so one finishing cannot blank
+    // a sibling still running a tool.
+    return own?.[own.length - 1];
+  });
+  const toolStatus = entry?.status ?? null;
+  const startedAt = entry?.startedAt ?? null;
+  const [now, setNow] = useState(() => Date.now());
   const [visible, setVisible] = useState(false);
   const visibleRef = useRef(false);
 
@@ -2771,15 +2817,14 @@ const ToolStatusDisplay: FC = () => {
   }, [visible]);
 
   useEffect(() => {
-    if (!toolStatus) {
-      setElapsed(0);
+    if (!startedAt) {
       if (!isThreadRunning) {
         setVisible(false);
       }
       return;
     }
 
-    setElapsed(0);
+    setNow(Date.now());
 
     // Debounce visibility by 300ms when the badge isn't already on screen.
     // Once visible from a prior tool, later tools show immediately so it
@@ -2789,26 +2834,42 @@ const ToolStatusDisplay: FC = () => {
       showTimer = setTimeout(() => setVisible(true), 300);
     }
 
-    const interval = setInterval(() => {
-      setElapsed((prev) => prev + 1);
-    }, 1000);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearInterval(interval);
       if (showTimer) {
         clearTimeout(showTimer);
       }
     };
-  }, [toolStatus, isThreadRunning]);
+  }, [startedAt, isThreadRunning]);
 
-  if (!(toolStatus && visible)) {
+  if (!(toolStatus && startedAt && visible)) {
     return null;
   }
-  const isRunning = toolStatus.startsWith("Running");
-  const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
+  // From the store's start time, so returning to the conversation resumes rather than restarting.
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const kind = toolStatusKind(toolStatus);
+  const isNudging = kind === "nudge";
+  const StatusIcon = kind === "terminal" ? TerminalIcon : GlobeIcon;
   return (
-    <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
-        <StatusIcon className="size-3.5" />
+    <div
+      data-testid="composer-tool-status"
+      className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1"
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary",
+          // The spinner is its own motion cue; pulsing too just fades it mid-spin.
+          !isNudging && "animate-pulse",
+        )}
+      >
+        {isNudging ? (
+          // label, not the default "Loading": the spinner is the badge's only
+          // role="status" region, so its name is what gets announced.
+          <Spinner className="size-3.5" label={toolStatus} />
+        ) : (
+          <StatusIcon className="size-3.5" />
+        )}
         <span>{toolStatus}</span>
         <span className="tabular-nums opacity-60">{elapsed}s</span>
       </div>
@@ -3769,9 +3830,15 @@ const DiffusionCanvas: FC = () => {
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // A non-null canvas is set only by diffusion_frame events (diffusion models only),
-  // so it is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
-  const canvas = useChatRuntimeStore((s) => s.activeDiffusionCanvas);
+  // Only this conversation's own frames render here; a first turn has no id yet, so it reads
+  // "__default", which is where its run files them until the thread persists.
+  const threadKey =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
+  // A canvas is set only by diffusion_frame events, so its presence is a sufficient gate;
+  // loadedIsDiffusion can lag the first frame on a fresh load.
+  const canvas = useChatRuntimeStore(
+    (s) => s.activeDiffusionCanvasByThreadId[threadKey],
+  );
   if (!isRunning || !canvas) {
     return null;
   }
