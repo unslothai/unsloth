@@ -1374,7 +1374,8 @@ html[data-chat-font] .aui-root {
 	html[data-panel-resizing]
 		:is(
 			[data-slot="sidebar-inner"],
-			[data-slot="sidebar-inset"]
+			[data-slot="sidebar-inset"],
+			[data-slot="chat-settings-panel"] > div
 		) {
 		pointer-events: none;
 	}
