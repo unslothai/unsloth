@@ -817,7 +817,26 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_flash_attn_last_value_wins(self, args, expected):
-        assert _flash_attn_enabled_from_args(args) is expected
+        assert _flash_attn_enabled_from_args(args, env = {}) is expected
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("off", False),
+            ("disabled", False),
+            ("false", False),
+            ("0", False),
+            ("on", True),
+            ("auto", True),
+            ("garbage", True),  # llama.cpp refuses to start, so the default is moot
+        ],
+    )
+    def test_flash_attn_env_applies(self, value, expected):
+        env = {"LLAMA_ARG_FLASH_ATTN": value}
+        assert _flash_attn_enabled_from_args([], env = env) is expected
+        # llama.cpp parses the environment first, so an explicit flag still wins.
+        assert _flash_attn_enabled_from_args(["-fa", "on"], env = env) is True
+        assert _flash_attn_enabled_from_args(["-fa", "off"], env = env) is False
 
     def test_effective_main_cache_types_follow_env_then_cli(self):
         env = {
