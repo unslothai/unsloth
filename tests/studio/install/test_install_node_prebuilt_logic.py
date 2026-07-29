@@ -765,8 +765,8 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
 
 
 # ── _replace_with_retry: transient Windows sharing violations ──────────────────
-# A real CI install failed with WinError 5 renaming the extracted Node tree into place,
-# on a FRESH install: a scanner still held handles inside the new files.
+# Seen in CI: WinError 5 renaming extracted Node into place on a FRESH install, a scanner
+# still holding handles inside the new files.
 
 
 def _oserror(winerror: int) -> OSError:
