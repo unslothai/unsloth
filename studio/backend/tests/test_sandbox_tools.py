@@ -634,6 +634,26 @@ class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
         [
+            (
+                "import sys\n"
+                "next(m for n, m in sys.modules.items() if n == 'yaml').unsafe_load(payload)"
+            ),
+            (
+                "import yaml\n"
+                "def inject(registry):\n"
+                "    registry['tag:yaml.org,2002:python/'] = "
+                "yaml.constructor.FullConstructor.construct_python_object_apply\n"
+                "inject(yaml.SafeLoader.yaml_multi_constructors)\n"
+                "yaml.safe_load(payload)"
+            ),
+        ],
+    )
+    def test_namespace_iteration_and_registry_escape_pyyaml_bypasses_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
             "from yaml import loader as yl\nyl.Loader('a: 1')",
             ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
             "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",

@@ -834,7 +834,7 @@ def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset(
         return True  # vars(sys)["modules"]
     if (
         isinstance(node, ast.Attribute)
-        and node.attr in {"get", "pop", "setdefault", "__getitem__"}
+        and node.attr in {"get", "pop", "setdefault", "__getitem__", "items", "values"}
         and _is_dynamic_namespace(node.value, dynamic_namespace_aliases)
     ):
         return True
@@ -6112,8 +6112,7 @@ def _check_signal_escape_patterns(code: str):
                         )
                     )
                     and not (
-                        isinstance(statement.value, ast.Constant)
-                        and statement.value.value is None
+                        isinstance(statement.value, ast.Constant) and statement.value.value is None
                     )
                 )
                 for statement in node.body
@@ -6288,12 +6287,8 @@ def _check_signal_escape_patterns(code: str):
                 for statement in statements:
                     self.visit(statement)
                 body_state = self._pyyaml_scope_state()
-                continue_states = (
-                    self.loop_continue_states[-1] if self.loop_continue_states else ()
-                )
-                self._merge_pyyaml_scope_states(
-                    base_state, previous, body_state, *continue_states
-                )
+                continue_states = self.loop_continue_states[-1] if self.loop_continue_states else ()
+                self._merge_pyyaml_scope_states(base_state, previous, body_state, *continue_states)
                 current = self._pyyaml_scope_state()
                 if current == previous:
                     break
@@ -6387,7 +6382,34 @@ def _check_signal_escape_patterns(code: str):
                     node,
                     "Unsafe PyYAML deserialization module escapes through call arguments",
                 )
+            if any(
+                _pyyaml_safe_loader_registry_reference(
+                    argument,
+                    self.yaml_aliases,
+                    self.yaml_safe_loader_aliases,
+                    self.yaml_safe_loader_registry_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+                for argument in (
+                    *node.args,
+                    *(keyword.value for keyword in node.keywords),
+                )
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization registry escapes through call arguments",
+                )
             func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in {"items", "values"}
+                and _is_dynamic_namespace(func.value, self.dynamic_namespace_aliases)
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization via dynamic module namespace iteration",
+                )
             resolver_target = _pyyaml_resolver_target(node, self.pyyaml_resolver_aliases)
             if resolver_target is not None or (
                 _is_pyyaml_resolver_call(node, self.pyyaml_resolver_aliases)
