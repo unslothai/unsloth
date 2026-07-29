@@ -152,27 +152,37 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
-  options?: { signal?: AbortSignal; onRequestStart?: () => void },
+  options?: {
+    signal?: AbortSignal;
+    onRequestStart?: () => void;
+    onAuthenticationRequired?: () => void;
+  },
 ): Promise<LoadModelResponse> {
   options?.signal?.throwIfAborted();
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   options?.signal?.throwIfAborted();
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
-  // Callers use this boundary to expose a backend cancellation target. Keep it
-  // after token validation/dialogs and immediately before the request so Stop
-  // cannot unload a resident same-ID model while no replacement load exists.
-  options?.onRequestStart?.();
-  const response = await authFetch("/api/inference/load", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: options?.signal,
-    body: JSON.stringify({
-      ...payload,
-      hf_token: preparedToken.token,
-      native_path_lease: payload.nativePathLease ?? null,
-      nativePathLease: undefined,
-    }),
-  });
+  const response = await authFetch(
+    "/api/inference/load",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: options?.signal,
+      body: JSON.stringify({
+        ...payload,
+        hf_token: preparedToken.token,
+        native_path_lease: payload.nativePathLease ?? null,
+        nativePathLease: undefined,
+      }),
+    },
+    {
+      // authFetch replays these boundaries around a 401 refresh/retry, letting
+      // callers hide the cancellation target while no authenticated load is
+      // actually in flight.
+      onRequestStart: options?.onRequestStart,
+      onAuthenticationRequired: options?.onAuthenticationRequired,
+    },
+  );
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
 

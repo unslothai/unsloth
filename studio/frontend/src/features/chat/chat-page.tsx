@@ -515,7 +515,7 @@ function modelMatchesDeleted(
  */
 function getIsLoraCompareFromState(
   state: ReturnType<typeof useChatRuntimeStore.getState>,
-  checkpoint = state.params.checkpoint,
+  checkpoint: string | null = state.params.checkpoint,
 ): boolean {
   const selected = checkpoint
     ? state.loras.find((l) => l.id === checkpoint)
@@ -552,13 +552,15 @@ const CompareContent = memo(function CompareContent({
   const [compareActive, setCompareActive] = useState(false);
   const usedInventoryFallbackRef = useRef(false);
   const layoutCheckpointRef = useRef<string | null>(null);
+  const layoutCheckpointCapturedRef = useRef(false);
   const handleCompareActiveChange = useCallback((active: boolean) => {
     // If fallback compare starts before runtime hydration recovers, freeze the
     // last pre-load checkpoint now. Later sequential loads mutate the global
     // checkpoint and must not influence layout classification.
-    if (active && layoutCheckpointRef.current === null) {
+    if (active && !layoutCheckpointCapturedRef.current) {
       layoutCheckpointRef.current =
         useChatRuntimeStore.getState().params.checkpoint;
+      layoutCheckpointCapturedRef.current = true;
     }
     setCompareActive(active);
   }, []);
@@ -575,9 +577,11 @@ const CompareContent = memo(function CompareContent({
         if (compareActive) return;
       }
       const state = useChatRuntimeStore.getState();
-      const checkpoint =
-        layoutCheckpointRef.current ?? state.params.checkpoint;
-      layoutCheckpointRef.current = checkpoint;
+      if (!layoutCheckpointCapturedRef.current) {
+        layoutCheckpointRef.current = state.params.checkpoint;
+        layoutCheckpointCapturedRef.current = true;
+      }
+      const checkpoint = layoutCheckpointRef.current;
       const detected = getIsLoraCompareFromState(state, checkpoint);
       if (usedInventoryFallbackRef.current) {
         usedInventoryFallbackRef.current = false;

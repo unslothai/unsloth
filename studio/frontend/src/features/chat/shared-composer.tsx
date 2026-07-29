@@ -1370,6 +1370,11 @@ export function SharedComposer({
                 ? (preLoadStore.activeGgufVariant ?? null)
                 : null;
             },
+            onAuthenticationRequired: () => {
+              compareRunsRef.current.setLoadingModel(run, null);
+              modelSwitchState.originCheckpoint = null;
+              modelSwitchState.originGgufVariant = null;
+            },
           },
         );
         throwIfCompareCancelled(compareSignal);
@@ -1880,6 +1885,12 @@ export function SharedComposer({
         onRunList={(items) => {
           const filtered = items.filter((p) => p.trim());
           if (!filtered.length) return;
+          if (!submissionReady) {
+            toast.info("Restoring compare conversations…", {
+              description: "Run the prompt list once your conversations load.",
+            });
+            return;
+          }
           const hasCompareHandles = Boolean(
             handlesRef.current["model1"] || handlesRef.current["model2"],
           );

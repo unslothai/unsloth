@@ -34,6 +34,7 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     assert "state.modelsError" in compare
     assert "usedInventoryFallbackRef" in compare
     assert "layoutCheckpointRef" in compare
+    assert "layoutCheckpointCapturedRef" in compare
     assert "handleCompareActiveChange" in compare
     assert "if (compareActive) return;" in compare
     assert "if (!modelsError || isLoraCompare !== null) return;" in compare
@@ -105,14 +106,36 @@ def test_compare_load_target_starts_at_the_request_boundary():
     load_model = api.split("export async function loadModel(", 1)[1].split(
         "export async function validateModel(", 1
     )[0]
-    assert "options?.onRequestStart?.();" in load_model
+    assert "onRequestStart: options?.onRequestStart" in load_model
+    assert "onAuthenticationRequired: options?.onAuthenticationRequired" in load_model
     assert load_model.index("const preparedToken = await prepareHfTokenForUse") < (
-        load_model.index("options?.onRequestStart?.();")
+        load_model.index("const response = await authFetch")
     )
-    assert load_model.index("options?.onRequestStart?.();") < load_model.index(
-        'authFetch("/api/inference/load"'
+
+    auth = (
+        ROOT / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts"
+    ).read_text()
+    auth_fetch = auth.split("export async function authFetch(", 1)[1].split(
+        "async function postLogout(", 1
+    )[0]
+    assert auth_fetch.index("lifecycle?.onRequestStart?.();") < auth_fetch.index(
+        "response = await fetchWithTauriNetworkRetry"
+    )
+    assert auth_fetch.index("lifecycle?.onAuthenticationRequired?.();") < (
+        auth_fetch.index("const refreshed = await refreshSession();")
     )
 
     composer = _read("shared-composer.tsx")
     assert "onRequestStart: () => {" in composer
+    assert "onAuthenticationRequired: () => {" in composer
     assert "compareRunsRef.current.setLoadingModel(run, sel);" in composer
+    assert "compareRunsRef.current.setLoadingModel(run, null);" in composer
+
+
+def test_prompt_queue_waits_for_compare_thread_restore():
+    composer = _read("shared-composer.tsx")
+    queue = composer.split("onRunList={(items) => {", 1)[1].split(
+        "const hasCompareHandles", 1
+    )[0]
+    assert "if (!submissionReady)" in queue
+    assert 'toast.info("Restoring compare conversations…"' in queue

@@ -24,6 +24,11 @@ let logoutGeneration = 0;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
 
+type AuthFetchLifecycle = {
+  onRequestStart?: () => void;
+  onAuthenticationRequired?: () => void;
+};
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -92,20 +97,25 @@ async function redirectToAuth(): Promise<void> {
 async function retryWithCurrentToken(
   input: RequestInfo | URL,
   init?: RequestInit,
+  lifecycle?: AuthFetchLifecycle,
 ): Promise<Response> {
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
+  lifecycle?.onRequestStart?.();
   return fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
 }
 
 async function retryWithTauriAutoAuth(
   input: RequestInfo | URL,
   init?: RequestInit,
+  lifecycle?: AuthFetchLifecycle,
 ): Promise<Response | null> {
   clearAuthTokens();
   const { tauriAutoAuth } = await import("./tauri-auto-auth");
-  if (await tauriAutoAuth()) return retryWithCurrentToken(input, init);
+  if (await tauriAutoAuth()) {
+    return retryWithCurrentToken(input, init, lifecycle);
+  }
   return null;
 }
 
@@ -156,6 +166,7 @@ export async function refreshSession(): Promise<boolean> {
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
+  lifecycle?: AuthFetchLifecycle,
 ): Promise<Response> {
   const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
@@ -166,6 +177,7 @@ export async function authFetch(
 
   let response: Response;
   try {
+    lifecycle?.onRequestStart?.();
     response = await fetchWithTauriNetworkRetry(resolvedInput, {
       ...init,
       headers,
@@ -185,19 +197,27 @@ export async function authFetch(
   }
 
   if (await isPasswordChangeRequiredResponse(response)) {
+    lifecycle?.onAuthenticationRequired?.();
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(resolvedInput, init, lifecycle)) ??
+        response
+      );
     }
     void redirectToAuth();
     return response;
   }
   if (response.status !== 401) return response;
 
+  lifecycle?.onAuthenticationRequired?.();
   const refreshToken = getRefreshToken();
   const refreshed = await refreshSession();
   if (!refreshed) {
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(resolvedInput, init, lifecycle)) ??
+        response
+      );
     }
     clearAuthTokensIfCurrent(refreshToken);
     void redirectToAuth();
@@ -206,14 +226,17 @@ export async function authFetch(
 
   if (mustChangePassword()) {
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(resolvedInput, init, lifecycle)) ??
+        response
+      );
     }
     void redirectToAuth();
     return response;
   }
 
   if (!getAuthToken()) clearAuthTokens();
-  return retryWithCurrentToken(resolvedInput, init);
+  return retryWithCurrentToken(resolvedInput, init, lifecycle);
 }
 
 async function postLogout(accessToken: string | null): Promise<Response | null> {
