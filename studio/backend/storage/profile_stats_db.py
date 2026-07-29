@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
-from storage.studio_db import get_connection
+from storage.studio_db import count_chat_message_attachments, get_connection
 
 logger = get_logger(__name__)
 
@@ -253,7 +253,8 @@ def _fold_messages(conn, zone) -> _MessageFold:
     surviving = _surviving_original_keys(conn)
     rows = conn.execute(
         """
-        SELECT m.thread_id, m.role, m.metadata_json, m.attachments_json, m.created_at,
+        SELECT m.thread_id, m.role, m.content_json, m.metadata_json,
+               m.attachments_json, m.created_at,
                t.title, t.model_id, t.model_type, t.pair_id,
                t.created_at AS thread_created_at, t.forked_from_thread_id
         FROM chat_messages m
@@ -325,14 +326,10 @@ def _fold_messages(conn, zone) -> _MessageFold:
         if role == "user":
             fold.user_messages += 1
 
-        attachments_json = row["attachments_json"]
-        if attachments_json:
-            try:
-                parsed = json.loads(attachments_json)
-                if isinstance(parsed, list):
-                    fold.attachments += len(parsed)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        fold.attachments += count_chat_message_attachments(
+            row["attachments_json"],
+            row["content_json"],
+        )
 
         message_tokens = 0
         metadata: Any = None

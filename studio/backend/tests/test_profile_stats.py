@@ -1089,3 +1089,148 @@ def test_server_timings_stand_in_for_a_missing_usage_chunk(stats_db):
     assert totals["completionTokens"] == 120
     assert totals["totalTokens"] == 520
     assert totals["cachedTokens"] == 90
+
+
+def test_nested_fork_keeps_one_copy_after_the_middle_thread_is_deleted(stats_db):
+    """Deleting a fork reconnects its descendants to the retained ancestor."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    root_time = now - timedelta(hours = 4)
+    middle_time = now - timedelta(hours = 2)
+    middle_new_time = now - timedelta(hours = 1)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at) "
+            "VALUES ('root', 'root', 'base', 'm', ?, ?)",
+            (_ms(root_time), _ms(root_time)),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES ('root-a0', 'root', 'assistant', '[]', ?, ?)",
+            (json.dumps(_metadata(100, 50)), _ms(root_time)),
+        )
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at, "
+            "forked_from_thread_id, forked_from_message_id) "
+            "VALUES ('middle', 'middle', 'base', 'm', ?, ?, 'root', 'root-a0')",
+            (_ms(middle_time), _ms(middle_new_time)),
+        )
+        conn.executemany(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES (?, 'middle', 'assistant', '[]', ?, ?)",
+            [
+                ("middle-a0", json.dumps(_metadata(100, 50)), _ms(root_time)),
+                ("middle-a1", json.dumps(_metadata(20, 10)), _ms(middle_new_time)),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at, "
+            "forked_from_thread_id, forked_from_message_id) "
+            "VALUES ('leaf', 'leaf', 'base', 'm', ?, ?, 'middle', 'middle-a1')",
+            (_ms(now), _ms(now)),
+        )
+        conn.executemany(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, metadata_json, "
+            "created_at) VALUES (?, 'leaf', 'assistant', '[]', ?, ?)",
+            [
+                ("leaf-a0", json.dumps(_metadata(100, 50)), _ms(root_time)),
+                ("leaf-a1", json.dumps(_metadata(20, 10)), _ms(middle_new_time)),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = compute_profile_stats(days = 7)["totals"]
+    assert before["messages"] == 2
+    assert before["totalTokens"] == 180
+
+    studio_db.delete_chat_threads(["middle"])
+    invalidate_profile_stats_cache()
+
+    conn = studio_db.get_connection()
+    try:
+        leaf = conn.execute(
+            "SELECT forked_from_thread_id FROM chat_threads WHERE id = 'leaf'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert leaf["forked_from_thread_id"] == "root"
+    after = compute_profile_stats(days = 7)["totals"]
+    assert after["messages"] == 2
+    assert after["totalTokens"] == 180
+
+
+def test_nested_resume_keeps_cumulative_totals_after_middle_run_deletion(stats_db):
+    """Deleting a resumed run reconnects its continuation to the source."""
+    conn = studio_db.get_connection()
+    try:
+        conn.executemany(
+            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+            "started_at, final_step, output_dir, resume_blocked, resumed_from_run_id) "
+            "VALUES (?, ?, 'm', 'd', '{}', ?, ?, ?, ?, ?)",
+            [
+                ("source", "stopped", "2026-01-01T10:00:00", 10, "/runs/out", 1, None),
+                ("middle", "stopped", "2026-01-02T10:00:00", 15, "/runs/out", 1, "source"),
+                ("tail", "completed", "2026-01-03T10:00:00", 20, "/runs/out", 0, "middle"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO training_metrics (run_id, step, num_tokens) VALUES (?, ?, ?)",
+            [("source", 10, 1000), ("middle", 15, 1500), ("tail", 20, 2000)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = compute_profile_stats(days = 7)["training"]
+    assert before["steps"] == 20
+    assert before["tokens"] == 2000
+
+    studio_db.delete_run("middle")
+    invalidate_profile_stats_cache()
+
+    conn = studio_db.get_connection()
+    try:
+        tail = conn.execute(
+            "SELECT resumed_from_run_id FROM training_runs WHERE id = 'tail'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert tail["resumed_from_run_id"] == "source"
+    after = compute_profile_stats(days = 7)["training"]
+    assert after["steps"] == 20
+    assert after["tokens"] == 2000
+
+
+def test_inline_media_counts_as_attachments_without_double_counting(stats_db):
+    """Compare messages keep uploads in content_json instead of attachments_json."""
+    now = datetime.now()
+    image = {"type": "image", "image": "data:image/png;base64,AAAA"}
+    audio = {"type": "audio", "audio": "data:audio/wav;base64,BBBB"}
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, model_id, created_at, updated_at) "
+            "VALUES ('media', 'media', 'base', 'm', ?, ?)",
+            (_ms(now), _ms(now)),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, attachments_json, "
+            "created_at) VALUES ('media-u0', 'media', 'user', ?, ?, ?)",
+            (
+                json.dumps([image, audio, image]),
+                json.dumps([{"id": "image-upload", "content": [image]}]),
+                _ms(now),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    totals = compute_profile_stats(days = 7)["totals"]
+
+    # The image appears in both storage representations and twice inline.
+    assert totals["attachments"] == 2
