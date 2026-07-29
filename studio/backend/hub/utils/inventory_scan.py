@@ -703,7 +703,6 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
 
 def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
     from hub.utils.gguf import list_local_gguf_variants
-
     try:
         variants, _ = list_local_gguf_variants(str(snapshot_dir))
         return {v.quant for v in variants if getattr(v, "quant", None)}
