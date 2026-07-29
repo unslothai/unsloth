@@ -977,6 +977,13 @@ class ChatMessage(BaseModel):
         ),
     )
 
+    @field_validator("reasoning_content", mode = "before")
+    @classmethod
+    def _ignore_non_string_reasoning(cls, value):
+        # Gateways emit structured reasoning too. That used to be dropped by extra="ignore";
+        # declaring the field would turn it into a 422, so keep dropping it instead.
+        return value if isinstance(value, str) else None
+
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
         if self.tool_calls is not None and self.role != "assistant":

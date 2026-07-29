@@ -8487,16 +8487,23 @@ class LlamaCppBackend:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
                     if "qwen3.5" in mid or "qwen3.6" in mid:
-                        # Extract just the model name from any directory path
-                        # so a size-like directory (e.g. /8bit/) doesn't match
-                        # before the actual model size.  Trailing boundary after
-                        # "b" prevents matching substrings like "8bit".
-                        model_name = mid.replace("\\", "/").split("/")[-1]
-                        size_match = re.search(r"(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])", model_name)
+                        # Prefer the file name so a size-like directory (/8bit/) loses to the
+                        # real size, but fall back to the whole path: the identifier is a
+                        # directory for auto-switch (snapshot sha) and quant subdirs.
+                        # Trailing boundary stops "8bit" matching as 8B.
+                        size_re = r"(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])"
+                        mid_slash = mid.replace("\\", "/")
+                        size_match = re.search(size_re, mid_slash.split("/")[-1]) or re.search(
+                            size_re, mid_slash
+                        )
                         if size_match and float(size_match.group(1)) < 9:
                             thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
+                    # Pin off at launch so a template defaulting it true does not replay prior
+                    # chain-of-thought for callers that omit the field. Per-request still wins.
+                    if self._supports_preserve_thinking:
+                        reasoning_kw["preserve_thinking"] = False
                     cmd.extend(
                         [
                             "--chat-template-kwargs",

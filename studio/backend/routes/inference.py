@@ -16169,6 +16169,10 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
             has_reasoning = bool(m.get("reasoning_content"))
             if not has_content and not has_tool_calls and not has_reasoning:
                 continue
+            if not has_content and not has_tool_calls:
+                # llama.cpp requires a content or tool_calls key and only reads
+                # reasoning_content after that check, so keep the turn but give it one.
+                m = {**m, "content": ""}
         out.append(m)
     return out
 

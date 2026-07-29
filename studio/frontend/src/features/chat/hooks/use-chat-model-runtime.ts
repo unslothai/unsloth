@@ -1057,8 +1057,10 @@ export function useChatModelRuntime() {
               if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
                 // Extract model name from path; trailing boundary prevents
                 // matching substrings like "8bit".
-                const modelName = mid.replace(/\\/g, '/').split('/').pop() || "";
-                const sizeMatch = modelName.match(/(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])/);
+                const midSlash = mid.replace(/\\/g, "/");
+                const sizeRe = /(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])/;
+                const sizeMatch =
+                  (midSlash.split("/").pop() || "").match(sizeRe) ?? midSlash.match(sizeRe);
                 if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
                   reasoningDefault = false;
                 }
