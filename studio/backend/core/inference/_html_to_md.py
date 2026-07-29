@@ -425,6 +425,15 @@ class _MarkdownRenderer(HTMLParser):
         body prose. ATX headings carry their own ``#`` here and so score zero."""
         return _non_heading_chars("".join(self._seg_heading_texts))
 
+    def _drain_pre(self) -> None:
+        """Emit the open ``<pre>`` and empty it, so a late ``</pre>`` cannot replay
+        it outside a stripped header and push the article past the fetch cap."""
+        raw = "".join(self._pre_parts)
+        self._in_pre = False
+        self._pre_parts = []
+        fence = _fence_for(raw)
+        self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
+
     def _emit_replay(self, text: str) -> None:
         """Emit a flushed buffer's own output, which must not be teed as a heading
         a second time (the raw text was teed when it entered the buffer)."""
@@ -497,6 +506,9 @@ class _MarkdownRenderer(HTMLParser):
             frame = self._header_stack[-1]
             frame.heading_parts.append(heading_text + "\n\n")
             frame.heading_chars += len(heading_text)
+            # Preserved by hand, so the gate needs telling too or a title-only card
+            # reads as body prose.
+            self._seg_heading_texts.append(heading_text)
 
     # ------------------------------------------------------------------
     # Tag handlers
@@ -576,17 +588,13 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_inline_code and not frame.outer_in_code:
             self._in_inline_code = False
             self._emit("`")
+        # Before the cell: _finish_row emits, and an open <pre> would swallow the
+        # row into the code block as CODE|  | instead of a cell holding the code.
+        if self._in_pre and not frame.outer_in_pre:
+            self._drain_pre()
         if self._in_cell and self._cell_seq != frame.outer_cell_seq:
             self._finish_cell()
             self._finish_row()
-        if self._in_pre and not frame.outer_in_pre:
-            raw = "".join(self._pre_parts)
-            self._in_pre = False
-            # Drained, not just closed: a late </pre> would replay the block outside the stripped
-            # header and push the article past the cap.
-            self._pre_parts = []
-            fence = _fence_for(raw)
-            self._emit_replay(f"\n\n{fence}\n{raw}\n{fence}\n\n")
         while len(self._bq_stack) > frame.outer_bq_depth:
             prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
             if prefixed:
@@ -1108,7 +1116,11 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     A candidate earns its place on the prose it RETAINED, then gets its dropped
     header furniture added back to rank against siblings. Furniture must not buy
     eligibility: a card whose header was the only bulk would otherwise clear the
-    gate on deleted bytes and suppress the ``<main>`` holding the real page."""
+    gate on deleted bytes and suppress the ``<main>`` holding the real page.
+
+    Nor may it dominate: the credit is capped at the retained render, so removed
+    furniture can never be the majority of a score. Uncapped, a teaser with a
+    1000 link header outranked a sibling holding five times its real text."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
     dropped = renderer.scope_dropped
     heading_prose = renderer.scope_heading_prose
@@ -1119,7 +1131,7 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
         prose = _non_heading_chars(rendered) - heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
-        size = len(rendered) + dropped[i]
+        size = len(rendered) + min(dropped[i], len(rendered))
         if size > best_len:
             best_len = size
             best_render = rendered
@@ -1186,8 +1198,17 @@ def _visible_len(line: str) -> int:
     prose: a card holding one [Read](/x?<300 bytes>) otherwise scored 339 visible
     characters off 4 and displaced the article. Scanned, so no backtracking."""
     total, i, n = 0, 0, len(line)
+    open_bracket = False
     while i < n:
-        if line[i] == "]" and i + 1 < n and line[i + 1] == "(":
+        if line[i] == "\\":
+            total += 2
+            i += 2
+            continue
+        if line[i] == "[":
+            open_bracket = True
+        # Without a bracket that opened it, "](" is literal text and the parens after
+        # it are prose: skipping them dropped visible characters from the score.
+        if open_bracket and line[i] == "]" and i + 1 < n and line[i + 1] == "(":
             # Destinations may hold balanced or escaped parens (/card(foo)?q=..), so stopping at
             # the first ) leaves the rest scored as prose.
             j, depth = i + 2, 1
@@ -1205,6 +1226,7 @@ def _visible_len(line: str) -> int:
                 i += 1
                 continue
             i = j
+            open_bracket = False
             continue
         total += 1
         i += 1

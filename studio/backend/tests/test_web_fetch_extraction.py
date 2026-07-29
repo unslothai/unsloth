@@ -1866,6 +1866,57 @@ def test_fenced_code_counts_as_retained_content():
 _FENCE = "`" * 3
 
 
+def test_dropped_furniture_cannot_dominate_sibling_ranking():
+    # Credit keeps a stripped article competitive but must not decide the match:
+    # a teaser with a 1000 link header outranked five times its own real text.
+    teaser = "<article><header>%s</header><p>%s</p></article>" % (
+        "".join('<a href="/l%d">Lang%d</a>' % (i, i) for i in range(1000)),
+        "Teaser words here. " * 20,
+    )
+    real = "<article><p>%s</p></article>" % ("The genuine article body text goes here. " * 55)
+    out = html_to_markdown(f"<body>{teaser}{real}</body>", main_content = True)
+    assert "The genuine article body text goes here." in out
+    assert "Teaser words here." not in out
+
+
+def test_literal_bracket_paren_is_prose_not_a_destination():
+    # No [ opened it, so "](" is literal text and the parens hold visible prose.
+    # Skipping them scored 192 of 295 and dropped the article under the gate.
+    article = "<article><p>%s](%s) %s</p></article>" % (
+        "Real article prose that the reader wants to see. " * 3,
+        "y" * 100,
+        "Tail prose to finish the paragraph off here.",
+    )
+    sibling = "<article><p>%s</p></article>" % ("Unrelated sibling teaser words. " * 8)
+    out = html_to_markdown(f"<body>{article}{sibling}</body>", main_content = True)
+    assert "Real article prose that the reader wants to see." in out
+    assert "Unrelated sibling teaser" not in out
+
+
+def test_hand_preserved_heading_reaches_the_eligibility_tally():
+    # The partial branch writes the title straight into heading_parts, so the
+    # gate has to be told as well or a title-only card reads as body prose.
+    card = '<article><header><a href="/h"><div role="heading">%s</div>%s</a><ul>%s</ul></header></article>' % (
+        "Card Title Words " * 14,
+        "nav text " * 40,
+        _interlanguage_list(300),
+    )
+    real = "<p>%s</p>" % ("The real page body text here. " * 30)
+    out = html_to_markdown(f"<body><main>{real}{card}</main></body>", main_content = True)
+    assert "The real page body text here." in out
+
+
+def test_pre_inside_a_table_cell_is_drained_before_the_row():
+    # The row is emitted, so an open <pre> swallowed it and produced a fenced
+    # block holding CODEMARKER|  | instead of a cell holding the code.
+    body = "<main><header><h1>T</h1><table><tr><td><pre>CODEMARKER</header><p>%s</p></main>" % (
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "CODEMARKER|" not in out
+    assert "Article body." in out
+
+
 def test_post_processing_respects_the_widened_fence():
     # _cleanup and _strip_boilerplate_lines toggled on any ``` line, so the literal one
     # closed the block and its code was cleaned and de-boilerplated.
