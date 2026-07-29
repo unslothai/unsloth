@@ -27,6 +27,10 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "await refresh();" in runtime
     assert "if (!preserveCheckpoint) clearCheckpoint();" not in cancel
     assert "if (!preserveCheckpoint) await refresh();" in cancel
+    no_active = runtime.split(
+        "} else if (!statusRes.active_model && !isExternalSelectionActive) {", 1
+    )[1].split("}", 1)[0]
+    assert "clearCheckpoint();" in no_active
     assert 'useHfTokenWarningStore.getState().resolve("cancel", run);' in cancel
     assert "useRemoteCodeConsentDialogStore.getState().resolve(false, run);" in cancel
     assert "useTransformersUpgradeDialogStore.getState().cancelPending(run);" in cancel
@@ -75,7 +79,7 @@ def test_external_selection_invalidates_older_local_intent():
     assert external.index("invalidatePendingModelSelection()") < external.index(
         "store.setCheckpoint(value, null);"
     )
-    assert external.index("await cancelLoading(true);") < external.index(
+    assert external.index("await cancelLoadingForReplacement();") < external.index(
         "store.setCheckpoint(value, null);"
     )
     assert "isModelSelectionIntentCurrent(selectionIntentId)" in external
@@ -84,9 +88,8 @@ def test_external_selection_invalidates_older_local_intent():
 def test_replacement_carries_forward_an_already_unloaded_rollback_target():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousCheckpointWasUnloaded: replacementNeedsRollback" in runtime
-    assert (
-        "replacementNeedsRollback ||\n          activeRun.previousCheckpointWasUnloaded"
-    ) in runtime
+    assert runtime.count("inheritCancelledRunRollback(activeRun);") >= 2
+    assert "replacementNeedsRollback = pendingReplacementRollback != null;" in runtime
     assert "let previousWasUnloaded = run.previousCheckpointWasUnloaded;" in runtime
 
 
@@ -115,21 +118,45 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     assert "return shared ? shared.cancel(preserveCheckpoint) : Promise.resolve(false);" in runtime
     assert "if (sharedModelLoadHandle?.run === run)" in runtime
     assert "const stopped = await shared.cancel(true);" in runtime
-    assert "shared.run.previousCheckpointWasUnloaded" in runtime
+    assert runtime.count("inheritCancelledRunRollback(shared.run);") >= 2
     assert "supersedeOwnerIntent: () => void;" in runtime
     assert "shared.supersedeOwnerIntent();" in runtime
     assert "loadIntentRef.current += 1;" in runtime
     assert "!initialSharedRun?.cancelPromise" in runtime
     assert "!sharedRun?.cancelPromise" in runtime
+    assert "const cancelLoading = useCallback(\n    (): Promise<boolean>" in runtime
+    assert "cancelLoadingWithCheckpointPolicy(false)" in runtime
+    assert "cancelLoadingWithCheckpointPolicy(true)" in runtime
 
 
 def test_superseded_replacement_keeps_the_working_model_config():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "rollbackConfig?: PerModelConfig;" in runtime
     assert "rollbackConfig: previousConfig" in runtime
-    assert "previousConfig = activeRun.rollbackConfig;" in runtime
-    assert "previousConfig = shared.run.rollbackConfig;" in runtime
+    assert "previousConfig = cancelledRun.rollbackConfig;" in runtime
+    assert "inheritCancelledRunRollback(activeRun);" in runtime
+    assert "inheritCancelledRunRollback(shared.run);" in runtime
     assert "previousConfig?.maxSeqLength ?? maxSeqLength" in runtime
+    assert "applyPerModelConfigToRuntime(previousConfig" in runtime
+    assert "previousConfig.nParallel ?? null" in runtime
+
+
+def test_loaded_checkpoint_noop_does_not_hide_an_inflight_replacement():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    checkpoint_noop = runtime.split("params.checkpoint === modelId", 1)[1].split(
+        "restorePreviousConfig();", 1
+    )[0]
+    assert "!initialInFlightLoad" in checkpoint_noop
+    assert "!pendingReplacementRollback" in checkpoint_noop
+
+
+def test_unloaded_rollback_target_survives_pending_selection_intents():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "let pendingReplacementRollback: PendingReplacementRollback | null" in runtime
+    assert "pendingReplacementRollback = {" in runtime
+    assert "const inheritedPendingRollback = pendingReplacementRollback;" in runtime
+    assert "pendingReplacementRollback = null;" in runtime
+    assert "checkpoint: cancelledRun.rollbackCheckpoint" in runtime
 
 
 def test_throwing_callers_learn_when_their_selection_is_superseded():
@@ -169,6 +196,7 @@ def test_successful_rollback_requires_the_replacement_to_unload_it():
 
 def test_abort_signal_reaches_validation_and_scan_cleanup():
     api = _read("features/chat/api/chat-api.ts")
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     hf_api = _read("features/hf-auth/api.ts")
     hf_token = _read("features/hf-auth/confirm-token.ts")
     remote_api = _read("features/security/api/remote-code-api.ts")
@@ -180,6 +208,11 @@ def test_abort_signal_reaches_validation_and_scan_cleanup():
     assert "getRemoteCodeScan(modelName, hfToken, signal)" in remote_code
     assert "signal?: AbortSignal" in remote_api
     assert "signal," in remote_api
+    assert "signal: options?.signal" in api
+    staged_metadata = runtime.split("await fetchGgufStagedMetadata({", 1)[1].split(
+        ").isDiffusion", 1
+    )[0]
+    assert "{ signal: abortCtrl.signal }" in staged_metadata
     assert "const discardScanDownloads = () =>" in remote_code
     aborted = remote_code.split("if (signal?.aborted)", 1)[1].split("// No custom code", 1)[0]
     assert "discardScanDownloads();" in aborted

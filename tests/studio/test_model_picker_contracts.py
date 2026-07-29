@@ -1140,8 +1140,8 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     live control describes the outgoing model only for a bare pick."""
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert (
-        'const previousNParallel = typeof selection !== "string" && '
-        "selection.previousConfig ? (selection.previousConfig.nParallel ?? null) "
+        "const previousNParallel = previousConfig "
+        "? (previousConfig.nParallel ?? null) "
         ": useChatRuntimeStore.getState().nParallel;" in runtime
     )
     # Matched on the call prefix, not the whole call: the staged apply also

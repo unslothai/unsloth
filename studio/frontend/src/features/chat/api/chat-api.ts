@@ -210,12 +210,15 @@ export async function validateModel(
  * backend reads the granted local path. Used by the deferred-load staging flow
  * to size the context, GPU-layers and MoE sliders before the single load.
  */
-export async function fetchGgufStagedMetadata(payload: {
-  model_path: string;
-  gguf_variant?: string | null;
-  hf_token?: string | null;
-  nativePathToken?: string | null;
-}): Promise<{
+export async function fetchGgufStagedMetadata(
+  payload: {
+    model_path: string;
+    gguf_variant?: string | null;
+    hf_token?: string | null;
+    nativePathToken?: string | null;
+  },
+  options?: { signal?: AbortSignal },
+): Promise<{
   contextLength: number | null;
   layerCount: number | null;
   moeLayerCount: number | null;
@@ -247,6 +250,7 @@ export async function fetchGgufStagedMetadata(payload: {
       native_path_lease: nativePathLease,
       include_context_length: true,
     }),
+    signal: options?.signal,
   });
   const res = await parseJsonOrThrow<ValidateModelResponse>(response);
   return {

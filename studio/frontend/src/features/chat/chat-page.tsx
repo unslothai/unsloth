@@ -1964,6 +1964,7 @@ export function ChatPage({
     selectModel,
     ejectModel,
     cancelLoading,
+    cancelLoadingForReplacement,
     invalidatePendingModelSelection,
     isModelSelectionIntentCurrent,
     loadingModel,
@@ -2601,7 +2602,7 @@ export function ChatPage({
           store.modelLoading || store.loadingModelPick,
         );
         if (hadLocalLoad) {
-          const stopped = await cancelLoading(true);
+          const stopped = await cancelLoadingForReplacement();
           if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
           if (!stopped) {
             toast.error("Could not stop the current model load", {
@@ -2802,7 +2803,7 @@ export function ChatPage({
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
-      cancelLoading,
+      cancelLoadingForReplacement,
       invalidatePendingModelSelection,
       isModelSelectionIntentCurrent,
       stageOrLoad,

@@ -145,6 +145,15 @@ type SharedModelLoadHandle = {
 // without trying to mutate refs it does not own.
 let sharedModelLoadHandle: SharedModelLoadHandle | null = null;
 
+type PendingReplacementRollback = {
+  checkpoint: string | null;
+  config?: PerModelConfig;
+};
+
+// Cancellation can finish after a newer selection intent has already started.
+// Retain the inherited rollback target until the winning intent reserves a run.
+let pendingReplacementRollback: PendingReplacementRollback | null = null;
+
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
 // the pinned approval the worker requires instead of being blocked.
 const approvedRemoteCodeFingerprints = new Map<string, string>();
@@ -365,14 +374,9 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // specFallbackReason survives here, so clearing activeModelIsLocal
-      // alone would flip a local model's warning to "download failed". Every
-      // load path and clearCheckpoint set it, so leave it consistent.
-      useChatRuntimeStore.setState({
-        modelRequiresTrustRemoteCode: false,
-        loadedIsMultimodal: false,
-        loadedIsDiffusion: false,
-      });
+      // The backend is authoritative: cancellation may have evicted the
+      // previous model before the pending replacement reached /load.
+      useChatRuntimeStore.getState().clearCheckpoint();
     }
   } catch (error) {
     if (signal?.aborted) return;
@@ -603,7 +607,7 @@ export function useChatModelRuntime() {
     [refresh, setLoadToastDismissedState, setModelsError],
   );
 
-  const cancelLoading = useCallback(
+  const cancelLoadingWithCheckpointPolicy = useCallback(
     (preserveCheckpoint = false): Promise<boolean> => {
       const localRun = activeLoadRunRef.current;
       if (localRun) return cancelLoadRun(localRun, preserveCheckpoint);
@@ -611,6 +615,14 @@ export function useChatModelRuntime() {
       return shared ? shared.cancel(preserveCheckpoint) : Promise.resolve(false);
     },
     [cancelLoadRun],
+  );
+  const cancelLoading = useCallback(
+    (): Promise<boolean> => cancelLoadingWithCheckpointPolicy(false),
+    [cancelLoadingWithCheckpointPolicy],
+  );
+  const cancelLoadingForReplacement = useCallback(
+    (): Promise<boolean> => cancelLoadingWithCheckpointPolicy(true),
+    [cancelLoadingWithCheckpointPolicy],
   );
 
   const invalidatePendingModelSelection = useCallback((): number => {
@@ -639,9 +651,11 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isGguf;
       let isDiffusion =
         typeof selection === "string" ? undefined : selection.isDiffusion;
+      let previousConfig =
+        typeof selection === "string" ? undefined : selection.previousConfig;
       const restorePreviousConfig = () => {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig, {
+        if (previousConfig) {
+          applyPerModelConfigToRuntime(previousConfig, {
             isDiffusion:
               useChatRuntimeStore.getState().loadedIsDiffusion,
           });
@@ -651,18 +665,7 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
-      let previousConfig =
-        typeof selection === "string" ? undefined : selection.previousConfig;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (
-        !forceReload &&
-        (!modelId ||
-          (params.checkpoint === modelId &&
-            (ggufVariant ?? null) === (currentVariant ?? null)))
-      ) {
-        restorePreviousConfig();
-        return;
-      }
       const initialActiveRun = activeLoadRunRef.current;
       const initialSharedRun = sharedModelLoadHandle?.run;
       const initialInFlightLoad =
@@ -673,6 +676,17 @@ export function useChatModelRuntime() {
         (initialInFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
         (initialInFlightLoad.nativePathToken ?? null) ===
           (nativePathToken ?? null);
+      if (
+        !forceReload &&
+        (!modelId ||
+          (params.checkpoint === modelId &&
+            (ggufVariant ?? null) === (currentVariant ?? null) &&
+            !initialInFlightLoad &&
+            !pendingReplacementRollback))
+      ) {
+        restorePreviousConfig();
+        return;
+      }
       if (
         initiallyLoadingSamePick &&
         !initialActiveRun?.cancelPromise &&
@@ -685,7 +699,22 @@ export function useChatModelRuntime() {
       // the superseded run's error cleanup from restoring its previous config
       // over settings already applied by the new caller.
       const loadIntentId = ++loadIntentRef.current;
-      let replacementNeedsRollback = false;
+      let replacementNeedsRollback = pendingReplacementRollback != null;
+      if (pendingReplacementRollback?.config) {
+        previousConfig = pendingReplacementRollback.config;
+      }
+      const inheritCancelledRunRollback = (cancelledRun: ActiveModelLoadRun) => {
+        if (cancelledRun.rollbackConfig) {
+          previousConfig = cancelledRun.rollbackConfig;
+        }
+        if (cancelledRun.previousCheckpointWasUnloaded) {
+          replacementNeedsRollback = true;
+          pendingReplacementRollback = {
+            checkpoint: cancelledRun.rollbackCheckpoint,
+            config: previousConfig,
+          };
+        }
+      };
       // A different pick supersedes the local load in flight. Await its
       // cancellation and backend unload before claiming the slot. Re-check in a
       // loop because multiple selections may be waiting on the same cancellation;
@@ -711,24 +740,16 @@ export function useChatModelRuntime() {
           return;
         }
 
-        if (activeRun?.rollbackConfig) {
-          previousConfig = activeRun.rollbackConfig;
-        }
-
         // A load owned by another runtime surface cannot be safely cancelled
         // through this hook's local refs. Delegate to the owning hook through
         // the shared handle instead.
         if (!activeRun) {
           const shared = sharedModelLoadHandle;
           if (shared) {
-            if (shared.run.rollbackConfig) {
-              previousConfig = shared.run.rollbackConfig;
-            }
+            inheritCancelledRunRollback(shared.run);
             shared.supersedeOwnerIntent();
             const stopped = await shared.cancel(true);
-            replacementNeedsRollback =
-              replacementNeedsRollback ||
-              shared.run.previousCheckpointWasUnloaded;
+            inheritCancelledRunRollback(shared.run);
             if (loadIntentRef.current !== loadIntentId) {
               if (throwOnError) {
                 throw new Error("Model selection was superseded by a newer choice.");
@@ -747,10 +768,9 @@ export function useChatModelRuntime() {
 
         // Keep the working checkpoint as the rollback target for the
         // replacement. A standalone Stop still clears the selection.
+        inheritCancelledRunRollback(activeRun);
         const stopped = await cancelLoadRun(activeRun, true);
-        replacementNeedsRollback =
-          replacementNeedsRollback ||
-          activeRun.previousCheckpointWasUnloaded;
+        inheritCancelledRunRollback(activeRun);
         if (loadIntentRef.current !== loadIntentId) {
           if (throwOnError) {
             throw new Error("Model selection was superseded by a newer choice.");
@@ -866,7 +886,15 @@ export function useChatModelRuntime() {
       const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
-      const previousCheckpoint = currentCheckpoint;
+      const inheritedPendingRollback = pendingReplacementRollback;
+      if (inheritedPendingRollback?.config) {
+        previousConfig = inheritedPendingRollback.config;
+      }
+      replacementNeedsRollback =
+        replacementNeedsRollback || inheritedPendingRollback != null;
+      const previousCheckpoint = inheritedPendingRollback
+        ? inheritedPendingRollback.checkpoint
+        : currentCheckpoint;
       const previousVariant =
         useChatRuntimeStore.getState().activeGgufVariant ?? null;
       const reloadingSameModel =
@@ -931,6 +959,7 @@ export function useChatModelRuntime() {
         previousCheckpointWasUnloaded: replacementNeedsRollback,
       };
       activeLoadRunRef.current = run;
+      pendingReplacementRollback = null;
       sharedModelLoadHandle = {
         run,
         supersedeOwnerIntent: () => {
@@ -952,8 +981,8 @@ export function useChatModelRuntime() {
           // Read before the staged-metadata await below so an in-flight change
           // cannot perturb the outgoing snapshot.
           const previousNParallel =
-            typeof selection !== "string" && selection.previousConfig
-              ? (selection.previousConfig.nParallel ?? null)
+            previousConfig
+              ? (previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
@@ -974,7 +1003,7 @@ export function useChatModelRuntime() {
                 gguf_variant: ggufVariant ?? null,
                 hf_token: preparedToken.token,
                 nativePathToken: nativePathToken ?? null,
-              })
+              }, { signal: abortCtrl.signal })
             ).isDiffusion;
           }
           const targetIsDiffusion = isDiffusion === true;
@@ -2101,6 +2130,7 @@ export function useChatModelRuntime() {
     selectModel,
     ejectModel,
     cancelLoading,
+    cancelLoadingForReplacement,
     invalidatePendingModelSelection,
     isModelSelectionIntentCurrent,
     loadingModel,
