@@ -150,6 +150,7 @@ type SharedModelLoadHandle = {
 // without trying to mutate refs it does not own.
 let sharedModelLoadHandle: SharedModelLoadHandle | null = null;
 let modelSelectionIntentEpoch = 0;
+let latestExternalSelectionIntentId: number | null = null;
 let pendingExternalReplacement:
   | { intentId: number; config?: PerModelConfig }
   | null = null;
@@ -698,6 +699,7 @@ export function useChatModelRuntime() {
 
   const invalidatePendingModelSelection = useCallback((): number => {
     modelSelectionIntentEpoch += 1;
+    latestExternalSelectionIntentId = modelSelectionIntentEpoch;
     return modelSelectionIntentEpoch;
   }, []);
 
@@ -928,7 +930,12 @@ export function useChatModelRuntime() {
         forceReload ? "Applying these settings" : "Loading a different model",
       );
       if (modelSelectionIntentEpoch !== loadIntentId) {
-        restorePreviousConfig();
+        // A hosted pick does not stage its own local load config, so restore
+        // the preflight snapshot for it. A newer local pick has already staged
+        // its own settings and must not be overwritten by this stale call.
+        if (latestExternalSelectionIntentId === modelSelectionIntentEpoch) {
+          restorePreviousConfig();
+        }
         if (throwOnError) {
           throw new Error("Model selection was superseded by a newer choice.");
         }

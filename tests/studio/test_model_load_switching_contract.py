@@ -309,7 +309,9 @@ def test_superseded_preflight_restores_the_staged_config():
         "if (modelSelectionIntentEpoch !== loadIntentId) {",
         1,
     )[1].split("if (!stopDecision.proceed)", 1)[0]
+    assert "latestExternalSelectionIntentId === modelSelectionIntentEpoch" in stale
     assert "restorePreviousConfig();" in stale
+    assert "latestExternalSelectionIntentId = modelSelectionIntentEpoch;" in runtime
 
 
 def test_reselecting_hosted_checkpoint_still_cancels_a_local_load():
