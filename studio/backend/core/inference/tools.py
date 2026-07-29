@@ -778,7 +778,7 @@ def _is_dynamic_import_callable(
             return _is_dynamic_import_callable(
                 node.value, dynamic_import_aliases, dynamic_namespace_aliases
             )
-        return node.attr in {"import_module", "__import__"}
+        return node.attr in {"import_module", "__import__", "load_module"}
     if isinstance(node, ast.Subscript):
         contained = _literal_container_item(node)
         if contained is not None:
@@ -804,15 +804,15 @@ def _is_dynamic_import_callable(
             return _is_dynamic_import_callable(
                 base, dynamic_import_aliases, dynamic_namespace_aliases
             )
-        if member in {"import_module", "__import__"}:
+        if member in {"import_module", "__import__", "load_module"}:
             return True
     if isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
-        return _subscript_key(node.args[1]) in {"import_module", "__import__"}
+        return _subscript_key(node.args[1]) in {"import_module", "__import__", "load_module"}
     return (
         isinstance(node.func, ast.Attribute)
         and node.func.attr in {"__getattribute__", "__getitem__"}
         and bool(node.args)
-        and _subscript_key(node.args[0]) in {"import_module", "__import__"}
+        and _subscript_key(node.args[0]) in {"import_module", "__import__", "load_module"}
     )
 
 
@@ -6198,6 +6198,51 @@ def _check_signal_escape_patterns(code: str):
                     node,
                     "Unsafe PyYAML deserialization via YAMLObject SafeLoader registration",
                 )
+
+        def visit_Return(self, node):
+            if node.value is None:
+                return
+            self.visit(node.value)
+            if _pyyaml_loader_is_safe(
+                node.value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization loader class escapes through return value",
+                )
+            if _pyyaml_safe_loader_registry_reference(
+                node.value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.yaml_safe_loader_registry_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization registry escapes through return value",
+                )
+            if _pyyaml_safe_loader_mutator_reference(
+                node.value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization mutator escapes through return value",
+                )
+
+        def visit_Yield(self, node):
+            self.visit_Return(node)
+
+        def visit_YieldFrom(self, node):
+            self.visit_Return(node)
 
         def _visit_comprehension_scope(self, node, result_nodes):
             state = self._pyyaml_scope_state()
