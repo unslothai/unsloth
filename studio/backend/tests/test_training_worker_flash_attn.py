@@ -426,6 +426,7 @@ def test_tilelang_backend_skipped_on_unsupported_linux_arch(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_pins_only_binary(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -467,6 +468,7 @@ def _force_missing_tilelang_imports(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
+@linux_only
 def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -491,6 +493,7 @@ def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
     assert any("Installing TileLang" in s for s in statuses)
 
 
+@linux_only
 def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
     """Repair path issues TWO pip calls:
 
@@ -560,6 +563,7 @@ def test_tilelang_backend_skipped_on_windows(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_swallows_install_timeout(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -614,6 +618,7 @@ def test_tilelang_backend_skipped_via_env(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_swallows_install_failure(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -981,6 +986,7 @@ def test_hook_does_install_tilelang_for_qwen35(monkeypatch):
     tile_install.assert_called_once()
 
 
+@linux_only
 def test_tilelang_repair_does_not_touch_torch_cuda_stack(monkeypatch):
     """Finding #2: the broken-tvm-ffi repair must use --no-deps on the
     forced step so --force-reinstall doesn't cascade through
