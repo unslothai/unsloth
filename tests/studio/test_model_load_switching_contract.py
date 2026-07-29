@@ -274,6 +274,9 @@ def test_status_distinguishes_idle_reload_stash_from_manual_unload():
     assert '"requested_parallel_slots": backend.requested_parallel_slots' in keepwarm
     assert 'cache_type_kv = idle_capabilities.get("cache_type_kv")' in backend_route
     assert 'parallel_slots = idle_capabilities.get("parallel_slots")' in backend_route
+    assert 'tensor_parallel = idle_capabilities.get("tensor_parallel", False)' in backend_route
+    assert 'gpu_memory_mode = idle_capabilities.get("gpu_memory_mode", "auto")' in backend_route
+    assert 'gpu_layers = idle_capabilities.get("gpu_layers", -1)' in backend_route
     assert "inference_config = load_inference_config(idle_internal_identifier)" in backend_route
     assert "if is_direct_local_model" in keepwarm
 

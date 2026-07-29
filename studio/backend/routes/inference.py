@@ -7470,16 +7470,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             chat_template_override = idle_capabilities.get("chat_template_override"),
             speculative_type = idle_capabilities.get("speculative_type"),
             spec_draft_n_max = idle_capabilities.get("spec_draft_n_max"),
-            tensor_parallel = idle_capabilities.get("tensor_parallel"),
-            gpu_memory_mode = idle_capabilities.get("gpu_memory_mode"),
-            gpu_layers = idle_capabilities.get("gpu_layers"),
-            n_cpu_moe = idle_capabilities.get("n_cpu_moe"),
+            tensor_parallel = idle_capabilities.get("tensor_parallel", False),
+            gpu_memory_mode = idle_capabilities.get("gpu_memory_mode", "auto"),
+            gpu_layers = idle_capabilities.get("gpu_layers", -1),
+            n_cpu_moe = idle_capabilities.get("n_cpu_moe", 0),
             tensor_split = idle_capabilities.get("tensor_split"),
             requested_context_length = idle_capabilities.get(
                 "requested_context_length"
             ),
             n_layers = idle_capabilities.get("n_layers"),
-            n_moe_layers = idle_capabilities.get("n_moe_layers"),
+            n_moe_layers = idle_capabilities.get("n_moe_layers", 0),
             gpu_ids = idle_capabilities.get("gpu_ids"),
             requested_gpu_ids = idle_capabilities.get("requested_gpu_ids"),
             requested_parallel_slots = idle_capabilities.get(
