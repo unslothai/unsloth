@@ -364,14 +364,6 @@ def _render_registered_vlm_prompt(
         if value is not None
     }
 
-    first_user = next(
-        (
-            index
-            for index, message in enumerate(messages)
-            if isinstance(message, dict) and str(message.get("role", "")).lower() == "user"
-        ),
-        None,
-    )
     media_owner = next(
         (
             index
@@ -380,8 +372,8 @@ def _render_registered_vlm_prompt(
         ),
         None,
     )
-    if first_user is None or media_owner != first_user:
-        raise RuntimeError("Model-aware image recovery requires media on the first user turn.")
+    if media_owner is None or str(messages[media_owner].get("role", "")).lower() != "user":
+        raise RuntimeError("Model-aware image recovery requires media on a user turn.")
 
     extract_text = getattr(prompt_utils, "extract_text_from_content", content_to_text)
 

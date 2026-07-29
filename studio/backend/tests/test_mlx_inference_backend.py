@@ -739,8 +739,13 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert [message["content"] for message in calls["template_messages"][-1][0]] == ["<image> Read. Now.", "Seen.", "Again."]
     state["generic"] = "serialized_last"
     later_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": "Seen."}, {"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "Again."}]}]
-    with pytest.raises(RuntimeError, match = "first user turn"):
-        list(backend._generate_vlm(*((later_image,) + args[1:])))
+    assert list(backend._generate_vlm(*((later_image,) + args[1:]))) == ["ok"]
+    assert [call["num_images"] for call in calls["model"][-3:]] == [0, 0, 1]
+    roles_and_content = [(message["role"], mlx_inference._flatten_registered_vlm_content(backend._processor, message["content"])) for message in calls["template_messages"][-1][0]]
+    assert roles_and_content == [("user", "First."), ("assistant", "Seen."), ("user", "<image> Again.")]
+    non_user_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": [{"type": "input_image"}]}]
+    with pytest.raises(RuntimeError, match = "media on a user turn"):
+        list(backend._generate_vlm(*((non_user_image,) + args[1:])))
     backend._processor = SimpleNamespace(chat_template = "template")
     state["generic"] = "<image> healthy generic"
     state["model"] = "<image> model-aware"
