@@ -733,6 +733,7 @@ _PYYAML_UNSAFE_LOADERS = frozenset(
         # These constructors expose Python-object construction without a
         # Loader facade.
         "Constructor",
+        "FullConstructor",
         "UnsafeConstructor",
     }
 )

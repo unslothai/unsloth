@@ -803,6 +803,12 @@ class TestPyYamlDeserialization:
                 "yaml.constructor.Constructor().construct_object("
                 "yaml.compose(payload), deep=True)"
             ),
+            (
+                "import yaml\n"
+                "fn = yaml.constructor.FullConstructor().construct_python_name("
+                "'builtins.eval', yaml.compose(\"''\"))\n"
+                "fn(expression)"
+            ),
             "im = (lambda: __import__)()\nim('yaml').unsafe_load(payload)",
             (
                 "import yaml\n"
