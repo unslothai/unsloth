@@ -31,7 +31,10 @@ export async function confirmRemoteCodeIfNeeded({
 }: ConfirmArgs): Promise<boolean> {
   let scan: RemoteCodeScan;
   try {
-    scan = await getRemoteCodeScan(modelName, hfToken, signal);
+    // Let the backend scan finish even if the caller cancels: the response
+    // carries the complete list of repositories created by the scan, which is
+    // required to purge every unapproved download below.
+    scan = await getRemoteCodeScan(modelName, hfToken);
   } catch {
     scan = {
       requiresTrustRemoteCode: Boolean(requiresTrustRemoteCode),

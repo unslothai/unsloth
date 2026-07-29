@@ -939,7 +939,7 @@ def test_parallel_slots_setting_wired_end_to_end():
     assert "n_parallel: isGguf ? loadNParallel : null," in runtime
     assert "n_parallel: validateNParallel," in runtime
     assert "loadNParallel = pendingLoadConfig?.nParallel ?? null;" in runtime
-    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+    assert "n_parallel: rollbackState.loadedNParallel," in runtime
     chat_api = _read("features/chat/api/chat-api.ts")
     assert "n_parallel: payload.n_parallel," in chat_api
     composer = _read("features/chat/shared-composer.tsx")
@@ -1142,7 +1142,7 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     assert (
         "const previousNParallel = previousConfig "
         "? (previousConfig.nParallel ?? null) "
-        ": useChatRuntimeStore.getState().nParallel;" in runtime
+        ": rollbackState.nParallel;" in runtime
     )
     # Matched on the call prefix, not the whole call: the staged apply also
     # carries the resolved diffusion flag. Only the ordering is the contract.
@@ -1158,8 +1158,8 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     assert "nParallel: previousNParallel," in rollback
     # Baseline and reload payload keep the resolved count, or the rollback
     # recreates the previous model at a different slot count.
-    assert "loadedNParallel: stateBeforeUnload.loadedNParallel ?? null," in rollback
-    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+    assert "loadedNParallel: rollbackState.loadedNParallel ?? null," in rollback
+    assert "n_parallel: rollbackState.loadedNParallel," in runtime
 
 
 def test_vulkan_inference_devices_are_the_pickable_set():

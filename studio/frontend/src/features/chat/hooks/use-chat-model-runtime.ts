@@ -118,6 +118,10 @@ type LoadingModelState = {
   nativePathToken?: string | null;
 };
 
+type ChatRuntimeStateSnapshot = ReturnType<
+  typeof useChatRuntimeStore.getState
+>;
+
 type ActiveModelLoadRun = {
   attemptId: number;
   intentId: number;
@@ -130,6 +134,7 @@ type ActiveModelLoadRun = {
   backendLoadModelId: string | null;
   rollbackCheckpoint: string | null;
   rollbackConfig?: PerModelConfig;
+  rollbackState: ChatRuntimeStateSnapshot;
   previousCheckpointWasUnloaded: boolean;
 };
 
@@ -148,6 +153,7 @@ let sharedModelLoadHandle: SharedModelLoadHandle | null = null;
 type PendingReplacementRollback = {
   checkpoint: string | null;
   config?: PerModelConfig;
+  state: ChatRuntimeStateSnapshot;
 };
 
 // Cancellation can finish after a newer selection intent has already started.
@@ -374,9 +380,14 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // The backend is authoritative: cancellation may have evicted the
-      // previous model before the pending replacement reached /load.
-      useChatRuntimeStore.getState().clearCheckpoint();
+      // No active model is also the normal idle auto-unload state. Keep the
+      // checkpoint so the next generation can transparently reload it, while
+      // clearing only the resident model capabilities.
+      useChatRuntimeStore.setState({
+        modelRequiresTrustRemoteCode: false,
+        loadedIsMultimodal: false,
+        loadedIsDiffusion: false,
+      });
     }
   } catch (error) {
     if (signal?.aborted) return;
@@ -555,7 +566,10 @@ export function useChatModelRuntime() {
           // backend. In that case /unload leaves the resident model untouched,
           // so derive the UI checkpoint from the backend instead of clearing it
           // optimistically.
-          if (!preserveCheckpoint) await refresh();
+          if (!preserveCheckpoint) {
+            clearCheckpoint();
+            await refresh();
+          }
           return true;
         } catch (error) {
           // Even when /unload fails, the cancelled frontend task may still own
@@ -604,7 +618,7 @@ export function useChatModelRuntime() {
       run.cancelPromise = cancelPromise;
       return cancelPromise;
     },
-    [refresh, setLoadToastDismissedState, setModelsError],
+    [clearCheckpoint, refresh, setLoadToastDismissedState, setModelsError],
   );
 
   const cancelLoadingWithCheckpointPolicy = useCallback(
@@ -700,10 +714,12 @@ export function useChatModelRuntime() {
       // over settings already applied by the new caller.
       const loadIntentId = ++loadIntentRef.current;
       let replacementNeedsRollback = pendingReplacementRollback != null;
+      let inheritedRollbackState = pendingReplacementRollback?.state;
       if (pendingReplacementRollback?.config) {
         previousConfig = pendingReplacementRollback.config;
       }
       const inheritCancelledRunRollback = (cancelledRun: ActiveModelLoadRun) => {
+        inheritedRollbackState = cancelledRun.rollbackState;
         if (cancelledRun.rollbackConfig) {
           previousConfig = cancelledRun.rollbackConfig;
         }
@@ -712,6 +728,7 @@ export function useChatModelRuntime() {
           pendingReplacementRollback = {
             checkpoint: cancelledRun.rollbackCheckpoint,
             config: previousConfig,
+            state: cancelledRun.rollbackState,
           };
         }
       };
@@ -884,19 +901,23 @@ export function useChatModelRuntime() {
       primeNativeNotificationPermission().catch(() => undefined);
       const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
       const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
-      const currentCheckpoint =
-        useChatRuntimeStore.getState().params.checkpoint;
+      const currentRollbackState = useChatRuntimeStore.getState();
+      const currentCheckpoint = currentRollbackState.params.checkpoint;
       const inheritedPendingRollback = pendingReplacementRollback;
+      inheritedRollbackState =
+        inheritedPendingRollback?.state ?? inheritedRollbackState;
       if (inheritedPendingRollback?.config) {
         previousConfig = inheritedPendingRollback.config;
       }
       replacementNeedsRollback =
         replacementNeedsRollback || inheritedPendingRollback != null;
+      const rollbackStateForRun =
+        inheritedRollbackState ?? currentRollbackState;
       const previousCheckpoint = inheritedPendingRollback
         ? inheritedPendingRollback.checkpoint
         : currentCheckpoint;
       const previousVariant =
-        useChatRuntimeStore.getState().activeGgufVariant ?? null;
+        rollbackStateForRun.activeGgufVariant ?? null;
       const reloadingSameModel =
         previousCheckpoint === modelId &&
         (ggufVariant ?? null) === (previousVariant ?? null);
@@ -956,6 +977,7 @@ export function useChatModelRuntime() {
         backendLoadModelId: null,
         rollbackCheckpoint: previousCheckpoint,
         rollbackConfig: previousConfig,
+        rollbackState: rollbackStateForRun,
         previousCheckpointWasUnloaded: replacementNeedsRollback,
       };
       activeLoadRunRef.current = run;
@@ -972,6 +994,7 @@ export function useChatModelRuntime() {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = run.previousCheckpointWasUnloaded;
+          const rollbackState = run.rollbackState;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
           // The outgoing model's slot INTENT (blank = follow the server
@@ -983,7 +1006,7 @@ export function useChatModelRuntime() {
           const previousNParallel =
             previousConfig
               ? (previousConfig.nParallel ?? null)
-              : useChatRuntimeStore.getState().nParallel;
+              : rollbackState.nParallel;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -1021,7 +1044,7 @@ export function useChatModelRuntime() {
             normalizeMaxSeqLength(pendingLoadConfig?.maxSeqLength) ??
             stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
-            stateBeforeUnload.activeNativePathToken;
+            rollbackState.activeNativePathToken;
           const previousIsGguf =
             previousModel?.isGguf === true
             || previousVariant != null
@@ -1032,24 +1055,25 @@ export function useChatModelRuntime() {
           // params.maxSeqLength may already be the next model's; use it only when
           // no snapshot exists.
           const previousMaxSeqLength =
-            previousConfig?.maxSeqLength ?? maxSeqLength;
+            previousConfig?.maxSeqLength ??
+            rollbackState.params.maxSeqLength;
           // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
           // with an unpinned context must reload with 0 (so --fit re-auto-sizes),
           // not the positive context it picked (which the backend treats as a pin).
           const rollbackMaxSeqLength = resolveFitMaxSeqLength(
             previousIsGguf,
-            stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-            stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-            stateBeforeUnload.loadedCustomContextLength,
+            rollbackState.loadedGpuMemoryMode ?? "auto",
+            rollbackState.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+            rollbackState.loadedCustomContextLength,
             previousIsGguf
-              ? (stateBeforeUnload.ggufContextLength ?? 0)
+              ? (rollbackState.ggufContextLength ?? 0)
               : previousMaxSeqLength,
           );
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
-            stateBeforeUnload.modelRequiresTrustRemoteCode;
+            rollbackState.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
-            stateBeforeUnload.activeNativePathExpiresAtMs;
+            rollbackState.activeNativePathExpiresAtMs;
           // Snapshot the load settings at click time, before the awaits below
           // (validation, the trust dialog, unload). When the picker staged a
           // config payload, prefer it over the store: React may not have
@@ -1614,22 +1638,22 @@ export function useChatModelRuntime() {
                   approved_remote_code_fingerprint:
                     approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   chat_template_override:
-                    stateBeforeUnload.loadedChatTemplateOverride,
-                  cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
+                    rollbackState.loadedChatTemplateOverride,
+                  cache_type_kv: rollbackState.loadedKvCacheDtype,
                   speculative_type:
-                    stateBeforeUnload.loadedSpeculativeType,
+                    rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
-                    stateBeforeUnload.loadedSpecDraftNMax,
-                  n_parallel: stateBeforeUnload.loadedNParallel,
+                    rollbackState.loadedSpecDraftNMax,
+                  n_parallel: rollbackState.loadedNParallel,
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
-                  tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  tensor_parallel: rollbackState.loadedTensorParallel ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
-                  gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-                  gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-                  n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
-                  tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
-                  gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                  gpu_memory_mode: rollbackState.loadedGpuMemoryMode ?? "auto",
+                  gpu_layers: rollbackState.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                  n_cpu_moe: rollbackState.loadedNCpuMoe ?? 0,
+                  tensor_split: rollbackState.loadedSplitRatio ?? undefined,
+                  gpu_ids: rollbackState.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
                   force_cancel_active: true,
                 }, {
@@ -1656,25 +1680,25 @@ export function useChatModelRuntime() {
                     : null,
                   // Restore the editable speculative knobs to the rolled-back
                   // model's; the loaded baselines below come from its reload echo.
-                  speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
-                  specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
+                  speculativeType: rollbackState.loadedSpeculativeType ?? null,
+                  specDraftNMax: rollbackState.loadedSpecDraftNMax ?? null,
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
-                  loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  loadedNParallel: rollbackState.loadedNParallel ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   loadedChatTemplateOverride:
-                    stateBeforeUnload.loadedChatTemplateOverride,
+                    rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
                   customContextLength:
-                    stateBeforeUnload.loadedCustomContextLength,
+                    rollbackState.loadedCustomContextLength,
                   loadedCustomContextLength:
-                    stateBeforeUnload.loadedCustomContextLength,
+                    rollbackState.loadedCustomContextLength,
                 });
                 await refresh();
               } catch {

@@ -25,12 +25,13 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "const stopped = await cancelLoadRun(activeRun, true);" in runtime
     assert "if (!stopped)" in runtime
     assert "await refresh();" in runtime
-    assert "if (!preserveCheckpoint) clearCheckpoint();" not in cancel
-    assert "if (!preserveCheckpoint) await refresh();" in cancel
+    standalone = cancel.split("if (!preserveCheckpoint) {", 1)[1].split("}", 1)[0]
+    assert standalone.index("clearCheckpoint();") < standalone.index("await refresh();")
     no_active = runtime.split(
         "} else if (!statusRes.active_model && !isExternalSelectionActive) {", 1
     )[1].split("}", 1)[0]
-    assert "clearCheckpoint();" in no_active
+    assert "clearCheckpoint();" not in no_active
+    assert "loadedIsDiffusion: false" in no_active
     assert 'useHfTokenWarningStore.getState().resolve("cancel", run);' in cancel
     assert "useRemoteCodeConsentDialogStore.getState().resolve(false, run);" in cancel
     assert "useTransformersUpgradeDialogStore.getState().cancelPending(run);" in cancel
@@ -136,7 +137,8 @@ def test_superseded_replacement_keeps_the_working_model_config():
     assert "previousConfig = cancelledRun.rollbackConfig;" in runtime
     assert "inheritCancelledRunRollback(activeRun);" in runtime
     assert "inheritCancelledRunRollback(shared.run);" in runtime
-    assert "previousConfig?.maxSeqLength ?? maxSeqLength" in runtime
+    assert "previousConfig?.maxSeqLength ??" in runtime
+    assert "rollbackState.params.maxSeqLength" in runtime
     assert "applyPerModelConfigToRuntime(previousConfig" in runtime
     assert "previousConfig.nParallel ?? null" in runtime
 
@@ -157,6 +159,20 @@ def test_unloaded_rollback_target_survives_pending_selection_intents():
     assert "const inheritedPendingRollback = pendingReplacementRollback;" in runtime
     assert "pendingReplacementRollback = null;" in runtime
     assert "checkpoint: cancelledRun.rollbackCheckpoint" in runtime
+    assert "state: cancelledRun.rollbackState" in runtime
+
+
+def test_replacement_inherits_the_rollback_models_complete_runtime_state():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "rollbackState: ChatRuntimeStateSnapshot;" in runtime
+    assert "rollbackState: rollbackStateForRun" in runtime
+    assert "inheritedRollbackState = cancelledRun.rollbackState;" in runtime
+    rollback = runtime.split("const rollbackResponse = await loadModel(", 1)[1]
+    rollback = rollback.split("await refresh();", 1)[0]
+    assert "rollbackState.activeNativePathToken" in runtime
+    assert "rollbackState.loadedGpuMemoryMode" in rollback
+    assert "rollbackState.loadedGpuIds" in rollback
+    assert "rollbackState.loadedChatTemplateOverride" in rollback
 
 
 def test_throwing_callers_learn_when_their_selection_is_superseded():
@@ -205,7 +221,8 @@ def test_abort_signal_reaches_validation_and_scan_cleanup():
     assert "validateHfToken(normalized, options.signal)" in hf_token
     assert "signal?: AbortSignal" in hf_api
     assert "signal," in hf_api
-    assert "getRemoteCodeScan(modelName, hfToken, signal)" in remote_code
+    assert "getRemoteCodeScan(modelName, hfToken);" in remote_code
+    assert "getRemoteCodeScan(modelName, hfToken, signal)" not in remote_code
     assert "signal?: AbortSignal" in remote_api
     assert "signal," in remote_api
     assert "signal: options?.signal" in api
