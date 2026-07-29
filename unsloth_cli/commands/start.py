@@ -2449,11 +2449,13 @@ def _augment_path_with_install_dirs() -> None:
     # Add known install dirs to PATH so a freshly installed agent resolves without a new
     # shell. User agent dirs are appended so existing tools keep precedence. A managed Node
     # selected over the system runtime is prepended so Node-backed shims use that same runtime.
+    # Only the user install dirs need a home; a missing one must not also drop the managed
+    # Node, or a shim resolved here fails on `env node` under a bare container UID.
     try:
         home = Path.home()
     except (RuntimeError, OSError):
-        return
-    candidates = [home / ".local" / "bin"]
+        home = None
+    candidates = [home / ".local" / "bin"] if home is not None else []
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:

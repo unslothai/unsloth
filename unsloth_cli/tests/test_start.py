@@ -5237,6 +5237,42 @@ def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeyp
     assert not home.exists()
 
 
+def test_augment_path_keeps_managed_node_without_a_home(monkeypatch, tmp_path):
+    # A bare container UID has no home, but the managed Node is still the runtime that
+    # resolves a Node-backed shim, so it must stay on PATH.
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    monkeypatch.setattr(
+        start,
+        "_managed_node_tools",
+        lambda: (managed_bin / "node", managed_bin / "npm", True),
+    )
+    monkeypatch.setattr(
+        start.Path,
+        "home",
+        staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("no home directory"))),
+    )
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    start._augment_path_with_install_dirs()
+
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(managed_bin)
+
+
+def test_augment_path_leaves_path_alone_when_nothing_to_add(monkeypatch):
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
+    monkeypatch.setattr(
+        start.Path,
+        "home",
+        staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("no home directory"))),
+    )
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    start._augment_path_with_install_dirs()
+
+    assert os.environ["PATH"] == "/usr/bin"
+
+
 def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path):
     # A shim resolved via Studio's managed Node needs that node on PATH when it runs.
     managed_bin = tmp_path / "node" / "bin"
