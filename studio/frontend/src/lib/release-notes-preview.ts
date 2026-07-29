@@ -3,6 +3,7 @@
 
 // Top changelog bullets, shown in the collapsed update popup.
 import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";
+import { commentClosesBelow } from "@/lib/markdown-inline-comments";
 import {
   EMPTY_LIST_STATE,
   type ListState,
@@ -10,6 +11,7 @@ import {
   type QuoteState,
   hiddenStructure,
   indentWidth,
+  itemContent,
   openLists,
   quoteState,
 } from "@/lib/markdown-list-columns";
@@ -53,6 +55,7 @@ const ESCAPE = /\\([!-/:-@[-`{-~])/g;
 // Private-use sentinels park code spans, so document text cannot contain them.
 const SENTINELS = /[\uE000\uE001]/g;
 const LINE_ENDINGS = /\r\n?/g;
+const TABS = /\t/g;
 // Real tags only: a name character must follow "<", so a version constraint
 // like "Support Python <3.15 and >3.9" keeps its operators.
 const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
@@ -256,25 +259,42 @@ interface ContentLine {
   column: number;
 }
 
-/** `line` with its comments removed, and whether a comment stays open. */
+/**
+ * `line` with its comments removed, whether a comment block stays open, and
+ * whether an inline comment runs on into the line below.
+ *
+ * Only a comment starting a line opens a block, which hides whole lines to the
+ * one holding `-->`. One written mid-sentence is inline HTML belonging to its
+ * paragraph: its `-->` may arrive on a later line of that paragraph, and only
+ * the text up to it is hidden. `closesBelow` says one does; without it the
+ * opener is the ordinary text a renderer shows and hides nothing below.
+ */
 function stripCommentSpans(
   line: string,
   startInComment: boolean,
-): [string, boolean] {
-  // Only a comment starting a line opens a block; one written mid-sentence is
-  // inline HTML and hides its own line at most.
+  runOn: boolean,
+  closesBelow: boolean,
+): [string, boolean, boolean] {
   if (startInComment) {
     // The closing line belongs to the block, tail included.
-    return ["", !line.includes(COMMENT_CLOSE)];
-  }
-  if (COMMENT_BLOCK_OPEN.test(line)) {
-    // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
-    // opener; searching past it would hide every later release.
-    return ["", !line.includes(COMMENT_CLOSE)];
+    return ["", !line.includes(COMMENT_CLOSE), false];
   }
 
   let visible = "";
   let index = 0;
+  if (runOn) {
+    const closed = line.indexOf(COMMENT_CLOSE);
+    if (closed === -1) {
+      return ["", false, true];
+    }
+    // Only up to the closer: the tail is the paragraph's own text again.
+    index = closed + COMMENT_CLOSE.length;
+  } else if (COMMENT_BLOCK_OPEN.test(line)) {
+    // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
+    // opener; searching past it would hide every later release.
+    return ["", !line.includes(COMMENT_CLOSE), false];
+  }
+
   const spans = codeSpans(line);
   while (index < line.length) {
     const open = line.indexOf(COMMENT_OPEN, index);
@@ -293,14 +313,19 @@ function stripCommentSpans(
     }
     const close = line.indexOf(COMMENT_CLOSE, open + COMMENT_OPEN.length);
     if (close === -1) {
-      // Nothing closes it on this line, so the renderer shows it as text.
+      if (closesBelow) {
+        // The paragraph carries the comment on, so the rest of this line is
+        // inside it and the line below opens still inside it.
+        return [visible + line.slice(index, open), false, true];
+      }
+      // Nothing closes it at all, so the renderer shows it as text.
       visible += line.slice(index);
       break;
     }
     visible += line.slice(index, open);
     index = close + COMMENT_CLOSE.length;
   }
-  return [visible, false];
+  return [visible, false, false];
 }
 
 /** Strips raw block content. State is the open block's index, or null. */
@@ -352,10 +377,14 @@ function structuralLine(
 
 interface ScanState {
   openFence: string | null;
-  // Content column of the list item an open fence belongs to, 0 at document
-  // level. A fence is scoped to its container, so the item's end closes it.
-  fenceColumn: number;
+  // Content column of the list item the open block belongs to, 0 at document
+  // level. A fence and an HTML block are both scoped to their container, so
+  // the item's end closes them. Only one of the three is ever open.
+  blockColumn: number;
   inComment: boolean;
+  // True while an inline comment opened above runs on into this line, which the
+  // paragraph holding it carries.
+  runOn: boolean;
   inRawHtml: number | null;
   inHtmlBlock: boolean;
   afterParagraph: boolean;
@@ -370,7 +399,11 @@ interface ScannedLine {
   structural: string;
 }
 
-function visibleText(line: string, state: ScanState): ScannedLine {
+function visibleText(
+  line: string,
+  state: ScanState,
+  closesBelow: boolean,
+): ScannedLine {
   // Raw HTML first: its contents are literal, so a fence inside it is not one.
   if (state.inRawHtml !== null) {
     const [after, stillInRaw] = stripRawHtml(line, state.inRawHtml);
@@ -382,7 +415,17 @@ function visibleText(line: string, state: ScanState): ScannedLine {
     state.inHtmlBlock = line.trim() !== "";
     return { text: "", structural: "" };
   }
-  const fence = state.inComment ? null : FENCE.exec(line);
+  // An opener is read past a marker on the same line, since a fence written as
+  // a list item's first content opens inside that item. Only an opener: fenced
+  // content is literal, and a closer carries no marker.
+  const commented = state.inComment || state.runOn;
+  const fence = commented
+    ? null
+    : FENCE.exec(
+        state.openFence === null
+          ? itemContent(line, state.afterParagraph)
+          : line,
+      );
   // A backtick fence whose info string holds a backtick is prose, not a fence.
   if (
     fence &&
@@ -399,21 +442,37 @@ function visibleText(line: string, state: ScanState): ScannedLine {
   if (state.openFence !== null) {
     return { text: null, structural: "" };
   }
+  return visibleContent(line, state, closesBelow);
+}
+
+/** `visibleText` for a line no fence or HTML block already owns. */
+function visibleContent(
+  line: string,
+  state: ScanState,
+  closesBelow: boolean,
+): ScannedLine {
   // A block already open owns this line, so the line is its content rather
   // than a block written at the column it happens to start in.
   const hidden = state.inComment || state.inRawHtml !== null;
+  const carried = state.runOn;
   // Commented-out notes are not rendered, so they are not previewed either.
-  const [uncommented, stillInComment] = stripCommentSpans(
+  const [uncommented, stillInComment, stillRunOn] = stripCommentSpans(
     line,
     state.inComment,
+    state.runOn,
+    closesBelow,
   );
   state.inComment = stillInComment;
+  state.runOn = stillRunOn;
   const [visible, stillInRaw] = stripRawHtml(uncommented, state.inRawHtml);
   state.inRawHtml = stillInRaw;
   // Taken before the opener is hidden: it renders as nothing, but its
-  // indentation still closes a list item it sits to the left of.
-  const structural = structuralLine(line, visible, hidden);
+  // indentation still closes a list item it sits to the left of. A line an
+  // inline comment runs on into is still a line of the paragraph that carries
+  // it, so only its text is hidden, never its block structure.
+  const structural = carried ? line : structuralLine(line, visible, hidden);
   if (
+    !carried &&
     stillInRaw === null &&
     visible.trim() &&
     opensHtmlBlock(visible, state.afterParagraph)
@@ -590,35 +649,44 @@ function nextFence(
   return closes ? null : open;
 }
 
+/** Whether a fence, a raw block or an HTML block is open. */
+function inBlock(state: ScanState): boolean {
+  return (
+    state.openFence !== null || state.inRawHtml !== null || state.inHtmlBlock
+  );
+}
+
 /**
- * A fence inside a list item runs only to the end of that item, so a line
- * dedented out of the item closes both. Lazy continuation cannot reach into a
- * fence, so any content to the left of the item ends it.
+ * A fence or an HTML block inside a list item runs only to the end of that
+ * item, so a line dedented out of the item closes both. Lazy continuation
+ * cannot reach into either, so any content to the left of the item ends it.
  */
-function closeDedentedFence(line: string, state: ScanState): void {
-  if (state.openFence === null || state.fenceColumn === 0) {
+function closeDedentedBlock(line: string, state: ScanState): void {
+  if (state.blockColumn === 0 || !inBlock(state)) {
     return;
   }
-  if (line.trim() && indentWidth(line) < state.fenceColumn) {
+  if (line.trim() && indentWidth(line) < state.blockColumn) {
     state.openFence = null;
-    state.fenceColumn = 0;
+    state.inRawHtml = null;
+    state.inHtmlBlock = false;
+    state.blockColumn = 0;
   }
 }
 
-/** Ties a fence just opened to the list item it is written inside. */
-function scopeFence(
+/** Ties a block just opened to the list item it is written inside. */
+function scopeBlock(
   state: ScanState,
-  wasFenced: boolean,
+  wasInBlock: boolean,
   lists: ListState,
 ): void {
-  if (state.openFence === null) {
-    state.fenceColumn = 0;
+  if (!inBlock(state)) {
+    state.blockColumn = 0;
     return;
   }
-  if (!wasFenced) {
+  if (!wasInBlock) {
     // The opener closed the items it is dedented out of first, so this is the
-    // column of the item the fence really sits in.
-    state.fenceColumn = lists.columns.at(-1) ?? 0;
+    // column of the item the block really sits in.
+    state.blockColumn = lists.columns.at(-1) ?? 0;
   }
 }
 
@@ -626,8 +694,9 @@ function contentLines(markdown: string): ContentLine[] {
   const lines: ContentLine[] = [];
   const state: ScanState = {
     openFence: null,
-    fenceColumn: 0,
+    blockColumn: 0,
     inComment: false,
+    runOn: false,
     inRawHtml: null,
     inHtmlBlock: false,
     afterParagraph: false,
@@ -635,11 +704,19 @@ function contentLines(markdown: string): ContentLine[] {
   let lists: ListState = EMPTY_LIST_STATE;
   let quote: QuoteState = NO_QUOTE;
 
-  for (const rawLine of markdown.split("\n")) {
-    const line = rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH));
-    closeDedentedFence(line, state);
-    const wasFenced = state.openFence !== null;
-    const { text: visible, structural } = visibleText(line, state);
+  const rawLines = markdown
+    .split("\n")
+    .map((raw) => raw.replace(TABS, " ".repeat(TAB_WIDTH)));
+  const closesBelow = commentClosesBelow(rawLines);
+  for (const [index, line] of rawLines.entries()) {
+    closeDedentedBlock(line, state);
+    const wasInBlock = inBlock(state);
+    const carried = state.runOn;
+    const { text: visible, structural } = visibleText(
+      line,
+      state,
+      closesBelow[index + 1] ?? false,
+    );
     // The quote state from the line above, which is the one list tracking asks
     // about. Only a line of text below rewrites it, so a fenced, blank or
     // hidden line leaves no quoted paragraph open behind it.
@@ -647,8 +724,13 @@ function contentLines(markdown: string): ContentLine[] {
     quote = NO_QUOTE;
     // Taken with the paragraph state from the line above, as a renderer would.
     lists = openLists(structural, lists, state.afterParagraph, above.quoted);
-    scopeFence(state, wasFenced, lists);
+    scopeBlock(state, wasInBlock, lists);
     if (visible === null) {
+      continue;
+    }
+    if (carried && !visible.trim()) {
+      // The whole line sits inside a comment its paragraph carries, so it
+      // renders as nothing at all: no text, and no break either.
       continue;
     }
     if (!visible.trim() || THEMATIC_BREAK.test(visible)) {

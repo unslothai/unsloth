@@ -194,9 +194,10 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     version: str | None = None
     body: list[str] = []
     open_fence: str | None = None
-    # Content column of the list item an open fence belongs to, 0 at document
-    # level. A fence is scoped to its container, so the item's end closes it.
-    fence_column = 0
+    # Content column of the list item the open block belongs to, 0 at document
+    # level. A fence and an HTML block are both scoped to their container, so
+    # the item's end closes them. Only one of the three is ever open.
+    block_column = 0
     in_comment = False
     in_raw_html: int | None = None
     in_html_block = False
@@ -219,16 +220,27 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     for line in _markdown_lines(text):
         # The line as list tracking sees it: blank wherever nothing renders.
         structural = ""
-        opened_fence = False
-        # A fence inside a list item runs only to the end of that item, so a
-        # line dedented out of the item closes both. Lazy continuation cannot
-        # reach into a fence, so any content to the left ends it.
-        if open_fence and fence_column and line.strip() and _indent_width(line) < fence_column:
+        opened_block = False
+        in_block = open_fence is not None or in_html_block or in_raw_html is not None
+        # A fence or an HTML block inside a list item runs only to the end of
+        # that item, so a line dedented out of the item closes both. Lazy
+        # continuation cannot reach into either, so any content to the left of
+        # the item ends the block along with the item. A raw block inside an
+        # item ends on a blank line as well: the item takes the break, so what
+        # follows it is a block of the item's own.
+        leaves = _indent_width(line) < block_column if line.strip() else in_raw_html is not None
+        if in_block and block_column and leaves:
             open_fence = None
-            fence_column = 0
-            # The paragraph the line could have continued is fenced content,
-            # so it closes the item rather than reading as more of it.
+            in_html_block = False
+            in_raw_html = None
+            block_column = 0
+            # The paragraph the line could have continued is block content, so
+            # it closes the item rather than reading as more of it.
             after_paragraph = False
+        # A fence written as a list item's first content opens inside that
+        # item, so an opener is read past a marker on the same line. Only an
+        # opener: fenced content is literal, and a closer carries no marker.
+        fence_line = line if open_fence else _item_content(line, after_paragraph)
         # Raw HTML first: its contents are literal, so a fence in it is not one.
         if in_raw_html is not None:
             visible, in_raw_html = _strip_raw_html(line, in_raw_html)
@@ -236,10 +248,10 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             # A blank line is the only thing that ends a type 6 block.
             in_html_block = line.strip() != ""
             visible = ""
-        elif (fence := _FENCE_PATTERN.match(line)) and not in_comment:
+        elif (fence := _FENCE_PATTERN.match(fence_line)) and not in_comment:
             was_open = open_fence
             open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
-            opened_fence = was_open is None and open_fence is not None
+            opened_block = was_open is None and open_fence is not None
             # Hidden from heading matching, but its indent still closes items.
             visible = ""
             structural = line
@@ -251,19 +263,34 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             hidden = in_comment or in_raw_html is not None
             # Commented-out sections are not rendered, so they are not releases.
             visible, in_comment = _strip_comments(line, in_comment)
+            # An HTML block written as a list item's first content opens inside
+            # that item, as a fence does, so an opener is read past a marker on
+            # the same line. The marker itself stays, so the item it opens is
+            # still tracked.
+            content = _item_content(visible, after_paragraph)
+            marker = visible[: len(visible) - len(content)]
             # Nor is anything inside a raw HTML block such as <pre>.
-            visible, in_raw_html = _strip_raw_html(visible, in_raw_html)
+            stripped, in_raw_html = _strip_raw_html(content, in_raw_html)
+            opened_block = in_raw_html is not None
             # Taken before the opener is hidden: it renders as nothing, but its
-            # indentation still closes a list item it sits to the left of. A
-            # comment keeps only its column, since the text it hides is not
-            # Markdown and must not open a list of its own.
-            if visible.strip():
-                structural = visible
-            elif not hidden:
-                structural = _hidden_structure(line)
-            if visible and in_raw_html is None and _opens_html_block(visible, after_paragraph):
-                in_html_block = True
+            # indentation still closes a list item it sits to the left of, and a
+            # marker on its line still opens one. A comment or a raw block keeps
+            # only those, since the text it hides is not Markdown and must not
+            # open a list of its own.
+            if stripped != content:
+                if not hidden:
+                    structural = _hidden_structure(line, marker)
                 visible = ""
+            else:
+                visible = marker + stripped
+                if visible.strip():
+                    structural = visible
+                elif not hidden:
+                    structural = _hidden_structure(line)
+                if stripped and _opens_html_block(stripped, after_paragraph):
+                    in_html_block = True
+                    opened_block = True
+                    visible = ""
         # A `##` inside a fenced block is sample markdown, not a real heading.
         match = _HEADING_PATTERN.match(visible) if visible else None
         # `1.0` over a line of dashes is the same heading written setext style.
@@ -293,11 +320,11 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         lazy_marker = _lazy_marker(structural, lists, after_paragraph, quoted)
         lists = _open_lists(structural, lists, after_paragraph, quoted)
         # Taken after the opening line closed the items it is dedented out of,
-        # so the fence belongs to the item it is really written inside.
-        if opened_fence:
-            fence_column = lists.columns[-1] if lists.columns else 0
-        elif open_fence is None:
-            fence_column = 0
+        # so the block belongs to the item it is really written inside.
+        if opened_block:
+            block_column = lists.columns[-1] if lists.columns else 0
+        elif open_fence is None and not in_html_block and in_raw_html is None:
+            block_column = 0
         # At an open item's content column a heading is nested, not a boundary.
         if lists.columns and _indent_width(visible) >= lists.columns[0]:
             match = None
@@ -729,13 +756,16 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
     return "".join(visible), False
 
 
-def _hidden_structure(line: str) -> str:
+def _hidden_structure(line: str, marker: str = "") -> str:
     """`line` as list tracking sees it once the renderer hides its text.
 
     A comment or a raw HTML block renders nothing, but it is still a block
     written at its own column, so it closes the items it sits to the left of.
     Only the indentation survives: what is inside the block is not Markdown and
-    must not open a list of its own."""
+    must not open a list of its own. `marker` is the part of the line that opens
+    a list item the block is the content of, which survives with it."""
+    if marker:
+        return marker + _HIDDEN_BLOCK
     if not line.strip():
         return ""
     return line[: len(line) - len(line.lstrip(" \t"))] + _HIDDEN_BLOCK
@@ -779,6 +809,28 @@ def _interrupts_paragraph(line: str) -> bool:
     if not line[item.end() :].strip():
         return False
     return marker[-1] not in ".)" or marker[:-1] == "1"
+
+
+def _item_content(line: str, after_paragraph: bool) -> str:
+    """`line` read from the content column of a list item that opens on it.
+
+    A block written as an item's first content sits inside that item, so
+    ``- ```` opens a fence even though its marker is not within three columns of
+    the container. The padding is capped the way `_open_lists` caps it, or
+    ``-     ```` would read as a fence rather than the indented code it is. A
+    marker the paragraph above swallows opens no item, so its line is returned
+    whole, as is one four columns past its container. Ported to the frontend as
+    `itemContent` in markdown-list-columns.ts."""
+    if _indent_width(line) >= 4 or (after_paragraph and not _interrupts_paragraph(line)):
+        return line
+    item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
+    if item is None:
+        return line
+    padding = _indent_width(item.group("space"))
+    # Over-indented content starts one column past the marker, so the rest of
+    # the padding is the content's own indentation.
+    over = padding - 1 if padding > _MAX_ITEM_PADDING else 0
+    return " " * over + line[item.end() :]
 
 
 def _quote_content(line: str) -> str:

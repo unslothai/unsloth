@@ -58,9 +58,14 @@ const LEADING_SPACE = /^[ \t]*/;
  * or a raw HTML block renders nothing, but it is still a block written at its
  * own column, so it closes the items it sits to the left of. Only the
  * indentation survives: what the block hides is not Markdown and must not open
- * a list of its own. Ported from `_hidden_structure` on the backend.
+ * a list of its own. `marker` is the part of the line that opens a list item
+ * the block is the content of, which survives with it. Ported from
+ * `_hidden_structure` on the backend.
  */
-export function hiddenStructure(line: string): string {
+export function hiddenStructure(line: string, marker = ""): string {
+  if (marker) {
+    return `${marker}${HIDDEN_BLOCK}`;
+  }
   const indent = LEADING_SPACE.exec(line)?.[0] ?? "";
   return line.trim() ? `${indent}${HIDDEN_BLOCK}` : "";
 }
@@ -86,7 +91,7 @@ export function indentWidth(line: string): number {
  * one only when it starts at 1: anything else is text of the paragraph it
  * appears to interrupt.
  */
-function interruptsParagraph(line: string): boolean {
+export function interruptsParagraph(line: string): boolean {
   if (BLOCK_QUOTE.test(line)) {
     return true;
   }
@@ -228,6 +233,33 @@ export function containerContent(
   }
   const columns = dropDeeper(state.columns, indentWidth(inner));
   return stripIndent(inner, columns.at(-1) ?? 0);
+}
+
+/**
+ * `line` read from the content column of a list item that opens on it. A block
+ * written as an item's first content sits inside that item, so ``- ``` `` opens
+ * a fence even though its marker is not within three columns of the container
+ * (spec 0.31.2 section 5.2). The padding is capped the way `openLists` caps it,
+ * or ``-     ``` `` would read as a fence rather than the indented code it is.
+ * A marker the paragraph above swallows opens no item, so its line is returned
+ * whole, as is one four columns past its container.
+ */
+export function itemContent(line: string, afterParagraph: boolean): string {
+  if (
+    indentWidth(line) >= INDENTED_CODE ||
+    (afterParagraph && !interruptsParagraph(line))
+  ) {
+    return line;
+  }
+  const item = THEMATIC_BREAK.test(line) ? null : LIST_ITEM.exec(line);
+  if (item === null) {
+    return line;
+  }
+  const padding = indentWidth(item[2] ?? "");
+  // Over-indented content starts one column past the marker, so the rest of
+  // the padding is the content's own indentation.
+  const over = padding > MAX_ITEM_PADDING ? padding - 1 : 0;
+  return `${" ".repeat(over)}${line.slice(item[0].length)}`;
 }
 
 /** Whether a blockquote owns the paragraph the line below could continue. */
