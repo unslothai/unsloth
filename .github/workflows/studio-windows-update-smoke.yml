@@ -198,6 +198,31 @@ jobs:
           fi
           echo "update path took the prebuilt fast path"
 
+      - name: Update must keep the --no-torch install GGUF-only
+        run: |
+          # `unsloth studio update` exports no UNSLOTH_NO_TORCH, so setup.ps1 has
+          # to recover the mode from the install manifest. Without that it reads
+          # the missing torch as a stale venv and tries to delete the venv it is
+          # running out of, and the shared dependency pass pulls torch back in.
+          # The skip line only prints when the dependency pass actually runs, so
+          # don't demand it if the fast path short-circuited that pass.
+          if grep -q "running ordered dependency installation" logs/update.log \
+             && ! grep -q "skipping direct PyTorch and Triton installation (no-torch mode)" logs/update.log; then
+            echo "::error::studio update left no-torch mode; it would reinstall PyTorch."
+            grep -iE "no-torch|stale venv|PyTorch" logs/update.log | tail -40
+            exit 1
+          fi
+          PY="$HOME/.unsloth/studio/unsloth_studio/Scripts/python.exe"
+          if [ ! -f "$PY" ]; then
+            echo "::error::studio venv interpreter missing at $PY"
+            exit 1
+          fi
+          if "$PY" -c "import torch" 2>/dev/null; then
+            echo "::error::torch was reinstalled into the --no-torch venv."
+            exit 1
+          fi
+          echo "update preserved no-torch mode"
+
       - name: Second update must also be a no-op
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

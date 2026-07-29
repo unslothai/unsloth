@@ -215,8 +215,8 @@ def _ollama_model_info_from_manifest(
         return None
 
     try:
-        manifest = json.loads(tag_file.read_text())
-    except (json.JSONDecodeError, OSError) as e:
+        manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         logger.debug("Skipping unreadable/invalid Ollama manifest %s: %s", tag_file, e)
         return None
 
@@ -228,10 +228,10 @@ def _ollama_model_info_from_manifest(
         config_blob = _ollama_blob_path(blobs_dir, config_digest)
         if config_blob is not None and _safe_is_file(config_blob):
             try:
-                cfg = json.loads(config_blob.read_text())
+                cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
                 model_type = cfg.get("model_type", "")
                 file_type = cfg.get("file_type", "")
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                 logger.debug("Could not parse Ollama config blob %s: %s", config_blob, e)
 
     layers = manifest.get("layers") or []

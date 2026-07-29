@@ -15,6 +15,7 @@ import urllib.request
 from typing import Callable
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.child_stdio import utf8_child_env
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 _logger = logging.getLogger(__name__)
@@ -43,6 +44,8 @@ def has_blackwell_gpu() -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             env = child_env_without_native_path_secret(),
         )
@@ -102,8 +105,10 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = timeout,
-            env = child_env_without_native_path_secret(),
+            env = utf8_child_env(child_env_without_native_path_secret()),
             **windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
@@ -201,6 +206,8 @@ def install_wheel(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             env = child_env_without_native_path_secret(),
         )
         attempts.append(("uv", result))
@@ -213,7 +220,10 @@ def install_wheel(
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
-        env = child_env_without_native_path_secret(),
+        encoding = "utf-8",
+        errors = "replace",
+        # Make the Python child emit the UTF-8 we decode above.
+        env = utf8_child_env(child_env_without_native_path_secret()),
     )
     attempts.append(("pip", result))
     return attempts

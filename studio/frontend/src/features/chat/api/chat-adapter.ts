@@ -6,7 +6,7 @@ import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
-import { toast } from "@/lib/toast";
+import { createLoadingToastIcon, toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -59,6 +59,7 @@ import {
   shouldPreserveFullOutput,
   toolOutputKey,
   toolPaneScope,
+  toolThreadScope,
 } from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
@@ -74,6 +75,8 @@ import {
   getStoredChatThread,
   getStoredChatProject,
   listStoredChatThreads,
+  listStoredChatMessages,
+  saveStoredChatMessage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import {
@@ -83,12 +86,19 @@ import {
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
-  hasClosedThinkTag,
+  extractDeltaText,
+  hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import {
+  countReasoningGroups,
+  createReasoningDurationTracker,
+  lastReasoningGroupTextLength,
+} from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
+  GenerationLengthError,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -105,6 +115,16 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import {
+  beginExternalResearchFollow,
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "../stores/research-run-store";
+import {
+  cancelResearchRun,
+  createResearchRun,
+  followResearchRun,
+} from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -601,67 +621,6 @@ function estimateTokenCount(text: string): number | undefined {
     return undefined;
   }
   return Math.max(1, Math.round(trimmed.length / 4));
-}
-
-/**
- * Normalize a streamed `delta.content` to a plain text string.
- *
- * OpenAI Chat Completions originally typed `delta.content` as a string, but
- * some providers now emit an array of structured content parts; concatenating
- * those directly would stringify each as `[object Object]`. This guards that.
- *
- * Handled part shapes:
- *   { type: "text" | "output_text", text | content: "..." }   → text body
- *   { type: "thinking" | "reasoning", thinking | text: "..." } → wrapped as
- *       inline `<think>...</think>` so `parseAssistantContent` lifts it into
- *       a reasoning part (else Mistral magistral and similar reasoning-part
- *       providers lose their thinking panel).
- *
- * Unknown part types are skipped — better to drop a stray field than
- * stringify an object into the rendered chat.
- */
-function extractDeltaText(delta: unknown): string {
-  const extractReasoningText = (payload: unknown): string => {
-    if (typeof payload === "string") return payload;
-    if (Array.isArray(payload)) {
-      return payload.map((item) => extractReasoningText(item)).join("");
-    }
-    if (!payload || typeof payload !== "object") return "";
-
-    const obj = payload as Record<string, unknown>;
-    for (const key of ["thinking", "text", "content", "reasoning", "summary"]) {
-      if (key in obj) {
-        const text = extractReasoningText(obj[key]);
-        if (text) return text;
-      }
-    }
-    return "";
-  };
-
-  if (typeof delta === "string") return delta;
-  if (!Array.isArray(delta)) return "";
-  let out = "";
-  for (const part of delta) {
-    if (typeof part === "string") {
-      out += part;
-      continue;
-    }
-    if (!part || typeof part !== "object") continue;
-    const obj = part as {
-      type?: string;
-      text?: string;
-      content?: string;
-      thinking?: string;
-    };
-    if (obj.type === "text" || obj.type === "output_text") {
-      if (typeof obj.text === "string") out += obj.text;
-      else if (typeof obj.content === "string") out += obj.content;
-    } else if (obj.type === "thinking" || obj.type === "reasoning") {
-      const thinking = extractReasoningText(obj);
-      if (thinking) out += `<think>${thinking}</think>`;
-    }
-  }
-  return out;
 }
 
 function buildTiming(
@@ -1352,6 +1311,29 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+async function resolveChatInstructions(
+  threadId: string | undefined,
+  systemPrompt: unknown,
+  systemVariables: unknown,
+): Promise<string> {
+  const safeSystemPrompt =
+    typeof systemPrompt === "string"
+      ? resolveSystemPromptVariables(
+          systemPrompt,
+          typeof systemVariables === "string" ? systemVariables : "",
+        )
+      : "";
+  const projectInstructions = await resolveProjectInstructions(threadId);
+  return [
+    projectInstructions
+      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+      : "",
+    safeSystemPrompt.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
@@ -1476,13 +1458,38 @@ async function autoLoadSmallestModel(): Promise<{
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
   const lastLoaded = readLastLocalModelLoad();
-  const toastId = toast("Loading a model…", {
+  let autoLoadToastDismissed = false;
+  const toastId = toast.message("Loading a model…", {
     description: lastLoaded
       ? "Loading last used model."
       : "Auto-selecting the smallest downloaded model.",
-    duration: 5000,
+    duration: Number.POSITIVE_INFINITY,
     closeButton: true,
+    icon: createLoadingToastIcon(),
+    onDismiss: () => {
+      autoLoadToastDismissed = true;
+    },
   });
+  const updateAutoLoadToast = (message: string, description: string): void => {
+    if (autoLoadToastDismissed) return;
+    toast.message(message, {
+      id: toastId,
+      description,
+      duration: Number.POSITIVE_INFINITY,
+    });
+  };
+  const showAutoLoadSuccess = (message: string): void => {
+    const options = {
+      description: undefined,
+      duration: 5000,
+      icon: undefined,
+    };
+    if (autoLoadToastDismissed) {
+      toast.success(message, options);
+      return;
+    }
+    toast.success(message, { ...options, id: toastId });
+  };
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
@@ -1500,6 +1507,8 @@ async function autoLoadSmallestModel(): Promise<{
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
+    cache_type_kv?: string | null;
+    tensor_parallel?: boolean | null;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1588,11 +1597,14 @@ async function autoLoadSmallestModel(): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        cache_type_kv: config.kvCacheDtype,
+        tensor_parallel: config.tensorParallel,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
+              n_parallel: config.nParallel ?? null,
             }
           : {}),
       }))
@@ -1626,6 +1638,8 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
+            // Per-model too, or the auto-load reverts a remembered override.
+            n_parallel: config.nParallel ?? null,
           }
         : {}),
     });
@@ -1678,6 +1692,11 @@ async function autoLoadSmallestModel(): Promise<{
         effectiveGpuLayers,
         config.customContextLength ?? null,
       );
+      // Slots this auto-load committed. Diffusion ignores --parallel, so a count
+      // there would mint a phantom override a saved preset carries onto a GGUF.
+      const committedSlots = (loadResp.is_diffusion ?? false)
+        ? null
+        : (config.nParallel ?? null);
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
@@ -1692,6 +1711,9 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // Click-time value, not the resolved backend echo (see performLoad).
+        nParallel: committedSlots,
+        loadedNParallel: committedSlots,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
@@ -1717,6 +1739,10 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // GGUF-only and never sent here: a staged override would be saved for
+        // a model that cannot use it.
+        nParallel: null,
+        loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -1738,7 +1764,7 @@ async function autoLoadSmallestModel(): Promise<{
         ggufVariant: candidate.ggufVariant,
       });
     }
-    toast.success(candidate.successLabel, { id: toastId });
+    showAutoLoadSuccess(candidate.successLabel);
     return true;
   }
   try {
@@ -1764,11 +1790,10 @@ async function autoLoadSmallestModel(): Promise<{
                 isAutoLoadableGgufVariant(entry),
             );
             if (variant) {
-              toast("Loading last used model…", {
-                id: toastId,
-                description: `${repo.repo_id} (${variant.quant})`,
-                duration: 5000,
-              });
+              updateAutoLoadToast(
+                "Loading last used model…",
+                `${repo.repo_id} (${variant.quant})`,
+              );
               if (
                 await loadAutoLoadCandidate({
                   id: repo.repo_id,
@@ -1793,11 +1818,7 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(modelRepos, lastLoaded.id);
         if (repo) {
           try {
-            toast("Loading last used model…", {
-              id: toastId,
-              description: repo.repo_id,
-              duration: 5000,
-            });
+            updateAutoLoadToast("Loading last used model…", repo.repo_id);
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
@@ -1818,11 +1839,10 @@ async function autoLoadSmallestModel(): Promise<{
           }
         }
       }
-      toast("Loading a model…", {
-        id: toastId,
-        description: "Auto-selecting the smallest downloaded model.",
-        duration: 5000,
-      });
+      updateAutoLoadToast(
+        "Loading a model…",
+        "Auto-selecting the smallest downloaded model.",
+      );
     }
 
     // GGUF first: smallest-total-size repo, then its smallest variant.
@@ -1913,12 +1933,10 @@ async function autoLoadSmallestModel(): Promise<{
     }
 
     // No cached models — try downloading a small default GGUF.
-    toast("Downloading a small model…", {
-      id: toastId,
-      description:
-        "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
-      duration: 30000,
-    });
+    updateAutoLoadToast(
+      "Downloading a small model…",
+      "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
+    );
     try {
       const rt = useChatRuntimeStore.getState();
       if (
@@ -1998,6 +2016,10 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // The request above omits n_parallel: a staged override left from a
+        // preset would read as applied and be re-sent by the next Apply.
+        nParallel: null,
+        loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
@@ -2014,7 +2036,7 @@ async function autoLoadSmallestModel(): Promise<{
         kind: "gguf",
         ggufVariant: "UD-Q4_K_XL",
       });
-      toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
+      showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
@@ -2039,29 +2061,289 @@ export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
   return {
-    async *run({ messages, abortSignal, unstable_threadId }) {
+    async *run({
+      messages,
+      abortSignal,
+      unstable_threadId,
+      unstable_assistantMessageId,
+    }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const threadAlreadyResearched = Boolean(
+        resolvedThreadId &&
+          useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
+      );
+      if (runtime.deepResearchEnabled && threadAlreadyResearched) {
+        runtime.setDeepResearchEnabled(false);
+        runtime = useChatRuntimeStore.getState();
+      }
+      if (
+        runtime.deepResearchEnabled &&
+        !options.pairId &&
+        (options.modelType === undefined || options.modelType === "base")
+      ) {
+        if (runtime.modelLoading) {
+          toast.info("Waiting for model to finish loading…");
+          await waitForModelReady(abortSignal);
+        }
+        if (!useChatRuntimeStore.getState().params.checkpoint) {
+          const { loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel();
+          if (!loaded) {
+            toast.error(
+              blockedByTrustRemoteCode
+                ? "This model needs custom code approval"
+                : "No model loaded",
+              {
+                description: blockedByTrustRemoteCode
+                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                  : "Pick a model in the top bar, then retry.",
+              },
+            );
+            throw new Error("Load a model first.");
+          }
+        }
+        runtime = useChatRuntimeStore.getState();
+        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!unstable_assistantMessageId) {
+          throw new Error(
+            "Deep research could not bind its assistant message. Please retry the send.",
+          );
+        }
+        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        if (!userMessage) throw new Error("Research requires a user message.");
+        const userMessageIndex = messages.indexOf(userMessage);
+        const userMessageParentId =
+          userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
+        const { params } = runtime;
+        const model = params.checkpoint.trim();
+        if (!model || parseExternalModelId(model)) {
+          throw new Error("Deep research requires a selected local model.");
+        }
+        const inferenceRequest: {
+          model: string;
+          temperature?: number;
+          topP?: number;
+          maxTokens?: number;
+          enableThinking?: boolean;
+          reasoningEffort?: string;
+        } = { model };
+        if (
+          Number.isFinite(params.temperature) &&
+          params.temperature >= 0 &&
+          params.temperature <= 2
+        ) {
+          inferenceRequest.temperature = params.temperature;
+        }
+        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
+          inferenceRequest.topP = params.topP;
+        }
+        if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
+          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
+        }
+        const reasoningRequested =
+          runtime.reasoningAlwaysOn ||
+          (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
+        if (
+          runtime.reasoningStyle === "enable_thinking" ||
+          runtime.reasoningStyle === "enable_thinking_effort"
+        ) {
+          inferenceRequest.enableThinking = reasoningRequested;
+        }
+        if (
+          reasoningRequested &&
+          (runtime.reasoningStyle === "reasoning_effort" ||
+            runtime.reasoningStyle === "enable_thinking_effort")
+        ) {
+          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
+          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
+          // this model lacks is dropped by llama.cpp and the run falls back to the default.
+          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
+            runtime.reasoningEffort,
+            runtime.reasoningEffortLevels,
+          );
+        }
+        const researchProjectId = await resolveProjectId(resolvedThreadId);
+        const projectRagEnabled = researchProjectId
+          ? await projectHasSources(researchProjectId)
+          : false;
+        const researchInstructions = await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+        );
+        const ragScope =
+          runtime.ragEnabled || projectRagEnabled
+            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
+              ? {
+                  kb_id: runtime.ragSource.kbId,
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+              : {
+                  ...(runtime.ragEnabled
+                    ? { thread_id: resolvedThreadId }
+                    : {}),
+                  ...(projectRagEnabled && researchProjectId
+                    ? { project_id: researchProjectId }
+                    : {}),
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+            : undefined;
+
+        const threadKey = resolvedThreadId;
+        // The run is durable on the server, but Stop, archive and delete reach a background
+        // thread only through this map: without a handle the supervisor kept planning against
+        // a deleted conversation. Registered before the run exists, since the thread can be
+        // stopped while createResearchRun is still in flight.
+        let researchRunId: string | null = null;
+        let researchStopRequested = false;
+        const researchServerCancel = () => {
+          researchStopRequested = true;
+          if (researchRunId) {
+            void cancelResearchRun(researchRunId).catch(() => {});
+          }
+        };
+        runtime.registerThreadServerCancel(threadKey, researchServerCancel);
+        runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
+        let report = "";
+        let releaseResearchFollow: (() => void) | null = null;
+        const researchFollowController = new AbortController();
+        const detachResearchFollow = () => {
+          researchFollowController.abort({ detach: true });
+        };
+        const forwardAdapterAbort = () => {
+          researchFollowController.abort(abortSignal.reason);
+        };
+        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        try {
+          // The normal history adapter persists messages after model execution,
+          // but research validates the user message before it can start.
+          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
+            (message) => message.id === userMessage.id,
+          );
+          await saveStoredChatMessage({
+            id: userMessage.id,
+            threadId: resolvedThreadId,
+            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            role: "user",
+            content: userMessage.content,
+            ...(userMessage.attachments?.length
+              ? { attachments: userMessage.attachments }
+              : {}),
+            createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
+          });
+          const createdRun = await createResearchRun({
+            threadId: resolvedThreadId,
+            userMessageId: userMessage.id,
+            assistantMessageId: unstable_assistantMessageId,
+            inferenceRequest,
+            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(ragScope ? { ragScope } : {}),
+            websitePolicy: {
+              allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
+              blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
+            },
+          });
+          researchRunId = createdRun.id;
+          if (researchStopRequested) {
+            // Stopped while createResearchRun was still in flight, so the handle had no
+            // id to act on. Replay it rather than following a run the user already ended.
+            void cancelResearchRun(createdRun.id).catch(() => {});
+            return;
+          }
+          releaseResearchFollow = beginExternalResearchFollow(
+            createdRun,
+            detachResearchFollow,
+          );
+          runtime.setDeepResearchEnabled(false);
+          if (abortSignal.aborted) {
+            const detached = Boolean(
+              (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
+            );
+            if (!detached) {
+              try {
+                ingestResearchUpdate(await cancelResearchRun(createdRun.id));
+              } catch {
+                // The durable run remains visible and can be stopped again after recovery.
+              }
+            }
+            return;
+          }
+          for await (const update of followResearchRun(createdRun.id, {
+            initialRun: createdRun,
+            signal: researchFollowController.signal,
+            replayFrom: 0,
+          })) {
+            const run = update.run;
+            ingestResearchUpdate(run, update.event);
+            // The activity store coalesces these high-frequency events. Yielding them
+            // through assistant-ui would replace the whole hidden message content per
+            // token, making long planning turns progressively more expensive.
+            if (
+              update.event?.event === "reasoning.updated" ||
+              update.event?.event === "report.updated"
+            ) {
+              continue;
+            }
+            if (run.status === "completed" && typeof run.report === "string") {
+              report = run.report;
+            } else if (typeof run.report === "string") {
+              report = run.report;
+            }
+            yield {
+              content: [{ type: "text" as const, text: report }],
+              metadata: {
+                custom: {
+                  researchRunId: run.id,
+                  researchRun: run,
+                  serverManaged: true,
+                  serverRevision: run.lastEventSeq,
+                },
+              },
+            };
+          }
+        } catch (error) {
+          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+            throw error;
+          }
+        } finally {
+          abortSignal.removeEventListener("abort", forwardAdapterAbort);
+          releaseResearchFollow?.();
+          runtime.clearThreadServerCancel(threadKey, researchServerCancel);
+          runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
+        }
+        return;
+      }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Store keys are pane-scoped since local tool ids ("call_0") repeat across
-      // turns and concurrent panes (compare mode). Track this run's keys so
-      // cleanup can't wipe another pane's.
-      const toolOutputPaneScope = toolPaneScope(
-        options.modelType,
-        options.pairId,
+      // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
+      // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
+      // threadListItem.remoteId, which is exactly this value.
+      const toolOutputPaneScope = toolThreadScope(
+        toolPaneScope(options.modelType, options.pairId),
+        unstable_threadId,
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
+      // Which conversation was on screen when this run started. A first turn has no id yet, so
+      // this is the only way to tell later whether the user has switched away from it.
+      const activeThreadIdAtRunStart =
+        useChatRuntimeStore.getState().activeThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
         (pendingImageEditReferenceForRun?.threadId ?? null) ===
@@ -2317,25 +2599,11 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string"
-          ? resolveSystemPromptVariables(
-              params.systemPrompt,
-              typeof params.systemVariables === "string"
-                ? params.systemVariables
-                : "",
-            )
-          : "";
-      const projectInstructions =
-        await resolveProjectInstructions(resolvedThreadId);
-      const combinedSystemPrompt = [
-        projectInstructions
-          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-          : "",
-        safeSystemPrompt.trim(),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      const combinedSystemPrompt = await resolveChatInstructions(
+        resolvedThreadId,
+        params.systemPrompt,
+        params.systemVariables,
+      );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
@@ -2481,8 +2749,11 @@ export function createOpenAIStreamAdapter(
           // waitForRunEnd resolves instead of hanging: this gate fires
           // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
-          runtime.setThreadRunning(gatedThreadKey, true);
-          runtime.setThreadRunning(gatedThreadKey, false);
+          // Own token: siblings share "__default", so an ownerless clear would drop their
+          // entries while they are still generating.
+          const gateOwner = () => {};
+          runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
+          runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
           clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }
@@ -2500,13 +2771,44 @@ export function createOpenAIStreamAdapter(
       }
       const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
+      const threadKey = resolvedThreadId || "__default";
+      // A first turn files its handles under "__default"; autosave then assigns a real id and
+      // adoptDefaultThreadRun re-keys them mid-run. Resolve per use so later writes and the
+      // final clear follow the run instead of stranding entries behind.
+      const liveThreadKey = (owner: () => void) =>
+        threadKey === "__default"
+          ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner)
+          : threadKey;
+
+      // Per-run token so a delayed stop POST can't match the next run.
+      const cancelId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Per-run abort, chained to assistant-ui's signal. cancelByThreadId only holds the visible
+      // thread's cancelRun(), so this controller is the only way to end a backgrounded chat's
+      // request; the cancel POST below reaches llama-server only.
+      const runAbort = new AbortController();
+      const runSignal = runAbort.signal;
+      const forwardAbort = () => runAbort.abort(abortSignal.reason);
+      // Declared here, not at its registration below: it doubles as this run's identity token
+      // on the per-thread maps (see registerThreadServerCancel).
+      const serverCancel = () => runAbort.abort();
+      if (abortSignal.aborted) {
+        forwardAbort();
+      } else {
+        abortSignal.addEventListener("abort", forwardAbort, { once: true });
+      }
+
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        const threadKey = resolvedThreadId || "__default";
-        runtime.setThreadRunning(threadKey, true);
+        const audioCancel = () => runAbort.abort();
+        runtime.registerThreadServerCancel(threadKey, audioCancel);
+        runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
@@ -2516,6 +2818,10 @@ export function createOpenAIStreamAdapter(
             {
               model: params.checkpoint,
               messages: outboundMessages,
+              // Same run in both registries: without it the backend files this under no
+              // thread, and the stop-chats prompt counts the named local run and the
+              // unnamed backend one as two.
+              ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               stream: false,
               temperature: params.temperature,
               top_p: params.topP,
@@ -2526,7 +2832,7 @@ export function createOpenAIStreamAdapter(
               presence_penalty: params.presencePenalty,
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
-            abortSignal,
+            runSignal,
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
@@ -2539,19 +2845,21 @@ export function createOpenAIStreamAdapter(
             ],
           };
         } catch (err) {
-          if (!abortSignal.aborted) {
+          if (!runSignal.aborted) {
             toast.error("Audio generation failed", {
               description: err instanceof Error ? err.message : "Unknown error",
             });
           }
           throw err;
         } finally {
-          runtime.setThreadRunning(threadKey, false);
+          abortSignal.removeEventListener("abort", forwardAbort);
+          const audioKey = liveThreadKey(audioCancel);
+          runtime.setThreadRunning(audioKey, false, { owner: audioCancel });
+          runtime.clearThreadServerCancel(audioKey, audioCancel);
         }
         return;
       }
 
-      const threadKey = resolvedThreadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
@@ -2582,13 +2890,17 @@ export function createOpenAIStreamAdapter(
       const warmupDelayMs = 450;
       const warmupTimer = setTimeout(() => {
         if (!waitingFirstChunk) return;
-        if (abortSignal.aborted) return;
+        if (runSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
-      runtime.setThreadRunning(threadKey, true);
+      // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
+      // backend leaves external-provider runs out of active_generations for the same reason.
+      runtime.setThreadRunning(threadKey, true, {
+        local: !isExternalRequest,
+        owner: serverCancel,
+      });
       let cumulativeText = "";
-      let reasoningStartAt: number | null = null;
-      let reasoningDuration = 0;
+      const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
@@ -2728,9 +3040,11 @@ export function createOpenAIStreamAdapter(
         return merged;
       };
       const closeReasoningContent = () => {
-        if (!reasoningContentOpen) return;
-        cumulativeText += "</think>";
-        reasoningContentOpen = false;
+        if (reasoningContentOpen) {
+          cumulativeText += "</think>";
+          reasoningContentOpen = false;
+        }
+        reasoningDurationTracker.finishGroup();
       };
       // Anthropic document_citations payload, converted to Sources-panel
       // parts at end-of-stream so inline [N] markers have matching entries.
@@ -2751,21 +3065,12 @@ export function createOpenAIStreamAdapter(
         timings?: ServerTimings;
       } | null = null;
 
-      // Per-run cancellation token so a delayed stop POST can't match
-      // the next run on the same thread.
-      const cancelId =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
-        // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
-        // unmounts (navigation / background thread switch) and detach=false for an
-        // explicit Stop. Only a real Stop cancels the backend run; a detach must
-        // leave a backgrounded generation streaming.
-        if ((abortSignal.reason as { detach?: boolean } | undefined)?.detach) {
+        // assistant-ui aborts with detach=true when a runtime unmounts and detach=false for an
+        // explicit Stop. Only a real Stop cancels the backend run; runSignal forwards the reason.
+        if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
         const body: Record<string, string> = { cancel_id: cancelId };
@@ -2786,11 +3091,17 @@ export function createOpenAIStreamAdapter(
           keepalive: true,
         }).catch(() => {});
       };
+
+      // Stop handle for when this conversation is not the visible one, which cancelByThreadId
+      // cannot reach. Aborting this run's own controller closes just its request, and the
+      // listener above posts its cancel_id so llama-server stops decoding too. For an
+      // external provider the abort is the stop, since its cancel_id is never registered.
+      runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
-        if (abortSignal.aborted) {
+        if (runSignal.aborted) {
           onAbortCancel();
         } else {
-          abortSignal.addEventListener("abort", onAbortCancel, { once: true });
+          runSignal.addEventListener("abort", onAbortCancel, { once: true });
         }
 
         const {
@@ -3171,12 +3482,15 @@ export function createOpenAIStreamAdapter(
             // Permission level for local tool calls is sent for every local
             // chat, not only when a tool pill is on: a process policy
             // (unsloth run --enable-tools) can open the tool loop with no pill,
-            // and the backend must still see the selected gate. ask/auto request
-            // the confirm gate ("auto" only pauses calls flagged unsafe); off
-            // and full never prompt, full also drops the sandbox.
+            // and the backend must still see the selected gate. "auto" OMITS
+            // confirm_tool_calls: an explicit true would make the backend treat
+            // every auto request as needing a stream and defeat the safe-only
+            // no-stream exception. "ask" sends true; off/full send false (full
+            // also drops the sandbox).
             permission_mode: permissionMode,
-            confirm_tool_calls:
-              permissionMode === "ask" || permissionMode === "auto",
+            ...(permissionMode === "auto"
+              ? {}
+              : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
@@ -3259,7 +3573,7 @@ export function createOpenAIStreamAdapter(
             }
             clearSelectedImageEditReference();
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            const stream = streamChatCompletions(requestPayload, abortSignal);
+            const stream = streamChatCompletions(requestPayload, runSignal);
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -3272,7 +3586,11 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
-                runtime.setToolStatus(toolStatusText || null);
+                runtime.setToolStatus(
+                  liveThreadKey(serverCancel),
+                  toolStatusText || null,
+                  serverCancel,
+                );
                 continue;
               }
 
@@ -3282,8 +3600,9 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (typeof reasoningMs === "number" && Number.isFinite(reasoningMs)) {
-                reasoningDuration = Math.max(0, Math.round(reasoningMs / 1000));
+              if (
+                reasoningDurationTracker.recordServerDuration(reasoningMs)
+              ) {
                 continue;
               }
 
@@ -3301,7 +3620,9 @@ export function createOpenAIStreamAdapter(
                 }
               )._diffusionFrame;
               if (diffusionFrame !== undefined) {
-                runtime.setActiveDiffusionCanvas({
+                // Keyed by thread so a background run's frames stay out of the visible chat
+                // instead of overwriting the frame it is painting.
+                runtime.setActiveDiffusionCanvas(liveThreadKey(serverCancel), {
                   block: diffusionFrame.block ?? 0,
                   step: diffusionFrame.step ?? 0,
                   total: diffusionFrame.total ?? 0,
@@ -3425,7 +3746,7 @@ export function createOpenAIStreamAdapter(
                             totalChunks,
                             firstTokenTime,
                           ),
-                          custom: { reasoningDuration },
+                          custom: reasoningDurationTracker.metadata(),
                         },
                       };
                     }
@@ -3442,8 +3763,16 @@ export function createOpenAIStreamAdapter(
                   const approvalId = (toolEvent.approval_id as string) || "";
                   const awaitingConfirmation =
                     toolEvent.awaiting_confirmation === true;
+                  // Reuse a provisional card's part id, else the confirmation-scoped id
+                  // opens a second card and the first spins "Running" forever.
+                  const openPartId = backendToolCallId
+                    ? toolPartIdByBackendId.get(backendToolCallId)
+                    : undefined;
+                  const reuseOpenPart =
+                    !!openPartId &&
+                    toolCallParts.some((p) => p.toolCallId === openPartId);
                   const id =
-                    awaitingConfirmation && approvalId
+                    awaitingConfirmation && approvalId && !reuseOpenPart
                       ? `${toolConfirmationScopeId}:${approvalId}`
                       : backendToolCallId
                         ? resolveToolPartId(backendToolCallId)
@@ -3712,7 +4041,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
                 continue;
@@ -3751,7 +4080,10 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const delta = extractDeltaText(rawDelta);
+              const {
+                text: delta,
+                structuredReasoningContinues,
+              } = extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -3905,7 +4237,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
                 continue;
@@ -3922,6 +4254,7 @@ export function createOpenAIStreamAdapter(
 
               if (reasoning) {
                 if (!reasoningContentOpen) {
+                  reasoningDurationTracker.startGroup();
                   cumulativeText += `<think>${reasoning}`;
                   reasoningContentOpen = true;
                 } else {
@@ -3929,7 +4262,9 @@ export function createOpenAIStreamAdapter(
                 }
               }
               if (delta) {
-                closeReasoningContent();
+                if (reasoningContentOpen) {
+                  closeReasoningContent();
+                }
                 cumulativeText += delta;
               }
               // Strip a trailing ${...} template-literal fragment from
@@ -3940,35 +4275,48 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              const textParts = parseAssistantContent(cumulativeText);
+              const assistantContent = buildAssistantContent(cumulativeText);
 
               // Fallback when no server-side reasoning_summary arrives.
+              const parsedReasoningGroupCount =
+                countReasoningGroups(assistantContent);
               if (
-                textParts.some((part) => part.type === "reasoning") &&
-                !reasoningStartAt
+                parsedReasoningGroupCount >
+                reasoningDurationTracker.groupCount
               ) {
-                reasoningStartAt = Date.now();
-              }
-              if (
-                hasClosedThinkTag(cumulativeText) &&
-                reasoningStartAt &&
-                !reasoningDuration
-              ) {
-                reasoningDuration = Math.round(
-                  (Date.now() - reasoningStartAt) / 1000,
+                reasoningDurationTracker.startGroup(
+                  parsedReasoningGroupCount - 1,
                 );
               }
+              if (parsedReasoningGroupCount > 0) {
+                // Providers that close every reasoning block atomically
+                // (structured parts wrapped as <think>..</think>) end the group
+                // on each chunk. Reopen while the reasoning text is still
+                // growing so the timer spans the whole pass.
+                reasoningDurationTracker.resumeGroup(
+                  parsedReasoningGroupCount - 1,
+                  lastReasoningGroupTextLength(assistantContent),
+                );
+              }
+              if (
+                reasoningDurationTracker.hasActiveGroup &&
+                !reasoningContentOpen &&
+                !structuredReasoningContinues &&
+                !hasUnclosedThinkTag(cumulativeText)
+              ) {
+                reasoningDurationTracker.finishGroup();
+              }
 
-              if (textParts.length > 0 || toolCallParts.length > 0) {
+              if (assistantContent.length > 0) {
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: assistantContent,
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
               }
@@ -4022,9 +4370,17 @@ export function createOpenAIStreamAdapter(
         // Anthropic-only (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
-        // Gate on the captured checkpoint still being active so a late
-        // completion from provider A doesn't populate the bar after a
-        // mid-stream switch to provider B.
+        // Gate on the captured checkpoint so a late completion from provider A cannot populate
+        // the bar after a mid-stream switch to B, and on the captured thread so a background
+        // run finishing after New Chat cannot repaint another chat's usage. An unresolved run
+        // has no id to compare, so compare what was on screen when it started. A first turn is
+        // adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
+        // adopted key, or the run stays "unresolved" for life and the bar stays blank.
+        const usageKey = liveThreadKey(serverCancel);
+        const usageThreadKey = usageKey === "__default" ? null : usageKey;
+        const usageThreadIsVisible =
+          useChatRuntimeStore.getState().activeThreadId ===
+          (usageThreadKey ?? activeThreadIdAtRunStart);
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
@@ -4032,13 +4388,23 @@ export function createOpenAIStreamAdapter(
           typeof meta.usage.total_tokens === "number" &&
           useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
-          useChatRuntimeStore.getState().setContextUsage({
+          const usage = {
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
             cachedTokens,
             cacheWriteTokens,
-          });
+          };
+          // File it under this run's own thread even when the gate below blocks the visible
+          // write, so switching back re-applies it.
+          if (usageThreadKey !== null) {
+            useChatRuntimeStore
+              .getState()
+              .setThreadContextUsage(usageThreadKey, usage);
+          }
+          if (usageThreadIsVisible) {
+            useChatRuntimeStore.getState().setContextUsage(usage);
+          }
         }
 
         const finishedAt = Date.now();
@@ -4053,12 +4419,7 @@ export function createOpenAIStreamAdapter(
         );
 
         // Finalize reasoning-only streams.
-        if (reasoningStartAt && !reasoningDuration) {
-          reasoningDuration = Math.max(
-            0,
-            Math.round((Date.now() - reasoningStartAt) / 1000),
-          );
-        }
+        reasoningDurationTracker.finishGroup();
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),
@@ -4068,7 +4429,7 @@ export function createOpenAIStreamAdapter(
           metadata: {
             timing: finalTiming,
             custom: {
-              reasoningDuration,
+              ...reasoningDurationTracker.metadata(),
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -4091,9 +4452,17 @@ export function createOpenAIStreamAdapter(
         settleFirstTokenErr(
           err instanceof Error ? err : new Error("Generation failed"),
         );
-        if (!abortSignal.aborted) {
+        if (!runSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof StreamInterruptedError) {
+          if (err instanceof GenerationLengthError) {
+            toast.error("Response ran out of tokens", {
+              description:
+                "The model used the full Max Tokens budget while thinking " +
+                "and did not produce a final answer. Increase Max Tokens in " +
+                "chat Settings or turn off thinking, then retry.",
+              duration: 8000,
+            });
+          } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
             toast.error("Response interrupted", {
@@ -4119,15 +4488,44 @@ export function createOpenAIStreamAdapter(
             });
           }
         }
+        if (!abortSignal.aborted) {
+          closeReasoningContent();
+          const partialContent = buildAssistantContent(cumulativeText);
+          if (partialContent.length > 0) {
+            const partialTiming = buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(cumulativeText),
+              toolCallParts.length,
+            );
+            yield {
+              content: partialContent,
+              metadata: {
+                timing: partialTiming,
+                custom: {
+                  ...reasoningDurationTracker.metadata(),
+                  timing: partialTiming,
+                },
+              },
+            };
+          }
+        }
         throw err;
       } finally {
-        abortSignal.removeEventListener("abort", onAbortCancel);
+        runSignal.removeEventListener("abort", onAbortCancel);
+        abortSignal.removeEventListener("abort", forwardAbort);
+        // Resolve once: the clears below drop the owner the lookup keys on.
+        const cleanupKey = liveThreadKey(serverCancel);
         const confirmStore = useChatRuntimeStore.getState();
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
         runtime.setGeneratingStatus(null);
-        runtime.setToolStatus(null);
+        // Scoped by thread AND by run: a global clear wiped every other running chat's badge,
+        // and an unowned one wiped a concurrent run's badge behind the same key.
+        runtime.setToolStatus(cleanupKey, null, serverCancel);
         // Clear only this run's live keys (a concurrent pane owns its own). A
         // key still here streamed stdout but never reached tool_end (SSE drop or
         // cancel), so promote it to full output first, else the partial
@@ -4141,20 +4539,23 @@ export function createOpenAIStreamAdapter(
           store.clearToolLiveOutput(liveKey);
         }
         runToolLiveOutputKeys.clear();
-        // Drop the transient denoising canvas so the finished bubble shows only
-        // the committed markdown answer (cancellation/error included).
-        runtime.setActiveDiffusionCanvas(null);
+        // Drop the transient denoising canvas so the finished bubble shows only the committed
+        // answer. Scoped: a global clear wiped another denoising chat's frame.
+        runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {
             settleFirstTokenOk();
-          } else if (abortSignal.aborted) {
+          } else if (runSignal.aborted) {
             settleFirstTokenErr(new Error("Cancelled"));
           } else {
             settleFirstTokenErr(new Error("No tokens received"));
           }
         }
-        runtime.setThreadRunning(threadKey, false);
+        // serverCancel narrows both clears: runs with no resolved thread id share the "__default"
+        // key, so a blind clear could drop a sibling's entry.
+        runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
+        runtime.clearThreadServerCancel(cleanupKey, serverCancel);
       }
     },
   };

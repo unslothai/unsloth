@@ -35,6 +35,7 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
@@ -118,6 +119,7 @@ import {
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
+  type ClipboardEvent,
   type FC,
   type KeyboardEvent,
   type MutableRefObject,
@@ -834,7 +836,7 @@ export function SharedComposer({
   }, [text]);
 
   const addFiles = useCallback(
-    (files: FileList | null) => {
+    (files: FileList | readonly File[] | null) => {
       if (!files?.length) return;
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
@@ -864,6 +866,29 @@ export function SharedComposer({
       setPendingImages((prev) => [...prev, ...next]);
     },
     [setPendingAudioStore, attachUnavailableReason],
+  );
+
+  const handleFilePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      pasteClipboardFiles(
+        event,
+        async (files) => {
+          const supported = files.some(
+            (file) =>
+              (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) ||
+              (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
+                file.size <= MAX_IMAGE_SIZE),
+          );
+          if (!supported) throw new Error("Unsupported compare attachment");
+          addFiles(files);
+        },
+        () =>
+          toast.error("Could not paste files.", {
+            description: "Compare supports images and audio within the attachment size limits.",
+          }),
+      );
+    },
+    [addFiles],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -1097,12 +1122,16 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          tensor_parallel: effectiveTensorParallel,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
+                // Slots scale the KV estimate; keep validate sized like the load.
+                n_parallel: ownConfig.nParallel ?? null,
               }
             : {}),
         });
@@ -1171,6 +1200,7 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                n_parallel: ownConfig.nParallel ?? null,
               }
             : {}),
         });
@@ -1202,6 +1232,12 @@ export function SharedComposer({
               effectiveCustomContextLength,
             )
           : null;
+        // Slots this compare load committed. Diffusion ignores --parallel, so a
+        // count there would mint a phantom override a preset carries onto a GGUF.
+        const committedSlots =
+          targetIsGguf && !(resp.is_diffusion ?? false)
+            ? (ownConfig.nParallel ?? null)
+            : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1210,6 +1246,9 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          // Click-time value, not the resolved echo (see the single-model load).
+          nParallel: committedSlots,
+          loadedNParallel: committedSlots,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
@@ -1688,6 +1727,7 @@ export function SharedComposer({
           setText(e.currentTarget.value);
         }}
         onKeyDown={onKeyDown}
+        onPaste={handleFilePaste}
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a
           // matching compositionend, leaving composingRef pinned. The OS always
