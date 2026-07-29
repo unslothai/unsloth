@@ -533,6 +533,7 @@ const CompareContent = memo(function CompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  onRefreshModelInventories,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -543,6 +544,7 @@ const CompareContent = memo(function CompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  onRefreshModelInventories: () => Promise<void>;
 }): ReactElement {
   const modelRuntimeHydrated = useChatRuntimeStore(
     (state) => state.modelRuntimeHydrated,
@@ -550,6 +552,8 @@ const CompareContent = memo(function CompareContent({
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const [isLoraCompare, setIsLoraCompare] = useState<boolean | null>(null);
   const [compareActive, setCompareActive] = useState(false);
+  const [inventoryRefreshComplete, setInventoryRefreshComplete] =
+    useState(false);
   const usedInventoryFallbackRef = useRef(false);
   const layoutCheckpointRef = useRef<string | null>(null);
   const layoutCheckpointCapturedRef = useRef(false);
@@ -565,10 +569,27 @@ const CompareContent = memo(function CompareContent({
     setCompareActive(active);
   }, []);
 
+  useEffect(() => {
+    let canceled = false;
+    setInventoryRefreshComplete(false);
+    void onRefreshModelInventories().finally(() => {
+      if (!canceled) setInventoryRefreshComplete(true);
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [onRefreshModelInventories]);
+
   // Wait for the full LoRA inventory before choosing the layout, then freeze
   // that choice. Generalized compare temporarily changes the global checkpoint
   // as it visits each pane; those later changes must never remount the layout.
   useEffect(() => {
+    if (!inventoryRefreshComplete) return;
+    if (modelsError && isLoraCompare === null) {
+      usedInventoryFallbackRef.current = true;
+      setIsLoraCompare(false);
+      return;
+    }
     if (modelRuntimeHydrated) {
       if (usedInventoryFallbackRef.current) {
         // A successful retry can land while generalized compare has temporarily
@@ -591,10 +612,13 @@ const CompareContent = memo(function CompareContent({
       }
       return;
     }
-    if (!modelsError || isLoraCompare !== null) return;
-    usedInventoryFallbackRef.current = true;
-    setIsLoraCompare(false);
-  }, [compareActive, modelRuntimeHydrated, modelsError, isLoraCompare]);
+  }, [
+    compareActive,
+    inventoryRefreshComplete,
+    modelRuntimeHydrated,
+    modelsError,
+    isLoraCompare,
+  ]);
 
   if (isLoraCompare === null) {
     return <div className="min-h-0 flex-1" aria-busy="true" />;
@@ -3243,10 +3267,11 @@ export function ChatPage({
   }, [lorasFromStore, localModels]);
 
   const inventoryRefreshStartedRef = useRef(false);
-  const refreshDeferredModelInventories = useCallback(() => {
+  const refreshDeferredModelInventories = useCallback(async () => {
     inventoryRefreshStartedRef.current = true;
-    void refresh({ includeLoras: true });
+    const refreshPromise = refresh({ includeLoras: true });
     refreshLocalModels();
+    await refreshPromise;
   }, [refresh, refreshLocalModels]);
 
   useEffect(() => {
@@ -3254,7 +3279,7 @@ export function ChatPage({
     void refresh({ includeLoras: false });
     const timeoutId = window.setTimeout(() => {
       if (!inventoryRefreshStartedRef.current) {
-        refreshDeferredModelInventories();
+        void refreshDeferredModelInventories();
       }
     }, 1200);
     return () => window.clearTimeout(timeoutId);
@@ -3262,7 +3287,7 @@ export function ChatPage({
 
   useEffect(() => {
     if (!active || !modelSelectorOpen) return;
-    refreshDeferredModelInventories();
+    void refreshDeferredModelInventories();
   }, [active, modelSelectorOpen, refreshDeferredModelInventories]);
 
   useEffect(() => {
@@ -3668,6 +3693,7 @@ export function ChatPage({
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
             onExitCompare={exitCompare}
+            onRefreshModelInventories={refreshDeferredModelInventories}
           />
         )}
 

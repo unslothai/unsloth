@@ -37,7 +37,11 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     assert "layoutCheckpointCapturedRef" in compare
     assert "handleCompareActiveChange" in compare
     assert "if (compareActive) return;" in compare
-    assert "if (!modelsError || isLoraCompare !== null) return;" in compare
+    assert "onRefreshModelInventories: () => Promise<void>" in compare
+    assert "const [inventoryRefreshComplete, setInventoryRefreshComplete]" in compare
+    assert "void onRefreshModelInventories().finally(" in compare
+    assert "if (!inventoryRefreshComplete) return;" in compare
+    assert "if (modelsError && isLoraCompare === null)" in compare
     assert "setIsLoraCompare(false);" in compare
     assert "setIsLoraCompare(detected);" in compare
     assert "const [isLoraCompare, setIsLoraCompare]" in compare
