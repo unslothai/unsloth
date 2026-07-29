@@ -4,22 +4,16 @@
 
 """Measure where Unsloth Studio's startup time goes, per platform.
 
-Motivation: nothing measured this. The backend logs "lifespan startup completed in
-X ms" (studio/backend/main.py) but no test or CI job ever asserted a budget, and
-studio_test_kit polls /healthz in a loop that discards the elapsed time -- its
-default healthz_timeout_s of 180 was the only recorded expectation.
-
-A first local run (Linux, warm cache, fast server CPU) found `import main` alone
-costs 6.6s before the server can bind, dominated by eager module-level imports:
+Nothing measured this before: the backend logs "lifespan startup completed in X ms"
+but no test or CI job asserted a budget, and studio_test_kit discards the elapsed
+time of its /healthz poll. A first local run (Linux, warm cache, fast server CPU)
+found `import main` alone costs 6.6s before the server can bind, dominated by eager
+module-level imports pulled in by the `routes` package:
 
     torch          1930 ms self
     unsloth_zoo     914 ms self
     routes          779 ms self
     transformers    524 ms self
-
-pulled in transitively by the `routes` package (routes.training ->
-utils.models.model_config, routes.models -> unsloth_zoo). A laptop is slower. That
-is the number this script exists to track, alongside the phases around it.
 
 Phases measured:
   import   `python -X importtime -c "import main"`, top cumulative + per-package self
@@ -31,8 +25,7 @@ Usage:
     python scripts/profile_startup.py --repeats 3 --json out.json
     python scripts/profile_startup.py --import-only     # no server, no port needed
 
-Exit code is 0 unless --max-healthz-seconds is given and exceeded, so this can be
-turned into a regression gate once budgets are agreed.
+Exit code is 0 unless --max-healthz-seconds is given and exceeded.
 """
 
 from __future__ import annotations
@@ -68,9 +61,8 @@ def _free_port() -> int:
 def profile_imports(python: str, top: int = 15) -> dict:
     """Cumulative and self import cost for the backend's module graph.
 
-    Run in a subprocess with -X importtime because the numbers are only meaningful
-    for a cold interpreter -- importing in-process would measure an already-warm
-    sys.modules and report near zero.
+    Run in a subprocess with -X importtime: the numbers are only meaningful for a
+    cold interpreter, and importing in-process would measure a warm sys.modules.
     """
     proc = subprocess.run(
         [python, "-X", "importtime", "-c", "import sys; sys.path.insert(0, '.'); import main"],
@@ -87,8 +79,7 @@ def profile_imports(python: str, top: int = 15) -> dict:
     if not rows:
         return {"ok": False, "error": (proc.stderr or proc.stdout)[-2000:]}
     if proc.returncode != 0:
-        # Rows survive for every module imported before the failure, so the graph
-        # is partial and any total from it would be plausible but wrong.
+        # Rows survive up to the failure, so any total from a partial graph is wrong.
         return {
             "ok": False,
             "error": (proc.stderr or proc.stdout)[-2000:],
@@ -96,9 +87,8 @@ def profile_imports(python: str, top: int = 15) -> dict:
         }
 
     by_cum = sorted(rows, key = lambda r: -r[1])
-    # Take the total from the row labelled `main`, not by_cum[0]: -X importtime
-    # also prints the interpreter's own startup graph (`site`, `encodings`), which
-    # can outrank a trivial main and report another module's cost as the headline.
+    # Total comes from the `main` row, not by_cum[0]: -X importtime also prints the
+    # interpreter's own startup graph (`site`), which can outrank a trivial main.
     main_row = next((r for r in reversed(rows) if r[2] == "main"), None)
     if main_row is None:
         return {
@@ -126,14 +116,11 @@ def profile_imports(python: str, top: int = 15) -> dict:
 def _terminate_tree(proc: subprocess.Popen) -> None:
     """Stop the server AND its children, which on Windows are a separate process.
 
-    CI profiles `Scripts/unsloth.exe`, and a pip console-script .exe is a distlib
-    launcher stub: it parses its own shebang, CreateProcess's the venv python on
-    the zip appended to itself, and just waits. terminate() therefore reaps the
-    stub only, leaving the real backend holding the inherited stdout handle -- so
-    the reader thread never sees EOF and burns the full reader.join(timeout=10),
-    and with --repeats every iteration strands another server on the shared
-    UNSLOTH_STUDIO_HOME. taskkill /T walks the tree, matching the cleanup already
-    used in unsloth_cli/commands/start.py and unsloth/dataprep/synthetic.py.
+    CI profiles `Scripts/unsloth.exe`, a distlib launcher stub that CreateProcess's
+    the venv python and waits, so terminate() reaps the stub only: the real backend
+    keeps the inherited stdout handle, the reader thread never sees EOF, and
+    --repeats strands one server per iteration on the shared UNSLOTH_STUDIO_HOME.
+    taskkill /T walks the tree, as unsloth_cli/commands/start.py already does.
     """
     if proc.poll() is not None:
         return
@@ -150,8 +137,7 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
         except Exception:
             # taskkill missing or timed out; fall through so the stub still dies.
             pass
-        # check=False means a nonzero taskkill does not raise, so fall through to
-        # terminate() instead of leaving even the stub running.
+        # check=False: a nonzero taskkill does not raise, so fall through as well.
     proc.terminate()
 
 
@@ -174,8 +160,8 @@ def profile_launch(
     )
 
     def _drain() -> None:
-        # Must run alongside the health polling: the first read timestamps the
-        # spawn phase, and an undrained pipe blocks the backend before it binds.
+        # Runs alongside the health polling: the first read timestamps the spawn
+        # phase, and an undrained pipe blocks the backend before it binds.
         for line in proc.stdout:
             if not first_byte:
                 first_byte.append(time.perf_counter() - t0)
@@ -208,8 +194,7 @@ def profile_launch(
     finally:
         _terminate_tree(proc)
         try:
-            # wait() is safe: the reader thread drains the pipe, so the child
-            # cannot block on write().
+            # Safe: the reader drains the pipe, so the child cannot block on write().
             proc.wait(timeout = 30)
         except subprocess.TimeoutExpired:
             proc.kill()
@@ -234,9 +219,8 @@ def profile_launch(
 def python_version_of(python: str) -> str:
     """Version of the interpreter that runs the imports, not the one running us.
 
-    The workflow deliberately points --python at the installed Studio venv while
-    the script itself runs under the runner's system python, so reporting
-    platform.python_version() would label the timings with the wrong version.
+    --python points at the installed Studio venv while this script runs under the
+    runner's system python, so platform.python_version() would label it wrong.
     """
     if python == sys.executable:
         return platform.python_version()
@@ -294,8 +278,7 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument("--json", help = "write the full report here")
     a = ap.parse_args(argv)
-    # range(0) launches nothing, so the budget check would see no measurement and
-    # exit 0: a gate that cannot fail.
+    # range(0) launches nothing, leaving the budget check with nothing to fail on.
     if a.repeats < 1:
         ap.error("--repeats must be at least 1")
     # Same reason: --import-only never launches anything.
@@ -361,16 +344,15 @@ def main(argv: list[str]) -> int:
         med = launch.get("healthz_median_seconds")
         failed = launch.get("failed_runs") or 0
         if failed:
-            # A launch that never became healthy fails the budget rather than
-            # being dropped, which would leave only the surviving faster runs.
+            # Failed launches fail the budget; dropping them would keep only the fast ones.
             print(
                 f"::error::startup regression: {failed} of {len(launch.get('runs') or [])} "
                 f"launches never became healthy within the timeout"
             )
             return 1
         if med is None:
-            # Nothing measured (no CLI, launch skipped): exiting 0 would pass an
-            # explicitly requested budget without one health request, so fail closed.
+            # Nothing measured: exiting 0 would pass a requested budget without a
+            # single health request, so fail closed.
             print(
                 "::error::startup regression: no healthz measurement, so the "
                 f"{a.max_healthz_seconds}s budget was never checked "

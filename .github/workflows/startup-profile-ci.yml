@@ -4,41 +4,37 @@
 # Measures where Studio's startup time goes, on each platform.
 #
 # Nothing recorded a number before: main.py logs "lifespan startup completed in X ms"
-# and studio_test_kit polls /healthz, but both throw the elapsed time away, so there
-# was no way to tell whether a change made launch slower. A first local run (Linux,
-# warm cache, 18-core server) put `import main` at 5.7-6.6s BEFORE the server can
-# bind, dominated by eager module-level imports pulled in by the routes package:
+# and studio_test_kit polls /healthz, but both throw the elapsed time away. A first
+# local run (Linux, warm cache, 18-core server) put `import main` at 5.7-6.6s BEFORE
+# the server can bind, dominated by eager module-level imports pulled in by routes:
 # torch ~1.9s self, unsloth_zoo ~0.8s, routes ~0.6s, transformers ~0.5s.
 #
-# Deliberately not a gate yet: --max-healthz-seconds exists in the script, but a
-# budget should be set from observed numbers rather than guessed.
+# Not a gate yet: --max-healthz-seconds exists, but a budget should come from
+# observed numbers rather than a guess.
 
 name: Startup profile
 
 on:
   pull_request:
     paths:
-      # The measured import graph is the whole backend tree, not three files:
-      # main.py imports auth, core, hub, loggers, models, picker, routes and utils
-      # at module scope, so any of them can move `import main`.
+      # The measured import graph is the whole backend tree: main.py imports auth,
+      # core, hub, loggers, models, picker, routes and utils at module scope.
       - 'studio/backend/**'
       - '!studio/backend/tests/**'
-      # The launch phase spawns `unsloth studio --api-only`, so the CLI is on the
-      # measured process-to-healthz path too.
+      # The launch phase spawns `unsloth studio --api-only`, so the CLI counts too.
       - 'unsloth_cli/**'
       - 'studio/src-tauri/src/preflight**'
       - 'scripts/profile_startup.py'
       - '.github/workflows/startup-profile-ci.yml'
       # The job profiles whatever `install.sh --local` built: the installers pick the
       # venv's Python and the dependency specs, and pyproject's include list is what
-      # makes --local overlay studio.backend* instead of the published backend.
+      # makes --local overlay studio.backend*.
       - 'install.sh'
       - 'install.ps1'
       - 'pyproject.toml'
-      # --local runs the checkout's own setup scripts (install.sh line 4182 picks
-      # $_REPO_ROOT/studio/setup.sh; the editable install makes `unsloth studio
-      # setup` resolve setup.ps1 to the repo), and both call install_python_stack.py,
-      # which is where the dependency set that gets imported is decided.
+      # --local also runs the checkout's setup scripts (install.sh picks
+      # $_REPO_ROOT/studio/setup.sh, the editable install resolves setup.ps1 to the
+      # repo), and both call install_python_stack.py, which picks the dependencies.
       - 'studio/setup.sh'
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
@@ -69,8 +65,7 @@ jobs:
 
     env:
       UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
-      # A wildcard bind makes run.py call ifconfig.me and check-host.net on the
-      # startup path; loopback measures our code, not someone's DNS.
+      # A wildcard bind calls ifconfig.me on the startup path; loopback times our code.
       UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
 
     steps:
@@ -85,9 +80,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p logs
-          # --local is load-bearing: it overlays the checkout, so the profiled
-          # server is this diff. Without it install.sh resolves unsloth from PyPI
-          # and the launch phase measures the PUBLISHED backend instead.
+          # --local is load-bearing: it overlays the checkout, so the profiled server
+          # is this diff. Without it install.sh resolves unsloth from PyPI.
           if [ "${{ runner.os }}" = "Windows" ]; then
             pwsh -NoProfile -File ./install.ps1 --local 2>&1 | tee logs/install.log
           else
@@ -100,8 +94,7 @@ jobs:
           BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
           [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/unsloth.exe"
           [ -x "$BIN" ] || BIN=""
-          # Profile imports with the INSTALLED interpreter: the venv is what
-          # actually starts at launch.
+          # Profile imports with the INSTALLED interpreter: that venv is what launches.
           PY="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/python"
           [ -x "$PY" ] || PY="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/python.exe"
           [ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
@@ -122,8 +115,7 @@ jobs:
           d = json.load(open(sys.argv[1]))
           print(f"### {d['platform']} / {d['machine']} (py {d['python']}, {d['cpu_count']} cpu)\n")
           imp = d.get("imports", {})
-          # Gate on ok, not total_seconds: a failed `import main` still leaves
-          # importtime rows behind, so total_seconds can be present and wrong.
+          # Gate on ok: a failed `import main` still leaves rows, so a total can lie.
           if imp.get("ok"):
               print(f"**`import main`: {imp['total_seconds']}s**\n")
               print("| package | self ms |")
@@ -138,7 +130,7 @@ jobs:
           runs = len(lau.get("runs") or [])
           failed = lau.get("failed_runs") or 0
           if lau.get("healthz_median_seconds") is not None:
-              # The aggregates cover only the runs that reached healthz, so note the
+              # The aggregates cover only the runs that reached healthz, so flag the
               # failures: bare numbers would read as a normal fast startup.
               note = f" _({runs - failed} of {runs} launches; {failed} never became healthy)_" if failed else ""
               print(f"**time to a healthy port: {lau['healthz_median_seconds']}s median, "

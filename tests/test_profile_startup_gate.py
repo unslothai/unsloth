@@ -19,8 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "profile_startup.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "startup-profile-ci.yml"
 
-# Checkout files that build the venv the workflow profiles, so an edit to any of
-# them can move startup time without the job ever running.
+# Checkout files that build the venv the workflow profiles.
 INSTALLER_INPUTS = (
     "studio/setup.sh",
     "studio/setup.ps1",
@@ -167,8 +166,7 @@ def test_workflow_triggers_on_studio_installer_inputs(rel):
 
 def test_studio_installer_inputs_are_on_the_local_install_path():
     """Anchor the list above: these files are what --local actually executes."""
-    # install.sh picks the checkout's setup.sh; install.ps1 gets there through the
-    # editable install instead, so only the setup -> stack call is greppable there.
+    # install.ps1 reaches setup.ps1 through the editable install, not by name.
     assert "studio/setup.sh" in (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
     for setup in ("studio/setup.sh", "studio/setup.ps1"):
         text = (REPO_ROOT / setup).read_text(encoding = "utf-8", errors = "replace")
