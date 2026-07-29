@@ -2,13 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Run install.sh and SIGTERM it partway through, reproducing what the desktop app does
-# when the user quits mid-install: main.rs cleanup_child_processes() ->
-# install::stop_install() -> kill the installer PROCESS GROUP (install.rs:798-807).
-#
-# Killing only the leader would leave `uv`/`python` children running and finishing the
-# dep pass, so the interruption has to target the group -- otherwise the test quietly
-# proves nothing.
+# Run install.sh and SIGTERM it partway through, reproducing a user quitting the desktop
+# app mid-install: main.rs cleanup_child_processes() -> install::stop_install() -> kill
+# the installer PROCESS GROUP (install.rs:798-807). It must be the group: killing only
+# the leader leaves `uv`/`python` children to finish the dep pass, proving nothing.
 #
 # Usage: bash .github/scripts/interrupt-install.sh "<marker>" "<logfile>" [-- install args]
 #   <marker>  regex to wait for in the install log before killing, e.g. "studio deps"
@@ -28,12 +25,11 @@ KILL_GRACE="${KILL_GRACE:-10}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 
-# Stand in for the desktop app, which creates this before spawning the installer and
-# clears it only on a terminal outcome (install.rs). We kill the installer directly
-# rather than driving the real app, so without this the marker #7490 relies on is
-# absent for a reason that has nothing to do with #7490. Written to both locations
-# because the Rust side hardcodes ~/.unsloth/studio while CI overrides
-# UNSLOTH_STUDIO_HOME. Deliberately never cleared: being killed is the whole point.
+# Stand in for the desktop app, which writes this before spawning the installer
+# (install.rs). We kill the installer directly, so without it the marker #7490 relies on
+# is absent for a reason unrelated to #7490. Both locations because the Rust side
+# hardcodes ~/.unsloth/studio while CI overrides UNSLOTH_STUDIO_HOME. Never cleared:
+# being killed is the whole point.
 for _marker_dir in "${UNSLOTH_STUDIO_HOME:-}" "$HOME/.unsloth/studio"; do
   [ -n "$_marker_dir" ] || continue
   mkdir -p "$_marker_dir" 2>/dev/null || continue
@@ -41,7 +37,7 @@ for _marker_dir in "${UNSLOTH_STUDIO_HOME:-}" "$HOME/.unsloth/studio"; do
 done
 
 # Job control puts the child in its own process group, so $! is the pgid leader and
-# `kill -- -$!` reaches every descendant -- matching the Rust side.
+# `kill -- -$!` reaches every descendant, matching the Rust side.
 set -m
 bash install.sh "$@" > "$LOG" 2>&1 &
 PID=$!
@@ -56,13 +52,12 @@ for i in $(seq 1 "$KILL_AT_SECONDS"); do
     break
   fi
   if [ -n "$MARKER" ] && grep -qE "$MARKER" "$LOG" 2>/dev/null; then
-    # Let it get a beat into the step, so the kill lands mid-work rather than on the
-    # boundary where the step has not started touching the venv yet.
+    # A beat into the step, so the kill lands mid-work rather than on the boundary
+    # before the step has touched the venv.
     sleep "${KILL_AFTER_MARKER_SECONDS:-3}"
-    # ...but a late step whose work is already cached can FINISH inside that beat.
-    # Recording marker-hit before the sleep handed the landing assertion a COMPLETED
-    # install: the signal reached no process, the probe read HEALTHY, and the leg
-    # passed green having interrupted nothing. Set the reason after, not before.
+    # ...but a cached step can FINISH inside that beat. Recording marker-hit before the
+    # sleep handed the landing assertion a COMPLETED install: the signal reached no
+    # process and the leg passed green having interrupted nothing.
     if ! kill -0 "$PID" 2>/dev/null; then
       reason="exited-during-marker-delay"
       break
@@ -86,11 +81,10 @@ if [ "$killed" = "true" ]; then
     kill -0 "$PID" 2>/dev/null || break
     sleep 1
   done
-  # Unconditional, and to the GROUP. The leader can exit on SIGTERM while a uv or
-  # python descendant ignores it or is mid-shutdown; `kill -0 "$PID"` then reported
-  # the leader gone, this escalation was skipped, and `wait` reaped only the leader,
-  # leaving that descendant free to finish the dependency pass while the probe ran.
-  # Signalling an already-empty group is a no-op.
+  # Unconditional, and to the GROUP. The leader can exit on SIGTERM while a uv or python
+  # descendant does not; gating on `kill -0 "$PID"` skipped this escalation and left that
+  # descendant free to finish the dependency pass while the probe ran. Signalling an
+  # already-empty group is a no-op.
   echo "[interrupt] SIGKILL to process group -$PID"
   kill -KILL -- -"$PID" 2>/dev/null || kill -KILL "$PID" 2>/dev/null || true
 fi
@@ -98,9 +92,9 @@ fi
 wait "$PID" 2>/dev/null
 rc=$?
 
-# Only after the reap: an unreaped leader is still a member of its own group, so
-# polling the group before `wait` would report it alive forever. Do not let the
-# probe start while an installer process is still running.
+# Only after the reap: an unreaped leader is still a member of its own group, so polling
+# the group before `wait` would report it alive forever. The probe must not start while
+# an installer process is still running.
 if [ "$killed" = "true" ]; then
   for _ in $(seq 1 "$KILL_GRACE"); do
     kill -0 -- -"$PID" 2>/dev/null || break
@@ -115,8 +109,8 @@ echo "[interrupt] installer exit=$rc reason=$reason killed=$killed"
 echo "[interrupt] last log lines:"
 tail -15 "$LOG" || true
 
-# Report how far it got, so a leg that never reached the target step is visible as such
-# rather than passing for the wrong reason.
+# Report how far it got, so a leg that never reached the target step is visible rather
+# than passing for the wrong reason.
 if [ -n "$MARKER" ] && ! grep -qE "$MARKER" "$LOG" 2>/dev/null; then
   echo "::warning::marker '$MARKER' never appeared -- this leg killed at the deadline, not at the intended step"
 fi
