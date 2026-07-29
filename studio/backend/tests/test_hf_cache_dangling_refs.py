@@ -607,9 +607,7 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
     assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == offered
 
 
-def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(
-    tmp_path, monkeypatch
-):
+def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_path, monkeypatch):
     """A whole small quant can sit in the newest snapshot beside an interrupted
     split one while an older snapshot holds nothing but a whole larger quant.
 
