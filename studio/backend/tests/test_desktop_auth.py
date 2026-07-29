@@ -257,6 +257,56 @@ def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
     assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"  legacy-bootstrap-secret  "
 
 
+def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
+    # Without O_BINARY, Windows opens the descriptor in text mode and os.write
+    # turns the LF back into CRLF, reintroducing the bug being fixed.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+    monkeypatch.setattr(storage.os, "O_BINARY", 0x8000, raising = False)
+    seen = []
+    real_open = storage.os.open
+
+    def spy(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            seen.append(flags)
+        return real_open(path, flags & ~0x8000, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", spy)
+
+    storage.ensure_default_admin()
+
+    assert seen and all(f & 0x8000 for f in seen), seen
+
+
+def test_normalising_survives_a_short_write(monkeypatch):
+    # A short write followed by ftruncate would NUL-fill the credential.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+    real_write = storage.os.write
+
+    def one_byte_at_a_time(fd, data):
+        return real_write(fd, data[:1])
+
+    monkeypatch.setattr(storage.os, "write", one_byte_at_a_time)
+
+    storage.ensure_default_admin()
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+
+
+def test_normalising_works_without_fchmod(monkeypatch):
+    # os.fchmod only reached Windows in 3.13; its absence must not raise.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+    monkeypatch.delattr(storage.os, "fchmod", raising = False)
+
+    storage.ensure_default_admin()
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+
+
 def test_persisting_the_bootstrap_password_is_atomic(monkeypatch, tmp_path):
     # A partial write would destroy the only plaintext recovery credential.
     storage._persist_bootstrap_password("original-secret")

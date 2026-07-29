@@ -83,16 +83,27 @@ def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
     if not raw.startswith(data[:-1]):
         return
 
-    fd = os.open(_BOOTSTRAP_PW_PATH, os.O_RDWR)
+    # O_BINARY or Windows opens the descriptor in text mode and os.write turns
+    # the LF straight back into CRLF, which is the bug this path exists to fix.
+    fd = os.open(_BOOTSTRAP_PW_PATH, os.O_RDWR | getattr(os, "O_BINARY", 0))
     try:
         if os.read(fd, len(raw) + 1) != raw:
             return
         os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, data)
+        # os.write may write fewer bytes than asked; truncating after a short
+        # write would NUL-fill the credential and lock the admin out.
+        written = 0
+        while written < len(data):
+            n = os.write(fd, data[written:])
+            if not n:
+                return
+            written += n
         os.ftruncate(fd, len(data))
         try:
             os.fchmod(fd, 0o600)
-        except OSError:
+        except (AttributeError, OSError):
+            # fchmod only reached Windows in 3.13. Staying on the descriptor
+            # matters more than re-applying a mode the writer already set.
             pass
     finally:
         os.close(fd)
