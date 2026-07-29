@@ -166,17 +166,13 @@ class JobManager:
         owner_subject: str, job_id: str, artifact_path: str, execution_type: str
     ) -> None:
         from storage import user_assets_db
-
         user_assets_db.record_completed_artifact_handoff(
             owner_subject, job_id, artifact_path, execution_type
         )
 
     @staticmethod
-    def _load_completed_artifact_handoff(
-        owner_subject: str, job_id: str
-    ) -> dict[str, Any] | None:
+    def _load_completed_artifact_handoff(owner_subject: str, job_id: str) -> dict[str, Any] | None:
         from storage import user_assets_db
-
         return user_assets_db.get_completed_artifact_handoff(owner_subject, job_id)
 
     @staticmethod
@@ -184,10 +180,7 @@ class JobManager:
         owner_subject: str, job_id: str, artifact_path: str
     ) -> None:
         from storage import user_assets_db
-
-        user_assets_db.release_completed_artifact_handoff(
-            owner_subject, job_id, artifact_path
-        )
+        user_assets_db.release_completed_artifact_handoff(owner_subject, job_id, artifact_path)
 
     def _has_blocking_job_locked(self) -> bool:
         """Check process-global admission while holding ``_lock``."""

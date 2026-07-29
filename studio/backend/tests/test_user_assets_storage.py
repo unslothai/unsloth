@@ -79,15 +79,9 @@ def test_recipe_pagination_does_not_drop_a_recipe_updated_between_pages(monkeypa
     user_assets_db.update_recipe(
         "owner", "r3", {**recipe("r3"), "name": "Updated"}, updated["revision"]
     )
-    second = user_assets_db.list_recipe_summaries(
-        "owner", cursor = first["nextCursor"], limit = 2
-    )
+    second = user_assets_db.list_recipe_summaries("owner", cursor = first["nextCursor"], limit = 2)
 
-    assert [item["id"] for item in first["recipes"] + second["recipes"]] == [
-        "r1",
-        "r2",
-        "r3",
-    ]
+    assert [item["id"] for item in first["recipes"] + second["recipes"]] == ["r1", "r2", "r3"]
 
 
 def test_unicode_ids_generate_reusable_bounded_cursors():

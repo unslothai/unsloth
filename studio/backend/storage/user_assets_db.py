@@ -626,10 +626,7 @@ def get_completed_recipe_execution_by_job_id(
 
 
 def record_completed_artifact_handoff(
-    owner_subject: str,
-    job_id: str,
-    artifact_path: str,
-    execution_type: str,
+    owner_subject: str, job_id: str, artifact_path: str, execution_type: str
 ) -> None:
     owner = _require_owner(owner_subject)
     asset_job_id = validate_id(job_id, "job id")
@@ -656,9 +653,7 @@ def record_completed_artifact_handoff(
         conn.close()
 
 
-def get_completed_artifact_handoff(
-    owner_subject: str, job_id: str
-) -> dict[str, Any] | None:
+def get_completed_artifact_handoff(owner_subject: str, job_id: str) -> dict[str, Any] | None:
     owner = _require_owner(owner_subject)
     asset_job_id = validate_id(job_id, "job id")
     conn = studio_db.get_connection()
@@ -680,9 +675,7 @@ def get_completed_artifact_handoff(
         conn.close()
 
 
-def release_completed_artifact_handoff(
-    owner_subject: str, job_id: str, artifact_path: str
-) -> None:
+def release_completed_artifact_handoff(owner_subject: str, job_id: str, artifact_path: str) -> None:
     owner = _require_owner(owner_subject)
     asset_job_id = validate_id(job_id, "job id")
     conn = studio_db.get_connection()
