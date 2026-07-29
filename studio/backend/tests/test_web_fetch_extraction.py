@@ -1896,10 +1896,13 @@ def test_literal_bracket_paren_is_prose_not_a_destination():
 def test_hand_preserved_heading_reaches_the_eligibility_tally():
     # The partial branch writes the title straight into heading_parts, so the
     # gate has to be told as well or a title-only card reads as body prose.
-    card = '<article><header><a href="/h"><div role="heading">%s</div>%s</a><ul>%s</ul></header></article>' % (
-        "Card Title Words " * 14,
-        "nav text " * 40,
-        _interlanguage_list(300),
+    card = (
+        '<article><header><a href="/h"><div role="heading">%s</div>%s</a><ul>%s</ul></header></article>'
+        % (
+            "Card Title Words " * 14,
+            "nav text " * 40,
+            _interlanguage_list(300),
+        )
     )
     real = "<p>%s</p>" % ("The real page body text here. " * 30)
     out = html_to_markdown(f"<body><main>{real}{card}</main></body>", main_content = True)
