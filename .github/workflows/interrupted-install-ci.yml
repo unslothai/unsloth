@@ -281,9 +281,12 @@ jobs:
           # post-delay HasExited check and Stop-Tree, leaving reason=marker-hit over a
           # COMPLETED install that probes HEALTHY and skips the re-run assertion.
           # Stop-Process -Force is non-zero, so only a completed install reports 0.
-          if ($vals['installer_exit'] -eq '0') {
-            Write-Host '::error::installer exited 0 -- it COMPLETED inside the kill window, so'
-            Write-Host '::error::nothing was interrupted and this leg asserts nothing.'
+          # 'running' too, not just 0: the driver reports that when the installer outlived
+          # Stop-Tree and WaitForExit, and a live installer writing into the venv under the
+          # probe is not an interrupted install either. Only a real non-zero code counts.
+          if ($vals['installer_exit'] -eq '0' -or $vals['installer_exit'] -notmatch '^-?\d+$') {
+            Write-Host "::error::installer exit=$($vals['installer_exit']) -- it completed or never"
+            Write-Host '::error::died inside the kill window, so this leg asserts nothing.'
             Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
             exit 1
           }
