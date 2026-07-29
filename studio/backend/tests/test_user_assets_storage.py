@@ -68,6 +68,23 @@ def test_recipe_summaries_are_payload_free_and_paginated():
     assert second["nextCursor"] is None
 
 
+def test_recipe_payload_preserves_object_insertion_order():
+    payload = {"schema": {"properties": {"zeta": {"type": "string"}, "alpha": {"type": "number"}}}}
+    created = user_assets_db.create_recipe("owner", recipe(payload = payload))
+    assert list(created["payload"]["schema"]["properties"]) == ["zeta", "alpha"]
+
+    updated = user_assets_db.update_recipe(
+        "owner", "r1", recipe(payload = payload), created["revision"]
+    )
+    assert list(updated["payload"]["schema"]["properties"]) == ["zeta", "alpha"]
+
+    user_assets_db.import_legacy_assets(
+        "owner", "recipe-indexeddb-v1", [recipe("legacy", payload)], []
+    )
+    imported = user_assets_db.get_recipe("owner", "legacy")
+    assert list(imported["payload"]["schema"]["properties"]) == ["zeta", "alpha"]
+
+
 def test_recipe_pagination_does_not_drop_a_recipe_updated_between_pages(monkeypatch):
     timestamps = iter((100, 200, 300, 400))
     monkeypatch.setattr(user_assets_db, "_now_ms", lambda: next(timestamps))
@@ -141,13 +158,18 @@ def test_completed_artifact_handoff_survives_manager_restart(monkeypatch):
         ),
     )
     user_assets_db.record_completed_artifact_handoff(
-        "owner", "completed-job", "recipes/recipe_r1", "full"
+        "owner",
+        "completed-job",
+        "recipes/recipe_r1",
+        "full",
+        {"columns": ["prompt", "response"]},
     )
     restarted_manager = JobManager()
     monkeypatch.setattr(data_recipe_jobs, "get_job_manager", lambda: restarted_manager)
     monkeypatch.setattr(user_assets_recipes, "get_job_manager", lambda: restarted_manager)
 
     status = data_recipe_jobs.job_status("completed-job", "owner")
+    analysis = data_recipe_jobs.job_analysis("completed-job", "owner")
     saved = user_assets_recipes.upsert_recipe_execution(
         "r1",
         "e1",
@@ -164,6 +186,7 @@ def test_completed_artifact_handoff_survives_manager_restart(monkeypatch):
 
     assert status["status"] == "completed"
     assert status["artifact_path"] == "recipes/recipe_r1"
+    assert analysis == {"columns": ["prompt", "response"]}
     assert saved["artifact_path"] == "recipes/recipe_r1"
     assert restarted_manager.get_completed_artifact_status("completed-job", "owner") is None
 

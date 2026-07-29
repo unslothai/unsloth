@@ -159,15 +159,21 @@ class JobManager:
         self._subs: list[Subscription] = []
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
-        self._completed_artifacts: dict[tuple[str, str], tuple[str, str]] = {}
+        self._completed_artifacts: dict[
+            tuple[str, str], tuple[str, str, dict[str, Any] | None]
+        ] = {}
 
     @staticmethod
     def _record_completed_artifact_handoff(
-        owner_subject: str, job_id: str, artifact_path: str, execution_type: str
+        owner_subject: str,
+        job_id: str,
+        artifact_path: str,
+        execution_type: str,
+        analysis: dict[str, Any] | None,
     ) -> None:
         from storage import user_assets_db
         user_assets_db.record_completed_artifact_handoff(
-            owner_subject, job_id, artifact_path, execution_type
+            owner_subject, job_id, artifact_path, execution_type, analysis
         )
 
     @staticmethod
@@ -410,12 +416,16 @@ class JobManager:
         """Final profiling output (only after job completes)."""
         with self._lock:
             if (
-                self._job is None
-                or self._job.job_id != job_id
-                or self._job.owner_subject != owner_subject
+                self._job is not None
+                and self._job.job_id == job_id
+                and self._job.owner_subject == owner_subject
             ):
-                return None
-            return self._job.analysis
+                return self._job.analysis
+            completed = self._completed_artifacts.get((owner_subject, job_id))
+            if completed is not None:
+                return completed[2]
+        handoff = self._load_completed_artifact_handoff(owner_subject, job_id)
+        return handoff["analysis"] if handoff is not None else None
 
     def get_owned_completed_artifact_path(self, job_id: str, owner_subject: str) -> str | None:
         """Return a completed artifact until its owner persists the terminal snapshot."""
@@ -836,7 +846,7 @@ class JobManager:
         msg = event.get("message") if et == "log" else None
 
         terminal = False
-        completed_handoff: tuple[str, str, str, str] | None = None
+        completed_handoff: tuple[str, str, str, str, dict[str, Any] | None] | None = None
         prepared: tuple[tuple[Subscription, ...], dict] | None = None
         with self._lock:
             generation = JobGeneration(job_id = job.job_id, owner_subject = job.owner_subject)
@@ -860,12 +870,14 @@ class JobManager:
                     self._completed_artifacts[(self._job.owner_subject, self._job.job_id)] = (
                         self._job.artifact_path,
                         self._job.execution_type or "full",
+                        self._job.analysis,
                     )
                     completed_handoff = (
                         self._job.owner_subject,
                         self._job.job_id,
                         self._job.artifact_path,
                         self._job.execution_type or "full",
+                        self._job.analysis,
                     )
                 if self._job.progress.total and self._job.progress.total > 0:
                     self._job.progress.done = self._job.progress.total

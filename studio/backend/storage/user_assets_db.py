@@ -297,7 +297,7 @@ def create_recipe(owner_subject: str, recipe: Mapping[str, Any]) -> dict[str, An
     name = validate_name(value.get("name"), "recipe name")
     payload = validate_recipe_payload(value.get("payload"))
     learning_id, learning_title = _validate_recipe_links(value)
-    payload_json = canonical_json(payload, MAX_RECIPE_JSON_BYTES, "recipe payload")
+    payload_json = canonical_json(payload, MAX_RECIPE_JSON_BYTES, "recipe payload", sort_keys = False)
     now = _now_ms()
     conn = studio_db.get_connection()
     try:
@@ -355,7 +355,7 @@ def update_recipe(
     learning_id, learning_title = _validate_recipe_links(value)
     has_learning_id = "learningRecipeId" in value
     has_learning_title = "learningRecipeTitle" in value
-    payload_json = canonical_json(payload, MAX_RECIPE_JSON_BYTES, "recipe payload")
+    payload_json = canonical_json(payload, MAX_RECIPE_JSON_BYTES, "recipe payload", sort_keys = False)
     expected_revision = _validate_expected_revision(expected_revision)
     now = _now_ms()
     conn = studio_db.get_connection()
@@ -626,7 +626,11 @@ def get_completed_recipe_execution_by_job_id(
 
 
 def record_completed_artifact_handoff(
-    owner_subject: str, job_id: str, artifact_path: str, execution_type: str
+    owner_subject: str,
+    job_id: str,
+    artifact_path: str,
+    execution_type: str,
+    analysis: Mapping[str, Any] | None = None,
 ) -> None:
     owner = _require_owner(owner_subject)
     asset_job_id = validate_id(job_id, "job id")
@@ -634,19 +638,25 @@ def record_completed_artifact_handoff(
         raise ValueError("artifact_path must be a non-empty string")
     if execution_type not in {"preview", "full"}:
         raise ValueError("execution_type must be preview or full")
+    analysis_json = (
+        canonical_json(analysis, MAX_EXECUTION_JSON_BYTES, "job analysis")
+        if analysis is not None
+        else None
+    )
     conn = studio_db.get_connection()
     try:
         conn.execute(
             """
             INSERT INTO data_recipe_completed_artifacts
-                (owner_subject, job_id, artifact_path, execution_type, completed_at)
-            VALUES (?, ?, ?, ?, ?)
+                (owner_subject, job_id, artifact_path, execution_type, analysis_json, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_subject, job_id) DO UPDATE SET
                 artifact_path = excluded.artifact_path,
                 execution_type = excluded.execution_type,
+                analysis_json = excluded.analysis_json,
                 completed_at = excluded.completed_at
             """,
-            (owner, asset_job_id, artifact_path, execution_type, _now_ms()),
+            (owner, asset_job_id, artifact_path, execution_type, analysis_json, _now_ms()),
         )
         conn.commit()
     finally:
@@ -660,7 +670,8 @@ def get_completed_artifact_handoff(owner_subject: str, job_id: str) -> dict[str,
     try:
         row = conn.execute(
             """
-            SELECT artifact_path, execution_type FROM data_recipe_completed_artifacts
+            SELECT artifact_path, execution_type, analysis_json
+            FROM data_recipe_completed_artifacts
             WHERE owner_subject = ? AND job_id = ?
             """,
             (owner, asset_job_id),
@@ -670,6 +681,7 @@ def get_completed_artifact_handoff(owner_subject: str, job_id: str) -> dict[str,
         return {
             "artifact_path": row["artifact_path"],
             "execution_type": row["execution_type"],
+            "analysis": json.loads(row["analysis_json"]) if row["analysis_json"] else None,
         }
     finally:
         conn.close()
@@ -1026,7 +1038,10 @@ def import_legacy_assets(
                 clean_payload, paths = validate_recipe_payload(item.get("payload"), legacy = True)
                 learning_id, learning_title = _validate_recipe_links(item)
                 payload_json = canonical_json(
-                    clean_payload, MAX_RECIPE_JSON_BYTES, "recipe payload"
+                    clean_payload,
+                    MAX_RECIPE_JSON_BYTES,
+                    "recipe payload",
+                    sort_keys = False,
                 )
                 created_at = item.get("createdAt", now)
                 created_at = validate_timestamp(created_at, "createdAt")

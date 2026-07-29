@@ -251,8 +251,14 @@ def redact_secret_fields(value: T) -> tuple[T, list[str]]:
     return clean, [format_json_path(path) for path in paths]
 
 
-def canonical_json(value: Any, max_bytes: int, field_name: str) -> str:
-    """Serialize JSON deterministically and enforce the UTF-8 byte limit."""
+def canonical_json(
+    value: Any,
+    max_bytes: int,
+    field_name: str,
+    *,
+    sort_keys: bool = True,
+) -> str:
+    """Serialize compact JSON and enforce the UTF-8 byte limit."""
 
     if max_bytes < 0:
         raise ValueError("max_bytes must be non-negative")
@@ -262,7 +268,7 @@ def canonical_json(value: Any, max_bytes: int, field_name: str) -> str:
             ensure_ascii = False,
             allow_nan = False,
             separators = (",", ":"),
-            sort_keys = True,
+            sort_keys = sort_keys,
         )
     except (TypeError, ValueError):
         raise UserAssetValidationError(
@@ -278,13 +284,19 @@ def canonical_json(value: Any, max_bytes: int, field_name: str) -> str:
     return encoded
 
 
-def _canonical_object(value: Any, max_bytes: int, field_name: str) -> dict[str, Any]:
+def _canonical_object(
+    value: Any,
+    max_bytes: int,
+    field_name: str,
+    *,
+    sort_keys: bool = True,
+) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise UserAssetValidationError(
             "invalid_json_object",
             f"{field_name} must be a JSON object",
         )
-    encoded = canonical_json(value, max_bytes, field_name)
+    encoded = canonical_json(value, max_bytes, field_name, sort_keys = sort_keys)
     result = json.loads(encoded)
     if not isinstance(result, dict):
         raise UserAssetValidationError("invalid_json_object", f"{field_name} must be a JSON object")
@@ -292,11 +304,16 @@ def _canonical_object(value: Any, max_bytes: int, field_name: str) -> dict[str, 
 
 
 def _validate_secret_policy(
-    value: Any, *, legacy: bool, max_bytes: int, field_name: str
+    value: Any,
+    *,
+    legacy: bool,
+    max_bytes: int,
+    field_name: str,
+    sort_keys: bool = True,
 ) -> dict[str, Any] | tuple[dict[str, Any], list[str]]:
     if legacy:
         clean, redacted_paths = redact_secret_fields(value)
-        return _canonical_object(clean, max_bytes, field_name), redacted_paths
+        return _canonical_object(clean, max_bytes, field_name, sort_keys = sort_keys), redacted_paths
     paths = find_secret_paths(value)
     if paths:
         raise UserAssetValidationError(
@@ -304,7 +321,7 @@ def _validate_secret_policy(
             f"{field_name} contains secret fields",
             tuple(paths),
         )
-    return _canonical_object(value, max_bytes, field_name)
+    return _canonical_object(value, max_bytes, field_name, sort_keys = sort_keys)
 
 
 @overload
@@ -327,6 +344,7 @@ def validate_recipe_payload(
         legacy = legacy,
         max_bytes = MAX_RECIPE_JSON_BYTES,
         field_name = "recipe payload",
+        sort_keys = False,
     )
 
 

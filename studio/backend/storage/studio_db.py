@@ -766,11 +766,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             job_id TEXT NOT NULL CHECK(length(job_id) BETWEEN 1 AND 128),
             artifact_path TEXT NOT NULL CHECK(length(artifact_path) > 0),
             execution_type TEXT NOT NULL CHECK(execution_type IN ('preview', 'full')),
+            analysis_json TEXT
+                CHECK(length(CAST(analysis_json AS BLOB)) <= 262144),
             completed_at INTEGER NOT NULL CHECK(completed_at >= 0),
             PRIMARY KEY (owner_subject, job_id)
         ) WITHOUT ROWID
         """
     )
+    completed_artifact_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(data_recipe_completed_artifacts)")
+    }
+    if "analysis_json" not in completed_artifact_columns:
+        conn.execute(
+            "ALTER TABLE data_recipe_completed_artifacts "
+            "ADD COLUMN analysis_json TEXT "
+            "CHECK(length(CAST(analysis_json AS BLOB)) <= 262144)"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS user_asset_legacy_imports (
