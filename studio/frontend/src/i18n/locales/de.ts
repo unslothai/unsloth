@@ -330,9 +330,23 @@ export const de = {
         diskFree: "{free} frei",
         modelsFolder: "Modell-Ordner",
         modelsFolderDescription:
-          "Wo heruntergeladene Modelle gespeichert werden.",
+          "Wo heruntergeladene Modelle gespeichert werden. Ändern Sie ihn, um Modelle nicht auf dem Systemlaufwerk abzulegen.",
+        modelsFolderKeywords:
+          "Modelle Ordner Verzeichnis Pfad Speicherort Download Downloads Cache Speicher Festplatte Laufwerk verschieben ändern hugging face",
+        futureDownloads: "Nur neue Downloads",
+        environmentManaged:
+          "Wird über die Umgebungsvariable {variable} verwaltet.",
+        locationFree: "{free} frei",
         openAction: "Öffnen",
         copyAction: "Pfad kopieren",
+        changeAction: "Ändern",
+        resetAction: "Standard verwenden",
+        chooseTitle: "Speicherort für Modell-Downloads wählen",
+        chooseAction: "Für künftige Downloads verwenden",
+        cacheSaved: "Speicherort für Modell-Downloads aktualisiert",
+        cacheSaveError:
+          "Der Speicherort für Modell-Downloads konnte nicht geändert werden",
+        cachePickerError: "Die Ordnerauswahl konnte nicht geöffnet werden",
         copied: "Pfad kopiert",
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",

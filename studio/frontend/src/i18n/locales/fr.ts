@@ -325,6 +325,8 @@ export const fr = {
         diskUsage: "{used} utilisé / {total}",
         diskFree: "{free} libre",
         modelsFolder: "Dossier des modèles",
+        modelsFolderKeywords:
+          "modeles modèles dossier repertoire répertoire chemin emplacement telechargements téléchargements cache stockage disque lecteur deplacer déplacer changer models folder path hugging face",
         modelsFolderDescription: "Emplacement de stockage des modèles téléchargés.",
         openAction: "Ouvrir",
         copyAction: "Copier le chemin",

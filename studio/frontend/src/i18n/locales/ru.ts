@@ -316,6 +316,8 @@ export const ru = {
         diskUsage: "{used} использовано / {total}",
         diskFree: "{free} свободно",
         modelsFolder: "Папка моделей",
+        modelsFolderKeywords:
+          "модели папка каталог путь расположение загрузки кэш хранилище диск перенести изменить models folder path hugging face",
         modelsFolderDescription: "Где хранятся загруженные модели.",
         openAction: "Открыть",
         copyAction: "Копировать путь",

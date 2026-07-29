@@ -316,6 +316,8 @@ export const hi = {
         diskUsage: "{used} उपयोग में / {total}",
         diskFree: "{free} खाली",
         modelsFolder: "मॉडल फ़ोल्डर",
+        modelsFolderKeywords:
+          "मॉडल फ़ोल्डर फोल्डर निर्देशिका पथ स्थान डाउनलोड कैश संग्रहण डिस्क ड्राइव स्थानांतरित बदलें models folder path hugging face",
         modelsFolderDescription: "जहां डाउनलोड किए गए मॉडल संग्रहीत होते हैं।",
         openAction: "खोलें",
         copyAction: "पथ कॉपी करें",

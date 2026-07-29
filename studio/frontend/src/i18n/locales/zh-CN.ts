@@ -408,6 +408,8 @@ export const zhCN = {
         diskUsage: "已用 {used} / {total}",
         diskFree: "{free} 可用",
         modelsFolder: "模型文件夹",
+        modelsFolderKeywords:
+          "模型 文件夹 目录 路径 位置 下载 缓存 存储 磁盘 驱动器 移动 更改 models folder path hugging face",
         modelsFolderDescription: "已下载模型的存储位置。",
         openAction: "打开",
         copyAction: "复制路径",

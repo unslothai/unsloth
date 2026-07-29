@@ -317,6 +317,8 @@ export const ar = {
         diskUsage: "{used} مستخدم / {total}",
         diskFree: "{free} متاح",
         modelsFolder: "مجلد النماذج",
+        modelsFolderKeywords:
+          "النماذج مجلد دليل مسار موقع تنزيلات التنزيل ذاكرة التخزين المؤقت تخزين قرص محرك نقل تغيير models folder path hugging face",
         modelsFolderDescription: "المكان الذي تُخزَّن فيه النماذج المُنزَّلة.",
         openAction: "فتح",
         copyAction: "نسخ المسار",

@@ -417,6 +417,8 @@ export const ptBR = {
         diskUsage: "{used} usados / {total}",
         diskFree: "{free} livres",
         modelsFolder: "Pasta de modelos",
+        modelsFolderKeywords:
+          "modelos pasta diretorio diretório caminho local localizacao localização downloads baixar cache armazenamento disco unidade mover alterar models folder path hugging face",
         modelsFolderDescription: "Onde os modelos baixados são armazenados.",
         openAction: "Abrir",
         copyAction: "Copiar caminho",

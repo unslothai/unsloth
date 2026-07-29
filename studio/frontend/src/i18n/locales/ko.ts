@@ -315,6 +315,8 @@ export const ko = {
         diskUsage: "{used} 사용 중 / {total}",
         diskFree: "{free} 여유",
         modelsFolder: "모델 폴더",
+        modelsFolderKeywords:
+          "모델 폴더 디렉터리 디렉토리 경로 위치 저장 다운로드 캐시 저장소 디스크 드라이브 이동 변경 models folder path hugging face",
         modelsFolderDescription: "다운로드한 모델이 저장되는 위치입니다.",
         openAction: "열기",
         copyAction: "경로 복사",
