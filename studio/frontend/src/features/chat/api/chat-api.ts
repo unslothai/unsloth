@@ -150,75 +150,21 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
 }
 
-// A reverse proxy in front of Studio gives up long before a big model finishes
-// loading: Cloudflare's tunnel drops a request with no response headers after
-// ~100s, and nginx/ngrok defaults are similar. A 600 GB MoE takes minutes, so
-// the POST dies even though the load is running fine and completes. Treat these
-// as "response lost", not "load failed".
-const PROXY_TIMEOUT_STATUSES = new Set([502, 503, 504, 520, 522, 524]);
-const LOAD_POLL_INTERVAL_MS = 3000;
-const LOAD_POLL_MAX_MS = 60 * 60 * 1000;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Wait out a load whose HTTP response was lost, then re-issue it.
- *
- * /load-progress reports the live load, so poll it until the model is ready or
- * no load is in flight. The retry is cheap and authoritative: the backend
- * short-circuits an already-resident model with status "already_loaded", and if
- * the load actually failed the retry surfaces the real error instead of the
- * proxy's.
- */
-async function awaitLostLoad(
-  send: () => Promise<Response>,
-): Promise<LoadModelResponse> {
-  const deadline = Date.now() + LOAD_POLL_MAX_MS;
-  // phase goes null both before the first sample and after the load settles, so
-  // only treat it as settled once it has been null on two consecutive polls.
-  let idlePolls = 0;
-  while (Date.now() < deadline) {
-    await sleep(LOAD_POLL_INTERVAL_MS);
-    let phase: ModelLoadPhase = null;
-    try {
-      phase = (await getLoadProgress()).phase;
-    } catch {
-      // The proxy can drop polls too; keep waiting rather than fail the load.
-      continue;
-    }
-    if (phase === "ready") break;
-    idlePolls = phase === null ? idlePolls + 1 : 0;
-    if (idlePolls >= 2) break;
-  }
-  return parseJsonOrThrow<LoadModelResponse>(await send());
-}
-
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
-  const send = () =>
-    authFetch("/api/inference/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...payload,
-        hf_token: preparedToken.token,
-        native_path_lease: payload.nativePathLease ?? null,
-        nativePathLease: undefined,
-      }),
-    });
-  let response: Response;
-  try {
-    response = await send();
-  } catch {
-    // Connection dropped mid-load; the server side is still going.
-    return awaitLostLoad(send);
-  }
-  if (PROXY_TIMEOUT_STATUSES.has(response.status)) {
-    return awaitLostLoad(send);
-  }
+  const response = await authFetch("/api/inference/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...payload,
+      hf_token: preparedToken.token,
+      native_path_lease: payload.nativePathLease ?? null,
+      nativePathLease: undefined,
+    }),
+  });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
 
