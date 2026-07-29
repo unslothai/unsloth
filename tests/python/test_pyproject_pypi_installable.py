@@ -114,8 +114,7 @@ class TestRuntimeImportsAreDeclared:
         packaging_requirements = pytest.importorskip("packaging.requirements")
         base = _load()["project"].get("dependencies", [])
         declared = {
-            packaging_requirements.Requirement(r).name.lower().replace("_", "-")
-            for r in base
+            packaging_requirements.Requirement(r).name.lower().replace("_", "-") for r in base
         }
         missing = [p for p in self.ENTRY_PATH_IMPORTS if p not in declared]
         assert missing == [], (
@@ -132,9 +131,7 @@ class TestAcceleratorExtrasCarryTheirCompanions:
     def test_torch2100_extras_pull_the_audio_path(self):
         extras = _load()["project"].get("optional-dependencies", {})
         targets = [
-            n
-            for n in extras
-            if n.endswith("torch2100") and "only" not in n and n.startswith("cu")
+            n for n in extras if n.endswith("torch2100") and "only" not in n and n.startswith("cu")
         ]
         assert targets, "expected cu*-torch2100 extras to exist"
         missing = [n for n in targets if not any("audio-torch" in d for d in extras[n])]
