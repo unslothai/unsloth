@@ -65,7 +65,6 @@ export const ContextUsageBar: FC<{
       <TooltipTrigger asChild>
         <button
           type="button"
-          data-testid="context-usage-bar"
           aria-label={
             hasKnownLimit
               ? `Context usage: ${formatTokenCount(used)} of ${formatTokenCount(total as number)} tokens`

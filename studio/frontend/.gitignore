@@ -33,7 +33,3 @@ test/
 *.sw?
 /src/features/recipe-studio/AGENTS.md
 /docs
-
-# Playwright
-playwright-report/
-test-results/

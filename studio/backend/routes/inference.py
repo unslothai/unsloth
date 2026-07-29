@@ -2177,47 +2177,6 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
-def _takes_tool_passthrough(payload, llama_backend) -> bool:
-    """True when a GGUF request is forwarded to llama-server verbatim.
-
-    The passthrough sends the caller's own tools and neither a built-in schema
-    nor the tool nudge, so the token counter has to reach this same verdict
-    before it applies the process tool policy: `unsloth run --enable-tools` sets
-    that policy without asking for Unsloth's tool loop, and counting the catalog
-    it selects would price a prompt the next completion never sends.
-    """
-    supports_tools = getattr(llama_backend, "supports_tools", False)
-    if supports_tools and _explicit_studio_tool_loop_requested(payload):
-        return False
-    # A count request carries no tool_choice and usually no response_format, so
-    # read both defensively: absent means the caller withdrew neither.
-    has_client_contract = (
-        bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
-    ) or _has_openai_tool_history(payload.messages)
-    supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
-    if supports_passthrough and has_client_contract:
-        return True
-    if not hasattr(payload, "response_format"):
-        return False
-    return _extract_response_format(payload) is not None
-
-
-def _passthrough_client_tools(payload):
-    """The caller's own tool catalog exactly as the passthrough puts it on the wire.
-
-    ``tool_choice: "none"`` withdraws the catalog, but only when no tool history
-    needs those schemas to replay. llama-server renders whatever ``tools`` reaches
-    ``/apply-template`` regardless of tool_choice (it goes straight into the Jinja
-    context), so the counter has to apply this same rule or it prices a catalog the
-    completion never sends.
-    """
-    if getattr(payload, "tool_choice", None) == "none" and not _has_openai_tool_history(
-        payload.messages
-    ):
-        return None
-    return payload.tools or None
-
-
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
@@ -3640,35 +3599,6 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
         or public_model_id(fallback)
         or fallback
     )
-
-
-def _llama_status_model_ids(llama_backend) -> tuple[Optional[str], Optional[str]]:
-    """The ``(active_model, model_identifier)`` pair ``/api/inference/status`` publishes for a
-    loaded GGUF; a native-lease load reports the display label, never the on-disk path."""
-    model_id = getattr(llama_backend, "model_identifier", None)
-    native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
-    display_model_id = getattr(
-        llama_backend, "_native_display_label", None
-    ) or display_label_for_native_path(model_id)
-    if (
-        native_grant_backed
-        and model_id
-        and display_model_id == model_id
-        and os.path.isabs(model_id)
-    ):
-        display_model_id = os.path.basename(model_id)
-    elif not native_grant_backed and display_model_id == model_id:
-        # No label registered, so report the clean public id, not the snapshot's sha.
-        display_model_id = _llama_public_model_id(llama_backend) or display_model_id
-    return display_model_id, (None if native_grant_backed else model_id)
-
-
-def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
-    """The string a Studio client holds as ``params.checkpoint`` for the loaded GGUF:
-    ``status.model_identifier ?? status.active_model``, built from the same pair the
-    status handler returns so a client's captured identity cannot drift from ours."""
-    display_model_id, model_identifier = _llama_status_model_ids(llama_backend)
-    return display_model_id if model_identifier is None else model_identifier
 
 
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
@@ -6918,8 +6848,20 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
-            # Shared with the count endpoint, so a client can tell whose tokenizer counted.
-            _display_model_id, _reported_model_identifier = _llama_status_model_ids(llama_backend)
+            _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
+            _display_model_id = getattr(
+                llama_backend, "_native_display_label", None
+            ) or display_label_for_native_path(_model_id)
+            if (
+                _native_grant_backed
+                and _model_id
+                and _display_model_id == _model_id
+                and os.path.isabs(_model_id)
+            ):
+                _display_model_id = os.path.basename(_model_id)
+            elif not _native_grant_backed and _display_model_id == _model_id:
+                # No label registered, so report the clean public id, not the snapshot's sha.
+                _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the
@@ -6939,7 +6881,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _reported_chat_template_override = None
             return InferenceStatusResponse(
                 active_model = _display_model_id,
-                model_identifier = _reported_model_identifier,
+                model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 is_diffusion = llama_backend.is_diffusion,
@@ -9062,6 +9004,7 @@ async def openai_chat_completions(
     # kwarg, so the schema gets silently dropped and data_designer falls back to
     # free-form sampling. Guided decoding does not require ``supports_tools`` --
     # the grammar machinery is independent of tool-call parsing.
+    _has_response_format = _extract_response_format(payload) is not None
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
     _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
@@ -9075,6 +9018,7 @@ async def openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
+    _tools_passthrough = _supports_tool_passthrough and _has_client_tool_contract
     if (
         using_gguf
         and not _studio_tool_loop_requested
@@ -9093,9 +9037,11 @@ async def openai_chat_completions(
                 param = "tools" if payload.tools else "messages",
             ),
         )
-    # Same verdict the token counter reaches, from the one helper, so a count
-    # can never describe a route the completion does not take.
-    if using_gguf and _takes_tool_passthrough(payload, llama_backend):
+    if (
+        using_gguf
+        and not _studio_tool_loop_requested
+        and (_tools_passthrough or _has_response_format)
+    ):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
@@ -14236,116 +14182,43 @@ async def chat_count_tokens(
             detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
-    # Route first: the passthrough forwards the messages that
-    # _openai_messages_for_passthrough builds, and that does NOT merge adjacent
-    # user turns, so coalescing here would render a prompt that route never
-    # sends. Two user turns separated by an empty assistant sentinel is the
-    # shape that reaches this, after a response is stopped before its first token.
-    _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
-    openai_messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
+    # Same sanitization the GGUF chat path runs before generation, so the count renders
+    # the prompt the next request would build rather than the raw history.
+    openai_messages = _coalesce_consecutive_user_turns(
+        _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels(
+                [m.model_dump(exclude_none = True) for m in payload.messages]
+            )
+        )
     )
-    if not _takes_passthrough:
-        openai_messages = _coalesce_consecutive_user_turns(openai_messages)
-    # Normalize system turns as the completion path does, so this renders as the next request.
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
-    # The passthrough is the one route that puts the caller's own catalog on the wire, and
-    # only under the rule _passthrough_client_tools states. Every other route renders tools
-    # solely from the selection below, which reassigns openai_tools, and
-    # generate_chat_completion takes no tools argument at all -- so a catalog surviving here
-    # prices schemas the completion never sends. tool_choice "none" is how that happens on
-    # well-formed input: it withdraws the catalog from the completion and disables the
-    # selection, leaving payload.tools as the only thing /apply-template still renders.
-    openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
-    model_name = _llama_public_model_id(llama_backend, payload.model)
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
-    _cli_policy = _get_tool_policy_ct()
-    # Route already decided above; see _takes_tool_passthrough for why it has to
-    # come before the process policy.
-    _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
-        _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
-    )
-    _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
-    _mcp_allowed = (
-        not _client_disabled_tool_calls and bool(payload.mcp_enabled) and _cli_policy is not False
-    )
-    if not _takes_passthrough and (_tools_on or _mcp_allowed) and llama_backend.supports_tools:
+    # Tool schemas and the action nudge are a large share of a tool-enabled prompt, so
+    # price them from the same selection the completion path makes.
+    _tools_on = _effective_enable_tools(payload)
+    _mcp_allowed = bool(payload.mcp_enabled) and _get_tool_policy_ct() is not False
+    openai_tools = None
+    if (_tools_on or _mcp_allowed) and llama_backend.supports_tools:
         tools_to_use = await _select_request_tools(
-            payload,
-            tools_on = _tools_on,
-            mcp_allowed = _mcp_allowed,
+            payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
         )
         if tools_to_use:
             openai_tools = tools_to_use
-            # A pending turn (unanswered user message or tool result) is the one shape whose
-            # next generation runs on exactly these messages plus whatever build_rag_autoinject
-            # splices in, so a count without it would report a turn as fitting when it is not.
-            # Decline like the image case; any other shape ends in an assistant turn, whose
-            # retrieval query does not exist yet.
-            if (
-                "search_knowledge_base"
-                in {(t.get("function") or {}).get("name") for t in tools_to_use}
-                and openai_messages
-                and openai_messages[-1].get("role") in ("user", "tool")
-            ):
-                from core.inference.tools import rag_autoinject_permitted
-                if rag_autoinject_permitted(payload.rag_scope):
-                    raise HTTPException(
-                        status_code = 503,
-                        detail = (
-                            "Cannot count tokens for a pending turn that would retrieve documents."
-                        ),
-                    )
-            _nudge = _build_tool_action_nudge(
-                tools = tools_to_use,
-                model_name = model_name,
+            openai_messages = _append_to_system_message(
+                openai_messages,
+                _apply_rag_nudge(
+                    _build_tool_action_nudge(
+                        tools = tools_to_use,
+                        model_name = _llama_public_model_id(llama_backend, payload.model),
+                    ),
+                    tools_to_use,
+                    rag_scope = payload.rag_scope,
+                ),
             )
-            _nudge = _apply_rag_nudge(
-                _nudge,
-                tools_to_use,
-                rag_scope = payload.rag_scope,
-            )
-            if _nudge:
-                openai_messages = _append_to_system_message(openai_messages, _nudge)
 
-            # Same stale tool-call XML strip the GGUF and Anthropic tool paths run over replayed
-            # history, gated on enabled tool names so documented inactive examples survive. With
-            # Auto-Heal off the markup stays in the real prompt, so the count keeps it too.
-            _count_auto_heal = (
-                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
-            )
-            _count_history_gate = _display_tool_name_gate(tools_to_use)
-            openai_messages = [dict(msg) for msg in openai_messages]
-            for _msg in openai_messages:
-                if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                    _msg["content"] = _strip_tool_xml_for_display(
-                        _msg["content"],
-                        auto_heal_tool_calls = _count_auto_heal,
-                        enabled_tool_names = _count_history_gate,
-                    ).strip()
-
-    # Render the template in the caller's reasoning mode, exactly as the completion
-    # paths do. Anything omitted here falls back to the load-time
-    # --chat-template-kwargs, so a Think / Preserve Thinking toggle moved off the
-    # launch default would price a prompt the next request never sends.
-    _count_tpl_kwargs = None
-    _reasoning_kwargs_for = getattr(llama_backend, "_request_reasoning_kwargs", None)
-    if _reasoning_kwargs_for is not None:
-        _count_tpl_kwargs = _reasoning_kwargs_for(
-            payload.enable_thinking,
-            payload.reasoning_effort,
-            payload.preserve_thinking,
-        )
-    # Sent only when there is something to say, so a request with no reasoning fields
-    # keeps the exact call the counter has always taken.
-    _count_tpl_arg = {"chat_template_kwargs": _count_tpl_kwargs} if _count_tpl_kwargs else {}
-
-    # Whose tokenizer counted, in the shape the status endpoint publishes: another client's
-    # auto-switch can move the tokenizer without the caller's captured checkpoint changing.
-    _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
     try:
         count = await asyncio.to_thread(
             llama_backend.count_chat_tokens,
@@ -14353,20 +14226,13 @@ async def chat_count_tokens(
             None,
             openai_tools,
             strict = True,
-            **_count_tpl_arg,
         )
     except Exception:
         raise HTTPException(
             status_code = 503,
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
-    # A switch landing mid-count leaves the total attributable to neither model.
-    if _llama_status_checkpoint_id(llama_backend) != _tokenizer_model:
-        raise HTTPException(
-            status_code = 503,
-            detail = "The loaded model changed while counting tokens.",
-        )
-    return JSONResponse(content = {"input_tokens": int(count), "model": _tokenizer_model})
+    return JSONResponse(content = {"input_tokens": int(count)})
 
 
 @router.post("/messages/count_tokens")
@@ -16524,7 +16390,9 @@ def _build_openai_passthrough_body(
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
-    tools = _passthrough_client_tools(payload)
+    tools = payload.tools
+    if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):
+        tools = None
     # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
     # preserve_thinking) via chat_template_kwargs so the Jinja template renders
     # in the caller's mode, gated on the active template's capabilities exactly

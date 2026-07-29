@@ -12603,21 +12603,39 @@ class LlamaCppBackend:
         system = None,
         tools = None,
         strict: bool = False,
-        chat_template_kwargs: Optional[dict] = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
-        Non-strict callers keep the historical best-effort behavior and return 0
-        when no count is available. Strict callers (public count_tokens endpoints)
-        raise instead, since the text-only fallback is an estimate, not a count.
-
-        ``chat_template_kwargs`` is the reasoning mode the matching completion would
-        send; omitting it renders the load-time ``--chat-template-kwargs`` default.
+        Non-strict callers keep the historical best-effort behavior and receive
+        0 when a count cannot be determined. Strict callers (public count_tokens
+        endpoints) get an exception instead of a successful-looking zero when
+        tokenizer/template calls fail or a multimodal prompt would fall back to a
+        text-only approximation.
         """
         if not self.is_loaded:
             if strict:
                 raise RuntimeError("llama-server is not loaded")
             return 0
+
+        def _has_non_text_content(content) -> bool:
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        continue
+                    if not isinstance(block, dict):
+                        return True
+                    if isinstance(block.get("text"), str):
+                        continue
+                    return True
+            return False
+
+        def _has_non_text_prompt_parts() -> bool:
+            if _has_non_text_content(system):
+                return True
+            for msg in messages or []:
+                if isinstance(msg, dict) and _has_non_text_content(msg.get("content", "")):
+                    return True
+            return False
 
         def _block_text(content) -> str:
             if isinstance(content, str):
@@ -12673,8 +12691,6 @@ class LlamaCppBackend:
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
-                    if chat_template_kwargs:
-                        template_body["chat_template_kwargs"] = chat_template_kwargs
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,
@@ -12687,10 +12703,10 @@ class LlamaCppBackend:
                 except Exception:
                     apply_template_failed = True
 
-                # The fallback drops role markers, special tokens and tool schemas (~30% of a
-                # six-turn two-tool prompt), so a strict caller errors rather than undercount.
-                if strict and apply_template_failed:
-                    raise RuntimeError("llama-server could not render the chat template")
+                if strict and apply_template_failed and _has_non_text_prompt_parts():
+                    raise RuntimeError(
+                        "cannot fall back to text-only token counting for multimodal messages"
+                    )
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a
                 # serialized form of the tools so they still contribute to the

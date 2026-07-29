@@ -172,7 +172,6 @@ function ModelSelectorTrigger({
     <PopoverTrigger asChild={true}>
       <button
         type="button"
-        data-testid="chat-model-selector"
         data-tour={dataTour}
         className={cn(
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",

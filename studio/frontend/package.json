@@ -13,8 +13,6 @@
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
-    "e2e": "playwright test -c e2e/playwright.config.ts",
-    "e2e:install": "playwright install chromium",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
@@ -91,13 +89,11 @@
     "hono": "4.12.25",
     "qs": "6.15.2",
     "ip-address": "10.1.1",
-    "brace-expansion@5.0.5": "5.0.6",
-    "fsevents": "2.3.3"
+    "brace-expansion@5.0.5": "5.0.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@eslint/js": "^9.39.1",
-    "@playwright/test": "^1.55.1",
     "@types/canvas-confetti": "^1.9.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.5.2",

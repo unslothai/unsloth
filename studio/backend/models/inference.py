@@ -1455,10 +1455,6 @@ class ChatCountTokensRequest(BaseModel):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
-    tools: Optional[list[dict]] = Field(
-        None,
-        description = "Optional OpenAI tool definitions included in the prompt",
-    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
@@ -1474,30 +1470,6 @@ class ChatCountTokensRequest(BaseModel):
     rag_scope: Optional[dict] = Field(
         None,
         description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
-    )
-    auto_heal_tool_calls: Optional[bool] = Field(
-        None,
-        description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
-    )
-    # llama-server falls back to the load-time --chat-template-kwargs for anything the
-    # request omits, so a count that drops these renders the launch default while the
-    # completion renders the caller's mode. Same names/types as ChatCompletionRequest.
-    enable_thinking: Optional[bool] = Field(
-        None,
-        description = "[x-unsloth] Count with thinking/reasoning mode on or off",
-    )
-    reasoning_effort: Optional[
-        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
-    ] = Field(
-        None,
-        description = "[x-unsloth] Count with this reasoning effort level",
-    )
-    preserve_thinking: Optional[bool] = Field(
-        None,
-        description = (
-            "[x-unsloth] Count with historical <think> blocks kept in past assistant "
-            "turns (Qwen3.6 templates)"
-        ),
     )
 
 
