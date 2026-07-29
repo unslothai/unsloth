@@ -23,6 +23,7 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
+
 def _load() -> dict:
     if sys.version_info >= (3, 11):
         import tomllib
