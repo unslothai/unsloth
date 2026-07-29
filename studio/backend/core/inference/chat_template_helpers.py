@@ -10,16 +10,12 @@ native-chat-template fallback used by the transformers and MLX backends.
 import copy
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
-# Invisible separator: neutralized markup still looks like the original tag but no
-# longer matches structural parsers or special tokens (#7066). U+2060 WORD JOINER,
-# not U+200B ZERO WIDTH SPACE: U+200B is line-break class ZW, so a neutralized tag
-# could wrap mid-tag; WORD JOINER (class WJ) forbids that break (#7334).
-_THINK_NEUTRAL_ZW = "\u2060"
 _GEMMA_CHANNEL_START = "<|channel>"
 _GEMMA_THOUGHT_OPEN = "<|channel>thought"
 _GEMMA_THOUGHT_CLOSE = "<channel|>"
@@ -29,682 +25,116 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
 
-# Markers that must not reach a non-assistant turn (user / system / tool) as raw
-# text, or templates / think extractors / stop sequences read it as markup.
-_NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
-    (_THINK_CLOSE, f"</{_THINK_NEUTRAL_ZW}think>"),
-    (_THINK_OPEN, f"<{_THINK_NEUTRAL_ZW}think>"),
-    ("<|im_start|>", f"<|{_THINK_NEUTRAL_ZW}im_start|>"),
-    ("<|im_end|>", f"<|{_THINK_NEUTRAL_ZW}im_end|>"),
-    # Gemma-4 GGUF thinking sentinels: raw, they inject a fake thought channel
-    # (#7066). A no-op for other templates.
-    (_GEMMA_CHANNEL_START, f"<|{_THINK_NEUTRAL_ZW}channel>"),
-    (_GEMMA_THOUGHT_CLOSE, f"<{_THINK_NEUTRAL_ZW}channel|>"),
-    # The same templates (assets/chat_templates/gemma-4*.jinja) delimit every turn,
-    # tool block and tool result with these and quote schema strings with <|"|>:
-    # raw, they end their own block or forge a model / tool_response one (#7066).
-    ("<|turn>", f"<|{_THINK_NEUTRAL_ZW}turn>"),
-    ("<turn|>", f"<{_THINK_NEUTRAL_ZW}turn|>"),
-    ("<|tool_call>", f"<|{_THINK_NEUTRAL_ZW}tool_call>"),
-    ("<tool_call|>", f"<{_THINK_NEUTRAL_ZW}tool_call|>"),
-    ("<|tool_response>", f"<|{_THINK_NEUTRAL_ZW}tool_response>"),
-    ("<tool_response|>", f"<{_THINK_NEUTRAL_ZW}tool_response|>"),
-    ("<|tool>", f"<|{_THINK_NEUTRAL_ZW}tool>"),
-    ("<tool|>", f"<{_THINK_NEUTRAL_ZW}tool|>"),
-    # Qwen renders the same two blocks with plain XML tags instead
-    # (unsloth/chat_templates.py qwen3/qwen2.5: assistant calls as
-    # <tool_call>{...}</tool_call>, tool results as <tool_response>...</tool_response>),
-    # so raw ones close their own block or forge a call / result (#7334). Qwen3 also
-    # reads a user turn wrapped in the tool_response pair as a tool result, which
-    # moves last_query_index and republishes the previous turn's <think> block.
-    ("<tool_call>", f"<{_THINK_NEUTRAL_ZW}tool_call>"),
-    ("</tool_call>", f"</{_THINK_NEUTRAL_ZW}tool_call>"),
-    ("<tool_response>", f"<{_THINK_NEUTRAL_ZW}tool_response>"),
-    ("</tool_response>", f"</{_THINK_NEUTRAL_ZW}tool_response>"),
-    # gemma-4.jinja turns thinking on with <|think|> in the first system turn, so a
-    # raw one in non-assistant text switches reasoning mode.
-    ("<|think|>", f"<|{_THINK_NEUTRAL_ZW}think|>"),
-    ('<|"|>', f'<|{_THINK_NEUTRAL_ZW}"|>'),
-    # Llama-3 turn delimiters (chat_eos.py / tool_call_parser.py treat them as turn
-    # ends): raw, they close their own turn and inject a fake assistant one,
-    # ``<|eot_id|><|start_header_id|>assistant`` (#7066).
-    ("<|eot_id|>", f"<|{_THINK_NEUTRAL_ZW}eot_id|>"),
-    ("<|start_header_id|>", f"<|{_THINK_NEUTRAL_ZW}start_header_id|>"),
-    ("<|end_header_id|>", f"<|{_THINK_NEUTRAL_ZW}end_header_id|>"),
-    # The remaining chat_eos turn-end tokens (Llama tool turns, Gemma, Phi,
-    # OpenChat) plus Gemma's turn opener, same hole as <|eot_id|>.
-    # test_neutralize_covers_every_turn_end_token pins this against chat_eos.
-    ("<|eom_id|>", f"<|{_THINK_NEUTRAL_ZW}eom_id|>"),
-    ("<end_of_turn>", f"<{_THINK_NEUTRAL_ZW}end_of_turn>"),
-    ("<start_of_turn>", f"<{_THINK_NEUTRAL_ZW}start_of_turn>"),
-    ("<|end_of_turn|>", f"<|{_THINK_NEUTRAL_ZW}end_of_turn|>"),
-    ("<|end|>", f"<|{_THINK_NEUTRAL_ZW}end|>"),
-    # Harmony / gpt-oss message and channel delimiters (developers.openai.com
-    # "OpenAI Harmony Response Format"; unsloth/chat_templates.py gptoss_template
-    # renders a user turn as <|start|>user<|message|>{content}<|end|>). Only
-    # <|end|> was covered by the Phi entry above, so the rest arrived raw and
-    # "<|start|>assistant<|channel|>final<|message|>..." forged a whole assistant
-    # final channel inside the user turn (#7334).
-    ("<|start|>", f"<|{_THINK_NEUTRAL_ZW}start|>"),
-    ("<|message|>", f"<|{_THINK_NEUTRAL_ZW}message|>"),
-    ("<|channel|>", f"<|{_THINK_NEUTRAL_ZW}channel|>"),
-    ("<|constrain|>", f"<|{_THINK_NEUTRAL_ZW}constrain|>"),
-    # Both are harmony stop tokens, so either ends the turn it lands in.
-    ("<|call|>", f"<|{_THINK_NEUTRAL_ZW}call|>"),
-    ("<|return|>", f"<|{_THINK_NEUTRAL_ZW}return|>"),
-    # Zephyr / Phi-3 open turns with a bare role sentinel instead of a header pair,
-    # so these ARE the turn boundary there ("<|user|>\n" + content + eos_token):
-    # raw, an EOS followed by "<|assistant|>" tokenizes as a forged model turn.
-    ("<|user|>", f"<|{_THINK_NEUTRAL_ZW}user|>"),
-    ("<|assistant|>", f"<|{_THINK_NEUTRAL_ZW}assistant|>"),
-    ("<|system|>", f"<|{_THINK_NEUTRAL_ZW}system|>"),
+# Chat-template control markup that must not reach the prompt as raw text from a
+# user / system / tool turn. Left alone, a literal "</think>" pasted into a user
+# message ends the model's reasoning block early and the rest of the thought
+# leaks into the visible answer, and a literal
+# "<|start|>assistant<|channel|>final<|message|>" inside a tool result forges a
+# whole assistant turn (#7066).
+#
+# One lookahead over the three shapes the templates actually emit, so a single
+# sub() can break every marker by inserting one space after the "<":
+#   <|name|> / <|name>   ChatML, Llama-3, Harmony/gpt-oss, Zephyr/Phi-3, Gemma-4
+#   <name>   / </name>   Qwen tool XML, Gemma turn delimiters, think tags
+#   <name|>              Gemma-4 closing delimiters
+# The name list is deliberately closed: bare words that are ordinary markup
+# elsewhere ("<end>", "<user>", "<div>", "List<String>") only match in the
+# pipe-delimited shape, so real HTML/XML in a message is untouched. The bare
+# shapes that do match ("<think>", "<tool_call>", "<start_of_turn>") are
+# template delimiters in their own right, so they are broken even inside a code
+# fence, which is the same trade the structural parsers make.
+_CONTROL_MARKUP = re.compile(
+    r"<(?="
+    r"\|(?:(?:start|end)_header_id|tool(?:_call|_response)?|end(?:_of_turn)?"
+    r"|im_(?:start|end)|assistant|constrain|channel|message|eo[tm]_id"
+    r"|return|system|start|think|turn|user|call|\")\|?>"
+    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|think)>"
+    r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
+    r")"
+)
+
+# The turn-boundary subset, for replayed ASSISTANT content. That text is
+# client-controlled just like a user turn, and a raw boundary in it truncates
+# that turn or forges a new one, so the boundaries still have to go. Everything
+# else stays byte-identical: the assistant's own think / channel / tool markup is
+# structural, and rewriting it would corrupt the transcript the template
+# re-renders. Harmony opens every message with <|start|> and stops on <|call|> /
+# <|return|>, and Zephyr / Phi-3 open a turn with a bare <|user|> / <|assistant|>
+# / <|system|>, so those count as boundaries too (#7066).
+_TURN_BOUNDARY_MARKUP = re.compile(
+    r"<(?="
+    r"\|(?:(?:start|end)_header_id|im_(?:start|end)|end(?:_of_turn)?|eo[tm]_id"
+    r"|assistant|return|system|start|turn|user|call)\|?>"
+    r"|(?:start|end)_of_turn>"
+    r"|turn\|>"
+    r")"
 )
 
 
-def neutralize_think_markup(text: str) -> str:
-    """Neutralize structural ``<think>`` / ``</think>`` inside free text.
+def neutralize_control_markup(text: str) -> str:
+    """Break chat-template control markup in free text by spacing out the "<".
 
-    Used when wrapping ``reasoning_content`` into synthetic think tags or when
-    a mid-thought literal close must stay inside the reasoning drawer (#7066).
+    "</think>" becomes "< /think>": still readable, but no longer a delimiter to
+    the template, the think extractor or the stop-sequence matcher (#7066). The
+    space is visible to the user, which is the deliberate cost of keeping this to
+    one substitution.
     """
-    if not text or (_THINK_OPEN not in text and _THINK_CLOSE not in text):
+    if not text or "<" not in text:
         return text
-    return text.replace(_THINK_CLOSE, f"</{_THINK_NEUTRAL_ZW}think>").replace(
-        _THINK_OPEN, f"<{_THINK_NEUTRAL_ZW}think>"
-    )
-
-
-def think_markup_holdback(text: str) -> int:
-    """Trailing chars that may be a prefix of a think marker (split-chunk safe)."""
-    markers = (_THINK_CLOSE, _THINK_OPEN)
-    max_marker = max(len(marker) for marker in markers)
-    for size in range(min(len(text), max_marker - 1), 0, -1):
-        suffix = text[-size:]
-        if any(marker.startswith(suffix) for marker in markers):
-            return size
-    return 0
-
-
-def neutralize_think_markup_streaming(buffer: str, *, finalize: bool = False) -> tuple[str, str]:
-    """Neutralize complete think markers in *buffer*, retaining a trailing holdback.
-
-    Returns ``(emit, remaining_buffer)`` for streaming ``reasoning_content`` chunks
-    that may split a literal ``</think>`` across SSE boundaries (#7066).
-    """
-    if not buffer:
-        return "", ""
-    if finalize:
-        return neutralize_think_markup(buffer), ""
-    keep = think_markup_holdback(buffer)
-    if keep == len(buffer):
-        return "", buffer
-    emit = buffer[:-keep] if keep else buffer
-    remaining = buffer[-keep:] if keep else ""
-    return neutralize_think_markup(emit), remaining
-
-
-def neutralize_non_assistant_control_markup(text: str) -> str:
-    """Neutralize think + ChatML control markers in user/system/tool text (#7066)."""
-    return _neutralize_markers(text, _NON_ASSISTANT_CONTROL_MARKERS)
-
-
-def _neutralize_markers(text: str, markers) -> str:
-    if not text:
-        return text
-    out = text
-    for src, dst in markers:
-        if src in out:
-            out = out.replace(src, dst)
-    return out
-
-
-# Neutralized in assistant content too: replayed history is client-controlled, and
-# a raw boundary there truncates that turn or injects a new one. The assistant's
-# own think / channel / tool markup is structural and stays (#7066).
-_TURN_BOUNDARY_NAMES = frozenset(
-    {
-        "<|im_start|>",
-        "<|im_end|>",
-        "<|eot_id|>",
-        "<|eom_id|>",
-        "<|start_header_id|>",
-        "<|end_header_id|>",
-        "<start_of_turn>",
-        "<end_of_turn>",
-        "<|end_of_turn|>",
-        "<|end|>",
-        "<|turn>",
-        "<turn|>",
-        # Harmony opens every message with <|start|> and stops on <|call|> /
-        # <|return|>, so all three are turn boundaries in replayed assistant text
-        # too. Its <|channel|> / <|message|> header pair is that turn's own
-        # structural markup, so it stays, like the Gemma channel pair (#7334).
-        "<|start|>",
-        "<|call|>",
-        "<|return|>",
-        # Zephyr / Phi-3 open a turn with these alone, so they are that template's
-        # turn boundary and must not survive assistant replay.
-        "<|user|>",
-        "<|assistant|>",
-        "<|system|>",
-    }
-)
-_TURN_BOUNDARY_MARKERS: tuple[tuple[str, str], ...] = tuple(
-    pair for pair in _NON_ASSISTANT_CONTROL_MARKERS if pair[0] in _TURN_BOUNDARY_NAMES
-)
+    return _CONTROL_MARKUP.sub("< ", text)
 
 
 def neutralize_turn_boundary_markup(text: str) -> str:
-    """Neutralize only the turn-boundary sentinels, for assistant text (#7066)."""
-    return _neutralize_markers(text, _TURN_BOUNDARY_MARKERS)
-
-
-# Every marker except the think tags. A think tag only ever reaches the PROMPT and
-# the think parser reads model OUTPUT, so one there is inert; the rest are turn /
-# tool / channel boundaries that do change how the prompt parses (#7334).
-_STRUCTURAL_MARKERS: tuple[tuple[str, str], ...] = tuple(
-    pair for pair in _NON_ASSISTANT_CONTROL_MARKERS if pair[0] not in (_THINK_OPEN, _THINK_CLOSE)
-)
-
-
-# Entries REFERENCE declared property names, not prose. Keys are preserved, so
-# rewriting these would name a property the schema no longer declares (OpenAI
-# strict mode rejects it; Gemini needs every ``propertyOrdering`` entry valid) (#7066).
-_SCHEMA_NAME_LIST_KEYS = frozenset({"required", "propertyOrdering"})
-# Same, one level deeper: {"dependentRequired": {"a": ["b"]}}. The object-valued
-# (sub-schema) form of ``dependencies`` is prose-bearing, so it still gets walked.
-_SCHEMA_NAME_MAP_KEYS = frozenset({"dependentRequired", "dependencies"})
-# Pointers and their anchors: "#/$defs/<name>" must keep matching the $defs key it
-# names, which this pass leaves alone (#7066).
-_SCHEMA_REF_KEYS = frozenset({"$ref", "$dynamicRef", "$id", "$anchor", "$dynamicAnchor", "$schema"})
-# Values the model must reproduce byte for byte: llama.cpp compiles const/enum into
-# literal GBNF rules and pattern into a regex rule (common/json-schema-to-grammar.cpp)
-# and constrains sampling with them, so a rewrite makes the decoder emit the REWRITTEN
-# value and nothing maps it back. It also buys nothing: a </think> here only reaches
-# the prompt, and the think parser reads model OUTPUT (#7334).
-_SCHEMA_VALUE_KEYS = frozenset({"const", "default", "enum", "examples", "pattern"})
-# Maps a CALLER-CHOSEN name to a sub-schema, so a property genuinely called "enum"
-# or "pattern" must not be read as the keyword and skip neutralization (#7334).
-_SCHEMA_SUBSCHEMA_MAP_KEYS = frozenset(
-    {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
-)
-
-
-def _is_schema_name_list(item) -> bool:
-    return isinstance(item, list) and all(isinstance(entry, str) for entry in item)
-
-
-def _is_schema_name_reference(key, item) -> bool:
-    """True when ``item`` under ``key`` lists property names, not prompt text."""
-    if not isinstance(key, str):
-        return False
-    if key in _SCHEMA_REF_KEYS:
-        return isinstance(item, str)
-    return key in _SCHEMA_NAME_LIST_KEYS and _is_schema_name_list(item)
-
-
-def _is_schema_constrained_value(key) -> bool:
-    """True when ``key`` holds a value the model must emit exactly, not prose."""
-    return isinstance(key, str) and key in _SCHEMA_VALUE_KEYS
-
-
-def _is_schema_dependency_map(key, item) -> bool:
-    """True for ``dependencies`` / ``dependentRequired``: name -> names or schema."""
-    return isinstance(key, str) and key in _SCHEMA_NAME_MAP_KEYS and isinstance(item, dict)
-
-
-def _neutralize_schema_dependency_map(value):
-    """Walk a dependency map, preserving its name-list entries individually.
-
-    Draft-7 ``dependencies`` may mix name arrays with sub-schemas, so the arrays
-    are kept as references while the sub-schemas still go through the walk.
-    """
-    changed = False
-    out = {}
-    for key, item in value.items():
-        if _is_schema_name_list(item):
-            out[key] = item
-            continue
-        new_item = neutralize_control_markup_deep(item, schema = True)
-        if new_item is not item and new_item != item:
-            changed = True
-        out[key] = new_item
-    return out if changed else value
-
-
-def _neutralize_argument_key(key):
-    """Neutralize a turn sentinel in a tool-call ARGUMENT name.
-
-    gemma-4.jinja emits ``{{ key }}`` raw inside its ``<|tool_call>`` block, so
-    ``q<tool_call|><|turn>model`` closes the call and forges a model turn (#7334).
-    Rewriting is safe here even though the schema pass preserves property keys:
-    :func:`schema_control_markup_conflict` refuses any schema whose key carries a
-    sentinel, so no declared property can hold one, and this copy is prompt-bound
-    (execution reads the un-neutralized arguments). Never conditional on the
-    siblings: a payload carrying both spellings would then keep the raw one.
-    """
-    if not isinstance(key, str):
-        return key
-    return _neutralize_markers(key, _STRUCTURAL_MARKERS)
-
-
-def neutralize_control_markup_deep(
-    value,
-    *,
-    schema: bool = False,
-    named_keys: bool = False,
-):
-    """Recursively neutralize control markers in every string *value* of a
-    nested dict/list structure (tool schemas / tool-call argument JSON).
-
-    Schema keys are left untouched; only leaf strings are rewritten. Keys are
-    identifiers, not prompt prose: renaming a schema property would hand the
-    model an argument name the client never declared, and nothing maps it back
-    on the generated tool call. Tool-call ARGUMENT keys are the one exception -
-    see :func:`_neutralize_argument_key`. With ``schema = True`` the name lists mirroring
-    those keys (``required`` and friends) are preserved for the same reason, and
-    so are the constrained values (``enum`` and friends) the schema compiles
-    into the decoder's grammar; tool-call arguments carry neither, so their data
-    is always rewritten. ``named_keys`` marks a mapping whose own keys are
-    caller-chosen names (``properties`` and friends), so they are not read as
-    schema keywords. Returns the same object when nothing changed so callers
-    keep byte-identical payloads on the common path (#7066).
-    """
-    if isinstance(value, str):
-        return neutralize_non_assistant_control_markup(value)
-    if isinstance(value, dict):
-        changed = False
-        out = {}
-        keywords = schema and not named_keys
-        for key, item in value.items():
-            if keywords and (
-                _is_schema_name_reference(key, item) or _is_schema_constrained_value(key)
-            ):
-                out[key] = item
-                continue
-            if keywords and _is_schema_dependency_map(key, item):
-                new_item = _neutralize_schema_dependency_map(item)
-            else:
-                new_item = neutralize_control_markup_deep(
-                    item,
-                    schema = schema,
-                    named_keys = keywords and key in _SCHEMA_SUBSCHEMA_MAP_KEYS,
-                )
-            if new_item is not item and new_item != item:
-                changed = True
-            new_key = key if schema else _neutralize_argument_key(key)
-            if new_key != key:
-                changed = True
-            out[new_key] = new_item
-        return out if changed else value
-    if isinstance(value, list):
-        changed = False
-        out = []
-        for item in value:
-            new_item = neutralize_control_markup_deep(item, schema = schema)
-            if new_item is not item and new_item != item:
-                changed = True
-            out.append(new_item)
-        return out if changed else value
-    return value
-
-
-def _neutralize_tool_entry(tool):
-    """Neutralize one tool declaration, keeping its own ``name`` byte-exact.
-
-    A tool's name is the identifier the CLIENT dispatches on, not prose: the
-    model echoes it back in the tool call and nothing maps it back before the
-    call is returned, so a rewritten ``search<tool|>`` reaches the client as
-    ``search<U+2060tool|>`` and matches no registered tool (#7334). Preserved
-    like a property key, which also hands the name to
-    :func:`schema_control_markup_conflict`, so one carrying a turn sentinel is
-    refused instead of silently renamed. Covers both spellings: OpenAI's
-    ``function.name`` and Anthropic's top-level ``name``.
-    """
-    if not isinstance(tool, dict):
-        return neutralize_control_markup_deep(tool, schema = True)
-    changed = False
-    out = {}
-    for key, item in tool.items():
-        if key == "name" and isinstance(item, str):
-            out[key] = item
-            continue
-        if key == "function" and isinstance(item, dict):
-            new_item = _neutralize_tool_entry(item)
-        else:
-            new_item = neutralize_control_markup_deep(item, schema = True)
-        if new_item is not item and new_item != item:
-            changed = True
-        out[key] = new_item
-    return out if changed else tool
-
-
-def neutralize_tools_control_markup(tools):
-    """Neutralize think / ChatML control markers in client tool schemas (#7066).
-
-    Tool function descriptions and parameter prose are rendered into the chat
-    template as prompt text, so a schema containing ``</think>`` or
-    ``<|im_start|>`` would otherwise bypass message-level neutralization.
-
-    Two categories are preserved verbatim instead. ``required`` /
-    ``propertyOrdering`` name the declared properties, whose keys this pass
-    leaves alone, so rewriting one would point the schema at a property it no
-    longer declares. ``enum`` / ``const`` / ``default`` / ``examples`` /
-    ``pattern`` carry values, and a schema is not only prompt text: llama-server
-    compiles it into the GBNF grammar that constrains tool-call sampling, so
-    rewriting one makes the decoder emit the rewritten value and nothing maps it
-    back before the call reaches the client. Prose keeps its rewrite because a
-    ``</think>`` in the PROMPT is harmless anyway - the think parser reads model
-    OUTPUT - while a turn sentinel there is not (#7334). The tool's own name is
-    an identifier too - see :func:`_neutralize_tool_entry`.
-    """
-    if not tools:
-        return tools
-    if not isinstance(tools, list):
-        return neutralize_control_markup_deep(tools, schema = True)
-    changed = False
-    out = []
-    for tool in tools:
-        new_tool = _neutralize_tool_entry(tool)
-        if new_tool is not tool and new_tool != tool:
-            changed = True
-        out.append(new_tool)
-    return out if changed else tools
-
-
-# A think tag in a schema is inert (see _STRUCTURAL_MARKERS) and must not fail a
-# request; a byte-exact schema string keeping any other marker is refused. Shares
-# _STRUCTURAL_MARKERS with the argument-key rewrite so the two cannot drift.
-_SCHEMA_REJECTED_MARKERS: tuple[str, ...] = tuple(src for src, _ in _STRUCTURAL_MARKERS)
-
-
-def _string_with_rejected_markup(value) -> Optional[str]:
-    """First string in ``value`` (keys included) still carrying a turn sentinel."""
-    if isinstance(value, str):
-        return value if any(src in value for src in _SCHEMA_REJECTED_MARKERS) else None
-    if isinstance(value, dict):
-        for key, item in value.items():
-            hit = _string_with_rejected_markup(key) or _string_with_rejected_markup(item)
-            if hit is not None:
-                return hit
-        return None
-    if isinstance(value, list):
-        for item in value:
-            hit = _string_with_rejected_markup(item)
-            if hit is not None:
-                return hit
-    return None
-
-
-def schema_control_markup_conflict(tools) -> Optional[str]:
-    """First tool-schema string that keeps a raw turn sentinel, or None.
-
-    Identifiers (property keys, ``required`` and friends) and grammar-constrained
-    values (``enum`` and friends) are forwarded byte-exact, so anything the
-    neutralizer leaves is what actually reaches the prompt. gemma-4.jinja splices
-    both straight into its ``<|tool>`` declaration block, where a raw ``<tool|>``
-    ends the declaration and the rest of the name forges a whole model turn.
-    Neither can be rewritten without breaking the schema contract, so a request
-    carrying one is refused instead (#7066).
-    """
-    if not tools:
-        return None
-    return _string_with_rejected_markup(neutralize_tools_control_markup(tools))
-
-
-def _neutralize_tool_arguments_json(args: str) -> str:
-    """Neutralize a JSON-string argument payload through the keyed deep walk.
-
-    A plain string rewrite would also hit the object keys with the think tags the
-    key pass keeps, and disagree with the parsed-dict path. Payloads without a
-    marker keep their exact bytes; only a payload that has one is parsed and
-    re-serialized (#7066).
-    """
-    neutral = neutralize_non_assistant_control_markup(args)
-    if neutral == args:
-        return args
-    try:
-        parsed = json.loads(args)
-    except (TypeError, ValueError):
-        return neutral  # not JSON: nothing to key-preserve, rewrite the text
-    if not isinstance(parsed, (dict, list)):
-        return neutral
-    cleaned = neutralize_control_markup_deep(parsed)
-    if cleaned is parsed:
-        return args
-    return json.dumps(cleaned, ensure_ascii = False)
-
-
-def neutralize_tool_call_arguments(tool_calls):
-    """Neutralize control markers inside assistant tool calls.
-
-    Assistant prose keeps its real ``<think>`` structure, but a replayed
-    ``tool_calls[].function.arguments`` string is user/model-derived data that
-    must not smuggle a literal ``</think>`` or ``<|im_start|>`` into the next
-    chat template (#7066). The call ``id`` gets the same treatment: several
-    native templates render it, and the rewrite is deterministic, so it still
-    matches the ``tool_call_id`` of its result message, which
-    :func:`neutralize_control_markup_in_messages` rewrites the same way.
-    Returns the same list when nothing changed.
-    """
-    if not isinstance(tool_calls, list) or not tool_calls:
-        return tool_calls
-    changed = False
-    out = []
-    for call in tool_calls:
-        if isinstance(call, dict):
-            call_id = call.get("id")
-            if isinstance(call_id, str) and call_id:
-                new_id = neutralize_non_assistant_control_markup(call_id)
-                if new_id != call_id:
-                    call = {**call, "id": new_id}
-                    changed = True
-            fn = call.get("function")
-            # Gemma-4 concatenates the name into the <|tool_call> block, so
-            # "lookup<tool_call|>" would close it. The deep schema sanitizer
-            # rewrites the same name on the tool definition side.
-            if isinstance(fn, dict) and isinstance(fn.get("name"), str):
-                new_name = neutralize_non_assistant_control_markup(fn["name"])
-                if new_name != fn["name"]:
-                    fn = {**fn, "name": new_name}
-                    call = {**call, "function": fn}
-                    changed = True
-            if isinstance(fn, dict) and fn.get("arguments") is not None:
-                args = fn["arguments"]
-                if isinstance(args, str):
-                    new_args = _neutralize_tool_arguments_json(args)
-                else:
-                    # On the retry path _normalize_tool_call_arguments() has
-                    # already parsed the JSON string, so a marker inside a parsed
-                    # value would render raw unless walked too (#7066).
-                    new_args = neutralize_control_markup_deep(args)
-                if new_args is not args and new_args != args:
-                    call = {**call, "function": {**fn, "arguments": new_args}}
-                    changed = True
-        out.append(call)
-    return out if changed else tool_calls
-
-
-def _split_marker_boundary(text: str, ahead: str, markers) -> bool:
-    """True when ``text`` and what follows only form a marker once joined.
-
-    Templates concatenate adjacent text parts with no separator and trim each
-    (``gemma-4.jinja:333-340``), so a marker cut across two parts survives the
-    per-part pass and is rebuilt in the rendered prompt (#7066).
-    """
-    tail, head = text.rstrip(), ahead.lstrip()
-    if not tail or not head:
-        return False
-    longest = max(len(src) for src, _ in markers) - 1
-    if longest <= 0:
-        return False
-    tail, head = tail[-longest:], head[:longest]
-    joined = tail + head
-    for src, _ in markers:
-        at = joined.find(src)
-        while at != -1:
-            # Only counts when it straddles the join; a marker inside either side
-            # alone was already neutralized by that part.
-            if at < len(tail) < at + len(src):
-                return True
-            at = joined.find(src, at + 1)
-    return False
-
-
-def _rendered_chunks(texts: list) -> tuple[list, list]:
-    """Split ``texts`` into what the template renders, plus per-part cursors.
-
-    Adjacent text parts are concatenated with no separator and each is trimmed
-    (``gemma-4.jinja:333-340``), so a marker can be split across THREE or more
-    of them (``</`` + ``thi`` + ``nk>``). Reading only the next part missed
-    those and rendered a raw sentinel, which is the injection this pass exists
-    to stop; the OpenAI schema allows any number of text parts per message
-    (#7334).
-
-    Returns the non-empty trimmed renderings and, for each part, where its
-    look-ahead starts in them. Building that suffix per part instead was
-    quadratic in part count, and the schema caps neither (#7334).
-    """
-    chunks: list = []
-    starts: list = []
-    for text in texts:
-        if isinstance(text, str):
-            chunk = text.strip()
-            if chunk:
-                chunks.append(chunk)
-        starts.append(len(chunks))
-    return chunks, starts
-
-
-def _rendered_lookahead(chunks: list, start: int, limit: int) -> str:
-    """The first ``limit`` chars ``chunks`` renders from ``start`` onwards.
-
-    Each chunk is cut to what is still wanted before the join. Appending it whole
-    and only then checking the total recopied a huge part once per BLANK part,
-    which all share one ``start``: 8k blanks before a 10 MB part copied ~80 GB
-    (#7334).
-    """
-    if limit <= 0:
-        return ""
-    out: list[str] = []
-    total = 0
-    for position in range(start, len(chunks)):
-        chunk = chunks[position][: limit - total]
-        out.append(chunk)
-        total += len(chunk)
-        if total >= limit:
-            break
-    return "".join(out)
-
-
-def neutralize_message_content_for_role(role: Optional[str], content):
-    """Apply control-markup neutralization to message content.
-
-    Assistant turns keep their structural think / channel / tool markup, but
-    even there the turn-boundary sentinels are neutralized: replayed history is
-    client-controlled and a raw one truncates that turn or injects a new one.
-    String content and OpenAI text parts are rewritten; other part types pass
-    through. Returns ``content`` unchanged when nothing needed rewriting.
-    """
-    rewrite = (
-        neutralize_turn_boundary_markup
-        if (role or "").strip().lower() == "assistant"
-        else neutralize_non_assistant_control_markup
-    )
-    if isinstance(content, str):
-        return rewrite(content)
-    if isinstance(content, list):
-        markers = (
-            _TURN_BOUNDARY_MARKERS
-            if (role or "").strip().lower() == "assistant"
-            else _NON_ASSISTANT_CONTROL_MARKERS
-        )
-        # Each part as the template renders it, so a marker cut across parts is
-        # spotted before the parts are rewritten.
-        texts = [
-            part if isinstance(part, str) else part.get("text") if isinstance(part, dict) else None
-            for part in content
-        ]
-        # The marker may straddle the seam, so that many following chars suffice.
-        lookahead = max((len(src) for src, _ in markers), default = 0)
-        chunks, starts = _rendered_chunks(texts)
-        changed = False
-        out = []
-        for index, part in enumerate(content):
-            # A neutral char at the seam breaks a marker only completed by what
-            # follows, leaving both parts' own text intact.
-            seam = ""
-            if isinstance(texts[index], str):
-                ahead = _rendered_lookahead(chunks, starts[index], lookahead)
-                if _split_marker_boundary(texts[index], ahead, markers):
-                    seam = _THINK_NEUTRAL_ZW
-            if isinstance(part, str):
-                new_part = rewrite(part) + seam
-                changed = changed or new_part != part
-                out.append(new_part)
-            elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                new_text = rewrite(part["text"]) + seam
-                if new_text != part["text"]:
-                    out.append({**part, "text": new_text})
-                    changed = True
-                else:
-                    out.append(part)
-            else:
-                out.append(part)
-        return out if changed else content
-    return content
-
-
-# Replayed thoughts: free text the template wraps in its own thinking delimiters,
-# never structural markup itself (#7066). ``thinking`` is the Harmony / gpt-oss
-# spelling, spliced between <|channel|>analysis<|message|> and <|end|>
-# (unsloth/chat_templates.py gptoss_template), and /inference/generate/stream
-# takes raw message dicts, so it reaches the renderer verbatim (#7334).
-_ASSISTANT_REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking")
+    """Break only the turn-boundary sentinels, for replayed assistant text (#7066)."""
+    if not text or "<" not in text:
+        return text
+    return _TURN_BOUNDARY_MARKUP.sub("< ", text)
 
 
 def neutralize_control_markup_in_messages(messages: list) -> list:
-    """Return a copy of ``messages`` with non-assistant control markup neutralized.
+    """Neutralize control markup in message content (#7066).
 
-    No-op (returns the same list object) when nothing changes, so callers can
-    keep byte-identical prompts on the common path.
+    User / system / tool turns lose every control marker. Assistant turns lose
+    only the turn boundaries and keep their structural think / channel / tool
+    markup, because replayed history legitimately holds the model's own
+    "<think>" and "<|channel|>" and rewriting those would corrupt the transcript
+    the template re-renders.
+
+    Returns the same list object when nothing changed, so the common prompt stays
+    byte-for-byte what it was before.
     """
     if not messages:
         return messages
     changed = False
     out: list = []
     for msg in messages:
-        if not isinstance(msg, dict):
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(msg, dict) or not content:
             out.append(msg)
             continue
-        content = msg.get("content")
-        new_content = neutralize_message_content_for_role(msg.get("role"), content)
-        content_changed = new_content is not content and new_content != content
-        # A replayed thought is free text the template wraps in its own delimiters
-        # (gemma-4: between <|channel>thought and <channel|>), so a literal marker
-        # inside it closes that channel early; `content` keeps real tags (#7066).
-        # ``tool_call_id`` and ``name`` (the tool_response fallback Gemma-4 splices
-        # in when no call id matches) get the same rewrite as the ``id`` /
-        # ``function.name`` of the call they answer, so the pairs still match.
-        scalar_updates = {}
-        for field in (*_ASSISTANT_REASONING_FIELDS, "tool_call_id", "name"):
-            value = msg.get(field)
-            if isinstance(value, str) and value:
-                new_value = neutralize_non_assistant_control_markup(value)
-                if new_value != value:
-                    scalar_updates[field] = new_value
-        # Tool-call arguments are data, not prose, so they are neutralized even
-        # though assistant content is preserved (#7066).
-        tool_calls = msg.get("tool_calls")
-        new_tool_calls = neutralize_tool_call_arguments(tool_calls)
-        tool_calls_changed = new_tool_calls is not tool_calls and new_tool_calls != tool_calls
-        if content_changed or tool_calls_changed or scalar_updates:
-            new_msg = {**msg, **scalar_updates}
-            if content_changed:
-                new_msg["content"] = new_content
-            if tool_calls_changed:
-                new_msg["tool_calls"] = new_tool_calls
-            out.append(new_msg)
+        rewrite = (
+            neutralize_turn_boundary_markup
+            if (msg.get("role") or "").strip().lower() == "assistant"
+            else neutralize_control_markup
+        )
+        if isinstance(content, str):
+            new_content = rewrite(content)
+        elif isinstance(content, list):
+            # The UI sends OpenAI-style parts; rewrite each part's text on its own
+            # and pass non-text parts (images, audio) through untouched.
+            new_content = [
+                {**part, "text": rewrite(part["text"])}
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+                else rewrite(part)
+                if isinstance(part, str)
+                else part
+                for part in content
+            ]
+        else:
+            out.append(msg)
+            continue
+        if new_content != content:
+            out.append({**msg, "content": new_content})
             changed = True
         else:
             out.append(msg)
@@ -1076,6 +506,9 @@ def apply_chat_template_for_generation(
     """Render the chat prompt. Try richest kwargs first; drop one
     group at a time on TypeError. Jinja / missing-variable errors
     propagate."""
+    # Shared choke point for the transformers and MLX backends: a user / system /
+    # tool turn must not smuggle template control markup into the prompt (#7066).
+    messages = neutralize_control_markup_in_messages(messages)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
@@ -1114,13 +547,10 @@ def apply_chat_template_for_generation(
         raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
 
     try:
-        return _render(neutralize_control_markup_in_messages(messages))
+        return _render(messages)
     except Exception:
         # Retry with repairs applied cumulatively. Originals render first, so
-        # working templates stay byte-identical. Repairs run on the RAW messages
-        # because ``_normalize_tool_call_arguments`` parses ``arguments`` as JSON
-        # and the neutralizer injects word joiners; neutralization is applied last,
-        # right before each render, as on the first attempt above.
+        # working templates stay byte-identical.
         candidates: list = []
         normalized = _normalize_tool_call_arguments(messages)
         if normalized is not messages:
@@ -1130,7 +560,7 @@ def apply_chat_template_for_generation(
             candidates.append(split)
         for candidate in candidates:
             try:
-                return _render(neutralize_control_markup_in_messages(candidate))
+                return _render(candidate)
             except Exception:
                 continue
         raise

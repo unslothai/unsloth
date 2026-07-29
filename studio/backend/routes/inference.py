@@ -8648,8 +8648,6 @@ async def openai_chat_completions(
                         param = "tools",
                     ),
                 )
-        if not _schema_never_reaches_template(payload):
-            _reject_schema_control_markup(payload.tools)
 
     # Reject a system-only chat before any automatic load so an invalid request
     # never swaps or reloads the resident model (as /responses and /messages
@@ -9210,9 +9208,6 @@ async def openai_chat_completions(
             payload,
             llama_backend.is_vision,
         )
-        if system_prompt:
-            from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
-            system_prompt = neutralize_non_assistant_control_markup(system_prompt)
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
         if audio_b64:
@@ -9269,17 +9264,6 @@ async def openai_chat_completions(
             tools_to_use = await _select_request_tools(
                 payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
             )
-            # An enabled MCP server's inputSchema is third-party too, and it is
-            # appended after payload.tools was checked, so re-run the check over
-            # the selection: its byte-exact parts reach the template raw (#7334).
-            _mcp_schema_error = _schema_control_markup_error(tools_to_use)
-            if _mcp_schema_error is not None:
-                raise _reject(400, _mcp_schema_error)
-            # Selected tools (client + MCP schemas) render into the chat template
-            # and the nudge as prompt text, as on the non-loop path (#7066).
-            from core.inference.chat_template_helpers import neutralize_tools_control_markup
-
-            tools_to_use = neutralize_tools_control_markup(tools_to_use)
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools
             # the caller didn't opt into. Callers who omit enabled_tools still
@@ -10675,16 +10659,6 @@ async def openai_chat_completions(
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
-        # Same MCP schema check as the GGUF branch: appended after payload.tools
-        # was validated, and its byte-exact parts render raw (#7334).
-        _sf_mcp_schema_error = _schema_control_markup_error(_sf_tools_to_use)
-        if _sf_mcp_schema_error is not None:
-            raise _reject(400, _sf_mcp_schema_error)
-        # Selected tools (client + MCP schemas) reach local template rendering
-        # and the nudge, as on the non-loop path (#7066).
-        from core.inference.chat_template_helpers import neutralize_tools_control_markup
-
-        _sf_tools_to_use = neutralize_tools_control_markup(_sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
         # survived, so a model-emitted built-in call can't piggy-back on the
         # empty allow-list.
@@ -11108,10 +11082,11 @@ async def openai_chat_completions(
         and _sf_features.get("supports_tools", False)
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
-    # Tool list backing the healer. Finalized below to the schemas actually
-    # RENDERED, which is what the model echoes back in text-form markup.
-    _sf_heal_tools = payload.tools
-    _sf_heal = None
+    _sf_heal = (
+        heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)
+        if _sf_client_tools
+        else None
+    )
     if _sf_client_tools:
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
@@ -11143,22 +11118,6 @@ async def openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
-        if gen_kwargs.get("tools"):
-            # Local templates render tool schemas as prompt text, so a schema
-            # carrying </think> would bypass the #7066 message protection above.
-            from core.inference.chat_template_helpers import neutralize_tools_control_markup
-            gen_kwargs["tools"] = neutralize_tools_control_markup(gen_kwargs["tools"])
-        # Build the promotion allowlist and the argument-coercion schemas from the
-        # advertised names, not the raw request ones: neutralization rewrites
-        # function.name, so a model echoing the RENDERED name would otherwise match
-        # nothing and be left as prose. The forced choice is realigned the same way
-        # so it still narrows the allowlist to its tool (#7334).
-        _sf_heal_tools = gen_kwargs.get("tools") or payload.tools
-        _sf_heal = heal_gate(
-            payload.auto_heal_tool_calls,
-            _sf_heal_tools,
-            _align_forced_tool_choice(payload.tool_choice, _sf_heal_tools),
-        )
 
     # The potential tool context above is needed before server/client routing is
     # known. This standard path now has the exact schemas that will be rendered,
@@ -11214,7 +11173,7 @@ async def openai_chat_completions(
 
                 # Client-tool passthrough: heal text-form calls on the fly
                 # (None => relay verbatim).
-                healer = StreamToolCallHealer(_sf_heal, _sf_heal_tools) if _sf_heal else None
+                healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
                 heal_state = {"idx": 0}
 
                 prev_text = ""
@@ -11438,13 +11397,13 @@ async def openai_chat_completions(
                 _msg["reasoning_content"] = _reasoning_text
             _finish = "stop"
             if _sf_heal:
-                if heal_openai_message(_msg, _sf_heal, _sf_heal_tools):
+                if heal_openai_message(_msg, _sf_heal, payload.tools):
                     _finish = "tool_calls"
                 elif nudge_enabled(payload.nudge_tool_calls):
                     _data = {
                         "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
                     }
-                    if nudge_should_retry(_data, _sf_heal, _sf_heal_tools):
+                    if nudge_should_retry(_data, _sf_heal, payload.tools):
                         # A failed retry must not 500 the request; keep the first
                         # response (GGUF nudge parity). The retry's generate()
                         # overwrites stats_holder, so save the first attempt's stats
@@ -11466,7 +11425,7 @@ async def openai_chat_completions(
                             retry_msg = {"role": "assistant", "content": _retry_visible}
                             if _retry_reasoning:
                                 retry_msg["reasoning_content"] = _retry_reasoning
-                            if heal_openai_message(retry_msg, _sf_heal, _sf_heal_tools):
+                            if heal_openai_message(retry_msg, _sf_heal, payload.tools):
                                 _visible_text, _msg, _finish = (
                                     _retry_visible,
                                     retry_msg,
@@ -12478,9 +12437,6 @@ def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]
 
 _RESPONSES_THINK_OPEN = "<think>"
 _RESPONSES_THINK_CLOSE = "</think>"
-# How much answer text may pile up behind a close tag held for an unclosed ```
-# fence before the hold is abandoned and the tag read as structural (#7334).
-_RESPONSES_FENCE_HOLD_LIMIT = 64 * 1024
 _RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
@@ -12502,256 +12458,11 @@ def _coerce_responses_reasoning_text(value: Any) -> str:
 
 def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
     """Number of trailing chars to retain because they may start a marker."""
-    if not text or not markers:
-        return 0
-    max_marker = max(len(m) for m in markers) - 1
-    for size in range(min(len(text), max_marker), 0, -1):
+    for size in range(min(len(text), max(len(m) for m in markers) - 1), 0, -1):
         suffix = text[-size:]
-        for marker in markers:
-            if marker.startswith(suffix):
-                return size
-            # A partial close tag may follow an opening quote (`echo "</thi`).
-            # The prefix after the quote must be NON-EMPTY (startswith("") is
-            # always True): a bare trailing quote is not marker context, and
-            # holding it reorders visible text vs a following tool-call delta.
-            if len(suffix) > 1 and suffix[0] in "\"'`" and marker.startswith(suffix[1:]):
-                return size
+        if any(marker.startswith(suffix) for marker in markers):
+            return size
     return 0
-
-
-def _should_hold_quoted_think_close(
-    buffer: str,
-    close_idx: int,
-    prev_char: str = "",
-) -> bool:
-    """Wait for a closing quote when a close tag follows an opening quote.
-
-    ``prev_char`` is the last char of the already-consumed span and supplies the
-    flank when the tag sits at buffer start. Providers emit ``</think>`` as one
-    atomic token, so a quoted mention normally arrives as the three deltas
-    ``"`` / ``</think>`` / ``"``; reading only ``buffer`` would then miss the
-    opening quote and split the mention out of reasoning (#7066).
-
-    A lone trailing backslash counts as "not arrived" too: the escaped quote of
-    ``\\"</think>\\"`` can split right after the backslash, and classifying then
-    would call the mention structural and emit the rest as answer text (#7334).
-
-    The char AFTER the closing quote is part of the flank as well, because it is
-    what separates a prose mention from an answer that opens with a quote (see
-    ``_quoted_close_opens_answer``), so a buffer ending on the closing quote is
-    still one char short of a decision. A buffer ending INSIDE that quote's run
-    is short too: the run's length is what pairs it against the leading one (see
-    ``_quoted_close_runs_differ``), and both it and the char past it decide the
-    verdict, so wait for the run to end (#7334).
-    """
-    if close_idx < 0:
-        return False
-    before = buffer[close_idx - 1] if close_idx > 0 else prev_char
-    # ``"" in "\"'`"`` is True, so an empty flank must be rejected explicitly.
-    if not before or before not in "\"'`":
-        return False
-    end = close_idx + len(_RESPONSES_THINK_CLOSE)
-    if end >= len(buffer):
-        return True
-    if buffer[end] == "\\" and end + 1 >= len(buffer):
-        return True
-    quote = end + 1 if buffer[end] == "\\" else end
-    if quote >= len(buffer) or buffer[quote] != before:
-        return False
-    return quote + _delim_run_after(buffer, quote, before) >= len(buffer)
-
-
-def _is_word_char(ch: str) -> bool:
-    return bool(ch) and ch.isalnum()
-
-
-def _trailing_backslash_run(text: str, carry: int = 0) -> int:
-    """Consecutive backslashes ending *text*, continuing a ``carry`` from before."""
-    run = len(text) - len(text.rstrip("\\"))
-    return carry + run if run == len(text) else run
-
-
-def _count_quote_delimiters(
-    text: str,
-    ch: str,
-    prev: str = "",
-    nxt: str = "",
-    prev_escapes: int = 0,
-) -> int:
-    """Occurrences of ``ch`` in *text* that act as quote DELIMITERS.
-
-    Two kinds of occurrence are not delimiters:
-
-    * an apostrophe between two word chars is punctuation, so counting the one
-      in "It's" flipped the parity of a genuinely quoted tag and
-      ``It's discussing '</think>'`` read as the structural close;
-    * a quote escaped by an odd backslash run sits INSIDE a string literal, so
-      counting it flipped the parity of ``He wrote "use \\"</think>\\" here"``.
-
-    Both leaked the rest of the thought into the visible answer (#7334).
-    ``prev`` / ``nxt`` / ``prev_escapes`` are the context flanking *text*, which
-    the streaming counters carry across chunk boundaries.
-    """
-    if not text:
-        return 0
-    if ch != "'" and not prev_escapes and "\\" not in text:
-        return text.count(ch)  # nothing to exclude on the common path
-    count = 0
-    escapes = prev_escapes
-    last = len(text) - 1
-    for i, char in enumerate(text):
-        if char == "\\":
-            escapes += 1
-            continue
-        if char == ch and escapes % 2 == 0:
-            left = text[i - 1] if i else prev
-            right = text[i + 1] if i < last else nxt
-            if ch != "'" or not (_is_word_char(left) and _is_word_char(right)):
-                count += 1
-        escapes = 0
-    return count
-
-
-def _delim_run_before(
-    text: str,
-    idx: int,
-    ch: str,
-    carry: int = 0,
-) -> int:
-    """Length of the run of ``ch`` ending at ``text[idx - 1]``.
-
-    ``carry`` continues a run that started in already-consumed text, so the
-    streaming extractor gets the same answer as a whole-buffer scan (#7334).
-    """
-    i = idx
-    while i > 0 and text[i - 1] == ch:
-        i -= 1
-    run = idx - i
-    return run + carry if i == 0 else run
-
-
-def _delim_run_after(text: str, idx: int, ch: str) -> int:
-    """Length of the run of ``ch`` starting at ``text[idx]``."""
-    i = idx
-    end = len(text)
-    while i < end and text[i] == ch:
-        i += 1
-    return i - idx
-
-
-def _quoted_close_run(buffer: str, close_idx: int) -> tuple[int, int]:
-    """``(index of the quote after the tag, length of its run)``.
-
-    An escaping backslash between the tag and its quote is skipped, exactly as
-    the flank checks do. The run is what pairs against the leading one.
-    """
-    end = close_idx + len(_RESPONSES_THINK_CLOSE)
-    quote = end + 1 if end < len(buffer) and buffer[end] == "\\" else end
-    if quote >= len(buffer):
-        return quote, 0
-    return quote, _delim_run_after(buffer, quote, buffer[quote])
-
-
-def _quoted_close_runs_differ(
-    buffer: str,
-    close_idx: int,
-    before: str,
-    lead_carry: int = 0,
-) -> bool:
-    """True when the delimiter runs flanking ``</think>`` are not a matched pair.
-
-    A quoted mention pairs delimiter RUNS of EQUAL length: CommonMark defines a
-    code span as a backtick string closed by "a backtick string of equal
-    length", so ``` `</think>```python ``` pairs a 1-run against a 3-run and is
-    no span at all - that ``` opens the ANSWER's fence, which means the tag was
-    the structural close. Raw-character parity cannot see this on its own:
-    well-formed markdown reaches an ODD backtick count through a
-    nested-backtick span (``` ``a ` b`` ```) or through a closing fence longer
-    than its opener, both legal, and reading the tag as a mention then hid the
-    entire visible answer in the thinking drawer (#7334).
-
-    ``lead_carry`` continues a leading run that began in text the streaming
-    extractor has already folded into its counters.
-    """
-    lead = _delim_run_before(buffer, close_idx, before, lead_carry)
-    _, trail = _quoted_close_run(buffer, close_idx)
-    return lead != trail
-
-
-def _quoted_close_opens_answer(buffer: str, close_idx: int) -> bool:
-    """True when the quote after ``</think>`` OPENS the answer, not a mention.
-
-    A prose mention closes its quote and then reads on as prose, so the closing
-    quote is followed by a space or punctuation (``"</think>" is the tag``). A
-    closing quote running straight into a word char is instead the first char of
-    the ANSWER (``"</think>"The answer is 42.``), which means the tag was the
-    structural close. Reading that as a mention put the whole visible answer
-    inside the thinking drawer, so the user saw an empty reply (#7334).
-
-    The deciding char sits after the WHOLE trailing run, so ``` ``</think>``The
-    answer``` is judged on the ``T``, not on the second backtick.
-    """
-    quote, run = _quoted_close_run(buffer, close_idx)
-    return quote + run < len(buffer) and _is_word_char(buffer[quote + run])
-
-
-def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
-    """True when ``</think>`` looks like quoted/code content, not a block end.
-
-    Mid-reasoning mentions of the close tag (echoing the user, discussing a
-    training script) must stay inside the thinking drawer (#7066). A structural
-    close is typically bare — not wrapped in quotes or backticks.
-
-    Both flanks must be non-empty: Python's ``"" in needles`` is True, so an
-    empty before/after (close at buffer start / end) must not count as quoted.
-    The flanks must also be the SAME char: a quoted mention is symmetric, while
-    mismatched flanks (``` `</think>"yes" ```) are a real close whose answer
-    happens to start with another quote char, and calling that literal hid the
-    whole visible answer in the drawer (#7334). An escaping backslash between
-    the tag and its closing quote (``\\"</think>\\"``) is skipped, so a mention
-    quoted inside a string literal still reads as symmetric.
-    """
-    end = close_idx + len(_RESPONSES_THINK_CLOSE)
-    before = buffer[close_idx - 1] if close_idx > 0 else ""
-    after_escaped = end < len(buffer) and buffer[end] == "\\"
-    after = buffer[end] if end < len(buffer) else ""
-    if after_escaped and end + 1 < len(buffer):
-        after = buffer[end + 1]
-    if not before or not after:
-        return False
-    if before == after and before in "\"'`" and _quoted_close_opens_answer(buffer, close_idx):
-        # Closing quote runs into a word: it opens the ANSWER, so the tag was
-        # structural.
-        return False
-    if (
-        before == after
-        and before in "\"'`"
-        and _quoted_close_runs_differ(buffer, close_idx, before)
-    ):
-        # Mismatched delimiter RUN lengths are not a quoted mention either.
-        return False
-    if before == after and before in "\"'`":
-        # A symmetric ESCAPED pair is a serialized quotation (``\"</think>\"``),
-        # literal on its own without an outer span (#7334).
-        if after_escaped and _trailing_backslash_run(buffer[: close_idx - 1]) % 2 == 1:
-            return True
-        # Otherwise literal only when the leading quote OPENS a span (odd count
-        # before the tag); an even count closed a prior span, so this is structural.
-        count = _count_quote_delimiters(buffer[:close_idx], before, nxt = buffer[close_idx])
-        if count % 2 == 1:
-            return True
-    return False
-
-
-def _think_close_is_literal_in_span(span: str, close_idx: int) -> bool:
-    """Literal-close check with span context: fenced code plus quote parity.
-
-    A close tag inside an open ``` fence is sample text; otherwise fall back
-    to the quote-flank + parity heuristic.
-    """
-    if span.count("```", 0, close_idx) % 2 == 1:
-        return True
-    return _is_literal_think_close(span, close_idx)
 
 
 class _ResponsesReasoningExtractor:
@@ -12764,202 +12475,11 @@ class _ResponsesReasoningExtractor:
         reasoning_prefilled: bool = False,
     ) -> None:
         self._buffer = ""
-        # Classification context for the CURRENT reasoning block. The literal
-        # </think> check only needs ``` fence and flanking-quote parity over the
-        # consumed text, so keep O(1) counters instead of the consumed string
-        # (which made a long block O(n^2)).
-        self._reset_span()
         # reasoning_prefilled: the template inserts an unclosed <think>, so output begins inside
         # the block; start in reasoning until the first close tag. Existing callers pass False.
         self._in_reasoning = reasoning_prefilled
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
-
-    def _reset_span(self) -> None:
-        """Clear the consumed-span parity state at a structural block boundary."""
-        # Completed "```" fences in the consumed span plus the greedy carry (0-2
-        # trailing backticks), reproducing ``consumed.count("```")`` incrementally.
-        self._fence_count = 0
-        self._fence_state = 0
-        # Quote counts over the consumed span (backtick doubles as a quote flank).
-        self._quote_counts = {'"': 0, "'": 0, "`": 0}
-        # An apostrophe is only a delimiter outside a word, so one at the very end
-        # of the span waits for its right neighbour (next chunk or live buffer).
-        # Holds the char to its LEFT while it waits, else None (#7334).
-        self._pending_apostrophe_prev = None
-        # Backslashes ending the consumed span: a quote opening the live buffer
-        # is escaped when this run plus the buffer's own is odd (#7334).
-        self._trailing_backslashes = 0
-        # Whether ``_span_last_char`` is itself escaped, for a tag at buffer[0].
-        self._span_last_char_escaped = False
-        # Last char of the consumed span: the ``before`` flank for a close tag at
-        # buffer start (index 0).
-        self._span_last_char = ""
-        # Run length of ``_span_last_char``, so a leading delimiter run split
-        # across a delta boundary still pairs against the trailing one (#7334).
-        self._span_trailing_run = 0
-        # Resume points for the two look-ahead scans behind a held close tag
-        # ("does a ``` follow" / "does another close tag follow that ```"): the
-        # buffer only grows at the tail, so rescanning it every delta is O(n^2).
-        self._fence_scan_from = 0
-        self._close_scan_from = 0
-
-    def _add_to_span(self, chunk: str) -> None:
-        """Fold a newly consumed chunk into the O(1) parity counters."""
-        if not chunk:
-            return
-        escapes = self._trailing_backslashes
-        self._quote_counts['"'] += _count_quote_delimiters(chunk, '"', prev_escapes = escapes)
-        self._quote_counts["`"] += _count_quote_delimiters(chunk, "`", prev_escapes = escapes)
-        # Resolve the apostrophe held at the previous edge now its right neighbour
-        # has arrived, then count this chunk minus its own edge.
-        if self._pending_apostrophe_prev is not None:
-            if not (_is_word_char(self._pending_apostrophe_prev) and _is_word_char(chunk[0])):
-                self._quote_counts["'"] += 1
-            self._pending_apostrophe_prev = None
-        # An escaped trailing apostrophe is no delimiter, so it needs no right
-        # neighbour and stays inside the counted body.
-        if chunk.endswith("'") and _trailing_backslash_run(chunk[:-1], escapes) % 2 == 0:
-            body = chunk[:-1]
-            self._pending_apostrophe_prev = body[-1] if body else self._span_last_char
-            nxt = "'"
-        else:
-            body, nxt = chunk, ""
-        self._quote_counts["'"] += _count_quote_delimiters(
-            body, "'", prev = self._span_last_char, nxt = nxt, prev_escapes = escapes
-        )
-        self._span_last_char_escaped = _trailing_backslash_run(chunk[:-1], escapes) % 2 == 1
-        self._trailing_backslashes = _trailing_backslash_run(chunk, escapes)
-        # Carry pending backticks so a fence straddling the boundary counts
-        # exactly as ``str.count("```")`` over the concatenation.
-        combined = "`" * self._fence_state + chunk
-        self._fence_count += combined.count("```")
-        self._fence_state = (len(combined) - len(combined.rstrip("`"))) % 3
-        # Trailing delimiter run, continued across the boundary when the whole chunk
-        # is that same char (#7334).
-        run = len(chunk) - len(chunk.rstrip(chunk[-1]))
-        if run == len(chunk) and self._span_last_char == chunk[-1]:
-            self._span_trailing_run += run
-        else:
-            self._span_trailing_run = run
-        self._span_last_char = chunk[-1]
-
-    def _rebase_scan_cursors(self, shift: int) -> None:
-        """Shift the look-ahead cursors after the buffer is trimmed by ``shift``."""
-        self._fence_scan_from = max(0, self._fence_scan_from - shift)
-        self._close_scan_from = max(0, self._close_scan_from - shift)
-
-    def _fence_parity_odd(self, text: str) -> bool:
-        """Odd ``` fence count over consumed span + ``text`` (inside a fence)."""
-        combined = "`" * self._fence_state + text
-        return (self._fence_count + combined.count("```")) % 2 == 1
-
-    def _fence_unresolved_at_close(self, buffer: str, close_idx: int) -> bool:
-        """True when the close tag sits in a ``` fence still open at buffer end.
-
-        Distinguishes a ``</think>`` genuinely wrapped by a *closed* code fence
-        (a real literal, e.g. a fenced example) from one after which no fence
-        close has arrived yet. In the latter case the fence decision must be
-        deferred mid-stream, and fall back to structural at EOF, so an unclosed
-        fence in the reasoning cannot swallow the whole visible answer (#7066).
-
-        Global parity over the whole buffer is wrong here, because a *separate*
-        later unclosed fence (odd total) would then misflag an earlier close
-        that its own fence already closed (#7334). A bare "some ``` follows the
-        tag" is wrong too: that marker may open a fenced block in the visible
-        ANSWER rather than close the reasoning-side fence, which hid the whole
-        answer in the drawer for ``draft ```</think>Answer: ```js ... ``` ``.
-        The fence is proven closed only when reasoning continues past that
-        marker to a further close tag.
-        """
-        if not self._fence_parity_odd(buffer[:close_idx]):
-            return False
-        # Resume from the last scanned offset (never before the tag) so a held tag
-        # does not re-scan the growing buffer every delta (#7334).
-        start = close_idx if close_idx > self._fence_scan_from else self._fence_scan_from
-        fence_at = buffer.find("```", start)
-        if fence_at == -1:
-            # No further ``` at all: the enclosing fence never closes.
-            # Overlap by 2 so a fence straddling this boundary is still found.
-            nxt = len(buffer) - 2
-            self._fence_scan_from = nxt if nxt > close_idx else close_idx
-            return True
-        # Park the cursor ON the marker: it is re-found every delta while the tag
-        # is held, and a cursor on a real ``` cannot skip one, so that is O(1).
-        if fence_at > self._fence_scan_from:
-            self._fence_scan_from = fence_at
-        after = fence_at + 3
-        scan = after if after > self._close_scan_from else self._close_scan_from
-        if buffer.find(_RESPONSES_THINK_CLOSE, scan) != -1:
-            return False
-        # Overlap so a close tag straddling this boundary is still found.
-        nxt = len(buffer) - (len(_RESPONSES_THINK_CLOSE) - 1)
-        self._close_scan_from = nxt if nxt > after else after
-        return True
-
-    def _think_close_is_literal(self, buffer: str, close_idx: int) -> bool:
-        """Literal-close check over consumed span + ``buffer[:close_idx]``.
-
-        Equivalent to the old ``_think_close_is_literal_in_span(span, idx)`` with
-        ``span = consumed + buffer`` and ``idx = len(consumed) + close_idx``, but
-        the consumed portion is summarized by parity counters and only the
-        bounded live ``buffer[:close_idx]`` is scanned.
-        """
-        # Fenced-code parity: consumed fences plus any completed by the pending
-        # carry meeting the live buffer, then fences fully inside the buffer.
-        if self._fence_parity_odd(buffer[:close_idx]):
-            # Deferring grows the held buffer quadratically, so a fence that never
-            # closes stalls the whole answer. Past the cap resolve structurally,
-            # the same verdict finish() would reach, just earlier.
-            return len(buffer) - close_idx <= _RESPONSES_FENCE_HOLD_LIMIT
-        end = close_idx + len(_RESPONSES_THINK_CLOSE)
-        before = buffer[close_idx - 1] if close_idx > 0 else self._span_last_char
-        after_escaped = end < len(buffer) and buffer[end] == "\\"
-        after = buffer[end] if end < len(buffer) else ""
-        if after_escaped and end + 1 < len(buffer):
-            after = buffer[end + 1]
-        if not before or not after:
-            return False
-        if before == after and before in "\"'`" and _quoted_close_opens_answer(buffer, close_idx):
-            # Closing quote runs into a word: it opens the ANSWER, so the tag was
-            # structural.
-            return False
-        if before == after and before in "\"'`":
-            # Mismatched RUN lengths are no quoted mention (see
-            # _quoted_close_runs_differ); the leading run may have started in the
-            # consumed span, so carry its trailing run in.
-            carry = self._span_trailing_run if self._span_last_char == before else 0
-            if _quoted_close_runs_differ(buffer, close_idx, before, carry):
-                return False
-        if after_escaped and before == after and before in "\"'`":
-            # Symmetric escaped pair: a serialized quotation, literal even without
-            # an outer span (see _is_literal_think_close).
-            before_escaped = (
-                _trailing_backslash_run(buffer[: close_idx - 1], self._trailing_backslashes) % 2
-                == 1
-                if close_idx > 0
-                else self._span_last_char_escaped
-            )
-            if before_escaped:
-                return True
-        if before == after and before in "\"'`":
-            # An odd count of the flanking quote before the tag means it opens a
-            # span, so the close tag is quoted content, not a structural close.
-            count = self._quote_counts[before] + _count_quote_delimiters(
-                buffer[:close_idx],
-                before,
-                prev = self._span_last_char,
-                nxt = buffer[close_idx],
-                prev_escapes = self._trailing_backslashes,
-            )
-            if before == "'" and self._pending_apostrophe_prev is not None:
-                # The live buffer supplies the right neighbour the span's held
-                # apostrophe was waiting for.
-                if not (_is_word_char(self._pending_apostrophe_prev) and _is_word_char(buffer[0])):
-                    count += 1
-            if count % 2 == 1:
-                return True
-        return False
 
     def feed(
         self,
@@ -12970,11 +12490,6 @@ class _ResponsesReasoningExtractor:
         visible_parts: list[str] = []
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
         if structured_reasoning:
-            # This channel is not delimited by think markup, so a literal marker
-            # here is data: emit it verbatim. Rewriting buys no protection and
-            # corrupts output for clients that persist or compare reasoning. Only
-            # the synthetic <think> transport (llama_cpp.py), where the tag IS the
-            # delimiter, still neutralizes (#7334).
             reasoning_parts.append(structured_reasoning)
         if text:
             self._buffer += text
@@ -12987,56 +12502,10 @@ class _ResponsesReasoningExtractor:
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
-                    if _should_hold_quoted_think_close(
-                        self._buffer, close_idx, self._span_last_char
-                    ):
-                        # With the opening quote already consumed (tag at index 0)
-                        # nothing is emitted: the tag is held until the next delta
-                        # reveals its right flank.
-                        hold_start = close_idx - 1 if close_idx > 0 else 0
-                        reasoning_parts.append(
-                            self._buffer[:hold_start].replace(_RESPONSES_THINK_OPEN, "")
-                        )
-                        self._add_to_span(self._buffer[:hold_start])
-                        self._buffer = self._buffer[hold_start:]
-                        # Buffer re-based: the look-ahead cursors no longer apply.
-                        self._rebase_scan_cursors(hold_start)
-                        break
-                    # Quoted / backticked / fenced </think> is content (user
-                    # echo, script discussion), not the end of reasoning (#7066).
-                    if self._think_close_is_literal(self._buffer, close_idx):
-                        if self._fence_unresolved_at_close(self._buffer, close_idx):
-                            # The close sits in a ``` fence not yet closed, so defer:
-                            # emit reasoning up to the tag, buffer the rest. A later
-                            # fence close makes it literal; otherwise finish() falls
-                            # back to structural so it cannot hide the answer (#7066).
-                            reasoning_parts.append(
-                                self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
-                            )
-                            self._add_to_span(self._buffer[:close_idx])
-                            self._buffer = self._buffer[close_idx:]
-                            # Re-base the cursors onto the trimmed buffer: the tag
-                            # is now at index 0 and scanned text stays scanned.
-                            self._rebase_scan_cursors(close_idx)
-                            break
-                        from core.inference.chat_template_helpers import (
-                            neutralize_think_markup,
-                        )
-
-                        reasoning_parts.append(
-                            self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
-                        )
-                        reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
-                        consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
-                        self._add_to_span(self._buffer[:consumed])
-                        self._buffer = self._buffer[consumed:]
-                        self._rebase_scan_cursors(consumed)
-                        continue
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                     )
                     self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
-                    self._reset_span()
                     self._in_reasoning = False
                     continue
                 # Hold back a trailing partial of either marker: the close (clean split across chunks)
@@ -13048,9 +12517,7 @@ class _ResponsesReasoningExtractor:
                     break
                 emit = self._buffer[:-keep] if keep else self._buffer
                 reasoning_parts.append(emit.replace(_RESPONSES_THINK_OPEN, ""))
-                self._add_to_span(emit)
                 self._buffer = self._buffer[-keep:] if keep else ""
-                self._rebase_scan_cursors(len(emit))
                 break
 
             open_idx = self._buffer.find(_RESPONSES_THINK_OPEN)
@@ -13062,7 +12529,6 @@ class _ResponsesReasoningExtractor:
             if open_idx != -1:
                 visible_parts.append(self._buffer[:open_idx])
                 self._buffer = self._buffer[open_idx + len(_RESPONSES_THINK_OPEN) :]
-                self._reset_span()
                 self._in_reasoning = True
                 continue
 
@@ -13078,91 +12544,7 @@ class _ResponsesReasoningExtractor:
 
         return "".join(reasoning_parts), "".join(visible_parts)
 
-    def _resolve_held_reasoning(self, remaining: str) -> tuple[str, str, bool]:
-        """Resolve held close tags when no further bytes can classify them.
-
-        Returns ``(reasoning, visible, closed)``. A tag ending the held text has
-        no trailing quote, so a quoted thought ending in a structural close
-        parses as the block end (not raw text), and a tag inside a ``` fence
-        that never closed falls back to structural so an unclosed fence cannot
-        swallow the answer (#7066). ``closed`` reports whether a structural
-        close was reached, which is what ends the reasoning block.
-        """
-        reasoning_parts: list[str] = []
-        visible_parts: list[str] = []
-        closed = False
-        buf = remaining
-        while buf:
-            close_idx = buf.find(_RESPONSES_THINK_CLOSE)
-            if close_idx == -1:
-                reasoning_parts.append(buf.replace(_RESPONSES_THINK_OPEN, ""))
-                self._add_to_span(buf)
-                break
-            literal = self._think_close_is_literal(buf, close_idx)
-            if literal and self._fence_unresolved_at_close(buf, close_idx):
-                # The fence never closed and no more bytes can resolve it, so treat
-                # the close as structural rather than swallow the answer (#7066).
-                literal = False
-            if literal:
-                from core.inference.chat_template_helpers import (
-                    neutralize_think_markup,
-                )
-
-                reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
-                reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
-                consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
-                self._add_to_span(buf[:consumed])
-                buf = buf[consumed:]
-                continue
-            reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
-            closed = True
-            tail = buf[close_idx + len(_RESPONSES_THINK_CLOSE) :]
-            if tail:
-                # The block ended here, so the tail is ordinary markup again and a
-                # later <think> opens a new one. Stripping every marker instead
-                # flattened a second thought into the visible answer (#7334).
-                # Nothing more can arrive for this text, so run it through the
-                # normal machine and finalize, exactly as a live parse would.
-                self._in_reasoning = False
-                self._reset_span()
-                for part_reasoning, part_visible in (self.feed(tail), self.finish()):
-                    reasoning_parts.append(part_reasoning)
-                    visible_parts.append(part_visible)
-            break
-        return "".join(reasoning_parts), "".join(visible_parts), closed
-
-    def flush_pending(self) -> tuple[str, str]:
-        """Finalize the raw marker holdback as ``(reasoning, visible)``.
-
-        A marker cannot continue contiguously across a structured item boundary,
-        so whatever the holdback kept is ordinary text. Left in the buffer it is
-        emitted by :meth:`finish` instead, landing after the item that opened in
-        the meantime and reversing the model's own output order (#7334).
-
-        The holdback can also be a COMPLETE close tag whose verdict was deferred
-        (an unresolved ``` fence, or a quote flank that has not arrived). A
-        Responses item boundary is one-way -- the reasoning item keeps a lower
-        ``output_index`` than the call that just opened -- so the decision
-        cannot wait either. Resolve it exactly as :meth:`finish` would; treating
-        the whole tail as reasoning instead swallowed the visible preface before
-        the call and emitted a raw ``</think>`` inside the reasoning item.
-        """
-        held, self._buffer = self._buffer, ""
-        if not held:
-            return "", ""
-        # The buffer is gone, so the look-ahead cursors no longer apply.
-        self._rebase_scan_cursors(len(held))
-        if self._in_reasoning:
-            reasoning, visible, closed = self._resolve_held_reasoning(held)
-            if closed:
-                self._in_reasoning = False
-                self._reset_span()
-            return reasoning, visible
-        return "", held
-
     def finish(self) -> tuple[str, str]:
-        # Structured reasoning is emitted verbatim as it arrives, so only the
-        # think-marker holdback on the text channel can still be pending.
         if not self._buffer:
             return "", ""
         remaining = self._buffer
@@ -13170,11 +12552,8 @@ class _ResponsesReasoningExtractor:
         if not self._parse_think_markers:
             return "", remaining
         if self._in_reasoning:
-            # No more bytes are coming: resolve any held close tags now.
-            reasoning, visible, _closed = self._resolve_held_reasoning(remaining)
             self._in_reasoning = False
-            self._reset_span()
-            return reasoning, visible
+            return remaining.replace(_RESPONSES_THINK_OPEN, ""), ""
         return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
 
@@ -14194,32 +13573,6 @@ async def _responses_stream(
                             "delta": reasoning_delta,
                         },
                     )
-                if delta.get("tool_calls"):
-                    # Tool-call delta: flush the held think-marker prefix so the
-                    # reasoning item keeps its output_index before the call. A
-                    # marker cannot continue across an item boundary, so a quoted
-                    # prefix like `echo "</thi` is plain text and belongs first.
-                    _held_tail, _held_visible = extractor.flush_pending()
-                    if _held_visible:
-                        # The holdback is the TAIL of this delta, so it follows
-                        # what feed() already released; prepending it reversed
-                        # the model's own characters (`Answer </thi` came out as
-                        # `</thiAnswer `).
-                        visible_delta = visible_delta + _held_visible
-                    if _held_tail:
-                        for event in _ensure_reasoning_open():
-                            yield event
-                        full_reasoning += _held_tail
-                        yield _sse(
-                            "response.reasoning_text.delta",
-                            {
-                                "type": "response.reasoning_text.delta",
-                                "item_id": reasoning_state["item_id"],
-                                "output_index": reasoning_state["output_index"],
-                                "content_index": 0,
-                                "delta": _held_tail,
-                            },
-                        )
                 # Heal text-form tool calls in the visible stream (never in
                 # reasoning text): promoted calls join the structured tc loop
                 # below through the same state machinery, and healer events are
@@ -14683,10 +14036,6 @@ async def openai_responses(
                     param = "tool_choice",
                 ),
             )
-    # Same disabled-tool gate as chat: both /responses paths render through
-    # _build_openai_passthrough_body, which forwards no tools in this shape (#7334).
-    if not _schema_never_reaches_template(payload, messages):
-        _reject_schema_control_markup(payload.tools)
     # After input validation so a 400 never triggers a load. Switches the
     # streaming path; non-streaming re-checks via the idempotent chat handler.
     # require_vision rejects a swap to a text-only target before it runs, so an
@@ -14881,13 +14230,6 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
-    # The neutralizer below preserves property keys and grammar-constrained
-    # values, so a schema /messages refuses would otherwise still be rendered by
-    # /apply-template here and return a count for a request generation rejects
-    # (#7334). Same check, same place in the order: before the switch.
-    _reject_schema_control_markup(
-        [t if isinstance(t, dict) else t.model_dump() for t in payload.tools or []]
-    )
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
@@ -14923,17 +14265,7 @@ async def anthropic_count_tokens(
     openai_messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
-    from core.inference.chat_template_helpers import (
-        neutralize_control_markup_in_messages,
-        neutralize_tools_control_markup,
-    )
-
-    openai_messages = neutralize_control_markup_in_messages(openai_messages)
-    # Generation neutralizes tool schemas before rendering (see /v1/messages), so
-    # neutralize here too or the count reflects a different prompt (#7066).
-    openai_tools = (
-        neutralize_tools_control_markup(anthropic_tools_to_openai(payload.tools or [])) or None
-    )
+    openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
     try:
         count = await asyncio.to_thread(
@@ -15018,9 +14350,6 @@ async def anthropic_messages(
         (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
         or anthropic_schema_client_tool_kind(t) is not None
         for t in payload.tools or []
-    )
-    _reject_schema_control_markup(
-        [t if isinstance(t, dict) else t.model_dump() for t in payload.tools or []]
     )
     _explicit_server_tools = bool(requested_studio_tools) or (
         payload.enable_tools is True and _effective_enable_tools(payload) is not False
@@ -15127,9 +14456,6 @@ async def anthropic_messages(
     openai_messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
-    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
-
-    openai_messages = neutralize_control_markup_in_messages(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
     # endpoint matches /v1/chat/completions.
@@ -15175,14 +14501,9 @@ async def anthropic_messages(
     # The server-side agentic loop doesn't support multimodal input -- matches
     # the `not image_b64` gate in /v1/chat/completions. requested_studio_tools and
     # the mixed-mode rejection were computed before the switch above.
-    # Tool schemas render into the llama-server template as prompt text (as on the
-    # OpenAI passthrough path), so an Anthropic tool description carrying </think>
-    # would bypass the #7066 protection applied above to the translated messages.
-    from core.inference.chat_template_helpers import neutralize_tools_control_markup
-
     openai_client_tools = [
         tool
-        for tool in neutralize_tools_control_markup(anthropic_tools_to_openai(payload.tools or []))
+        for tool in anthropic_tools_to_openai(payload.tools or [])
         if tool.get("function", {}).get("name") not in requested_studio_tools
     ]
 
@@ -16201,89 +15522,6 @@ def _llama_compatible_tools(openai_tools):
     return compatible_tools
 
 
-def _schema_control_markup_error(tools):
-    """Error body for a tool schema whose byte-exact parts carry a turn sentinel.
-
-    Property keys, ``required`` and the grammar-constrained values reach the
-    template unchanged by design -- rewriting one would name a property the
-    schema no longer declares, or make the decoder emit a value nothing maps
-    back. gemma-4.jinja splices them straight into its ``<|tool>`` block, so a
-    raw ``<tool|>`` there ends the declaration and the rest forges a model turn.
-    ``None`` when the schemas are safe (#7066).
-    """
-    from core.inference.chat_template_helpers import schema_control_markup_conflict
-
-    offender = schema_control_markup_conflict(tools)
-    if offender is None:
-        return None
-    return openai_error_body(
-        "Invalid 'tools': a schema name or constrained value contains a reserved "
-        f"chat-template marker and cannot be forwarded safely: {offender[:120]!r}.",
-        status = 400,
-        code = "invalid_value",
-        param = "tools",
-    )
-
-
-def _reject_schema_control_markup(tools) -> None:
-    """400 before any load, like the other tool validation on this path (#7066)."""
-    detail = _schema_control_markup_error(tools)
-    if detail is not None:
-        raise HTTPException(status_code = 400, detail = detail)
-
-
-def _schema_never_reaches_template(payload, messages = None) -> bool:
-    """True when this request's tool schemas are dropped before rendering.
-
-    Refusing a byte-exact marker in a catalog nothing renders would fail a
-    request that explicitly disabled tools (#7334), so mirror the gate
-    ``_build_openai_passthrough_body`` applies to tool forwarding. Every other
-    consumer drops the catalog in at least this case: the safetensors branch
-    zeroes ``tools`` for any ``tool_choice="none"``, and ``_select_request_tools``
-    only ever returns Unsloth's own built-ins plus MCP tools, which carry their
-    own check where they are appended.
-
-    ``messages`` overrides ``payload.messages`` for /responses, whose own input
-    items are already normalised to the chat shape this reads.
-    """
-    if messages is None:
-        messages = payload.messages
-    return payload.tool_choice == "none" and not _has_openai_tool_history(messages)
-
-
-def _align_forced_tool_choice(tool_choice, tools):
-    """Point a forced ``tool_choice`` at the function name actually advertised.
-
-    Tool schemas are control-marker neutralized before they reach llama-server
-    (#7066), which rewrites ``function.name`` too. A ``tool_choice`` copied from
-    the request still carries the raw name, so llama-server was asked to force a
-    function it was never given and the forced dispatch missed (#7334). Only ever
-    rewrites a name that matches no advertised tool but whose neutralized form
-    does, so a legitimate choice is left byte-identical.
-    """
-    if not isinstance(tool_choice, dict):
-        return tool_choice
-    function = tool_choice.get("function")
-    name = function.get("name") if isinstance(function, dict) else None
-    if not isinstance(name, str) or not name:
-        return tool_choice
-    advertised = {
-        tool["function"]["name"]
-        for tool in tools or []
-        if isinstance(tool, dict)
-        and isinstance(tool.get("function"), dict)
-        and isinstance(tool["function"].get("name"), str)
-    }
-    if name in advertised:
-        return tool_choice
-    from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
-
-    aligned = neutralize_non_assistant_control_markup(name)
-    if aligned == name or aligned not in advertised:
-        return tool_choice
-    return {**tool_choice, "function": {**function, "name": aligned}}
-
-
 def _build_passthrough_payload(
     openai_messages,
     openai_tools,
@@ -16313,7 +15551,7 @@ def _build_passthrough_payload(
     if openai_tools:
         body["tools"] = _llama_compatible_tools(openai_tools)
         if tool_choice is not None:
-            body["tool_choice"] = _align_forced_tool_choice(tool_choice, body["tools"])
+            body["tool_choice"] = tool_choice
     if seed is not None:
         body["seed"] = seed
     if stream and stream_options is not None:
@@ -16441,15 +15679,8 @@ async def _anthropic_passthrough_stream(
         emitter = AnthropicPassthroughEmitter()
         # Promote text-form tool calls (declared client tools only) into
         # tool_use blocks; verbatim behavior when healing is off or no tools.
-        # tool_choice is already OpenAI-shaped but still spells the name as the
-        # client sent it, while openai_tools was neutralized, so realign it first
-        # or narrowing to the raw name empties the allowlist and healing is off
-        # for the whole request (#7334).
-        _allowed_tools = heal_gate(
-            auto_heal_tool_calls,
-            openai_tools,
-            _align_forced_tool_choice(tool_choice, openai_tools),
-        )
+        # tool_choice arrives here already converted to the OpenAI shape.
+        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
@@ -16697,13 +15928,8 @@ async def _anthropic_passthrough_non_streaming(
             )
 
         data = resp.json()
-        # OpenAI-shaped, but realigned onto the neutralized names before it gates
-        # healing, as on the streaming path (#7334).
-        _allowed_tools = heal_gate(
-            auto_heal_tool_calls,
-            openai_tools,
-            _align_forced_tool_choice(tool_choice, openai_tools),
-        )
+        # tool_choice arrives here already converted to the OpenAI shape.
+        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
@@ -17009,11 +16235,6 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
-    # So a literal </think> or <|im_start|> in the prompt cannot close a thinking
-    # block or inject ChatML turns when echoed mid-reasoning (#7066).
-    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
-
-    messages = neutralize_control_markup_in_messages(messages)
 
     if not payload.image_base64:
         return messages
@@ -17116,9 +16337,6 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
         }
         _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
-    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
-
-    messages = neutralize_control_markup_in_messages(messages)
     return messages, has_image
 
 
@@ -17149,19 +16367,11 @@ def _build_openai_passthrough_body(
     """
     messages = _openai_messages_for_passthrough(payload)
     system_prompt, _, _ = _extract_content_parts(payload.messages)
-    if system_prompt:
-        from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
-        system_prompt = neutralize_non_assistant_control_markup(system_prompt)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
     tools = payload.tools
     if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):
         tools = None
-    if tools:
-        # Tool schemas render into the llama-server template as prompt text, so a
-        # schema carrying </think> would bypass the #7066 protection.
-        from core.inference.chat_template_helpers import neutralize_tools_control_markup
-        tools = neutralize_tools_control_markup(tools)
     # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
     # preserve_thinking) via chat_template_kwargs so the Jinja template renders
     # in the caller's mode, gated on the active template's capabilities exactly

@@ -126,7 +126,6 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "<think>First</think>",
       structuredReasoningContinues: true,
-      closeOffsets: ["<think>First".length],
     },
   );
   assert.deepEqual(
@@ -137,7 +136,6 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "<think>Last thought</think>Answer",
       structuredReasoningContinues: false,
-      closeOffsets: ["<think>Last thought".length],
     },
   );
   assert.deepEqual(
@@ -148,37 +146,8 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "Preface<think>First thought</think>",
       structuredReasoningContinues: true,
-      closeOffsets: ["Preface<think>First thought".length],
     },
   );
-});
-
-test("a literal close tag in a structured thought cannot end the wrapper", () => {
-  // #7066: the model echoing "</think>" inside a reasoning part would close the
-  // synthetic wrapper early and push the rest of the thought into the answer.
-  const { text, closeOffsets } = extractDeltaText([
-    { type: "reasoning", text: "user wrote </think> here" },
-  ]);
-  assert.equal(text, "<think>user wrote </⁠think> here</think>");
-  assert.equal(text.indexOf("</think>"), closeOffsets[0]);
-  assert.equal(closeOffsets.length, 1);
-});
-
-test("backdates a close that was deferred until end of stream", () => {
-  // #7334: an unclosed ``` fence keeps the close tag deferred, so the group is
-  // still open at EOF. It ended when the tag arrived, not when the answer did.
-  let now = 1_770_000_000_000;
-  const tracker = createReasoningDurationTracker(() => now);
-
-  tracker.startGroup();
-  const closeArrivedAt = now + 2_000;
-  now += 30_000;
-  tracker.finishGroup(closeArrivedAt);
-
-  assert.deepEqual(tracker.metadata(), {
-    reasoningDuration: 2,
-    reasoningDurations: [2],
-  });
 });
 
 test("keeps a coalesced reasoning group growing across atomic blocks", () => {

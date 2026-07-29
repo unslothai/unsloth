@@ -86,11 +86,8 @@ import {
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
-  createScanResumeCache,
-  drainThinkMarkupBuffer,
   extractDeltaText,
   hasUnclosedThinkTag,
-  lastStructuralThinkCloseIndex,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import {
@@ -2889,41 +2886,6 @@ export function createOpenAIStreamAdapter(
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
-      let reasoningMarkupBuffer = "";
-      // Offsets of the `</think>` we append when closing a synthetic wrapper.
-      // Known, not inferred, so the parser must not re-derive them with the
-      // fence/quote heuristics: an unfinished ``` in the reasoning would then
-      // keep every answer delta in the drawer until the end (#7334).
-      const syntheticCloses = new Set<number>();
-      // When a close tag first appeared, for candidates deferred mid-stream: an
-      // unfinished ``` resolves only at end of stream, so the thinking timer
-      // would otherwise count the whole answer as thought time (#7334). Read
-      // back only for the index the final parse confirms.
-      const deferredCloseTimes = new Map<number, number>();
-      // `cumulativeText` only grows by appending (the one trim below cuts from
-      // the end), so the close-tag scan can resume across deltas instead of
-      // re-walking the buffer (#7334). One cache per call site: same span,
-      // different options.
-      const pollResume = createScanResumeCache();
-      const buildResume = createScanResumeCache();
-      // The resume slot is keyed on these callbacks by identity, so mint one per
-      // base: a fresh arrow per delta restarted the scan (#7334).
-      const knownCloseByBase = new Map<number, (index: number) => boolean>();
-      const knownCloseAt = (base: number): ((index: number) => boolean) => {
-        let known = knownCloseByBase.get(base);
-        if (!known) {
-          known = (index: number) => syntheticCloses.has(index + base);
-          knownCloseByBase.set(base, known);
-        }
-        return known;
-      };
-      // First report wins: the parser reports a candidate on the delta its scan
-      // first reaches it, which is when the tag arrived.
-      const recordDeferredClose = (index: number): void => {
-        if (!deferredCloseTimes.has(index)) {
-          deferredCloseTimes.set(index, Date.now());
-        }
-      };
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -2987,12 +2949,7 @@ export function createOpenAIStreamAdapter(
         }
         return parts;
       };
-      // `streaming` marks a mid-stream build: an unclosed ``` fence may still
-      // close later, so its close tags stay deferred until the final build (#7334).
-      const buildAssistantContent = (
-        rawText: string,
-        options?: { streaming?: boolean },
-      ) => {
+      const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
             const cursor = (part as PositionedToolCallPart).textCursor;
@@ -3015,13 +2972,8 @@ export function createOpenAIStreamAdapter(
 
         const appendTextThrough = (nextCursor: number) => {
           if (nextCursor <= textCursor) return;
-          const base = textCursor;
           assembled.push(
-            ...parseAssistantContent(rawText.slice(base, nextCursor), {
-              ...options,
-              isKnownClose: knownCloseAt(base),
-              resume: buildResume,
-            }),
+            ...parseAssistantContent(rawText.slice(textCursor, nextCursor)),
           );
           textCursor = nextCursor;
         };
@@ -3069,24 +3021,10 @@ export function createOpenAIStreamAdapter(
         return merged;
       };
       const closeReasoningContent = () => {
-        if (reasoningMarkupBuffer) {
-          const { emit } = drainThinkMarkupBuffer(reasoningMarkupBuffer, {
-            finalize: true,
-          });
-          reasoningMarkupBuffer = "";
-          if (emit) {
-            if (!reasoningContentOpen) {
-              cumulativeText += `<think>${emit}`;
-              reasoningContentOpen = true;
-            } else {
-              cumulativeText += emit;
-            }
-          }
+        if (reasoningContentOpen) {
+          cumulativeText += "</think>";
+          reasoningContentOpen = false;
         }
-        if (!reasoningContentOpen) return;
-        syntheticCloses.add(cumulativeText.length);
-        cumulativeText += "</think>";
-        reasoningContentOpen = false;
         reasoningDurationTracker.finishGroup();
       };
       // Anthropic document_citations payload, converted to Sources-panel
@@ -3782,9 +3720,7 @@ export function createOpenAIStreamAdapter(
                         argsText: partial.argsText,
                       };
                       yield {
-                        content: buildAssistantContent(cumulativeText, {
-                          streaming: true,
-                        }),
+                        content: buildAssistantContent(cumulativeText),
                         metadata: {
                           timing: buildTiming(
                             streamStartTime,
@@ -4079,9 +4015,7 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText, {
-                    streaming: true,
-                  }),
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -4126,13 +4060,10 @@ export function createOpenAIStreamAdapter(
                 }
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
-              // Normalize structured delta.content (mistral magistral). The
-              // wrapper closes it inserts are known boundaries, rebased below
-              // onto cumulativeText.
+              // Normalize structured delta.content (mistral magistral).
               const {
                 text: delta,
                 structuredReasoningContinues,
-                closeOffsets: deltaCloseOffsets,
               } = extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
@@ -4280,9 +4211,7 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText, {
-                    streaming: true,
-                  }),
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -4305,34 +4234,17 @@ export function createOpenAIStreamAdapter(
               }
 
               if (reasoning) {
-                // Start the group when reasoning first ARRIVES: a first delta
-                // that is only a marker prefix ("</thi") emits nothing, so waiting
-                // for the parsed part undercounted the thought (#7334).
-                if (
-                  !reasoningContentOpen &&
-                  !reasoningDurationTracker.hasActiveGroup
-                ) {
+                if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
-                }
-                // A mid-thought "</think>" (echoing the user) must not close the
-                // synthetic <think> wrapper early (#7066).
-                reasoningMarkupBuffer += reasoning;
-                const drained = drainThinkMarkupBuffer(reasoningMarkupBuffer);
-                reasoningMarkupBuffer = drained.buffer;
-                const safeReasoning = drained.emit;
-                if (safeReasoning) {
-                  if (!reasoningContentOpen) {
-                    cumulativeText += `<think>${safeReasoning}`;
-                    reasoningContentOpen = true;
-                  } else {
-                    cumulativeText += safeReasoning;
-                  }
+                  cumulativeText += `<think>${reasoning}`;
+                  reasoningContentOpen = true;
+                } else {
+                  cumulativeText += reasoning;
                 }
               }
               if (delta) {
-                closeReasoningContent();
-                for (const offset of deltaCloseOffsets) {
-                  syntheticCloses.add(cumulativeText.length + offset);
+                if (reasoningContentOpen) {
+                  closeReasoningContent();
                 }
                 cumulativeText += delta;
               }
@@ -4344,9 +4256,7 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              const assistantContent = buildAssistantContent(cumulativeText, {
-                streaming: true,
-              });
+              const assistantContent = buildAssistantContent(cumulativeText);
 
               // Fallback when no server-side reasoning_summary arrives.
               const parsedReasoningGroupCount =
@@ -4369,19 +4279,11 @@ export function createOpenAIStreamAdapter(
                   lastReasoningGroupTextLength(assistantContent),
                 );
               }
-              // A held-back marker prefix is still reasoning in flight, so the
-              // group must not close on the delta that splits a tag (#7334).
               if (
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
-                !reasoningMarkupBuffer &&
                 !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText, {
-                  streaming: true,
-                  isKnownClose: knownCloseAt(0),
-                  onDeferredClose: recordDeferredClose,
-                  resume: pollResume,
-                })
+                !hasUnclosedThinkTag(cumulativeText)
               ) {
                 reasoningDurationTracker.finishGroup();
               }
@@ -4497,19 +4399,8 @@ export function createOpenAIStreamAdapter(
           finalTokPerSec,
         );
 
-        // Finalize reasoning-only streams. A close deferred mid-stream ends the
-        // thought when it arrived, not at end of stream, once the final parse
-        // confirms it structural (#7334).
-        const confirmedClose = deferredCloseTimes.size
-          ? lastStructuralThinkCloseIndex(cumulativeText, {
-              isKnownClose: knownCloseAt(0),
-            })
-          : -1;
-        reasoningDurationTracker.finishGroup(
-          confirmedClose === -1
-            ? undefined
-            : deferredCloseTimes.get(confirmedClose),
-        );
+        // Finalize reasoning-only streams.
+        reasoningDurationTracker.finishGroup();
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),

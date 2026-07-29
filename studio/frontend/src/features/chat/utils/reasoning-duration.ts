@@ -184,12 +184,8 @@ export function createReasoningDurationTracker(
       finishGroupAt(now());
       activeIndex = index;
     },
-    /**
-     * `at` backdates the close: a structural close deferred mid-stream ends the
-     * thought when the tag arrived, not at end of stream (#7334).
-     */
-    finishGroup(at?: number) {
-      finishGroupAt(typeof at === "number" && Number.isFinite(at) ? at : now());
+    finishGroup() {
+      finishGroupAt(now());
     },
     recordServerDuration(reasoningMs: unknown): boolean {
       if (
