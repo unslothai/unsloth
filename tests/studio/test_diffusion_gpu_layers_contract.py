@@ -176,23 +176,30 @@ def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
 
 def _in_target_state(b, *, mode, layers):
     return b._already_in_target_state(
-        model_identifier = "unsloth/DiffusionGemma-GGUF", hf_variant = None, n_ctx = 4096,
-        cache_type_kv = None, speculative_type = None, chat_template_override = None,
-        extra_args = None, is_vision = False, gpu_memory_mode = mode,
-        gpu_layers = layers, gpu_ids = [0],
+        model_identifier = "unsloth/DiffusionGemma-GGUF",
+        hf_variant = None,
+        n_ctx = 4096,
+        cache_type_kv = None,
+        speculative_type = None,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gpu_memory_mode = mode,
+        gpu_layers = layers,
+        gpu_ids = [0],
     )
 
 
 @pytest.mark.parametrize(
     ("recorded", "requested_ngl", "mode", "layers", "expected"),
     [
-        (-1, None, "auto", -1, True),      # auto -> auto
-        (-1, None, "manual", -1, True),    # inert manual preference must not loop
-        (-1, None, "manual", 8, False),    # a real split must reload
-        (8, 8, "manual", 8, True),         # same split dedupes
-        (8, 8, "manual", 4, False),        # a split change reloads
-        (8, 8, "auto", -1, False),         # manual -> auto reloads
-        (0, 0, "manual", 0, True),         # CPU-only split dedupes with itself
+        (-1, None, "auto", -1, True),  # auto -> auto
+        (-1, None, "manual", -1, True),  # inert manual preference must not loop
+        (-1, None, "manual", 8, False),  # a real split must reload
+        (8, 8, "manual", 8, True),  # same split dedupes
+        (8, 8, "manual", 4, False),  # a split change reloads
+        (8, 8, "auto", -1, False),  # manual -> auto reloads
+        (0, 0, "manual", 0, True),  # CPU-only split dedupes with itself
         # The shim had no --ngl, so -1 is running but 20 is what was asked for.
         # Comparing against the ask is what stops an endless reload.
         (-1, 20, "manual", 20, True),
@@ -233,9 +240,9 @@ def test_requested_split_survives_a_shim_without_the_flag(llama_cpp):
     ("source", "expected"),
     [
         ('ap.add_argument("--ngl", type=int)', True),
-        ("ap.add_argument('--ngl', type=int)", True),      # quoting must not matter
-        ('# someday: support "--ngl"', False),             # a comment is not support
-        ('"""usage: --ngl N"""', False),                   # nor is a docstring
+        ("ap.add_argument('--ngl', type=int)", True),  # quoting must not matter
+        ('# someday: support "--ngl"', False),  # a comment is not support
+        ('"""usage: --ngl N"""', False),  # nor is a docstring
         ('ap.add_argument("--maxtok", type=int)', False),
     ],
 )
@@ -254,7 +261,7 @@ def test_probe_accepts_an_uppercase_extension(llama_cpp, tmp_path):
 
 def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, tmp_path):
     shim = tmp_path / "shim.py"
-    shim.write_text('ap.add_argument("--ngl"\n', encoding = "utf-8")   # syntax error
+    shim.write_text('ap.add_argument("--ngl"\n', encoding = "utf-8")  # syntax error
     assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
 
 
@@ -266,7 +273,8 @@ def test_training_guard_sees_the_layer_count():
     route_src = ROUTE_PATH.read_text(encoding = "utf-8")
     route_tree = ast.parse(route_src)
     fn = next(
-        n for n in ast.walk(route_tree)
+        n
+        for n in ast.walk(route_tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_guard_chat_load_against_training"
     )
     names = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
@@ -275,10 +283,12 @@ def test_training_guard_sees_the_layer_count():
     assert "diffusion_ngl == 0" in body
 
     calls = [
-        n for n in ast.walk(route_tree)
+        n
+        for n in ast.walk(route_tree)
         if isinstance(n, ast.Call)
-        and any(isinstance(a, ast.Name) and a.id == "_guard_chat_load_against_training"
-                for a in n.args)
+        and any(
+            isinstance(a, ast.Name) and a.id == "_guard_chat_load_against_training" for a in n.args
+        )
     ]
     assert len(calls) == 2, "expected the /load and /validate call sites"
     for call in calls:

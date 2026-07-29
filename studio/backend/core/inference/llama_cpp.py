@@ -5560,7 +5560,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _diffusion_gpu_arg(
-        gpu_ids: Optional[List[int]], *, cpu_only: bool = False, force_cpu: bool = False
+        gpu_ids: Optional[List[int]],
+        *,
+        cpu_only: bool = False,
+        force_cpu: bool = False,
     ) -> str:
         """Device token passed to the diffusion visual-server child.
 
