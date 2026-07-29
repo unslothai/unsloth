@@ -15557,8 +15557,11 @@ def _build_passthrough_payload(
         "top_k": top_k,
         "stream": stream,
     }
-    if openai_tools:
-        body["tools"] = _llama_compatible_tools(neutralize_tool_descriptions(openai_tools))
+    # Tested after the rewrite, not before: a catalog whose every tool carries an
+    # injected name drops to empty, and "tools": [] would still advertise tool use.
+    safe_tools = neutralize_tool_descriptions(openai_tools)
+    if safe_tools:
+        body["tools"] = _llama_compatible_tools(safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:

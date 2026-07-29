@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _GEMMA_CHANNEL_START = "<|channel>"
@@ -212,7 +214,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
 
 
 def neutralize_tool_descriptions(tools):
-    """Neutralize control markup in a rendered tool catalog, keeping names exact.
+    """Neutralize a rendered tool catalog, dropping any tool with an unsafe name.
 
     A tool declaration is prompt text, and every string in it is rendered: Gemma-4
     interpolates the description into its system turn and ``format_parameters``
@@ -222,11 +224,20 @@ def neutralize_tool_descriptions(tools):
     a model one (#7066). ``mcp_client`` copies a server's ``description`` and its
     ``inputSchema`` verbatim, which is how remote text gets there.
 
-    ``function.name`` is the one exception: the client matches the name the model
-    echoes back against the one it registered. Everything else takes the rewrite,
-    which is the identity on a schema that holds no control markup -- a real
-    ``enum`` value or property key has no "<" for the pattern to match, so a live
-    catalog is returned unchanged and two distinct keys cannot collide onto one.
+    ``function.name`` cannot take the rewrite: it is the dispatch identity, and the
+    client matches the name the model echoes back against the one it registered.
+    Gemma-4 renders it rawest of all -- ``declaration:NAME`` and
+    ``<|tool_call>call:NAME``, both unquoted -- so leaving it exact forges a turn
+    while rewriting it silently breaks dispatch. Neither is acceptable, so a tool
+    whose name carries control markup is dropped with a warning, the way
+    ``_mcp_specs_for_server`` already skips a name that fails OpenAI's grammar.
+    The predicate is the markup rewrite itself, not that grammar, so a passthrough
+    client's ``ns.tool`` or ``functions.NAME:IDX`` still ships untouched.
+
+    Every other string takes the rewrite, which is the identity on a schema that
+    holds no control markup -- a real ``enum`` value or property key has no "<"
+    for the pattern to match, so a live catalog is returned unchanged and two
+    distinct keys cannot collide onto one.
     """
     if not tools or not isinstance(tools, list):
         return tools
@@ -238,6 +249,15 @@ def neutralize_tool_descriptions(tools):
             continue
         function = tool.get("function")
         target = function if isinstance(function, dict) else tool
+        name = target.get("name")
+        if isinstance(name, str) and neutralize_control_markup(name) != name:
+            logger.warning(
+                "Dropping tool %r from the catalog: function.name carries chat "
+                "control markup, which templates render as a turn boundary.",
+                name,
+            )
+            changed = True
+            continue
         updates: dict = {}
         for key, value in target.items():
             if key == "name":
@@ -509,9 +529,6 @@ def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
     if special_tokens and _THINK_CLOSE in set(special_tokens):
         return ""
     return tail
-
-
-logger = logging.getLogger(__name__)
 
 
 def _normalize_tool_call_arguments(messages: list) -> list:
