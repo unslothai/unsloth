@@ -756,7 +756,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 setattr(config_arg, "padding_free", False)
 
         if blocked and requested_pack:
-            reason = "custom data collator"
+            # Fall back to the env var, not to a collator the user never passed:
+            # unsloth sets UNSLOTH_RETURN_LOGITS itself for compute_metrics.
+            reason = (
+                "custom data collator"
+                if data_collator is not None
+                else "UNSLOTH_RETURN_LOGITS=1, set by compute_metrics"
+            )
             if data_collator is None and is_processor:
                 reason = "processor-based model"
             elif is_auto_processor_vlm:
@@ -769,16 +775,14 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            max_len = getattr(config_arg, "max_seq_length", None) or getattr(
-                config_arg, "max_length", None
-            )
-            limit = (
-                f"the {max_len}-token max sequence length" if max_len else "the max sequence length"
-            )
+            else:
+                reason = "UNSLOTH_RETURN_LOGITS=1, set by compute_metrics"
+            # No token count: this runs before max_seq_length / max_length / the model's own
+            # limit are reconciled, so any value read here is pre-reconciliation and often wrong.
             message = (
                 f"Unsloth: Sample packing skipped ({reason} detected) even though "
-                f"packing=True was requested. Sequences longer than {limit} will be "
-                f"TRUNCATED rather than split into additional sequences, which can silently "
+                f"packing=True was requested. Sequences longer than the max sequence length will "
+                f"be TRUNCATED rather than split into additional sequences, which can silently "
                 f"drop a large fraction of tokens from long samples. If your dataset has long "
                 f"documents (e.g. raw-text CPT), pre-split or pre-pack them before training to "
                 f"avoid data loss."
