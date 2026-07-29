@@ -89,3 +89,23 @@ def test_size_like_directory_does_not_shadow_the_real_size(model_id):
 )
 def test_other_models_are_never_gated(model_id):
     assert _thinking_default_off(model_id) is False
+
+
+@pytest.mark.parametrize(
+    "model_id", ["Qwen3.5-4 B-GGUF", "unsloth/Qwen3.5-800M-GGUF", "unsloth/Qwen3.5-4 B"]
+)
+def test_spacing_and_millions_match_extract_model_size_b(model_id):
+    # extract_model_size_b allows \s* before the unit and converts an M suffix to billions.
+    # The inline matcher replaces it only for the MoE total-vs-active fix, so it has to keep
+    # reading the same spellings.
+    assert _thinking_default_off(model_id) is True
+
+
+@pytest.mark.parametrize(
+    "quant",
+    ["Q4_K_M", "Q3_K_M", "IQ3_M", "UD-Q4_K_XL", "Q8_0", "BF16", "MXFP4"],
+)
+def test_quant_subdirs_never_read_as_a_size(quant):
+    # The M suffix is the risk here: a quant name is the leaf segment, so it is scanned first.
+    assert _thinking_default_off(f"unsloth/Qwen3.5-35B-A3B-GGUF/{quant}") is False
+    assert _thinking_default_off(f"unsloth/Qwen3.5-4B-GGUF/{quant}") is True

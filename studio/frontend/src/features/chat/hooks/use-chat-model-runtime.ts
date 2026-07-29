@@ -1057,7 +1057,7 @@ export function useChatModelRuntime() {
               if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
                 // Scan path segments right to left so the size nearest the leaf
                 // wins over a size-like parent dir; trailing boundary stops "8bit".
-                const sizeRe = /(?:^|[-_.])(\d+\.?\d*)b(?:$|[-_.])/;
+                const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
                 const sizeMatch = mid
                   .replace(/\\/g, "/")
                   .split("/")
@@ -1065,8 +1065,10 @@ export function useChatModelRuntime() {
                     (found, seg) => found ?? seg.match(sizeRe),
                     null,
                   );
-                if (sizeMatch && parseFloat(sizeMatch[1]) <= 9) {
-                  reasoningDefault = false;
+                if (sizeMatch) {
+                  const size = parseFloat(sizeMatch[1]);
+                  const sizeB = sizeMatch[2] === "m" ? size / 1000 : size;
+                  if (sizeB <= 9) reasoningDefault = false;
                 }
               }
             }

@@ -8493,15 +8493,20 @@ class LlamaCppBackend:
                         # directory (auto-switch snapshot, quant subdir), so the size
                         # nearest the leaf wins over a size-like parent (/8bit/, /8b/).
                         # Trailing boundary stops "8bit" matching as 8B.
-                        size_re = r"(?:^|[-_.])(\d+\.?\d*)b(?:$|[-_.])"
+                        # \s* and the M suffix keep parity with extract_model_size_b.
+                        size_re = r"(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])"
                         size_match = None
                         for seg in reversed(mid.replace("\\", "/").split("/")):
                             size_match = re.search(size_re, seg)
                             if size_match:
                                 break
-                        # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
-                        if size_match and float(size_match.group(1)) <= 9:
-                            thinking_default = False
+                        if size_match:
+                            size_b = float(size_match.group(1))
+                            if size_match.group(2) == "m":
+                                size_b /= 1000.0
+                            # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
+                            if size_b <= 9:
+                                thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
                     # Pin off at launch so a template defaulting it true does not replay prior

@@ -8,7 +8,7 @@ import { test } from "node:test";
 // llama_cpp.py. Path segments are scanned right to left so the size nearest the leaf wins
 // over a size-like parent dir, and a directory identifier (auto-switch snapshot sha, quant
 // subdir) still resolves.
-const SIZE_RE = /(?:^|[-_.])(\d+\.?\d*)b(?:$|[-_.])/;
+const SIZE_RE = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
 
 function thinkingDefaultOff(modelId: string): boolean {
   const mid = modelId.toLowerCase();
@@ -20,7 +20,9 @@ function thinkingDefaultOff(modelId: string): boolean {
       (found, seg) => found ?? seg.match(SIZE_RE),
       null,
     );
-  return !!sizeMatch && Number.parseFloat(sizeMatch[1]) <= 9;
+  if (!sizeMatch) return false;
+  const size = Number.parseFloat(sizeMatch[1]);
+  return (sizeMatch[2] === "m" ? size / 1000 : size) <= 9;
 }
 
 test("35B-A3B keeps thinking on: total params win over MoE active params", () => {
@@ -55,6 +57,19 @@ test("a size-like directory does not shadow the real size", () => {
     thinkingDefaultOff("/models/4b/Qwen3.6-27B-GGUF/snapshots/bfc15c3"),
     false,
   );
+});
+
+test("spacing and M-suffixed sizes keep parity with extract_model_size_b", () => {
+  assert.equal(thinkingDefaultOff("Qwen3.5-4 B-GGUF"), true);
+  assert.equal(thinkingDefaultOff("unsloth/Qwen3.5-800M-GGUF"), true);
+  assert.equal(thinkingDefaultOff("unsloth/Qwen3.5-4 B"), true);
+});
+
+test("a quant subdir is never read as a size", () => {
+  for (const q of ["Q4_K_M", "Q3_K_M", "IQ3_M", "UD-Q4_K_XL", "Q8_0", "BF16"]) {
+    assert.equal(thinkingDefaultOff(`unsloth/Qwen3.5-35B-A3B-GGUF/${q}`), false);
+    assert.equal(thinkingDefaultOff(`unsloth/Qwen3.5-4B-GGUF/${q}`), true);
+  }
 });
 
 test("non-qwen3.5/3.6 models are never gated", () => {
