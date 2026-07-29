@@ -42,6 +42,22 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+// Anchored to the far edge until the user drags, then clamped where they left it.
+function place(dragged: boolean, current: number, max: number): number {
+  return dragged ? clamp(current, 0, max) : max;
+}
+
+function sameLayout(a: MonitorLayout, b: MonitorLayout): boolean {
+  return (
+    a.left === b.left &&
+    a.top === b.top &&
+    a.minWidth === b.minWidth &&
+    a.minHeight === b.minHeight &&
+    a.maxWidth === b.maxWidth &&
+    a.maxHeight === b.maxHeight
+  );
+}
+
 // Height the panel wants. Reading the rendered box instead hides growth once
 // maxHeight caps it, so the observer never fires and the cap is never lifted.
 function desiredPanelHeight(
@@ -127,15 +143,19 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       }
 
       const width = Math.min(desiredWidth, constraintsBox.width);
-      const height = Math.min(desiredHeight, constraintsBox.height);
+      // Clamp position against the height actually rendered. A hand-resized
+      // panel keeps its own height and scrolls, so growing content must not
+      // drag it upwards and leave a gap below.
+      const height = Math.min(
+        monitor.style.height ? monitorBox.height : desiredHeight,
+        constraintsBox.height,
+      );
       const maxLeft = Math.max(0, constraintsBox.width - width);
       const maxTop = Math.max(0, constraintsBox.height - height);
       const currentLeft = monitorBox.left - constraintsBox.left;
       const currentTop = monitorBox.top - constraintsBox.top;
-      const left = hasDraggedRef.current
-        ? clamp(currentLeft, 0, maxLeft)
-        : maxLeft;
-      const top = hasDraggedRef.current ? clamp(currentTop, 0, maxTop) : maxTop;
+      const left = place(hasDraggedRef.current, currentLeft, maxLeft);
+      const top = place(hasDraggedRef.current, currentTop, maxTop);
 
       const session = dragSessionRef.current;
       if (session) {
@@ -156,15 +176,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
           maxWidth: constraintsBox.width - left,
           maxHeight: constraintsBox.height - top,
         };
-        return current &&
-          current.left === next.left &&
-          current.top === next.top &&
-          current.minWidth === next.minWidth &&
-          current.minHeight === next.minHeight &&
-          current.maxWidth === next.maxWidth &&
-          current.maxHeight === next.maxHeight
-          ? current
-          : next;
+        return current && sameLayout(current, next) ? current : next;
       });
     };
 
