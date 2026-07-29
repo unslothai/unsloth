@@ -45,20 +45,20 @@ class FakeClient:
         # Models a dead stdio transport: real Client.is_connected() stays True
         # after the subprocess dies, so liveness is probed via the transport.
         self.dead = False
-        # A server still stuck on an abandoned call fails its ping.
-        self.ping_ok = True
-        self.ping_error = False  # ping unsupported, but the server still works
-        self.pings = 0
+        # A server still stuck on an abandoned call fails the liveness probe.
+        self.probe_ok = True
+        self.probe_error = False
+        self.probes = 0
         self.transport = SimpleNamespace(_is_session_dead = lambda: self.dead)
         FakeClient.instances.append(self)
 
-    async def ping(self) -> bool:
-        self.pings += 1
-        if self.ping_error:
-            raise RuntimeError("ping not supported")
-        if not self.ping_ok:
+    async def list_tools(self) -> list:
+        self.probes += 1
+        if self.probe_error:
+            raise RuntimeError("probe failed")
+        if not self.probe_ok:
             await asyncio.sleep(30)
-        return True
+        return []
 
     async def __aenter__(self):
         self.entered += 1
@@ -183,12 +183,12 @@ def test_timeout_keeps_a_responsive_stdio_session(fake_clients):
 
 
 def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
-    # If the server never answers the ping it is still stuck on the abandoned
+    # If the server never answers the probe it is still stuck on the abandoned
     # call, so it is replaced rather than reused.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     key = mcp_client._session_key(STDIO_URL, None, "chat")
     fake_clients[0].call_delay = 0.5
-    fake_clients[0].ping_ok = False
+    fake_clients[0].probe_ok = False
     out = call_tool_sync(
         STDIO_URL,
         None,
@@ -205,12 +205,12 @@ def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
     assert key in mcp_client._stdio_sessions
 
 
-def test_dirty_session_ping_stays_inside_the_caller_timeout(fake_clients):
-    # The ping that gates reuse shares the call's deadline; it must not add a
+def test_dirty_session_probe_stays_inside_the_caller_timeout(fake_clients):
+    # The probe that gates reuse shares the call's deadline; it must not add a
     # window of its own on top of it.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
-    fake_clients[0].ping_ok = False  # ping hangs for 30s
+    fake_clients[0].probe_ok = False  # probe hangs for 30s
     call_tool_sync(
         STDIO_URL,
         None,
@@ -222,15 +222,15 @@ def test_dirty_session_ping_stays_inside_the_caller_timeout(fake_clients):
     )
     started = time.monotonic()
     call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.2, scope = "chat")
-    assert time.monotonic() - started < mcp_client._STDIO_PING_TIMEOUT
+    assert time.monotonic() - started < mcp_client._STDIO_LIVENESS_TIMEOUT
 
 
-def test_failed_ping_replaces_the_session(fake_clients):
-    # Only a completed round-trip proves the abandoned call is done, so a ping
+def test_failed_probe_replaces_the_session(fake_clients):
+    # Only a completed round-trip proves the abandoned call is done, so a probe
     # that errors is not enough to reuse the session.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
-    fake_clients[0].ping_error = True
+    fake_clients[0].probe_error = True
     call_tool_sync(
         STDIO_URL,
         None,
@@ -246,7 +246,7 @@ def test_failed_ping_replaces_the_session(fake_clients):
     assert fake_clients[0].exited == 1
 
 
-def test_successful_ping_is_not_repeated(fake_clients):
+def test_successful_probe_is_not_repeated(fake_clients):
     # Once a round-trip clears the flag, later calls dispatch without probing.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
@@ -262,14 +262,14 @@ def test_successful_ping_is_not_repeated(fake_clients):
     fake_clients[0].call_delay = 0.0
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-2"
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-3"
-    assert fake_clients[0].pings == 1
+    assert fake_clients[0].probes == 1
 
 
-def test_stop_interrupts_a_hanging_dirty_ping(fake_clients):
+def test_stop_interrupts_a_hanging_dirty_probe(fake_clients):
     # The recovery probe honors Stop like connect and the call itself do.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
-    fake_clients[0].ping_ok = False  # ping hangs for 30s
+    fake_clients[0].probe_ok = False  # probe hangs for 30s
     call_tool_sync(
         STDIO_URL,
         None,
@@ -292,7 +292,7 @@ def test_stop_interrupts_a_hanging_dirty_ping(fake_clients):
         timeout = 30,
     )
     assert out == "Error: MCP tool 't' cancelled"
-    assert time.monotonic() - started < mcp_client._STDIO_PING_TIMEOUT
+    assert time.monotonic() - started < mcp_client._STDIO_LIVENESS_TIMEOUT
 
 
 def test_unwind_wait_is_stdio_only(fake_clients, monkeypatch):

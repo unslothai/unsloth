@@ -262,7 +262,7 @@ _STDIO_SESSION_REAP_INTERVAL = 30.0
 _STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
 _STDIO_CLOSE_TIMEOUT = 10.0
 _STDIO_WEDGE_MARGIN = 15.0
-_STDIO_PING_TIMEOUT = 5.0
+_STDIO_LIVENESS_TIMEOUT = 5.0
 _CANCEL_UNWIND_TIMEOUT = 2.0
 # Cap concurrent persistent sessions: each owns a subprocess + loop thread, and
 # the scope includes a caller-supplied thread_id, so an unbounded cache is a
@@ -316,9 +316,13 @@ def _session_responsive(
     cancel_event = None,
 ) -> bool:
     """Whether a session left dirty by an abandoned call can be reused. Only a
-    completed ping round-trip proves the server is no longer working on that
-    call, so anything short of one -- an error, a wedge, or no budget left to
-    ask -- rejects the session instead of guessing from local state.
+    completed round-trip proves the server is no longer working on that call, so
+    anything short of one -- an error, a wedge, or no budget left to ask --
+    rejects the session instead of guessing from local state.
+
+    list_tools is the probe rather than ping: on a modern-era connection (the
+    default mode="auto" against a fastmcp 4 server) ping answers "Method not
+    found", which would retire every live session this is meant to protect.
 
     ``budget`` is the caller's remaining deadline, so recovery stays inside the
     one timeout window rather than adding to it, and ``cancel_event`` lets Stop
@@ -326,16 +330,14 @@ def _session_responsive(
     client = session.client
     if client is None:
         return False
-    window = _STDIO_PING_TIMEOUT if budget is None else min(_STDIO_PING_TIMEOUT, budget)
+    window = _STDIO_LIVENESS_TIMEOUT if budget is None else min(_STDIO_LIVENESS_TIMEOUT, budget)
     if window <= 0:
         return False
     try:
-        answered = session.run(_race_tool_call(client.ping(), window, cancel_event), window)
+        session.run(_race_tool_call(client.list_tools(), window, cancel_event), window)
     except _MCPCancelled:
         raise
     except Exception:  # noqa: BLE001
-        return False
-    if answered is False:
         return False
     session.dirty = False
     return True
