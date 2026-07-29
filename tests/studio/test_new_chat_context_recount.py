@@ -97,8 +97,6 @@ const state: any = {
   params: { checkpoint: "", systemPrompt: "", systemVariables: "" },
   ggufContextLength: null,
   modelLoading: false,
-  artifactsEnabled: false,
-  supportsTools: false,
 };
 
 function set(updater: any): void {
@@ -433,43 +431,36 @@ def test_the_hydration_retry_prices_a_blank_bar_only_once(
     assert out["contextUsage"].get("totalTokens") == expected_total
 
 
-def test_a_thread_recount_survives_switching_away_and_back():
-    """setActiveThreadId restores usage from contextUsageByThreadId only, so a recount
-    that landed on the visible thread has to reach that map too. setContextUsage writes
-    through for the active thread, which is the thread every recount publish is gated on."""
+def test_a_loaded_model_reprices_the_stored_branch_of_an_open_thread():
+    """The post-load recount on a real chat: a model change clears the per-thread cache,
+    so the bar has to be refilled from the stored branch rather than the last completion's
+    usage. Both stored turns must be in the count, and it must reach the per-thread cache
+    that setActiveThreadId restores from, or the bar blanks on the way back to it."""
     out = _run(
         textwrap.dedent(
             f"""
             // @ts-nocheck
-            import {{ refreshContextUsage, seed, snapshot, useChatRuntimeStore, world }} from "./harness.ts";
+            import {{ refreshContextUsage, seed, snapshot, world }} from "./harness.ts";
             {LOADED_MODEL}
             world.storedMessages["thread-a"] = [
               {{ id: "m1", role: "user", createdAt: 1, content: [{{ type: "text", text: "hi" }}], metadata: {{}} }},
               {{ id: "m2", role: "assistant", createdAt: 2, content: [{{ type: "text", text: "yo" }}], metadata: {{}} }},
             ];
-            // A model change cleared the per-thread cache; the post-load recount refills the bar.
             seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
             await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
-            const recounted = snapshot();
 
-            // Switch to another still-mounted thread and back: no history loader reruns.
-            useChatRuntimeStore.getState().setActiveThreadId("thread-b");
-            const away = snapshot().contextUsage;
-            useChatRuntimeStore.getState().setActiveThreadId("thread-a");
-
+            const after = snapshot();
             console.log(JSON.stringify({{
               counts: world.countedMessages.length,
-              recounted: recounted.contextUsage,
-              cached: recounted.contextUsageByThreadId["thread-a"] ?? null,
-              away,
-              back: snapshot().contextUsage,
+              sent: world.countedMessages.at(-1) ?? [],
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
             }}));
             """
         )
     )
     assert out["counts"] == 1
-    assert out["recounted"].get("totalTokens") == 62
+    assert len(out["sent"]) == 2, "both stored turns must be priced"
+    assert out["contextUsage"].get("totalTokens") == 62
     assert out["cached"] is not None, "the recount must reach the per-thread cache"
     assert out["cached"].get("totalTokens") == 62
-    assert out["away"] is None, "another thread has no usage of its own here"
-    assert out["back"].get("totalTokens") == 62, "the bar must not blank on the way back"

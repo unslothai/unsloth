@@ -3,14 +3,10 @@
 
 """Shared plumbing for the ``node --experimental-strip-types`` source harnesses.
 
-``studio/frontend`` carries no JS test runner, so the frontend behaviours are
-pinned by slicing the real source VERBATIM into a harness module and running it
-under node. Only the fixtures the sliced code reads through are written by hand,
-so a change to the shipped source is what these tests actually see.
-
-Both the harness and its runner are written into a per-invocation
-``mkdtemp(prefix = "run")`` directory and the runner imports ``./harness.ts``, so
-concurrent tests never share a file.
+``studio/frontend`` carries no JS test runner, so frontend behaviours are pinned by
+slicing the real source VERBATIM into a harness module and running it under node; only
+the fixtures the sliced code reads through are written by hand. Harness and runner go
+into a per-invocation ``mkdtemp(prefix = "run")``, so concurrent tests share no file.
 """
 
 from __future__ import annotations

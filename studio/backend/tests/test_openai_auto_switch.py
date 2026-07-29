@@ -3138,72 +3138,37 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     assert captured["require_vision"] is True
 
 
-# ── /chat/count_tokens: what the recount prices ─────────────────────
+# ── /chat/count_tokens: what the recount prices ───────────────────
 
 
 def _count_tokens_backend(
-    monkeypatch,
-    loaded_id = "org/A-GGUF",
-    count = 10,
-    *,
-    supports_tools = False,
-    switched = None,
+    monkeypatch, loaded_id = "org/A-GGUF", count = 10, *, supports_tools = False
 ):
-    """Loaded GGUF backend wired into the count endpoint, with auto-switch stubbed out.
+    """A loaded GGUF backend wired into the count endpoint.
 
-    Pass ``switched`` a list to record whether the hook was reached at all.
+    Returns ``(switched, counted)``: ``switched`` records auto-switch attempts, ``counted``
+    the messages/system/tools the route hands to the tokenizer.
     """
     backend = _FakeBackend(loaded_id)
     backend.supports_tools = supports_tools
-    backend.count_chat_tokens = lambda *a, **k: count
+    switched: list = []
+    counted: dict = {}
 
-    async def _switch(*a, **k):
-        if switched is not None:
-            switched.append(True)
-        return None
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
-    return backend
-
-
-def _capture_counted(backend, count = 10):
-    """Record the messages/system/tools the route hands to the tokenizer."""
-    captured = {}
-
-    def _count(
-        messages,
-        system,
-        tools,
-        strict = False,
-    ):
-        captured.update(messages = messages, system = system, tools = tools, strict = strict)
+    def _count(messages, system, tools, strict = False):
+        counted.update(messages = messages, system = system, tools = tools, strict = strict)
         return count
 
+    async def _switch(*args, **kwargs):
+        switched.append(True)
+        return None
+
     backend.count_chat_tokens = _count
-    return captured
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    return switched, counted
 
 
-def _selected_tools(
-    monkeypatch,
-    names = ("search_knowledge_base",),
-    record = None,
-):
-    """Stub _select_request_tools with a fixed catalog, recording the gate flags."""
-
-    async def _select(payload, *, tools_on, mcp_allowed):
-        if record is not None:
-            record.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
-        return [{"type": "function", "function": {"name": name}} for name in names]
-
-    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
-
-
-def _count_request(
-    messages,
-    model = "org/A-GGUF",
-    **fields,
-):
+def _count_request(messages, model = "org/A-GGUF", **fields):
     """A /chat/count_tokens payload built from plain message dicts."""
     from models.inference import ChatCountTokensRequest, ChatMessage
     return ChatCountTokensRequest(
@@ -3227,17 +3192,26 @@ def _counted_body(payload):
         pytest.param([{"type": "text", "text": "hello"}], id = "text_parts"),
     ],
 )
-def test_chat_count_tokens_returns_input_tokens(monkeypatch, content):
-    _count_tokens_backend(monkeypatch, count = 42)
+def test_chat_count_tokens_prices_the_loaded_model_without_switching(monkeypatch, content):
+    # The recount has no abort signal, so a stale payload still naming the previously
+    # loaded model A must not drag the backend back to it: count whatever is loaded.
+    switched, _counted = _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 42)
     payload = _count_request([{"role": "user", "content": content}])
     assert _counted_body(payload) == {"input_tokens": 42}
+    assert switched == []
 
 
 def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
-    backend = _count_tokens_backend(monkeypatch, supports_tools = True)
-    counted = _capture_counted(backend, count = 99)
+    # Tool schemas and the action nudge are a large share of a tool-enabled prompt, so
+    # the count has to price them from the same selection the completion path makes.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
     gate = {}
-    _selected_tools(monkeypatch, names = ("web_search",), record = gate)
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
     payload = _count_request(
         [{"role": "user", "content": "hello"}],
         enable_tools = True,
@@ -3245,19 +3219,19 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     )
     assert _counted_body(payload) == {"input_tokens": 99}
     assert gate.get("tools_on") is True
-    assert counted["tools"][0]["function"]["name"] == "web_search"
+    assert [t.get("function", {}).get("name") for t in counted.get("tools") or []] == [
+        "web_search"
+    ]
     assert any(
-        msg.get("role") == "system" and "web_search" in str(msg.get("content", ""))
-        for msg in counted["messages"]
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
     )
 
 
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):
-    # Images become a short /apply-template marker, so counting undercounts: refuse, and
-    # refuse before the auto-switch.
-    switched = []
-    backend = _count_tokens_backend(monkeypatch, switched = switched)
-    counted = _capture_counted(backend, count = 1234)
+    # Images become a short /apply-template marker, so a count would come back short by
+    # the whole embedding. Refuse rather than undercount, and refuse before the switch.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
     payload = _count_request(
         [
             {
@@ -3280,9 +3254,9 @@ def test_chat_count_tokens_refuses_image_messages(monkeypatch):
 
 
 def test_chat_count_tokens_collapses_system_turns(monkeypatch):
-    # The completion path joins every system/developer turn into one; the count must match.
-    backend = _count_tokens_backend(monkeypatch)
-    counted = _capture_counted(backend, count = 13)
+    # The completion path joins every system/developer turn into one, so the count must
+    # render the prompt the next request would build rather than the raw history.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 13)
     payload = _count_request(
         [
             {"role": "system", "content": "Runtime rules."},
@@ -3291,22 +3265,11 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
         ]
     )
     asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
-    systems = [m for m in counted["messages"] if m.get("role") in ("system", "developer")]
-    assert len(systems) == 1, counted["messages"]
-    assert counted["messages"][0]["role"] == "system"
-    assert "Runtime rules." in systems[0]["content"]
-    assert "Studio prompt." in systems[0]["content"]
-
-
-def test_chat_count_tokens_counts_the_loaded_model_and_never_switches(monkeypatch):
-    # The recount has no abort signal, so naming a stale model must not drag the backend
-    # back to it after the user moved on: count whatever is loaded instead.
-    switched = []
-    _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 77, switched = switched)
-    # A stale recount still naming the previously loaded model A.
-    payload = _count_request([{"role": "user", "content": "hello"}])
-    assert _counted_body(payload) == {"input_tokens": 77}
-    assert switched == []
+    messages = counted.get("messages") or []
+    systems = [m for m in messages if m.get("role") in ("system", "developer")]
+    assert len(systems) == 1, messages
+    assert "Runtime rules." in systems[0].get("content", "")
+    assert "Studio prompt." in systems[0].get("content", "")
 
 
 def test_audio_generate_is_reload_only(monkeypatch):
