@@ -16411,8 +16411,15 @@ async def _anthropic_passthrough_stream(
         emitter = AnthropicPassthroughEmitter()
         # Promote text-form tool calls (declared client tools only) into
         # tool_use blocks; verbatim behavior when healing is off or no tools.
-        # tool_choice arrives here already converted to the OpenAI shape.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
+        # tool_choice is already OpenAI-shaped but still spells the name as the
+        # client sent it, while openai_tools was neutralized, so realign it first
+        # or narrowing to the raw name empties the allowlist and healing is off
+        # for the whole request (#7334).
+        _allowed_tools = heal_gate(
+            auto_heal_tool_calls,
+            openai_tools,
+            _align_forced_tool_choice(tool_choice, openai_tools),
+        )
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
@@ -16660,8 +16667,13 @@ async def _anthropic_passthrough_non_streaming(
             )
 
         data = resp.json()
-        # tool_choice arrives here already converted to the OpenAI shape.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
+        # OpenAI-shaped, but realigned onto the neutralized names before it gates
+        # healing, as on the streaming path (#7334).
+        _allowed_tools = heal_gate(
+            auto_heal_tool_calls,
+            openai_tools,
+            _align_forced_tool_choice(tool_choice, openai_tools),
+        )
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.

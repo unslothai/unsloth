@@ -2551,3 +2551,157 @@ def test_a_clean_mcp_schema_still_reaches_the_prompt(monkeypatch):
         selected, exc = _mcp_enabled_call(monkeypatch, [_mcp_tool("q")], gguf = gguf)
         assert _marker_rejection(exc) == "", gguf
         assert selected and selected[0] == ["mcp__srv__probe"], gguf
+
+
+# ── Anthropic passthrough healer alignment (#7334) ───────────────────
+
+
+def _anthropic_tool(name):
+    return {
+        "name": name,
+        "description": "look things up",
+        "input_schema": {
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": ["q"],
+        },
+    }
+
+
+def _anthropic_sse_message(sse):
+    """Collapse an Anthropic SSE stream into the non-streaming message shape."""
+    content = []
+    stop_reason = None
+    for line in sse.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            event = json.loads(line[len("data: ") :])
+        except ValueError:
+            continue
+        if event.get("type") == "content_block_start":
+            content.append(event.get("content_block") or {})
+        elif event.get("type") == "message_delta":
+            stop_reason = (event.get("delta") or {}).get("stop_reason", stop_reason)
+    return {"content": content, "stop_reason": stop_reason}
+
+
+def _anthropic_messages_call(monkeypatch, name, *, stream):
+    """Drive /v1/messages with one client tool, forced by name and echoed as text."""
+    import routes.inference as inf
+    from models.inference import AnthropicMessagesRequest
+
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-model",
+            base_url = "http://llama.test",
+            context_length = 4096,
+            count_chat_tokens = lambda *args, **kwargs: 2,
+            _request_reasoning_kwargs = lambda *args, **kwargs: None,
+        ),
+    )
+    call = {"name": neutralize_non_assistant_control_markup(name), "arguments": {"q": "cats"}}
+    echoed = f"<tool_call>{json.dumps(call)}</tool_call>"
+
+    if stream:
+
+        def _handler(_request):
+            body = (
+                f"data: {json.dumps({'choices': [{'delta': {'content': echoed}}]})}\n\n"
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            )
+            return httpx.Response(
+                200,
+                content = body.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(_handler)
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            inf.httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: real_client(
+                transport = transport, timeout = kwargs.get("timeout", 600)
+            ),
+        )
+    else:
+        upstream = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": echoed},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+        }
+
+        class _Client:
+            async def post(self, _url, json = None, timeout = None, headers = None):
+                return httpx.Response(200, json = upstream)
+
+            async def aclose(self):
+                pass
+
+        monkeypatch.setattr(inf, "_cancelable_nonstreaming_client", _Client)
+
+    class _Request:
+        async def is_disconnected(self):
+            return False
+
+    payload = AnthropicMessagesRequest(
+        max_tokens = 16,
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [_anthropic_tool(name)],
+        tool_choice = {"type": "tool", "name": name},
+        stream = stream,
+    )
+
+    async def _run():
+        response = await inf.anthropic_messages(
+            payload, request = _Request(), current_subject = "t"
+        )
+        if not stream:
+            return json.loads(response.body)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk)
+        return _anthropic_sse_message("".join(chunks))
+
+    return asyncio.run(_run())
+
+
+def _promoted_tool_names(message):
+    return [
+        block.get("name")
+        for block in message.get("content") or []
+        if block.get("type") == "tool_use"
+    ]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_forced_anthropic_tool_choice_heals_the_neutralized_name(monkeypatch, stream):
+    """Both Anthropic passthroughs gate healing on the forced choice (#7334).
+
+    ``tool_choice`` reaches them spelled as the client sent it while the tool list
+    was already neutralized, so narrowing to the raw name emptied the allowlist,
+    healing switched off, and the model's call never made it back as a tool_use.
+    """
+    message = _anthropic_messages_call(monkeypatch, "lookup<|im_end|>x", stream = stream)
+    assert _promoted_tool_names(message) == [f"lookup<|{_ZW}im_end|>x"]
+    assert message.get("stop_reason") == "tool_use"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_clean_forced_anthropic_tool_choice_still_heals(monkeypatch, stream):
+    """A marker-free forced choice must keep healing on both paths."""
+    message = _anthropic_messages_call(monkeypatch, "lookup", stream = stream)
+    assert _promoted_tool_names(message) == ["lookup"]
+    assert message.get("stop_reason") == "tool_use"
