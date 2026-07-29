@@ -55,7 +55,7 @@ def _resolver_script(installed: list[tuple[str, str]], can_download: bool) -> st
         else "$null"
     )
     version_stubs = "\n".join(
-        f'function {name} {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest)\n'
+        f"function {name} {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest)\n"
         f'    if ($Rest -contains "--version") {{ return "Python {minor}.0" }}\n'
         f'    return "{name}" }}'
         for (minor, _arch), name in zip(installed, names)
