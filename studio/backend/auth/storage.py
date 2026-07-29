@@ -9,6 +9,7 @@ import ipaddress
 import os
 import secrets
 import sqlite3
+import tempfile
 import threading
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -41,12 +42,55 @@ def _bootstrap_file_bytes(password: str) -> bytes:
 
 
 def _persist_bootstrap_password(password: str) -> None:
-    """Write the bootstrap password 0600, with a trailing LF on every OS."""
-    _BOOTSTRAP_PW_PATH.write_bytes(_bootstrap_file_bytes(password))
+    """Write the bootstrap password 0600, with a trailing LF on every OS.
+
+    Atomic: this can rewrite a live file, and a partial write would destroy the
+    only plaintext copy of the recovery credential.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        prefix = f".{_BOOTSTRAP_PW_PATH.name}.", dir = _BOOTSTRAP_PW_PATH.parent
+    )
     try:
-        os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "wb") as f:
+            f.write(_bootstrap_file_bytes(password))
+        try:
+            os.chmod(tmp_name, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_name, _BOOTSTRAP_PW_PATH)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _read_persisted_bootstrap_password() -> Optional[str]:
+    """Read the persisted password, normalising the file if it is malformed."""
+    if not _BOOTSTRAP_PW_PATH.is_file():
+        return None
+
+    # No caller handles a raise, so an unreadable file has to mean "no bootstrap
+    # password", not a dead backend. We write UTF-8, so bytes that will not
+    # decode are damage whose plaintext is worthless anyway.
+    try:
+        raw = _BOOTSTRAP_PW_PATH.read_bytes()
+        password = raw.decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not password:
+        return None
+
+    # Older releases wrote no terminator, and text mode wrote CRLF on Windows,
+    # so upgrades kept the `cat` problem. Rewrite anything that isn't exactly
+    # "<secret>\n". Best-effort: a read-only auth dir must not fail startup.
+    if raw != _bootstrap_file_bytes(password):
+        try:
+            _persist_bootstrap_password(password)
+        except OSError:
+            pass
+    return password
 
 
 def generate_bootstrap_password() -> str:
@@ -62,19 +106,10 @@ def generate_bootstrap_password() -> str:
         return _bootstrap_password
 
     # Persisted from a previous run?
-    if _BOOTSTRAP_PW_PATH.is_file():
-        raw = _BOOTSTRAP_PW_PATH.read_bytes()
-        _bootstrap_password = raw.decode("utf-8").strip()
-        if _bootstrap_password:
-            # Older releases wrote no terminator, so upgrades kept the `cat`
-            # problem. Rewrite anything that isn't exactly "<secret>\n".
-            # Best-effort: a read-only auth dir must not fail startup.
-            if raw != _bootstrap_file_bytes(_bootstrap_password):
-                try:
-                    _persist_bootstrap_password(_bootstrap_password)
-                except OSError:
-                    pass
-            return _bootstrap_password
+    persisted = _read_persisted_bootstrap_password()
+    if persisted:
+        _bootstrap_password = persisted
+        return _bootstrap_password
 
     # First startup: generate a fresh passphrase.
     import diceware
@@ -96,19 +131,14 @@ def get_bootstrap_password() -> Optional[str]:
 
 
 def _load_bootstrap_password() -> Optional[str]:
-    """Load an existing bootstrap password without creating one."""
+    """Load an existing bootstrap password without creating one.
+
+    This, not generate_bootstrap_password(), is the path an upgraded install
+    takes (ensure_default_admin short-circuits once the admin row exists), so
+    the normalisation has to happen here too.
+    """
     global _bootstrap_password
-    _bootstrap_password = None
-    if _BOOTSTRAP_PW_PATH.is_file():
-        # No caller handles a raise, so an unreadable file has to mean "no bootstrap
-        # password", not a dead backend. We write UTF-8, so bytes that will not
-        # decode are damage whose plaintext is worthless anyway.
-        try:
-            bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            return _bootstrap_password
-        if bootstrap_password:
-            _bootstrap_password = bootstrap_password
+    _bootstrap_password = _read_persisted_bootstrap_password()
     return _bootstrap_password
 
 

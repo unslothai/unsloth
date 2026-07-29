@@ -153,30 +153,69 @@ def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
     assert storage.generate_bootstrap_password() == original
 
 
-def test_legacy_bootstrap_password_without_a_newline_is_migrated():
-    # Upgrades kept the `cat` problem: the file is read, not rewritten.
+@pytest.mark.parametrize("legacy", [
+    b"legacy-bootstrap-secret",         # written before the newline existed
+    b"legacy-bootstrap-secret\r\n",     # written by text mode on Windows
+])
+def test_upgrade_normalises_the_bootstrap_file(legacy):
+    # The upgrade path is ensure_default_admin() on an install that already has
+    # the admin row, which never reaches generate_bootstrap_password().
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(legacy)
+
+    storage.ensure_default_admin()
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+
+
+def test_upgrade_normalises_when_the_admin_row_is_missing():
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
     assert storage.generate_bootstrap_password() == "legacy-bootstrap-secret"
     assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
 
 
-def test_legacy_bootstrap_password_with_crlf_is_migrated():
-    storage._BOOTSTRAP_PW_PATH.write_bytes(b"crlf-bootstrap-secret\r\n")
+def test_a_well_formed_bootstrap_file_is_not_rewritten():
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret\n")
+    mtime = storage._BOOTSTRAP_PW_PATH.stat().st_mtime_ns
 
-    assert storage.generate_bootstrap_password() == "crlf-bootstrap-secret"
-    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"crlf-bootstrap-secret\n"
+    storage.ensure_default_admin()
+
+    assert storage._BOOTSTRAP_PW_PATH.stat().st_mtime_ns == mtime
 
 
-def test_migrating_a_legacy_bootstrap_password_survives_a_read_only_dir(monkeypatch):
+def test_migration_failure_does_not_break_startup(monkeypatch):
+    seed_user()
     storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
 
     def refuse(*args, **kwargs):
-        raise OSError("read-only auth dir")
+        raise PermissionError("read-only auth dir")
 
-    monkeypatch.setattr(Path, "write_bytes", refuse)
+    monkeypatch.setattr(storage.tempfile, "mkstemp", refuse)
 
-    assert storage.generate_bootstrap_password() == "legacy-bootstrap-secret"
+    storage.ensure_default_admin()
+
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret"
+
+
+def test_persisting_the_bootstrap_password_is_atomic(monkeypatch, tmp_path):
+    # A partial write would destroy the only plaintext recovery credential.
+    storage._persist_bootstrap_password("original-secret")
+
+    def boom(src, dst):
+        raise OSError("crash before replace")
+
+    monkeypatch.setattr(storage.os, "replace", boom)
+    with pytest.raises(OSError):
+        storage._persist_bootstrap_password("new-secret")
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"original-secret\n"
+    leftovers = [p.name for p in storage._BOOTSTRAP_PW_PATH.parent.iterdir()
+                 if "bootstrap_password." in p.name]
+    assert leftovers == []
 
 
 def test_ensure_default_admin_does_not_generate_for_empty_existing_bootstrap():
