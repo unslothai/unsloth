@@ -59,17 +59,38 @@ Write-Host "[interrupt] installer pid=$($proc.Id) marker='$Marker' deadline=${Ki
 # false exactly when there was nothing left to interrupt.
 $script:rootKilled = $false
 
+function Get-Descendants([int]$RootId) {
+  # Depth-first, deepest first. CIM gives the parent link Windows does not expose via
+  # process groups.
+  $ids = @()
+  foreach ($k in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootId" -ErrorAction SilentlyContinue)) {
+    $kid = [int]$k.ProcessId
+    $ids += Get-Descendants $kid
+    $ids += $kid
+  }
+  return $ids
+}
+
 function Stop-Tree([int]$RootId) {
-  # Depth-first, so a parent cannot respawn a child we already killed. CIM gives the
-  # parent link Windows does not expose via process groups.
-  $kids = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootId" -ErrorAction SilentlyContinue)
-  foreach ($k in $kids) { Stop-Tree ([int]$k.ProcessId) }
+  # Snapshot the whole tree BEFORE killing anything. Once a parent is gone its children are
+  # orphaned and there is no ParentProcessId left to walk, so the walk has to happen first.
+  $descendants = @(Get-Descendants $RootId)
+  # Then the ROOT, ahead of its children. install.ps1 watches the child it is waiting on:
+  # in staging run 30424366953 it had already printed "unsloth studio setup failed (exit
+  # code -1)" by the time Stop-Process reached it. Killing children first therefore races
+  # the leader's own exit, and a leader that wins that race makes Stop-Process throw over
+  # an interruption the driver really did deliver, failing the leg for nothing. Dead first,
+  # it cannot react to anything, and it cannot respawn what we are about to kill either.
   try {
     Stop-Process -Id $RootId -Force -ErrorAction Stop
-    Write-Host "[interrupt] killed pid=$RootId"
+    Write-Host "[interrupt] killed installer pid=$RootId"
     if ($RootId -eq $proc.Id) { $script:rootKilled = $true }
   }
   catch { if ($RootId -eq $proc.Id) { Write-Host "[interrupt] installer pid=$RootId was already gone: $_" } }
+  foreach ($id in $descendants) {
+    try { Stop-Process -Id $id -Force -ErrorAction Stop; Write-Host "[interrupt] killed pid=$id" }
+    catch { }
+  }
 }
 
 # A leg can be aimed at either kind of phase the installer prints, and only one of them is
