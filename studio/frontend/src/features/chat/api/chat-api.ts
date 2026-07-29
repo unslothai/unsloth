@@ -152,12 +152,16 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; onRequestStart?: () => void },
 ): Promise<LoadModelResponse> {
   options?.signal?.throwIfAborted();
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   options?.signal?.throwIfAborted();
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  // Callers use this boundary to expose a backend cancellation target. Keep it
+  // after token validation/dialogs and immediately before the request so Stop
+  // cannot unload a resident same-ID model while no replacement load exists.
+  options?.onRequestStart?.();
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -33,7 +33,8 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     assert "state.modelRuntimeHydrated" in compare
     assert "state.modelsError" in compare
     assert "usedInventoryFallbackRef" in compare
-    assert "initialCheckpointRef" in compare
+    assert "layoutCheckpointRef" in compare
+    assert "handleCompareActiveChange" in compare
     assert "if (compareActive) return;" in compare
     assert "if (!modelsError || isLoraCompare !== null) return;" in compare
     assert "setIsLoraCompare(false);" in compare
@@ -68,6 +69,8 @@ def test_compare_waiter_tracks_default_key_until_remote_id_handoff():
     )[0]
     assert '...(remoteId ? [] : ["__default"])' in waiter
     assert waiter.index("const remoteId") < waiter.index('["__default"]')
+    assert "aui.thread().getState().isRunning" in waiter
+    assert "aui.subscribe(check)" in waiter
 
 
 def test_overlapping_compare_sends_are_rejected_before_file_conversion():
@@ -91,5 +94,25 @@ def test_initial_thread_lookup_blocks_submission_until_ids_are_applied():
     assert initial_lookup.index("applyCompareThreadIds(ids);") < initial_lookup.index(
         "setInitialThreadLookupComplete(true);"
     )
+    assert "if (!isActive) return;" in initial_lookup
+    assert 'toast.error("Could not restore compare conversations"' in initial_lookup
     general = page.split("const GeneralCompareContent = memo(", 1)[1]
     assert "submissionReady={initialThreadLookupComplete}" in general
+
+
+def test_compare_load_target_starts_at_the_request_boundary():
+    api = _read("api/chat-api.ts")
+    load_model = api.split("export async function loadModel(", 1)[1].split(
+        "export async function validateModel(", 1
+    )[0]
+    assert "options?.onRequestStart?.();" in load_model
+    assert load_model.index("const preparedToken = await prepareHfTokenForUse") < (
+        load_model.index("options?.onRequestStart?.();")
+    )
+    assert load_model.index("options?.onRequestStart?.();") < load_model.index(
+        'authFetch("/api/inference/load"'
+    )
+
+    composer = _read("shared-composer.tsx")
+    assert "onRequestStart: () => {" in composer
+    assert "compareRunsRef.current.setLoadingModel(run, sel);" in composer

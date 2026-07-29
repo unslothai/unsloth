@@ -551,24 +551,35 @@ const CompareContent = memo(function CompareContent({
   const [isLoraCompare, setIsLoraCompare] = useState<boolean | null>(null);
   const [compareActive, setCompareActive] = useState(false);
   const usedInventoryFallbackRef = useRef(false);
-  const initialCheckpointRef = useRef(
-    useChatRuntimeStore.getState().params.checkpoint,
-  );
+  const layoutCheckpointRef = useRef<string | null>(null);
+  const handleCompareActiveChange = useCallback((active: boolean) => {
+    // If fallback compare starts before runtime hydration recovers, freeze the
+    // last pre-load checkpoint now. Later sequential loads mutate the global
+    // checkpoint and must not influence layout classification.
+    if (active && layoutCheckpointRef.current === null) {
+      layoutCheckpointRef.current =
+        useChatRuntimeStore.getState().params.checkpoint;
+    }
+    setCompareActive(active);
+  }, []);
 
   // Wait for the full LoRA inventory before choosing the layout, then freeze
   // that choice. Generalized compare temporarily changes the global checkpoint
   // as it visits each pane; those later changes must never remount the layout.
   useEffect(() => {
     if (modelRuntimeHydrated) {
-      const detected = getIsLoraCompareFromState(
-        useChatRuntimeStore.getState(),
-        initialCheckpointRef.current,
-      );
       if (usedInventoryFallbackRef.current) {
         // A successful retry can land while generalized compare has temporarily
         // loaded one pane into the global checkpoint. Keep the fallback layout
         // mounted until submission ends, then classify the original checkpoint.
         if (compareActive) return;
+      }
+      const state = useChatRuntimeStore.getState();
+      const checkpoint =
+        layoutCheckpointRef.current ?? state.params.checkpoint;
+      layoutCheckpointRef.current = checkpoint;
+      const detected = getIsLoraCompareFromState(state, checkpoint);
+      if (usedInventoryFallbackRef.current) {
         usedInventoryFallbackRef.current = false;
         setIsLoraCompare(detected);
       } else {
@@ -602,7 +613,7 @@ const CompareContent = memo(function CompareContent({
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
       onExitCompare={onExitCompare}
-      onComparingChange={setCompareActive}
+      onComparingChange={handleCompareActiveChange}
     />
   );
 });
@@ -990,10 +1001,15 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         setInitialThreadLookupComplete(true);
       })
       .catch((error) => {
-        if (!isExpectedBackgroundChatStorageError(error)) {
-          throw error;
-        }
         if (!isActive) return;
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          toast.error("Could not restore compare conversations", {
+            description:
+              error instanceof Error
+                ? error.message
+                : "Starting fresh compare conversations instead.",
+          });
+        }
         // Storage is unavailable, so there are no persisted IDs to wait for.
         // Allow the panes to continue with fresh local threads.
         initialThreadLookupCompleteRef.current = true;

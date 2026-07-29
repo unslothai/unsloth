@@ -386,7 +386,10 @@ export function RegisterCompareHandle({
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
           let wasRunning = false;
-          const unsub = useChatRuntimeStore.subscribe((state) => {
+          let settled = false;
+          let unsubs: Array<() => void> = [];
+          const check = () => {
+            const state = useChatRuntimeStore.getState();
             // A fresh assistant-ui pane begins with __LOCALID..., then storage
             // initialization assigns its persisted remote id before the adapter
             // marks the run active. Refresh both identities on every update so
@@ -401,15 +404,25 @@ export function RegisterCompareHandle({
               // keep this pane's waiter alive.
               ...(remoteId ? [] : ["__default"]),
             ].filter((id): id is string => Boolean(id));
-            const isRunning = ids.some((id) =>
-              Boolean(state.runningByThreadId[id]),
-            );
+            // When multiple first turns share __default, ownership cannot be
+            // migrated. The pane-local assistant state remains authoritative
+            // after remoteId appears, while the transient store pulse still
+            // covers pre-stream gates that never start assistant generation.
+            const isRunning =
+              aui.thread().getState().isRunning ||
+              ids.some((id) => Boolean(state.runningByThreadId[id]));
             if (isRunning) wasRunning = true;
-            if (wasRunning && !isRunning) {
-              unsub();
+            if (wasRunning && !isRunning && !settled) {
+              settled = true;
+              for (const unsubscribe of unsubs) unsubscribe();
               resolve();
             }
-          });
+          };
+          unsubs = [
+            useChatRuntimeStore.subscribe(check),
+            aui.subscribe(check),
+          ];
+          check();
         }),
     };
     return () => {
@@ -1315,18 +1328,6 @@ export function SharedComposer({
           }
           throwIfCompareCancelled(compareSignal);
         }
-        const preLoadStore = useChatRuntimeStore.getState();
-        const previousCheckpoint = preLoadStore.params.checkpoint;
-        const previousVariant = preLoadStore.activeGgufVariant ?? null;
-        // Only expose a backend cancellation target once /load is about to
-        // start. Let /load own the switch: its download/training prechecks run
-        // before it unloads the resident model. Preserve the origin even for a
-        // same-model reload because Stop can unload that active same-id model.
-        compareRunsRef.current.setLoadingModel(run, sel);
-        modelSwitchState.originCheckpoint = previousCheckpoint || null;
-        modelSwitchState.originGgufVariant = previousCheckpoint
-          ? previousVariant
-          : null;
         const resp = await loadModel(
           {
             model_path: sel.id,
@@ -1353,7 +1354,23 @@ export function SharedComposer({
                 }
               : {}),
           },
-          { signal: compareSignal },
+          {
+            signal: compareSignal,
+            // Token validation and its dialog happen inside loadModel. Expose
+            // the backend cancellation target only at the actual request
+            // boundary so Stop cannot evict a resident same-ID model earlier.
+            // Preserve the origin for a same-model reload because once the
+            // request starts, Stop can unload that active same-ID model.
+            onRequestStart: () => {
+              const preLoadStore = useChatRuntimeStore.getState();
+              const previousCheckpoint = preLoadStore.params.checkpoint;
+              compareRunsRef.current.setLoadingModel(run, sel);
+              modelSwitchState.originCheckpoint = previousCheckpoint || null;
+              modelSwitchState.originGgufVariant = previousCheckpoint
+                ? (preLoadStore.activeGgufVariant ?? null)
+                : null;
+            },
+          },
         );
         throwIfCompareCancelled(compareSignal);
         // Keep a compare pane's per-model speculative choice load-local: persist
