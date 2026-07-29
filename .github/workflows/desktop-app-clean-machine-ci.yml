@@ -473,21 +473,43 @@ jobs:
           foreach ($v in 'VSINSTALLDIR','VCINSTALLDIR','WindowsSdkDir','INCLUDE','LIB','LIBPATH') {
             "$v=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
-          # Prove it: the launcher binary stays, but an interpreter it can still START
-          # is a leak, because Find-CompatiblePython (install.ps1:1130-1153) probes `py`
-          # first. `py -0p` is only the launcher's REGISTRY view, which still names the
-          # paths the rename removed, so a start attempt is the only real evidence.
+          exit 0
+
+      - name: Verify the strip took effect
+        # PATH written to $GITHUB_ENV only applies to LATER steps, so the scrub can
+        # only be checked from here. The drop list above is heuristic path-fragment
+        # matching: if a runner image moves any of these tools outside those fragments,
+        # the bundled install.ps1 reuses the survivor and this job still calls itself
+        # clean. Same assertion the installer workflow runs, same reason.
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        shell: pwsh
+        run: |
+          $leaked = @()
+          foreach ($t in 'python','py','git','cmake','cl') {
+            $f = Get-Command $t -ErrorAction SilentlyContinue
+            Write-Host ("{0,-8} {1}" -f $t, $(if ($f) { $f.Source } else { 'ABSENT' }))
+            if ($f -and $t -ne 'py') { $leaked += "$t -> $($f.Source)" }
+          }
+          # `py` itself lives in C:\Windows and stays. Only an interpreter it can still
+          # START is a leak, because Find-CompatiblePython (install.ps1:1130-1153) probes
+          # `py` first. `py -0p` is just the launcher's REGISTRY view, which still names
+          # the paths the rename removed, so a start attempt is the only real evidence.
           if (Get-Command py -ErrorAction SilentlyContinue) {
             foreach ($v in '-3.11', '-3.12', '-3.13') {
               $out = & py $v -c "import sys; print(sys.executable)" 2>&1
               $rc = $LASTEXITCODE
               Write-Host ("py {0} -> exit {1}: {2}" -f $v, $rc, (($out | Out-String).Trim() -replace '\r?\n', ' / '))
-              if ($rc -eq 0) { Write-Host "::error::toolcache python survived the mask: $out"; exit 1 }
+              if ($rc -eq 0) { $leaked += "py $v -> $out" }
             }
             # A failing probe is the outcome we want, but it leaves $LASTEXITCODE
             # non-zero and the runner appends `exit $LASTEXITCODE` to every pwsh step
-            # (actions/runner#351), so the step would fail on a machine that is clean.
+            # (actions/runner#351), so the step would exit 1 with nothing printed on a
+            # machine that is in fact clean.
             $global:LASTEXITCODE = 0
+          }
+          if ($leaked) {
+            Write-Host "::error::developer tooling survived the strip: $($leaked -join '; ')"
+            exit 1
           }
           exit 0
 

@@ -697,14 +697,13 @@ jobs:
           # Ensure-VCRedist silently does not run, leaving torch unable to load, hence
           # the explicit `import torch` assert below.
           #
-          # It fails at studio/setup.ps1:1652-1670, the unconditional "Git is required
-          # but could not be installed automatically" gate: no winget means no way to
-          # fetch git. Before the overlay that failure came out of the RELEASED setup.ps1
-          # and said nothing about this ref; it now comes out of this ref's own copy,
-          # which carries the same gate, so the leg is red for a real and currently
-          # unfixed reason rather than an untestable one. Relaxing that gate to --local
-          # and llama.cpp source builds turns it green, and the overlay is what lets this
-          # workflow see that happen.
+          # On this ref alone it stops at studio/setup.ps1:1655-1669, the unconditional
+          # "Git is required but could not be installed automatically" gate: no winget
+          # means no way to fetch git. That gate is what #7549 relaxes to the --local and
+          # llama.cpp source paths that actually use git; with it applied the leg is
+          # green (staging run 30407859691, all 16 legs). So this row stays required: it
+          # is a merge-order dependency, not a product gap, and the overlay is what lets
+          # this workflow see the fix land.
           - os: windows-latest
             winget: 'masked'
             experimental: false
