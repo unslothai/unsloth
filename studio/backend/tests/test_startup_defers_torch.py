@@ -73,9 +73,9 @@ def _run(snippet: str) -> subprocess.CompletedProcess:
 def test_import_main_does_not_import_torch():
     """`import main` must leave torch and its scientific stack unimported."""
     proc = _run(_IMPORT_MAIN_SNIPPET)
-    assert proc.returncode == 0, (
-        f"import main was not clean\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr[-4000:]}"
-    )
+    assert (
+        proc.returncode == 0
+    ), f"import main was not clean\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr[-4000:]}"
     assert "IMPORT_MAIN_CLEAN" in proc.stdout
 
 
@@ -391,9 +391,9 @@ def test_first_paint_routes_do_not_block_the_event_loop(rel_path, func_name, cal
         and id(n) in offloaded
         for n in ast.walk(func)
     )
-    assert handed_off or called_inside, (
-        f"{rel_path}:{func_name} no longer references {callee}; update this guard"
-    )
+    assert (
+        handed_off or called_inside
+    ), f"{rel_path}:{func_name} no longer references {callee}; update this guard"
 
 
 def test_a_failed_detection_degrades_instead_of_raising():
