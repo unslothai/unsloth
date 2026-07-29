@@ -1181,9 +1181,7 @@ class TrainingBackend:
                 reason,
             )
         else:
-            logger.warning(
-                "Training worker watchdog force-terminating stuck worker: %s", reason
-            )
+            logger.warning("Training worker watchdog force-terminating stuck worker: %s", reason)
         # force_terminate can raise on a wedged child; finalize regardless.
         try:
             self.force_terminate(target_proc = target_proc)

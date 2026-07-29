@@ -185,9 +185,9 @@ def test_natural_completion_reaps_worker_stuck_after_save(monkeypatch):
     )
 
     assert b._progress.is_completed is True
-    assert _wait_until(lambda: b._proc is None), (
-        "a worker stuck in post-save teardown must be reaped after natural completion"
-    )
+    assert _wait_until(
+        lambda: b._proc is None
+    ), "a worker stuck in post-save teardown must be reaped after natural completion"
     assert proc.terminated is True
     assert b._progress.status_message == "Training completed! Model saved"
     assert b.is_training_active() is False
