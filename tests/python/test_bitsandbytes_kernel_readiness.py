@@ -155,7 +155,10 @@ def test_the_ctypes_binds_are_gated_on_the_same_verdict():
         "if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):" in source
     ), "the ctypes bind block must take the _bnb_required branch on a dead library too"
     guarded = source.split("if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):")[1]
-    assert "bnb.functional.lib" in guarded, "the binds must sit under that guard"
+    # Anchor on the symbol, not the module alias: #7580 renamed the binding from
+    # `bnb.functional.lib` to `bnb_functional.lib`, which is exactly the kind of rename
+    # this assertion should survive.
+    assert "lib.cdequantize_blockwise_fp32" in guarded, "the binds must sit under that guard"
 
 
 def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
