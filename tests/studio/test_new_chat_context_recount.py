@@ -383,10 +383,7 @@ NO_LOCAL_MODEL = """
     ],
 )
 def test_the_bar_stays_hidden_when_there_is_nothing_to_price(
-    seed_script,
-    is_loading,
-    expected_switched,
-    request,
+    seed_script, is_loading, expected_switched, request
 ):
     case = request.node.callspec.id
     out = _run(

@@ -3187,7 +3187,11 @@ def _capture_counted(backend, count = 10):
     return captured
 
 
-def _selected_tools(monkeypatch, names = ("search_knowledge_base",), record = None):
+def _selected_tools(
+    monkeypatch,
+    names = ("search_knowledge_base",),
+    record = None,
+):
     """Stub _select_request_tools with a fixed catalog, recording the gate flags."""
 
     async def _select(payload, *, tools_on, mcp_allowed):
@@ -3198,10 +3202,13 @@ def _selected_tools(monkeypatch, names = ("search_knowledge_base",), record = No
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
 
 
-def _count_request(messages, model = "org/A-GGUF", **fields):
+def _count_request(
+    messages,
+    model = "org/A-GGUF",
+    **fields,
+):
     """A /chat/count_tokens payload built from plain message dicts."""
     from models.inference import ChatCountTokensRequest, ChatMessage
-
     return ChatCountTokensRequest(
         model = model,
         messages = [ChatMessage(**message) for message in messages],
@@ -3455,16 +3462,12 @@ def test_count_chat_tokens_strict_counts_the_rendered_template():
     ],
 )
 def test_chat_count_tokens_answers_only_when_the_template_renders(
-    monkeypatch,
-    fail_status,
-    expect_503,
+    monkeypatch, fail_status, expect_503
 ):
     with _StubLlamaServer(fail_status = fail_status) as server:
         backend = _real_counter_backend(server)
         monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-        payload = _count_request(
-            [{"role": "user", "content": "search for the newest release"}]
-        )
+        payload = _count_request([{"role": "user", "content": "search for the newest release"}])
         if expect_503:
             with pytest.raises(HTTPException) as excinfo:
                 asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
@@ -3534,11 +3537,7 @@ _RAG_SCOPE = {"thread_id": "t1", "autoinject": True}
     ],
 )
 def test_chat_count_tokens_declines_only_a_prompt_retrieval_would_change(
-    monkeypatch,
-    messages,
-    scope,
-    tool_names,
-    expected_count,
+    monkeypatch, messages, scope, tool_names, expected_count
 ):
     _count_tokens_backend(monkeypatch, count = 11, supports_tools = True)
     _selected_tools(monkeypatch, names = tool_names)
