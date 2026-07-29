@@ -2,16 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * CommonMark code span boundaries: a backtick run is closed only by a run of
- * the same length. Expressing that needs lookbehind, which older Safari
- * refuses to parse, so runs are scanned by hand.
+ * CommonMark code spans: a backtick run closes only on an equal-length run.
+ * That needs lookbehind, which older Safari rejects, so runs are scanned by hand.
  */
 
 export interface CodeSpan {
   // Offsets of the whole span, delimiters included.
   start: number;
   end: number;
-  // Text between the delimiters, with the one space of padding removed.
+  // Between the delimiters, with the one space of padding removed.
   content: string;
 }
 

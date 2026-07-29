@@ -37,10 +37,9 @@ const NESTED_LABEL = String.raw`((?:[^[\]\\]|\\.|\[(?:[^[\]\\]|\\.)*\])*)`;
 // ordinary character of the destination and the space still ends it.
 const ESCAPABLE = String.raw`[!-/:-@[-\`{-~]`;
 const DESTINATION_CHAR = String.raw`\\${ESCAPABLE}|[^\s()]`;
-// A destination may hold parentheses while they balance, and a path may nest
-// them, so `[x](((draft)).md)` points at `((draft)).md`. An expression cannot
-// count, so the pairs are unrolled to the depth cmark stops counting at, which
-// is the depth GitHub renders.
+// A destination may hold balanced parentheses, and a path may nest them, so
+// `[x](((draft)).md)` points at `((draft)).md`. An expression cannot count, so
+// pairs are unrolled to the depth cmark stops at, which is what GitHub renders.
 const MAX_DESTINATION_NESTING = 32;
 
 /** A balanced parenthesised run nested up to `depth` levels deep. */
@@ -57,10 +56,9 @@ const PLAIN_DESTINATION = String.raw`(?:${DESTINATION_CHAR})*`;
 // A balanced pair counts only while a `)` or a title still closes the link
 // after it, or swallowing it would invent a link across lines.
 const CLOSES_LINK = String.raw`(?=[ \t]*[)'"])`;
-// A destination that runs out of line has its closer below it, since the line
-// is only part of the link. One that stops short of a closer is no destination
-// at all, so `[x](a b.md)` and `[x](a(b.md)` are the plain text they render as
-// and keep the paths they name.
+// A destination that runs out of line has its closer below it, the line being
+// only part of the link. One stopping short of a closer is no destination at all,
+// so `[x](a b.md)` and `[x](a(b.md)` stay plain text and keep the paths they name.
 const CLOSES_OR_ENDS_LINE = String.raw`(?=[ \t]*(?:[)'"]|$))`;
 const INLINE_TARGET = new RegExp(
   String.raw`(!?)\[${NESTED_LABEL}\]\(\s*(<[^<>\n]*>|${BALANCED_DESTINATION}${CLOSES_LINK}|${PLAIN_DESTINATION}${CLOSES_OR_ENDS_LINE})`,
@@ -72,16 +70,16 @@ const REFERENCE_TARGET = /^( {0,3}\[((?:[^[\]\\]|\\.)*)\]:\s*)(<[^<>\n]*>|\S+)/;
 const IMAGE_REFERENCE =
   /!\[((?:[^[\]\\]|\\.)*)\](?:\[((?:[^[\]\\]|\\.)*)\]|(?!\())/g;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// Four columns past the container start an indented code block, unless a
-// paragraph is open. Inside a list item that is four past the item's content
-// column, so a link indented under a bullet is prose and still resolves.
+// Four columns past the container start indented code, unless a paragraph is
+// open. Inside a list item that is measured from the item's content column, so a
+// link indented under a bullet is prose and still resolves.
 const INDENTED_CODE_INDENT = 4;
 // CommonMark type 1 HTML blocks show their contents verbatim.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
 // Type 6 and 7 blocks are literal too and run to the next blank line, not to a
-// closing tag, so `<details>` holds Markdown only after a blank line. Type 7
-// (any other complete tag alone on a line) cannot interrupt a paragraph.
+// closing tag, so `<details>` holds Markdown only after a blank line. Type 7 (any
+// other complete tag alone on a line) cannot interrupt a paragraph.
 const HTML_BLOCK_OPEN = /^ {0,3}<\/?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)/;
 const HTML_ATTRIBUTE =
   "(?:\\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\\s*=\\s*(?:[^\\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)";
@@ -99,10 +97,9 @@ const HTML_BLOCK_TAGS = new Set(
 const BLOCK_LINE =
   /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
 // A definition is a block of its own but may not interrupt a paragraph, so it
-// ends the one above it only when there is none to continue. It opens none of
-// its own either, or the definition below it could never start: they are
-// allowed to run consecutively (spec 0.31.2 section 4.7). Same rule as
-// `_LINK_DEFINITION` in the backend's `after_paragraph`.
+// ends the one above only when there is none to continue. It opens none either,
+// or consecutive definitions could never start (spec 0.31.2 section 4.7). Same
+// rule as `_LINK_DEFINITION` in the backend's `after_paragraph`.
 const LINK_DEFINITION = /^ {0,3}\[(?:[^[\]\\]|\\.)+\]:/;
 const LINE_ENDINGS = /\r\n?/g;
 // A scheme, a protocol-relative host, or a fragment: already absolute enough.
@@ -116,19 +113,17 @@ const COMMENT_BLOCK_OPEN = /^ {0,3}<!--/;
 /**
  * `line` with its commented spans blanked, and whether a comment block is still
  * open below it. Commented content renders as nothing, so it holds no fence,
- * block or code span. Lengths are preserved so offsets still line up with the
- * original.
+ * block or code span. Lengths are preserved so offsets still line up.
  *
  * Only a comment that starts a line opens a block (CommonMark type 2), and only
- * that block runs on to the line holding `-->`, tail included. One written
- * mid-sentence is inline raw HTML, which belongs to the paragraph holding it:
- * its `-->` may arrive on a later line of that paragraph, and only the text up
- * to it is hidden. `closesBelow` says one does; without it the opener is the
- * ordinary text a renderer shows, so a note that merely mentions `<!--` may not
- * hide the links below it.
+ * that runs on to the line holding `-->`, tail included. One written mid-sentence
+ * is inline raw HTML belonging to its paragraph, so its `-->` may arrive on a
+ * later line and only the text up to it is hidden. `closesBelow` says one does;
+ * without it the opener is ordinary text, so a note merely mentioning `<!--` must
+ * not hide the links below it.
  *
- * "Starts a line" is read inside the container, so `blockOpen` is decided by
- * the caller from the item's content rather than from the raw line.
+ * "Starts a line" is read inside the container, so `blockOpen` comes from the
+ * item's content rather than the raw line.
  */
 function maskComments(
   line: string,
@@ -166,9 +161,8 @@ function maskInline(
 ): [string, boolean, boolean] {
   let out = " ".repeat(from);
   let index = from;
-  // Scanned only once an opener turns up, so a line without one never pays for
-  // it. Spans are ordered and disjoint and each opener sits at or past the one
-  // before, so the search resumes where it stopped rather than restarting.
+  // Scanned only once an opener turns up. Spans are ordered and disjoint and each
+  // opener sits at or past the last, so the search resumes rather than restarts.
   let spans: CodeSpan[] | null = null;
   let cursor = 0;
   while (index < line.length) {
@@ -191,8 +185,8 @@ function maskInline(
     const close = line.indexOf(COMMENT_CLOSE, start + 2);
     if (close < 0) {
       if (closesBelow) {
-        // The paragraph carries the comment on, so the rest of the line from
-        // the opener is inside it, and so is the line below.
+        // The paragraph carries the comment on, so the line from the opener is
+        // inside it, and so is the line below.
         return [
           out + line.slice(index, start) + " ".repeat(line.length - start),
           false,
@@ -211,11 +205,10 @@ function maskInline(
 
 /**
  * Whether `line` is written outside the container an open block belongs to. A
- * fence and an HTML block hold no lazy continuation line, so content to the
- * left of the item, or outside the quote, ends the block with its container.
- * A raw block or a comment written inside a list item ends on a blank line as
- * well: the item takes the break, so what follows it is a block of the item's
- * own.
+ * fence and an HTML block hold no lazy continuation line, so content left of the
+ * item, or outside the quote, ends the block with its container. A raw block or
+ * comment inside a list item ends on a blank line too: the item takes the break,
+ * so what follows is a block of the item's own.
  */
 function leavesContainer(
   line: string,
@@ -248,9 +241,8 @@ function label(text: string): string {
 }
 
 const NEEDS_BRACKETS = /[()\s]/;
-// `\(` in a destination is a literal paren, not part of the path. Only ASCII
-// punctuation is escapable, so the backslash in `docs\alpha.md` is a character
-// of the path rather than an escape and has to survive.
+// `\(` in a destination is a literal paren. Only ASCII punctuation is escapable,
+// so the backslash in `docs\alpha.md` is part of the path and has to survive.
 const ESCAPE = new RegExp(String.raw`\\(${ESCAPABLE})`, "g");
 // A URL parser reads a backslash as a path separator, so `docs\a.md` would
 // resolve to `docs/a.md`. Encode it first, the way a renderer normalises it.
@@ -351,9 +343,8 @@ interface Classified {
 }
 
 /**
- * Sorts lines into Markdown and code, masking the code so a code span cannot
- * pair across it. Offsets are preserved, so a span found in the mask sits at
- * the same place in the document.
+ * Sorts lines into Markdown and code, masking the code so a span cannot pair
+ * across it. Offsets are preserved, so a mask span sits where it does in the doc.
  */
 function classify(lines: string[]): Classified {
   const text: number[] = [];
@@ -362,16 +353,15 @@ function classify(lines: string[]): Classified {
   let openFence: string | null = null;
   let inRawHtml = false;
   let inHtmlBlock = false;
-  // Where the open block was written: the content column of the list item it
-  // belongs to, 0 at document level, and the blockquotes it sits inside. Only
-  // one of the three is ever open, and none of them holds a lazy continuation
-  // line, so a line written to the left of the item or outside the quote ends
-  // the block along with its container instead of reading as more content.
+  // Where the open block was written: the content column of the item it belongs
+  // to, 0 at document level, plus the blockquotes it sits inside. Only one is ever
+  // open, and none holds a lazy continuation line, so a line left of the item or
+  // outside the quote ends the block with its container.
   let blockColumn = 0;
   let blockQuotes = 0;
   let inComment = false;
-  // True while an inline comment opened above runs on into this line, which the
-  // paragraph holding it carries.
+  // True while an inline comment opened above runs on into this line, carried by
+  // the paragraph holding it.
   let runOn = false;
   const closesBelow = commentClosesBelow(lines);
   let inCode = false;
@@ -400,14 +390,14 @@ function classify(lines: string[]): Classified {
   lines.forEach((original, index) => {
     const start = offset;
     offset += original.length + 1;
-    // The quote state from the line above, which is the one list tracking
-    // asks about. Only a plain line of text below rewrites it, so every block
-    // that returns early leaves no quoted paragraph open behind it.
+    // The quote state from the line above, which is what list tracking asks
+    // about. Only plain text below rewrites it, so every block returning early
+    // leaves no quoted paragraph open behind it.
     const above = quote;
     quote = NO_QUOTE;
-    // A fence, a comment or an HTML block runs only to the end of the container
-    // it was written in, so a line dedented out of that item or written outside
-    // that quote closes both.
+    // A fence, comment or HTML block runs only to the end of the container it was
+    // written in, so a line dedented out of that item or outside that quote
+    // closes both.
     const quotes = quoteDepth(original);
     let inBlock = openFence !== null || inRawHtml || inHtmlBlock || inComment;
     if (
@@ -429,18 +419,18 @@ function classify(lines: string[]): Classified {
     }
     // Read from the container the line is written in, so a fence three columns
     // past a nested bullet or behind a quote marker still opens one. A block
-    // already open keeps only its own quote stripped, or a deeper marker in its
-    // content would read as a closer.
+    // already open keeps only its own quote stripped, or a deeper marker in it
+    // would read as a closer.
     const container = containerContent(
       original,
       lists,
       inBlock ? blockQuotes : quotes,
     );
-    // A comment cannot open a fence and a fence hides a comment opener, so
-    // resolve them in that order or a hidden delimiter opens a phantom fence.
-    // An opener is read past a marker on the same line as well, since a fence
-    // written as an item's first content opens inside that item. Only an
-    // opener: fenced content is literal, and a closer carries no marker.
+    // A comment cannot open a fence and a fence hides a comment opener, so resolve
+    // them in that order or a hidden delimiter opens a phantom fence. An opener is
+    // read past a marker on the same line too, since a fence written as an item's
+    // first content opens inside it. Only an opener: fenced content is literal and
+    // a closer carries no marker.
     const fenceSource = inComment
       ? null
       : FENCE.exec(
@@ -460,9 +450,8 @@ function classify(lines: string[]): Classified {
     }
     if (inHtmlBlock) {
       track("", above);
-      // Only a blank line ends a type 6 or 7 block, so nothing inside one is
-      // a fence or a link. A quote marker on its own holds nothing, so the
-      // block written under it ends there too.
+      // Only a blank line ends a type 6 or 7 block, so nothing inside one is a
+      // fence or a link. A bare quote marker holds nothing, so it ends one too.
       inHtmlBlock = !!container.trim();
       if (!inHtmlBlock) {
         endBlock();
@@ -506,14 +495,13 @@ function classify(lines: string[]): Classified {
       masked.push(" ".repeat(original.length));
       return;
     }
-    // A block already open owns this line, so the line is its content rather
-    // than a block written at the column it happens to start in.
+    // A block already open owns this line, so it is content rather than a block
+    // written at the column it happens to start in.
     const hidden = inComment;
     const carried = runOn;
     // A comment is an HTML block too, so one written as a list item's first
-    // content opens inside that item exactly as a fence does: the opener is
-    // read past a marker on the same line and from the column its container
-    // starts at, not from the margin of the line as written.
+    // content opens inside that item exactly as a fence does: read past a marker
+    // on the same line and from its container's column, not the line's margin.
     const opensComment =
       !(hidden || carried) &&
       COMMENT_BLOCK_OPEN.test(itemContent(container, afterParagraph));
@@ -530,24 +518,22 @@ function classify(lines: string[]): Classified {
     // A line an inline comment runs on into is still a line of the paragraph
     // that carries it: only its text is hidden, never its block structure.
     const structure = carried ? original : line;
-    // The same container reading as above, now that the comments are masked. A
-    // comment blanks its own line, so that line is read as written instead: the
-    // block renders as nothing, but the item it is the content of still opens.
+    // The same container reading as above, now the comments are masked. A comment
+    // blanks its own line, so that line is read as written: the block renders as
+    // nothing, but the item it is the content of still opens.
     const source = opensComment ? original : line;
     const visible = containerContent(source, lists, quotes);
-    // An HTML block written as a list item's first content opens inside that
-    // item, as a fence does, so an opener is read past a marker on the same
-    // line. The marker survives into the structural line, so the item it opens
-    // is still tracked.
+    // An HTML block written as a list item's first content opens inside that item,
+    // as a fence does, so an opener is read past a marker on the same line. The
+    // marker survives into the structural line, so its item is still tracked.
     const content = itemContent(visible, afterParagraph);
     const marker =
       content === visible
         ? ""
         : source.slice(0, source.length - content.length);
-    // Taken before an HTML opener is hidden: it renders as nothing, but its
-    // indentation still closes a list item it sits to the left of. A comment
-    // or a <pre> keeps only its column and its marker, since the text it hides
-    // is not Markdown and must not open a list of its own.
+    // Taken before an HTML opener is hidden: it renders as nothing, but its indent
+    // still closes a list item it sits left of. A comment or a <pre> keeps only its
+    // column and marker, since the text it hides is not Markdown and opens no list.
     const opensRaw = !carried && RAW_HTML_OPEN.test(content);
     track(
       !(hidden || carried) && (opensRaw || !line.trim())
@@ -626,9 +612,9 @@ export function resolveChangelogLinks(markdown: string): string {
   // The desktop updater body arrives with CRLF, which would hide fences.
   const lines = markdown.replace(LINE_ENDINGS, "\n").split("\n");
   const { text, masked, definition, comments } = classify(lines);
-  // Scanned over the whole document, so a span may cross a line break.
-  // Commented ranges join them: the renderer shows neither, so a link in one
-  // is not followable and rewriting it would only mutate hidden text.
+  // Scanned over the whole document, so a span may cross a line break. Commented
+  // ranges join them: the renderer shows neither, so a link in one is not
+  // followable and rewriting it would only mutate hidden text.
   const spans = [...codeSpans(masked), ...comments].sort(
     (a, b) => a.start - b.start,
   );

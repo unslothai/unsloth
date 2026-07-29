@@ -201,8 +201,8 @@ export function DownloadManagerPanel({
       className={cn(
         // Standalone: anchor bottom-right. In a shared stack (positioned=false)
         // flow as a right-aligned row so overlays stack instead of overlapping.
-        // min-h-0 there because a flex item defaults to min-height:auto, so the
-        // capped stack would squeeze the update card instead of this list.
+        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
+        // stack would squeeze the update card instead of this list.
         "pointer-events-none",
         positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}

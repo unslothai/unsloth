@@ -21,8 +21,8 @@ SNAPSHOT = ROOT / "studio" / "CHANGELOG.md"
 
 class build_py(_build_py):
     def run(self) -> None:
-        # Copy beside the sources only if writable (a PEP 517 build may run on
-        # an immutable checkout), always into the staging directory.
+        # Beside the sources only if writable (PEP 517 may build an immutable
+        # checkout); into the staging directory always.
         if SOURCE.is_file():
             try:
                 shutil.copyfile(SOURCE, SNAPSHOT)

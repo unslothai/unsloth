@@ -121,8 +121,8 @@ def get_studio_update_status(current_version: str) -> dict[str, Any]:
     install_source = detect_install_source()
     disabled = os.environ.get(DISABLE_ENV_VAR) == "1"
 
-    # Dev-only: the popup is PyPI-install-only, so set the env var below to a
-    # version to review it from a checkout. The documented opt-out still wins.
+    # Dev-only: the popup is PyPI-install-only, so fake a version to review it
+    # from a checkout. The documented opt-out still wins.
     forced_version = os.environ.get(FAKE_UPDATE_ENV_VAR, "").strip()
     if forced_version and not disabled and _is_version(forced_version):
         return _status_response(

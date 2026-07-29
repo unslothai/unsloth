@@ -39,9 +39,9 @@ CHANGELOG_SUCCESS_TTL_SECONDS = 30 * 60
 CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
-# CommonMark requires a space, a tab or the end of the line after the hashes: a
-# non-breaking space copied from rich text renders as ordinary text, not a
-# heading, but a bare `##` is an empty heading and still ends the release above.
+# CommonMark requires a space, tab or line end after the hashes: a non-breaking
+# space copied from rich text renders as text, not a heading, but a bare `##` is
+# an empty heading and still ends the release above.
 _HEADING_PATTERN = re.compile(r"^ {0,3}##(?:[ \t]+(?P<title>.*?))?[ \t]*$")
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 # CommonMark type 1 HTML blocks: contents are literal until a closing tag,
@@ -60,8 +60,8 @@ _RAW_BLOCKS = (
 # Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
 # once a blank line has closed the block. Open and close tags both start one.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
-# Blocks that break into an open paragraph, so no paragraph is open after them
-# and one they are written below is closed rather than continued.
+# Blocks that break into an open paragraph, so none is open after them and one
+# they are written below is closed rather than continued.
 _INTERRUPTS = re.compile(
     r"^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$)"
 )
@@ -107,8 +107,7 @@ _COMMENT_BLOCK_OPEN = re.compile(r"^ {0,3}<!--")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
 # Stands in for a line the renderer hides. `#` is a block of its own, so list
-# tracking reads it the way it reads a comment: never a marker, never a lazy
-# paragraph continuation.
+# tracking reads it like a comment: never a marker, never a lazy continuation.
 _HIDDEN_BLOCK = "#"
 _VERSION_TOKEN_PATTERN = re.compile(r"^[\[(]?v?(?P<version>[0-9][0-9A-Za-z.!+-]*?)[\])]?$")
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
@@ -195,8 +194,8 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     body: list[str] = []
     open_fence: str | None = None
     # Content column of the list item the open block belongs to, 0 at document
-    # level. A fence and an HTML block are both scoped to their container, so
-    # the item's end closes them. Only one of the three is ever open.
+    # level. A fence and an HTML block are scoped to their container, so the
+    # item's end closes them. Only one of the three is ever open.
     block_column = 0
     in_comment = False
     in_raw_html: int | None = None
@@ -222,12 +221,11 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         structural = ""
         opened_block = False
         in_block = open_fence is not None or in_html_block or in_raw_html is not None or in_comment
-        # A fence, a comment or an HTML block inside a list item runs only to
-        # the end of that item, so a line dedented out of the item closes both.
-        # Lazy continuation cannot reach into any of them, so any content to the
-        # left of the item ends the block along with the item. A raw block or a
-        # comment inside an item ends on a blank line as well: the item takes
-        # the break, so what follows it is a block of the item's own.
+        # A fence, comment or HTML block inside a list item runs only to the end
+        # of that item, so a line dedented out of the item closes both. Lazy
+        # continuation reaches into none of them. A raw block or comment inside an
+        # item also ends on a blank line: the item takes the break, so what
+        # follows is a block of the item's own.
         leaves = (
             _indent_width(line) < block_column
             if line.strip()
@@ -242,9 +240,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             # The paragraph the line could have continued is block content, so
             # it closes the item rather than reading as more of it.
             after_paragraph = False
-        # A fence written as a list item's first content opens inside that
-        # item, so an opener is read past a marker on the same line. Only an
-        # opener: fenced content is literal, and a closer carries no marker.
+        # A fence written as a list item's first content opens inside that item, so
+        # an opener is read past a marker on the same line. Only an opener: fenced
+        # content is literal and a closer carries no marker.
         fence_line = line if open_fence else _item_content(line, after_paragraph)
         # Raw HTML first: its contents are literal, so a fence in it is not one.
         if in_raw_html is not None:
@@ -263,12 +261,12 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         elif open_fence:
             visible = ""
         else:
-            # A block already open owns this line, so the line is its content
-            # rather than a block written at the column it happens to start in.
+            # A block already open owns this line, so it is content rather than a
+            # block written at the column it happens to start in.
             hidden = in_comment or in_raw_html is not None
-            # A comment is an HTML block too, so one written as a list item's
-            # first content opens inside that item exactly as a fence does: the
-            # opener is read past a marker on the same line.
+            # A comment is an HTML block too, so one written as a list item's first
+            # content opens inside it exactly as a fence does: the opener is read
+            # past a marker on the same line.
             block_open = (
                 not in_comment
                 and _COMMENT_BLOCK_OPEN.match(_item_content(line, after_paragraph)) is not None
@@ -276,11 +274,10 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             # Commented-out sections are not rendered, so they are not releases.
             visible, in_comment = _strip_comments(line, in_comment, block_open)
             # An HTML block written as a list item's first content opens inside
-            # that item, as a fence does, so an opener is read past a marker on
-            # the same line. The marker itself stays, so the item it opens is
-            # still tracked. A comment blanks its own line, so that line is read
-            # as written instead: the block renders as nothing, but the item it
-            # is the content of still opens.
+            # that item, as a fence does, so an opener is read past a marker on the
+            # same line. The marker stays, so its item is still tracked. A comment
+            # blanks its own line, so that line is read as written: the block
+            # renders as nothing, but the item it is content of still opens.
             source = line if block_open else visible
             content = _item_content(source, after_paragraph)
             marker = source[: len(source) - len(content)]
@@ -288,10 +285,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             stripped, in_raw_html = _strip_raw_html(content, in_raw_html)
             opened_block = in_raw_html is not None or (block_open and in_comment)
             # Taken before the opener is hidden: it renders as nothing, but its
-            # indentation still closes a list item it sits to the left of, and a
-            # marker on its line still opens one. A comment or a raw block keeps
-            # only those, since the text it hides is not Markdown and must not
-            # open a list of its own.
+            # indent still closes a list item it sits left of, and a marker on its
+            # line still opens one. A comment or raw block keeps only those, since
+            # the text it hides is not Markdown and must open no list.
             if block_open or stripped != content:
                 if not hidden:
                     structural = _hidden_structure(line, marker)
@@ -352,11 +348,10 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         # Only ordinary text continues a paragraph. Indented code counts four
         # spaces past the container, so an item's own indent does not count.
         indented_code = not after_paragraph and _indent_width(visible) - column >= 4
-        # An underline ends the paragraph it underlines, so it needs one open
-        # in its own container: the quote above owns its own, and a row written
-        # left of an open item is lazy text of the item's paragraph rather than
-        # a heading. A row of three dashes is a thematic break either way, which
-        # `_INTERRUPTS` already ends the paragraph on.
+        # An underline ends the paragraph it underlines, so it needs one open in
+        # its own container: the quote above owns its own, and a row left of an
+        # open item is lazy text of the item's paragraph. Three dashes are a
+        # thematic break either way, which `_INTERRUPTS` already ends on.
         underline = (
             _SETEXT_UNDERLINE.match(visible) is not None
             and after_paragraph
@@ -364,9 +359,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             and _indent_width(visible) >= column
         )
         after_paragraph = (
-            # Read inside its container, so an empty item and a fence written
-            # as an item's own content leave no paragraph open below them. A
-            # marker the paragraph above swallows is its text, not an item.
+            # Read inside its container, so an empty item and a fence written as an
+            # item's own content leave no paragraph open below them. A marker the
+            # paragraph above swallows is its text, not an item.
             (bool(content.strip()) or lazy_marker)
             and match is None
             and _HEADING_PATTERN.match(content) is None
@@ -389,9 +384,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             # The only paragraph a quote line leaves open is the quote's own,
             # and a quote holding a heading or nothing at all leaves none.
             after_paragraph = in_quote
-        # Whose paragraph the line below would continue. A quote owns the one
-        # its own lines hold, so a marker written outside the quote is a block
-        # of its own rather than more of the text above it.
+        # Whose paragraph the line below would continue. A quote owns the one its
+        # own lines hold, so a marker outside the quote is a block of its own
+        # rather than more of the text above it.
         quoted = quote_line or in_quote
         # The lines a later underline turns into one heading. A paragraph opens
         # only on plain text and then runs on until something interrupts it.
@@ -412,9 +407,8 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             continue
 
         flush()
-        # An empty heading has no title at all, so it ends the release above it
-        # without indexing one of its own: `_version_from_heading` finds no
-        # version and `flush` then skips the section.
+        # An empty heading has no title, so it ends the release above without
+        # indexing one: `_version_from_heading` finds no version and `flush` skips.
         heading = match.group("title") or ""
         version = _version_from_heading(heading)
         body = []
@@ -749,8 +743,8 @@ def _strip_comments(line: str, in_comment: bool, block_open: bool) -> tuple[str,
     index = 0
     spans = _code_span_ranges(line)
     # Spans are ordered and disjoint and each opener sits at or past the one
-    # before, so the search resumes where it stopped. Restarting it per opener
-    # is quadratic, and a long line of code spans is reparsed on every request.
+    # before, so the search resumes rather than restarts: restarting per opener is
+    # quadratic, and a long line of code spans is reparsed on every request.
     cursor = 0
     while index < len(line):
         opening = line.find(_COMMENT_OPEN, index)
@@ -845,8 +839,8 @@ def _item_content(line: str, after_paragraph: bool) -> str:
     if item is None:
         return line
     padding = _indent_width(item.group("space"))
-    # Over-indented content starts one column past the marker, so the rest of
-    # the padding is the content's own indentation.
+    # Over-indented content starts one column past the marker; the rest of the
+    # padding is the content's own indentation.
     over = padding - 1 if padding > _MAX_ITEM_PADDING else 0
     return " " * over + line[item.end() :]
 
@@ -872,7 +866,7 @@ def _may_be_lazy(line: str) -> bool:
         and _INTERRUPTS.match(line) is None
         and _FENCE_PATTERN.match(line) is None
         # Types 1 to 6 interrupt a paragraph, so a `<div>` left of an open item
-        # closes it. Type 7 cannot, and is deliberately excluded here.
+        # closes it. Type 7 cannot, and is deliberately excluded.
         and not _opens_html_block(line, True)
     )
 
@@ -1020,10 +1014,9 @@ def _renders_visibly(markdown: str) -> bool:
         if not in_comment and (_FENCE_PATTERN.match(line) or opens_raw):
             # A code block or raw HTML block renders even when it is empty.
             return True
-        # No containers are tracked here, so the opener is read at the margin.
-        # The answer does not turn on the difference: an item renders its marker
-        # whatever the block inside it hides, so a section whose only content is
-        # a commented-out item renders something either way.
+        # No containers are tracked here, so the opener is read at the margin. The
+        # answer does not turn on it: an item renders its marker whatever the block
+        # inside hides, so a commented-out item renders something either way.
         visible, in_comment = _strip_comments(
             line, in_comment, _COMMENT_BLOCK_OPEN.match(line) is not None
         )

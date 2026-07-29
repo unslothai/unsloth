@@ -2,14 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * CommonMark measures a block's indentation from its container, not from the
- * left margin: inside a list item the content column moves right, so four
- * spaces at document level and four spaces under a bullet mean different
+ * CommonMark measures a block's indentation from its container, not the left
+ * margin: four spaces at document level and four under a bullet mean different
  * things. Tracking the open items lets both changelog scanners ask "is this
  * indented code?" the way a renderer would.
  *
- * Ported from the backend's `_open_lists` in studio/backend/utils/changelog.py
- * so the three scanners classify the same line the same way.
+ * Ported from `_open_lists` in studio/backend/utils/changelog.py so the three
+ * scanners classify a line the same way.
  */
 
 /** The open list items, innermost last, by the column their content starts. */
@@ -29,8 +28,8 @@ const BLOCK_QUOTE = /^ {0,3}>/;
 const QUOTE_MARKER = /^ {0,3}>[ \t]?/;
 // Blocks that are not paragraph text, so they cannot continue one lazily.
 const PARAGRAPH_TEXT = /^ {0,3}(?![-*+>]([ \t]|$)|\d{1,9}[.)]([ \t]|$))\S/;
-// Blocks that break into an open paragraph, so one they are written below is
-// closed rather than continued. A link reference definition is not one of them.
+// Blocks that break into an open paragraph, closing it rather than continuing
+// it. A link reference definition is not one of them.
 const INTERRUPTS =
   /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$)/;
 const FENCE = /^ {0,3}(?:`{3,}|~{3,})/;
@@ -47,19 +46,17 @@ const HTML_BLOCK_TAGS = new Set(
 const MAX_ITEM_PADDING = 4;
 // Columns past its container at which a line becomes an indented code block.
 const INDENTED_CODE = 4;
-// Stands in for a line the renderer hides. `#` is a block in its own right, so
-// list tracking reads it the way it reads a comment: never a marker, never a
-// lazy paragraph continuation.
+// Stands in for a line the renderer hides. `#` is a block of its own, so list
+// tracking reads it like a comment: never a marker, never a lazy continuation.
 const HIDDEN_BLOCK = "#";
 const LEADING_SPACE = /^[ \t]*/;
 
 /**
- * `line` as list tracking sees it once the renderer hides its text. A comment
- * or a raw HTML block renders nothing, but it is still a block written at its
- * own column, so it closes the items it sits to the left of. Only the
- * indentation survives: what the block hides is not Markdown and must not open
- * a list of its own. `marker` is the part of the line that opens a list item
- * the block is the content of, which survives with it. Ported from
+ * `line` as list tracking sees it once the renderer hides its text. A comment or
+ * raw HTML block renders nothing but is still a block at its own column, so it
+ * closes the items it sits left of. Only the indentation survives: what the block
+ * hides is not Markdown and must not open a list. `marker` is the part opening
+ * the item the block is content of, which survives too. Ported from
  * `_hidden_structure` on the backend.
  */
 export function hiddenStructure(line: string, marker = ""): string {
@@ -87,9 +84,8 @@ export function indentWidth(line: string): number {
 
 /**
  * Whether `line` starts a block that can break into an open paragraph. A quote
- * marker always can. A list item can only when it has content, and an ordered
- * one only when it starts at 1: anything else is text of the paragraph it
- * appears to interrupt.
+ * marker always can; a list item only with content, an ordered one only at 1.
+ * Anything else is text of the paragraph it appears to interrupt.
  */
 export function interruptsParagraph(line: string): boolean {
   if (BLOCK_QUOTE.test(line)) {
@@ -108,10 +104,10 @@ export function interruptsParagraph(line: string): boolean {
 }
 
 /**
- * Whether a marker-shaped `line` is really text of the paragraph above it. Only
- * a marker inside the paragraph's own item interrupts it; one to the left
- * closes that item and opens a sibling. A quote owns the paragraph its lines
- * hold, so a marker written outside the quote opens a list of its own.
+ * Whether a marker-shaped `line` is really text of the paragraph above. Only a
+ * marker inside the paragraph's own item interrupts it; one to the left closes
+ * that item and opens a sibling. A quote owns the paragraph its lines hold, so a
+ * marker outside the quote opens a list of its own.
  */
 export function lazyMarker(
   line: string,
@@ -157,18 +153,17 @@ function stripIndent(line: string, columns: number): string {
 }
 
 /**
- * Whether `line` can continue a paragraph it is indented out of. Only plain
- * text can: a heading, a fence, a break or an HTML block starts a block of its
- * own, which closes the item instead. An underline is not one of them: it may
- * never be lazy, so `===` written left of an open item is read as more of the
- * item's paragraph. Nor is a definition, which is a block of its own but may
- * not interrupt a paragraph. A row of dashes still closes the item, as
- * `INTERRUPTS` reads three or more as the thematic break they are.
+ * Whether `line` can continue a paragraph it is indented out of. Only plain text
+ * can: a heading, fence, break or HTML block starts a block of its own, closing
+ * the item instead. An underline is not one: it may never be lazy, so `===` left
+ * of an open item is more of the item's paragraph. Nor is a definition, a block
+ * of its own that may not interrupt a paragraph. A row of dashes still closes the
+ * item: `INTERRUPTS` reads three or more as the thematic break they are.
  */
 function mayBeLazy(line: string): boolean {
   const named = HTML_BLOCK_OPEN.exec(line);
-  // Types 1 to 6 interrupt a paragraph, so a `<div>` left of an open item
-  // closes it. Type 7 cannot, and is deliberately excluded here.
+  // Types 1 to 6 interrupt a paragraph, so a `<div>` left of an open item closes
+  // it. Type 7 cannot, and is deliberately excluded.
   const htmlBlock =
     named !== null && HTML_BLOCK_TAGS.has((named[1] ?? "").toLowerCase());
   return (
@@ -180,10 +175,10 @@ function mayBeLazy(line: string): boolean {
 }
 
 /**
- * Whether `line` reads as more of a paragraph open in its container. Measured
- * from `column`, where that container's content starts: four columns past it
- * the line is an indented code block, which may not interrupt a paragraph, so
- * indentation alone never closes the one above it.
+ * Whether `line` reads as more of a paragraph open in its container, measured
+ * from `column` where that container's content starts: four columns past it the
+ * line is indented code, which may not interrupt a paragraph, so indentation
+ * alone never closes the one above.
  */
 export function continuesParagraph(line: string, column: number): boolean {
   const inner = stripIndent(line, column);
@@ -215,10 +210,10 @@ export function quoteDepth(line: string): number {
 
 /**
  * `line` as the container it is written in sees it, with `quotes` blockquote
- * markers and the open item's content column removed. CommonMark measures a
- * block from its container rather than from the margin (spec 0.31.2 sections
- * 5.1 and 5.2), so `> ~~~` and a fence under a nested bullet are openers even
- * though neither sits within three columns of the margin.
+ * markers and the open item's content column removed. CommonMark measures a block
+ * from its container, not the margin (spec 0.31.2 sections 5.1, 5.2), so `> ~~~`
+ * and a fence under a nested bullet are openers despite sitting more than three
+ * columns in.
  */
 export function containerContent(
   line: string,
@@ -227,8 +222,8 @@ export function containerContent(
 ): string {
   const [inner] = stripQuotes(line, quotes);
   if (quotes > 0) {
-    // A list written inside a quote is the quote's own, which this tracker
-    // follows at document level only, so its columns do not apply here.
+    // A list inside a quote is the quote's own; this tracker follows document
+    // level only, so its columns do not apply here.
     return inner;
   }
   const columns = dropDeeper(state.columns, indentWidth(inner));
@@ -237,11 +232,11 @@ export function containerContent(
 
 /**
  * `line` read from the content column of a list item that opens on it. A block
- * written as an item's first content sits inside that item, so ``- ``` `` opens
- * a fence even though its marker is not within three columns of the container
- * (spec 0.31.2 section 5.2). The padding is capped the way `openLists` caps it,
- * or ``-     ``` `` would read as a fence rather than the indented code it is.
- * A marker the paragraph above swallows opens no item, so its line is returned
+ * written as an item's first content sits inside that item, so ``- ``` `` opens a
+ * fence even though its marker is not within three columns of the container (spec
+ * 0.31.2 section 5.2). Padding is capped the way `openLists` caps it, or
+ * ``-     ``` `` would read as a fence rather than the indented code it is. A
+ * marker the paragraph above swallows opens no item, so its line is returned
  * whole, as is one four columns past its container.
  */
 export function itemContent(line: string, afterParagraph: boolean): string {
@@ -256,8 +251,8 @@ export function itemContent(line: string, afterParagraph: boolean): string {
     return line;
   }
   const padding = indentWidth(item[2] ?? "");
-  // Over-indented content starts one column past the marker, so the rest of
-  // the padding is the content's own indentation.
+  // Over-indented content starts one column past the marker; the rest of the
+  // padding is the content's own indentation.
   const over = padding > MAX_ITEM_PADDING ? padding - 1 : 0;
   return `${" ".repeat(over)}${line.slice(item[0].length)}`;
 }
@@ -275,9 +270,9 @@ export const NO_QUOTE: QuoteState = { inQuote: false, quoted: false };
 /**
  * The quote state after `line`, given the state after the line above and the
  * content column of the item `line` sits in. A quote owns the paragraph its own
- * lines hold, so a list marker written outside the quote opens a list of its own
- * instead of reading as more of that paragraph. Ported from the backend's
- * `in_quote` tracking in changelog.py.
+ * lines hold, so a marker written outside the quote opens a list of its own
+ * rather than reading as more of that paragraph. Ported from `in_quote` tracking
+ * in changelog.py.
  */
 export function quoteState(
   line: string,
@@ -293,10 +288,9 @@ export function quoteState(
 }
 
 /**
- * `columns` with every item `line` is written to the left of closed. Read
- * inside the container the item sits in, not from the margin: a line that only
- * looks indented there is lazy text of the item's paragraph, which leaves the
- * item open rather than closing it.
+ * `columns` with every item `line` is written to the left of closed. Read inside
+ * the container the item sits in, not from the margin: a line that only looks
+ * dedented there is lazy text of the item's paragraph, leaving the item open.
  */
 function closeDedented(
   columns: number[],
@@ -316,11 +310,10 @@ function closeDedented(
 }
 
 /**
- * The list items still open after `line`. A dedented line closes an item,
- * unless it is a lazy paragraph continuation. A new marker nests under a deeper
- * column and replaces a sibling. `quoted` marks a paragraph the blockquote
- * above owns: a marker written outside the quote is not text of it, so it opens
- * a list of its own.
+ * The list items still open after `line`. A dedented line closes an item unless
+ * it is a lazy paragraph continuation. A new marker nests under a deeper column
+ * and replaces a sibling. `quoted` marks a paragraph the blockquote above owns:
+ * a marker outside the quote is not text of it, so it opens a list of its own.
  */
 export function openLists(
   line: string,

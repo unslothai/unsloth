@@ -213,8 +213,7 @@ function TauriUpdateLayer({
   }
 
   return (
-    // Capped like the browser stack: the download panel shares it, so both
-    // together must still fit the window.
+    // Capped like the browser stack: the download panel shares it, so both must fit.
     <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
       <UpdateBanner
         status={update.status}
@@ -381,10 +380,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
-        {/* One bottom-right stack so overlays never overlap: download panel at
-            the corner, banners above. Each overlay owns its width. */}
+        {/* One bottom-right stack so overlays never overlap: download panel at the
+            corner, banners above, each owning its width. */}
         {/* Capped to the viewport, or a long download list plus expanded notes
-            would push the top of the stack off screen. */}
+            pushes the top of the stack off screen. */}
         <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
           <WebUpdateBanner
             positioned={false}

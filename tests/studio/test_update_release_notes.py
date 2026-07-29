@@ -36,9 +36,8 @@ INLINE_COMMENTS = FRONTEND / "lib/markdown-inline-comments.ts"
 WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
-# The scanners are the frontend's half of the contract the parser implements on
-# the backend, so they are run rather than read. Node strips the types; nothing
-# here imports a package, so no install is needed.
+# The scanners are the frontend half of the contract the parser implements, so they are
+# run rather than read. Node strips the types and nothing imports a package: no install.
 _TS_ALIAS = re.compile(r'"@/lib/([a-z-]+)"')
 _TS_RUNNER = """
 import { resolveChangelogLinks } from "./changelog-links.ts";
@@ -251,8 +250,7 @@ def test_commented_out_sections_are_not_releases(changelog_module, text):
 
 def test_repo_root_changelog_is_preferred_over_the_build_snapshot(changelog_module):
     """The build backend writes studio/CHANGELOG.md; the root file must win."""
-    # Compare resolved paths, not name suffixes: the checkout is not always
-    # called "unsloth" and Windows separates with a backslash.
+    # Resolved paths, not name suffixes: a checkout may be renamed and Windows uses "\".
     paths = [Path(p).resolve() for p in changelog_module._local_changelog_candidates()]
     root = paths.index((REPO / changelog_module.CHANGELOG_FILENAME).resolve())
     packaged = paths.index((REPO / "studio" / changelog_module.CHANGELOG_FILENAME).resolve())
@@ -775,8 +773,7 @@ def test_expanded_popup_fits_a_short_viewport(banner):
     """A window under roughly 430px high used to push the card's title and
     dismiss control above the top of the screen."""
     panel = PANEL.read_text(encoding = "utf-8")
-    # The notes region shrinks inside the capped card, so the header and the
-    # actions stay on screen at any height.
+    # The notes region shrinks inside the capped card, so header and actions stay on screen.
     assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
     src = banner.read_text(encoding = "utf-8")
     assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
@@ -1238,8 +1235,7 @@ def test_link_resolver_reads_html_containers_the_way_the_others_do():
     for source in (PREVIEW, LINKS):
         text = source.read_text(encoding = "utf-8")
         assert "HTML_BLOCK_TAGS" in text and "HTML_TAG_ONLY_LINE" in text
-    # A blank line, not the closing tag, is what ends the block, and the line is
-    # read from the container so a quote marker alone counts as blank.
+    # A blank line ends the block, not the closing tag, and a bare quote marker counts as blank.
     assert "inHtmlBlock = !!container.trim()" in links
     # Type 7 cannot interrupt a paragraph, so prose above it keeps its links.
     assert "return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);" in links
@@ -1293,8 +1289,7 @@ def test_link_resolver_reads_comments_before_fences():
     order matters both ways, so a comment opener inside a real fence is not a
     comment either."""
     links = LINKS.read_text(encoding="utf-8")
-    # Fence state is read before comments are masked and suppressed while one
-    # is open, the same order the collapsed preview uses.
+    # Fence state is read before comments are masked, the order the collapsed preview uses.
     assert "const fenceSource = inComment\n      ? null\n      : FENCE.exec(" in links
     # Masking happens only after the in-fence early return.
     fence_return = links.index("// Fenced content is literal")
@@ -1450,8 +1445,7 @@ def test_a_table_only_release_previews_as_nothing(run_scanner):
     assert preview_leads(run_scanner("preview", f"Some prose.\n\n{table}")) == ["Some prose."]
     # A bullet right after the rows ends the table, so it still previews.
     assert preview_leads(run_scanner("preview", f"{table}- Added tests\n")) == ["Added tests"]
-    # A header and delimiter of different widths is not a table at all, which
-    # is what GitHub does, so the two lines stay one ordinary paragraph.
+    # Mismatched header and delimiter widths are no table, as on GitHub, so both lines are prose.
     assert preview_leads(run_scanner("preview", "| a | b |\n| --- |\n")) == ["| a | b | | --- |"]
 
 
@@ -1517,8 +1511,7 @@ def test_a_failed_fetch_keeps_retry_reachable():
     replaced the Retry button with generic text until the cache expired."""
     src = " ".join(PANEL.read_text(encoding="utf-8").split())
     assert 'notes?.matched ? notes.markdown : state === "error" ? null' in src
-    # NotesStatus is the only thing that renders retry, and it is the else of the
-    # markdown branch, so an error must not produce markdown.
+    # Only NotesStatus renders retry, in the else of the markdown branch: an error has no markdown.
     assert "{markdown ? (" in src
     assert "retry={retry}" in src
 
@@ -1547,8 +1540,7 @@ def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
     # A delimiter inside inline code is literal, as it is for the parser.
     spanned = run_scanner("links", "- Wrap in `<!--` and `-->`\n- See [docs](docs/a.md)\n")
     assert repo in spanned
-    # A comment that starts a line is still a block: it hides the lines below it
-    # down to the one holding the closer, that whole line included.
+    # A comment starting a line is a block: it hides down to the closer's line, that line included.
     block = run_scanner("links", "<!-- staged\n- See [docs](docs/a.md)\n-->\n")
     assert repo not in block
     closer = run_scanner("links", "<!-- staged\n--> See [docs](docs/a.md)\n")
@@ -1570,8 +1562,7 @@ def test_a_bare_level_two_marker_ends_the_release(changelog_module, run_scanner)
     # Prose still needs a space or a tab: `##x` is a paragraph, not a heading.
     prose = "## 2.0\n\n- new thing\n\n##x\n\n- still 2.0\n"
     assert "still 2.0" in changelog_module.find_release_notes(prose, "2.0").body
-    # The preview reads the same line the same way: an empty heading renders as
-    # nothing, so it ends the bullet instead of being appended to it.
+    # The preview agrees: an empty heading renders as nothing, so it ends the bullet.
     preview = run_scanner("preview", "- new thing\n##\nUnrelated scratch notes\n")
     assert preview_leads(preview) == ["new thing"]
 
@@ -1587,20 +1578,16 @@ def test_a_comment_between_bullets_closes_the_list(changelog_module, run_scanner
     assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0", "2.0"]
     assert "new item" not in changelog_module.find_release_notes(text, "1.0").body
     assert "new item" in changelog_module.find_release_notes(text, "2.0").body
-    # Written at the item's own content column the comment stays inside it, so
-    # the heading under it really is nested and indexes nothing.
+    # At the item's content column the comment stays inside it, so the heading under it is nested.
     nested = "## 1.0\n\n- old item\n  <!-- separator -->\n  ## 2.0\n\n- new item\n"
     assert [e.version for e in changelog_module.parse_changelog(nested)] == ["1.0"]
-    # The link resolver reads the same column: with the list closed, four spaces
-    # is an indented code block, whose sample text must survive untouched.
+    # The link resolver reads the same column: list closed, four spaces is code, left untouched.
     code = run_scanner("links", "- old item\n<!-- separator -->\n    [guide](docs/a.md)\n")
     assert "[guide](docs/a.md)" in code and "github.com" not in code
-    # Inside the item those four spaces are only two columns in, so it is prose
-    # holding a link and the destination still resolves.
+    # Inside the item those four spaces are two columns in, so it is prose and the link resolves.
     prose = run_scanner("links", "- old item\n  <!-- separator -->\n    [guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in prose
-    # The preview reads it the same way: the fence is indented code, not a fence
-    # that swallows the bullet below it.
+    # The preview agrees: the fence is indented code, not a fence swallowing the bullet below.
     preview = run_scanner(
         "preview",
         "- Details:\n<!-- separator -->\n    ```\n    - hidden sample\n- Real second item\n",
@@ -1622,21 +1609,18 @@ def test_a_parenthesised_link_destination_still_resolves(run_scanner):
     # A pair in the middle of a path balances too.
     middle = run_scanner("links", "[api](docs/(v2)/api.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/(v2)/api.md" in middle
-    # An unbalanced paren makes the destination invalid, so `[x](a(b.md)` is
-    # the plain text a renderer shows and its path is not a link to rewrite.
+    # An unbalanced paren makes the destination invalid, so `[x](a(b.md)` is plain text, not a link.
     unbalanced = run_scanner("links", "[x](a(b.md)\n")
     assert unbalanced == "[x](a(b.md)\n"
     # One more closer balances the pair, and then it is a link again.
     closed = run_scanner("links", "[x](a(b.md))\n")
     assert "https://github.com/unslothai/unsloth/blob/main/a(b.md)" in closed
-    # Pairs nest, and one level was all the expression allowed, so a path
-    # holding two was left relative and resolved against Studio's own origin.
+    # Pairs nest, and one level was all the expression allowed, so a path with two stayed relative.
     nested = run_scanner("links", "[x](((draft)).md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/((draft)).md" in nested
     deep = run_scanner("links", "![shot](((((v2))))).png)\n")
     assert "https://raw.githubusercontent.com/unslothai/unsloth/main/((((v2))))" in deep
-    # The closer still has to be there: an unbalanced run below a nested pair is
-    # not a link, so nothing is swallowed across the line break.
+    # The closer must still be there: an unbalanced run below a nested pair is not a link.
     across = run_scanner("links", "[x](((a).md\n[y](docs/y.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/y.md" in across
     assert "[x](((a).md" in across
@@ -1652,22 +1636,18 @@ def test_a_fence_inside_a_container_still_hides_its_sample(run_scanner):
     assert "[guide](docs/a.md)" in quoted and "github.com" not in quoted
     nested = run_scanner("links", "- a\n  - b\n    ~~~\n    [x](docs/x.md)\n    ~~~\n")
     assert "[x](docs/x.md)" in nested and "github.com" not in nested
-    # A longer closer is still a closer, so the pair is not what a code span
-    # happened to hide.
+    # A longer closer is still a closer, so the pair is not something a code span hid.
     uneven = run_scanner("links", "> ```\n> [guide](docs/a.md)\n> ````\n")
     assert "[guide](docs/a.md)" in uneven and "github.com" not in uneven
-    # The fence ends with its container: a line written outside the quote, or
-    # to the left of the item, is Markdown again.
+    # The fence ends with its container: a line outside the quote, or left of the item, is Markdown.
     left = run_scanner("links", "> ~~~\n[guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in left
     dedented = run_scanner("links", "- a\n  ~~~\n[guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in dedented
-    # A fence at document level owns the quoted lines below it, so the marker
-    # does not turn its content back into Markdown.
+    # A document-level fence owns the quoted lines below, so the marker does not undo it.
     document = run_scanner("links", "~~~\n> [guide](docs/a.md)\n~~~\n")
     assert "[guide](docs/a.md)" in document and "github.com" not in document
-    # Four columns past the item's content column it is an indented code block
-    # rather than a fence, and the sample stays literal for that reason.
+    # Four columns past the item's content column it is indented code, not a fence: still literal.
     code = run_scanner("links", "- Details:\n\n      ~~~\n      [guide](docs/a.md)\n")
     assert "[guide](docs/a.md)" in code and "github.com" not in code
 
@@ -1681,12 +1661,10 @@ def test_an_html_block_inside_a_container_is_literal_too(run_scanner):
     assert "[x](docs/x.md)" in nested and "github.com" not in nested
     quoted = run_scanner("links", "> <pre>\n> [x](docs/x.md)\n> </pre>\n")
     assert "[x](docs/x.md)" in quoted and "github.com" not in quoted
-    # The block ends with its container, so a line dedented out of the item is
-    # Markdown again even though no blank line closed the block.
+    # The block ends with its container, so a line dedented out of the item is Markdown again.
     dedented = run_scanner("links", "- a\n  - b\n    <details>\n[x](docs/x.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/x.md" in dedented
-    # Inside a quote a bare marker holds nothing, which is the blank line that
-    # ends a type 6 block.
+    # Inside a quote a bare marker holds nothing, the blank line that ends a type 6 block.
     blank = run_scanner("links", "> <details>\n>\n> [x](docs/x.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/x.md" in blank
 
@@ -1700,16 +1678,13 @@ def test_an_underline_left_of_an_item_is_lazy_text_of_it(changelog_module, run_s
     renderer never shows."""
     nested = "## 1.0\n- old note\n===\n  ## 2.0\n- new\n"
     assert [e.version for e in changelog_module.parse_changelog(nested)] == ["1.0"]
-    # A row of dashes is a thematic break, which does close the item, so the
-    # heading below it really is the next release.
+    # A row of dashes is a thematic break, closing the item, so the heading is the next release.
     broken = "## 1.0\n- old note\n---\n  ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(broken)] == ["1.0", "2.0"]
-    # Without a paragraph above it the underline opens one of its own, so the
-    # item is closed by the blank line and the heading stands at document level.
+    # With no paragraph above it the underline opens one, so the blank line closes the item.
     apart = "## 1.0\n- old note\n\n===\n  ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(apart)] == ["1.0", "2.0"]
-    # The link scanner keeps the same item open, so the four-space line below is
-    # a paragraph two columns into the item and its destination resolves.
+    # The link scanner keeps the item open, so the four-space line is a paragraph and resolves.
     resolved = run_scanner("links", "- Details:\n===\n\n    [guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in resolved
 
@@ -1723,16 +1698,13 @@ def test_a_quote_keeps_its_paragraph_to_itself(changelog_module, run_scanner):
     the item's content column read as a release of its own."""
     quoted = "## 1.0\n> quote\n2. item\n   ## 2.0\n- new\n"
     assert [e.version for e in changelog_module.parse_changelog(quoted)] == ["1.0"]
-    # A quote holding a heading leaves no paragraph at all, and neither does an
-    # empty one, so the list below still opens.
+    # A quote holding a heading leaves no paragraph, nor does an empty one, so the list opens.
     heading = "## 1.0\n> # inner\n2. item\n   ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(heading)] == ["1.0"]
-    # An unquoted line the quote's paragraph does swallow keeps it open, and the
-    # marker below is still outside the quote.
+    # An unquoted line the quote's paragraph swallows keeps it open, the marker still outside.
     lazy = "## 1.0\n> quote\ntext\n2. item\n   ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(lazy)] == ["1.0"]
-    # Under an ordinary paragraph the same marker is that paragraph's text, so
-    # the list never opens and the heading is a real boundary.
+    # Under an ordinary paragraph the marker is its text, so no list opens and the heading is real.
     prose = "## 1.0\nprose\n2. item\n   ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(prose)] == ["1.0", "2.0"]
     # The preview reads the marker as a bullet for the same reason.
@@ -1750,8 +1722,7 @@ def test_indented_code_before_an_ordered_marker_still_opens_a_list(changelog_mod
     # A blank line between the two changes nothing: the list opens either way.
     apart = "## 1.0\n\n    code\n\n2. item\n   ## 2.0\n- new\n"
     assert [e.version for e in changelog_module.parse_changelog(apart)] == ["1.0"]
-    # Four columns past its container the marker is code itself, so it opens no
-    # list and the heading below stands at document level.
+    # Four columns past its container the marker is code, so no list opens and the heading stands.
     inside = "## 1.0\n\n    code\n    - item\n  ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(inside)] == ["1.0", "2.0"]
 
@@ -1767,16 +1738,13 @@ def test_a_fence_written_as_an_item_first_content_opens_in_that_item(run_scanner
     assert "[example](docs/a.md)" in sample and "github.com" not in sample
     ordered = run_scanner("links", "1. ~~~\n   [example](docs/a.md)\n   ~~~\n")
     assert "[example](docs/a.md)" in ordered and "github.com" not in ordered
-    # The preview reads the same line the same way: an item holding only a code
-    # block previews as nothing, and the bullet after it is still a bullet.
+    # The preview agrees: an item of only a code block previews as nothing; the next is a bullet.
     preview = run_scanner("preview", "- ```md\n  sample text\n  ```\n- Added tests\n")
     assert preview_leads(preview) == ["Added tests"]
-    # Content one column further in is indented code inside the item, not a
-    # fence, so the link under it is prose and still resolves.
+    # One column further in it is indented code inside the item, so the link is prose and resolves.
     padded = run_scanner("links", "-     ```\n  [example](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in padded
-    # A marker the paragraph above swallows opens no item, so no fence either:
-    # an ordered item may only interrupt a paragraph when it starts at 1.
+    # A marker the paragraph above swallows opens no item, so no fence: ordered items open at 1.
     lazy = run_scanner("links", "Intro.\n2. ```\n[guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in lazy
 
@@ -1793,15 +1761,13 @@ def test_an_html_block_ends_with_the_item_it_was_written_in(changelog_module, ru
     # A raw block such as <pre> is scoped the same way.
     raw = "## 1.0\n\n- item\n\n  <pre>\n## 2.0\n\n- new thing\n"
     assert [e.version for e in changelog_module.parse_changelog(raw)] == ["1.0", "2.0"]
-    # At the item's own content column the block holds the heading, which is
-    # then nested and indexes nothing.
+    # At the item's content column the block holds the heading, which is nested and indexes nothing.
     nested = "## 1.0\n\n- item\n\n  <div>\n  ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(nested)] == ["1.0"]
     # The preview reads it the same way: the bullet below the block is a bullet.
     preview = run_scanner("preview", "- item\n\n  <div>\n- Added tests\n")
     assert preview_leads(preview) == ["item", "Added tests"]
-    # An opener written straight after a marker opens in that item too, so the
-    # heading dedented out of it is a release again.
+    # An opener straight after a marker opens in that item, so the dedented heading is a release.
     marked = "## 1.0\n\n- <div>\n## 2.0\n\n- new thing\n"
     assert [e.version for e in changelog_module.parse_changelog(marked)] == ["1.0", "2.0"]
 
@@ -1823,8 +1789,7 @@ def test_a_comment_may_close_on_a_later_line_of_its_paragraph(run_scanner):
         "preview", "- Added X <!-- TODO: rewrite\n  this properly -->\n- Second\n"
     )
     assert preview_leads(preview) == ["Added X", "Second"]
-    # An opener cannot outlive its paragraph: with the paragraph closed the
-    # `<!--` is the ordinary text a renderer shows and hides nothing below.
+    # An opener cannot outlive its paragraph: with it closed the `<!--` is text and hides nothing.
     broken = run_scanner("links", "Note <!-- open\n\nsecret --> end [d](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in broken
     # A heading breaks into the paragraph, so it ends the comment's reach too.
@@ -1873,8 +1838,7 @@ def test_one_definition_does_not_hide_the_next(run_scanner):
     # A run of them stays a run however long it is.
     run = run_scanner("links", "[a]: docs/a.md\n[b]: docs/b.md\n[c]: docs/c.md\n")
     assert run.count("https://github.com/unslothai/unsloth/blob/main/docs/") == 3
-    # Prose between them still opens a paragraph, which the next line may not
-    # interrupt, so that line is text of the paragraph and not a definition.
+    # Prose between them opens a paragraph the next line may not interrupt, so it is not one.
     prose = run_scanner("links", "[a]: docs/a.md\nintro\n[b]: docs/b.md\n")
     assert "[b]: docs/b.md" in prose
 
@@ -1903,8 +1867,7 @@ def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
         "- DoRA training is available. <!-- TODO confirm the\n  _draft_ note -->\n",
     )
     assert preview_leads(underscored) == ["DoRA training is available."]
-    # A real block still ends the paragraph, so the opener below one is the
-    # ordinary text a renderer shows and hides nothing under it.
+    # A real block still ends the paragraph, so the opener below one is text and hides nothing.
     broken = run_scanner("links", "Note <!-- open\n## 2.0\nsecret --> [d](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in broken
     # So does a list item with content, which may interrupt a paragraph.
@@ -1929,19 +1892,15 @@ def test_a_comment_written_as_an_item_first_content_is_a_block(changelog_module,
         "- outer\n  - <!-- new --> see [the guide](docs/amd.md)\n",
     ):
         assert "github.com" not in run_scanner("links", text)
-    # The multiline form hides the lines under it up to the closer, as a
-    # comment written at the item's own content column already did.
+    # The multiline form hides lines to the closer, as a comment at the item's content column did.
     multiline = run_scanner("links", "- <!-- hidden\n  [a](docs/x.md)\n  -->\n")
     assert "[a](docs/x.md)" in multiline and "github.com" not in multiline
-    # It is still scoped to the item it was written in, so a line dedented out
-    # of that item ends the block along with the item.
+    # Still scoped to the item it was written in, so a line dedented out of it ends the block.
     dedented = run_scanner("links", "- <!-- hidden\n[a](docs/x.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/x.md" in dedented
-    # The preview reads it the same way: an item holding only the block has
-    # nothing to preview, and the bullet below it is a bullet.
+    # The preview agrees: an item of only the block previews as nothing; the next is a bullet.
     preview = run_scanner("preview", "- <!-- new --> hidden note\n- Real bullet\n")
     assert preview_leads(preview) == ["Real bullet"]
-    # The parser reads it the same way too: the item keeps its content column,
-    # so a heading written inside the block is nested and indexes nothing.
+    # The parser agrees too: the item keeps its column, so a heading inside is nested, not indexed.
     text = "## 1.0\n\n- <!-- hidden\n\n  ## 2.0\n"
     assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]

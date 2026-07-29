@@ -19,8 +19,8 @@ export interface ReleaseNotes {
 
 export type ReleaseNotesState = "idle" | "loading" | "ready" | "error";
 
-// Desktop auto-auth installs its token after first paint, so a popup shown at
-// startup can ask before one exists. Wait briefly rather than fail.
+// Desktop auto-auth installs its token after first paint, so a startup popup can
+// ask before one exists. Wait briefly rather than fail.
 const AUTH_POLL_MS = 250;
 const AUTH_POLL_LIMIT = 40;
 
@@ -42,7 +42,7 @@ function toReleaseNotes(value: unknown, version: string): ReleaseNotes | null {
   }
   const payload = value as ApiObject;
   const notesVersion = stringOrNull(payload, "version");
-  // Defensive: a response for another version is not usable here.
+  // A response for another version is not usable here.
   if (notesVersion !== version) {
     return null;
   }

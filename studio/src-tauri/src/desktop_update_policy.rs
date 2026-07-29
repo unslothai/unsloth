@@ -36,8 +36,7 @@ pub(crate) struct ManualUpdateInfo {
 #[derive(Debug, serde::Deserialize)]
 struct ChannelMetadata {
     version: String,
-    // latest.json publishes Tauri's `notes`/`pub_date`; aliases keep older
-    // `body`/`date` metadata working.
+    // latest.json publishes Tauri's `notes`/`pub_date`; aliases keep older metadata working.
     pypi_version: Option<String>,
     #[serde(alias = "body")]
     notes: Option<String>,

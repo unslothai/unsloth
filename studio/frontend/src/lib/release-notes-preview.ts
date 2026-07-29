@@ -26,9 +26,9 @@ const INDENTED_CODE_INDENT = 4;
 
 // At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// An ATX heading needs an ASCII space, a tab or the end of the line after the
-// marker, as in _HEADING_PATTERN. `\s` would also match a non-breaking space
-// and eat prose, while a bare `##` is an empty heading and still ends a bullet.
+// An ATX heading needs a space, tab or line end after the marker, as in
+// _HEADING_PATTERN. `\s` would match a non-breaking space and eat prose, and a
+// bare `##` is an empty heading that still ends a bullet.
 const HEADING = /^#{1,6}(?:[ \t]|$)/;
 const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
 // At most three leading spaces, as everywhere else: deeper is indented code,
@@ -66,8 +66,7 @@ const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
 // Types 3 to 5 (processing instructions, declarations, CDATA) are literal too,
-// each ending on its own delimiter. Comments open mid-line, so are handled
-// separately.
+// each ending on its own delimiter. Comments open mid-line, handled separately.
 const RAW_BLOCKS: [RegExp, RegExp][] = [
   [RAW_HTML_OPEN, RAW_HTML_CLOSE],
   [/^ {0,3}<\?/, /\?>/],
@@ -265,12 +264,12 @@ interface ContentLine {
  *
  * Only a comment starting a line opens a block, which hides whole lines to the
  * one holding `-->`. One written mid-sentence is inline HTML belonging to its
- * paragraph: its `-->` may arrive on a later line of that paragraph, and only
- * the text up to it is hidden. `closesBelow` says one does; without it the
- * opener is the ordinary text a renderer shows and hides nothing below.
+ * paragraph, so its `-->` may arrive on a later line and only the text up to it
+ * is hidden. `closesBelow` says one does; without it the opener is ordinary text
+ * and hides nothing below.
  *
- * "Starting a line" is read inside the container, so `blockOpen` is decided by
- * the caller from the item's content rather than from the raw line.
+ * "Starting a line" is read inside the container, so `blockOpen` comes from the
+ * item's content rather than the raw line.
  */
 function stripCommentSpans(
   line: string,
@@ -318,8 +317,7 @@ function stripCommentSpans(
     const close = line.indexOf(COMMENT_CLOSE, open + COMMENT_OPEN.length);
     if (close === -1) {
       if (closesBelow) {
-        // The paragraph carries the comment on, so the rest of this line is
-        // inside it and the line below opens still inside it.
+        // The paragraph carries the comment on, so this line and the next are in it.
         return [visible + line.slice(index, open), false, true];
       }
       // Nothing closes it at all, so the renderer shows it as text.
@@ -362,13 +360,12 @@ function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
 }
 
 /**
- * The line as list tracking sees it. A comment or a raw block renders nothing,
- * but the line that opens one is still a block written at its own column, so it
- * closes a list item it sits to the left of. Only the column survives, since
- * the text it hides is not Markdown. A line inside a block already open is that
- * block's content rather than a block of its own, so it keeps neither. A marker
- * the hidden block is the content of survives with the column, so the item it
- * opens is still tracked.
+ * The line as list tracking sees it. A comment or raw block renders nothing, but
+ * the line opening one is still a block at its own column, so it closes a list
+ * item it sits left of. Only the column survives, since the text it hides is not
+ * Markdown. A line inside a block already open is that block's content, so it
+ * keeps neither. A marker the hidden block is the content of survives with the
+ * column, so the item it opens is still tracked.
  */
 function structuralLine(
   line: string,
@@ -385,12 +382,12 @@ function structuralLine(
 interface ScanState {
   openFence: string | null;
   // Content column of the list item the open block belongs to, 0 at document
-  // level. A fence and an HTML block are both scoped to their container, so
-  // the item's end closes them. Only one of the three is ever open.
+  // level. A fence and an HTML block are scoped to their container, so the item's
+  // end closes them. Only one of the three is ever open.
   blockColumn: number;
   inComment: boolean;
-  // True while an inline comment opened above runs on into this line, which the
-  // paragraph holding it carries.
+  // True while an inline comment opened above runs on into this line, carried by
+  // the paragraph holding it.
   runOn: boolean;
   inRawHtml: number | null;
   inHtmlBlock: boolean;
@@ -422,9 +419,9 @@ function visibleText(
     state.inHtmlBlock = line.trim() !== "";
     return { text: "", structural: "" };
   }
-  // An opener is read past a marker on the same line, since a fence written as
-  // a list item's first content opens inside that item. Only an opener: fenced
-  // content is literal, and a closer carries no marker.
+  // An opener is read past a marker on the same line, since a fence written as a
+  // list item's first content opens inside it. Only an opener: fenced content is
+  // literal and a closer carries no marker.
   const commented = state.inComment || state.runOn;
   const fence = commented
     ? null
@@ -458,13 +455,13 @@ function visibleContent(
   state: ScanState,
   closesBelow: boolean,
 ): ScannedLine {
-  // A block already open owns this line, so the line is its content rather
-  // than a block written at the column it happens to start in.
+  // A block already open owns this line, so it is content rather than a block
+  // written at the column it happens to start in.
   const hidden = state.inComment || state.inRawHtml !== null;
   const carried = state.runOn;
-  // A comment is an HTML block too, so one written as a list item's first
-  // content opens inside that item exactly as a fence does: the opener is read
-  // past a marker on the same line rather than from the margin.
+  // A comment is an HTML block too, so one written as a list item's first content
+  // opens inside that item exactly as a fence does: read past a marker on the
+  // same line rather than from the margin.
   const content = itemContent(line, state.afterParagraph);
   const opensComment =
     !(state.inComment || carried) && COMMENT_BLOCK_OPEN.test(content);
@@ -480,11 +477,10 @@ function visibleContent(
   state.runOn = stillRunOn;
   const [visible, stillInRaw] = stripRawHtml(uncommented, state.inRawHtml);
   state.inRawHtml = stillInRaw;
-  // Taken before the opener is hidden: it renders as nothing, but its
-  // indentation still closes a list item it sits to the left of, and a marker
-  // on its line still opens one. A line an inline comment runs on into is still
-  // a line of the paragraph that carries it, so only its text is hidden, never
-  // its block structure.
+  // Taken before the opener is hidden: it renders as nothing, but its indent still
+  // closes a list item it sits left of, and a marker on its line still opens one.
+  // A line an inline comment runs on into is still a line of the paragraph that
+  // carries it, so only its text is hidden, never its block structure.
   const marker = opensComment
     ? line.slice(0, line.length - content.length)
     : "";
@@ -504,9 +500,9 @@ function visibleContent(
 }
 
 /**
- * Marker of a fence the line scanner skipped because it is indented. Only a
- * line within three columns of its list item's content column is one: deeper
- * than that it is an indented code block, which a dedented bullet ends.
+ * Marker of a fence the line scanner skipped because it is indented. Only a line
+ * within three columns of its item's content column is one: deeper than that it
+ * is an indented code block, which a dedented bullet ends.
  */
 function opensDeepFence(line: ContentLine): string | null {
   if (
@@ -520,10 +516,10 @@ function opensDeepFence(line: ContentLine): string | null {
 }
 
 /**
- * True when `line` is the first one outside the deep fence opened with
- * `marker` at `column`. A fence inside a list item runs only to the end of that
- * item, so a line written left of the item's content column closes both, as
- * `fence_column` does on the backend.
+ * True when `line` is the first one outside the deep fence opened with `marker`
+ * at `column`. A fence inside a list item runs only to the end of that item, so a
+ * line left of the item's content column closes both, as `fence_column` does on
+ * the backend.
  */
 function endsDeepFence(
   marker: string,
@@ -595,9 +591,8 @@ function delimiterWidth(text: string): number | null {
 
 /**
  * Line indices that belong to a GFM table. A table needs a header row and a
- * delimiter row of the same width, and runs until a blank line or the start of
- * another block. Its cells render as a table rather than as prose, so the
- * collapsed preview drops them the way it drops a code block.
+ * delimiter row of the same width, and runs to a blank line or another block. Its
+ * cells render as a grid, not prose, so the preview drops them like a code block.
  */
 function opensTable(
   header: ContentLine | undefined,
@@ -680,10 +675,9 @@ function inBlock(state: ScanState): boolean {
 }
 
 /**
- * A fence, a comment or an HTML block inside a list item runs only to the end
- * of that item, so a line dedented out of the item closes both. Lazy
- * continuation cannot reach into any of them, so any content to the left of the
- * item ends it.
+ * A fence, comment or HTML block inside a list item runs only to the end of that
+ * item, so a line dedented out of the item closes both. Lazy continuation reaches
+ * into none of them, so any content left of the item ends it.
  */
 function closeDedentedBlock(line: string, state: ScanState): void {
   if (state.blockColumn === 0 || !inBlock(state)) {
@@ -742,9 +736,9 @@ function contentLines(markdown: string): ContentLine[] {
       state,
       closesBelow[index + 1] ?? false,
     );
-    // The quote state from the line above, which is the one list tracking asks
-    // about. Only a line of text below rewrites it, so a fenced, blank or
-    // hidden line leaves no quoted paragraph open behind it.
+    // The quote state from the line above, which is what list tracking asks about.
+    // Only a line of text below rewrites it, so a fenced, blank or hidden line
+    // leaves no quoted paragraph open behind it.
     const above = quote;
     quote = NO_QUOTE;
     // Taken with the paragraph state from the line above, as a renderer would.
@@ -754,8 +748,7 @@ function contentLines(markdown: string): ContentLine[] {
       continue;
     }
     if (carried && !visible.trim()) {
-      // The whole line sits inside a comment its paragraph carries, so it
-      // renders as nothing at all: no text, and no break either.
+      // Wholly inside a comment its paragraph carries: no text, and no break.
       continue;
     }
     if (!visible.trim() || THEMATIC_BREAK.test(visible)) {
@@ -770,8 +763,8 @@ function contentLines(markdown: string): ContentLine[] {
     // A quoted line is measured inside its quote, where the document's open
     // list items do not reach.
     const column = quoted ? 0 : (lists.columns.at(-1) ?? 0);
-    // Only ordinary text continues a paragraph; a heading or indented code
-    // line (four columns past its container, outside a paragraph) ends one.
+    // Only ordinary text continues a paragraph; a heading or indented code line
+    // (four columns past its container, outside a paragraph) ends one.
     const startsCode =
       !state.afterParagraph && indent - column >= INDENTED_CODE_INDENT;
     state.afterParagraph = !HEADING_LINE.test(stripped) && !startsCode;
@@ -923,8 +916,8 @@ function collectBullets(markdown: string): {
       flush(collector);
       continue;
     }
-    // A table renders as a grid, not as prose, so its rows are no more
-    // previewable than a code block. It also ends whatever came before it.
+    // A table renders as a grid, no more previewable than a code block, and it
+    // ends whatever came before it.
     if (tables.has(index)) {
       flush(collector);
       continue;
@@ -960,8 +953,8 @@ function collectBullets(markdown: string): {
       continue;
     }
     const bullet = BULLET.exec(line.text);
-    // Only an ordered list starting at 1 may interrupt a paragraph, so
-    // "2. Restart Studio" under prose is prose. A list item is not a paragraph.
+    // Only an ordered list starting at 1 may interrupt a paragraph, so "2. Restart
+    // Studio" under prose is prose. A list item is not a paragraph.
     const interrupts =
       collector.current === null &&
       collector.paragraph !== "" &&

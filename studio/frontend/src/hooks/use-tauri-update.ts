@@ -21,8 +21,7 @@ export type UpdateStatus =
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
-  // Backend release this desktop build pins. The app version is SemVer, but
-  // CHANGELOG.md is keyed by this one, so notes look it up.
+  // Backend release this build pins; CHANGELOG.md is keyed by it, not the SemVer.
   pypiVersion?: string;
   body?: string;
   date?: string;

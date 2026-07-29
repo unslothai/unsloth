@@ -103,8 +103,8 @@ else
     STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
 fi
 
-# 4. Build wheel/sdist. The build backend snapshots CHANGELOG.md into the
-# studio package (see _changelog_build.py) so release notes render offline.
+# 4. Build wheel/sdist. _changelog_build.py snapshots CHANGELOG.md into the studio
+# package so release notes render offline.
 python -m build
 
 # Drop the snapshot so a source checkout never serves a stale copy.
