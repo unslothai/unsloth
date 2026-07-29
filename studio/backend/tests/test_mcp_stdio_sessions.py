@@ -52,13 +52,16 @@ class FakeClient:
         self.transport = SimpleNamespace(_is_session_dead = lambda: self.dead)
         FakeClient.instances.append(self)
 
-    async def list_tools(self) -> list:
+    async def list_tools_mcp(self) -> SimpleNamespace:
         self.probes += 1
         if self.probe_error:
             raise RuntimeError("probe failed")
         if not self.probe_ok:
             await asyncio.sleep(30)
-        return []
+        return SimpleNamespace(tools = [])
+
+    async def list_tools(self) -> list:
+        raise AssertionError("the liveness probe must use the single-page tools/list")
 
     async def __aenter__(self):
         self.entered += 1

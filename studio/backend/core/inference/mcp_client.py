@@ -327,9 +327,12 @@ def _session_responsive(
     protocol exposes that, and every other MCP client dispatches the next call
     with no probe at all, so this is the strongest available guarantee.
 
-    list_tools is the probe rather than ping: on a modern-era connection (the
-    default mode="auto" against a fastmcp 4 server) ping answers "Method not
-    found", which would retire every live session this is meant to protect.
+    The probe is a raw single-page tools/list rather than ping (on a modern-era
+    connection -- the default mode="auto" against a fastmcp 4 server -- ping
+    answers "Method not found", which would retire every live session this is
+    meant to protect) and rather than the high-level list_tools(), which
+    auto-paginates up to 250 pages and could spend the whole budget enumerating
+    a large tool list.
 
     ``budget`` is the caller's remaining deadline, so recovery stays inside the
     one timeout window rather than adding to it, and ``cancel_event`` lets Stop
@@ -340,8 +343,9 @@ def _session_responsive(
     window = _STDIO_LIVENESS_TIMEOUT if budget is None else min(_STDIO_LIVENESS_TIMEOUT, budget)
     if window <= 0:
         return False
+    probe = getattr(client, "list_tools_mcp", None) or client.list_tools
     try:
-        session.run(_race_tool_call(client.list_tools(), window, cancel_event), window)
+        session.run(_race_tool_call(probe(), window, cancel_event), window)
     except _MCPCancelled:
         raise
     except Exception:  # noqa: BLE001
