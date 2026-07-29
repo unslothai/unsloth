@@ -4524,6 +4524,11 @@ def test_request_used_api_key_distinguishes_key_from_session():
     assert inference_route._request_used_api_key(_Req(None)) is False
     # Hot path: a malformed request object must read as "not an API key" rather than raise.
     assert inference_route._request_used_api_key(object()) is False
+    # A stand-in whose headers answer with anything at all, which is how the load
+    # routes are driven in tests: a monitor label must never take a load down.
+    from unittest.mock import MagicMock
+
+    assert inference_route._request_used_api_key(MagicMock()) is False
 
 
 def test_case_fallback_never_applies_to_a_posix_path(override_store):

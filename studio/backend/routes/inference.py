@@ -1816,9 +1816,14 @@ def _request_used_api_key(request: Any) -> bool:
     what separates "someone is using Unsloth as an API server" from "someone is
     using Unsloth".
     """
+    # Total by construction: this decides a monitor label, and a load must not fail
+    # over one. Only a real Request is guaranteed to hand back a string here, and
+    # the load routes are driven with stand-ins too.
     try:
-        header = request.headers.get("authorization") or ""
+        header = request.headers.get("authorization")
     except Exception:
+        return False
+    if not isinstance(header, str):
         return False
     scheme, _, token = header.partition(" ")
     return scheme.lower() == "bearer" and token.startswith(API_KEY_PREFIX)
