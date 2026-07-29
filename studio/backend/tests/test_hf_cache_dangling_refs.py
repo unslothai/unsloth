@@ -735,8 +735,6 @@ def test_no_snapshot_holds_the_payload_so_a_dangling_ref_pins_nothing(tmp_path, 
     assert load_id == "Org/Model"
 
 
-
-
 # --- the metadata must describe the snapshot the row hands out ---------------
 
 QUANTIZED_CONFIG = b'{"quantization_config": {"quant_method": "bitsandbytes"}}'
