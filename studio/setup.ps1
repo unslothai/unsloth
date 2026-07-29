@@ -1696,10 +1696,20 @@ if ($LongPathsEnabled) {
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
     # Fatal only where git is used: --local and the opt-in llama.cpp source build. A local
-    # llama.cpp dir overrides those opt-ins; the automatic fallback after a failed prebuilt
-    # download is not knowable here, so Phase 4 handles it.
+    # llama.cpp dir overrides those opt-ins, but only once it holds a reusable binary:
+    # pointing at the canonical install location with nothing built there falls through to
+    # the normal install below, so an explicit source build still needs git. The automatic
+    # fallback after a failed prebuilt download is not knowable here, so Phase 4 handles it.
     $gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')
-    if (-not $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) {
+    $_localLlamaDir = if ($env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR.Trim() } else { "" }
+    $_localLlamaBuilt = $false
+    if ($_localLlamaDir) {
+        # Same layout candidates as the reuse check in Phase 4.
+        foreach ($_c in @("llama-server.exe", "build\bin\llama-server.exe", "build\bin\Release\llama-server.exe")) {
+            if (Test-Path -LiteralPath (Join-Path $_localLlamaDir $_c)) { $_localLlamaBuilt = $true; break }
+        }
+    }
+    if (-not $_localLlamaBuilt) {
         $_prForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
         $_llamaSrc = $DefaultLlamaSource -replace '\.git$', ''
         if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq '1') { $gitNeeded = $true }
