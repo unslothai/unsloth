@@ -613,7 +613,9 @@ def test_studio_default_exposes_parallel_option():
 
 
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
-def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
+def test_in_venv_path_passes_parallel_to_run_server(
+    monkeypatch, value, stub_tool_policy_state
+):
     """In-venv path must forward --parallel to
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
@@ -706,7 +708,9 @@ def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
-def test_in_venv_path_passes_api_only_to_run_server(monkeypatch, extra, expected):
+def test_in_venv_path_passes_api_only_to_run_server(
+    monkeypatch, extra, expected, stub_tool_policy_state
+):
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 
