@@ -155,6 +155,10 @@ jobs:
             echo "brew            : $(command -v brew || echo none)"
             echo "cmake           : $(command -v cmake || echo none)"
             echo "python3         : $(command -v python3 || echo none)"
+            # Neither is documented for these images, and both change what a binary is
+            # allowed to do. One line settles it for anyone reading the artifact.
+            echo "spctl --status  : $(spctl --status 2>&1 || true)"
+            echo "csrutil status  : $(csrutil status 2>&1 || true)"
           } | tee runner-baseline.txt
 
       - name: Simulate a clean machine (${{ matrix.mode }})
@@ -208,6 +212,15 @@ jobs:
           set -o pipefail
           rc=0
           FLAGS="${{ matrix.flags }}"
+          # A consumer has no CI=true, no GITHUB_*, no RUNNER_*: an installer branching
+          # on any of them is a hidden dependency nobody outside CI exercises. Scoped to
+          # the installer's own process, so $GITHUB_OUTPUT below still resolves. `case`
+          # rather than `sed`, whose BRE has no \| alternation on macOS.
+          CLEAN_ENV=""
+          for v in $(env | cut -d= -f1); do
+            case "$v" in CI|GITHUB_*|RUNNER_*) CLEAN_ENV="$CLEAN_ENV -u $v" ;; esac
+          done
+          echo "unset for the installer:$CLEAN_ENV"
           # A `published` dispatch asks whether unsloth.ai's script works. Only `pipe`
           # honoured it, so six of the eight macOS rows ran the checked-out script and
           # were still reported as published coverage. Resolve it once, here, for every
@@ -224,7 +237,7 @@ jobs:
             file)
               # Plain file execution isolates "installer logic broken" from
               # "curl-pipe delivery broken".
-              bash "$SCRIPT" $FLAGS 2>&1 | tee logs/install.log || rc=$?
+              env $CLEAN_ENV bash "$SCRIPT" $FLAGS 2>&1 | tee logs/install.log || rc=$?
               ;;
             pipe)
               # The shape users actually run. install.sh is ~150KB of top-level
@@ -234,14 +247,14 @@ jobs:
               # re-fetches rather than piping $SCRIPT: the live transport is half of
               # what this delivery tests.
               if [ "${{ inputs.installer_source }}" = "published" ]; then
-                curl -fsSL https://unsloth.ai/install.sh | sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
+                curl -fsSL https://unsloth.ai/install.sh | env $CLEAN_ENV sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
               else
                 # `sh -s --` with no further args would pass an empty positional,
                 # so only add the separator when there are flags to pass.
                 if [ -n "$FLAGS" ]; then
-                  cat install.sh | sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
+                  cat install.sh | env $CLEAN_ENV sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
                 else
-                  cat install.sh | sh 2>&1 | tee logs/install.log || rc=$?
+                  cat install.sh | env $CLEAN_ENV sh 2>&1 | tee logs/install.log || rc=$?
                 fi
               fi
               ;;
@@ -252,7 +265,7 @@ jobs:
               # every other leg relies on must be dropped or the installer exits
               # before doing any work. The runner is ephemeral, so the real home is
               # as disposable as the override.
-              env -u UNSLOTH_STUDIO_HOME \
+              env -u UNSLOTH_STUDIO_HOME $CLEAN_ENV \
                 bash "$SCRIPT" --tauri $FLAGS < /dev/null 2>&1 | tee logs/install.log || rc=$?
               ;;
           esac
@@ -291,7 +304,7 @@ jobs:
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
             bash .github/scripts/clean-machine-assert.sh $checks
 
-      - name: Assert llama.cpp loads
+      - name: Assert llama.cpp loads, and every downloaded Mach-O is native and signed
         if: steps.install.outcome == 'success'
         run: |
           set -a; . ./clean-machine.env; set +a
@@ -304,6 +317,10 @@ jobs:
             HOME_DIR="$UNSLOTH_STUDIO_HOME"
           fi
           STUDIO_HOME="$HOME_DIR" bash .github/scripts/assert-llama-loads.sh
+          # Rosetta 2 is on this runner and not on a fresh Mac, so llama-server
+          # launching above does not prove it would launch for a user. Assert the arch
+          # of every payload (llama.cpp, whisper.cpp, the Node prebuilt, uv) instead.
+          MACHO_ROOT="$HOME_DIR" bash .github/scripts/clean-machine-assert.sh macho
 
       - name: Restore the runner
         if: always()

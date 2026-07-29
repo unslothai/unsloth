@@ -12,8 +12,10 @@
 #            "Building <pkg>==<ver>" from uv. Needs UNSLOTH_VERBOSE=1, or
 #            run_install_cmd (install.sh:193-243) discards uv's output on success
 #            and there is nothing to read.
+#   macho    Every Mach-O under $MACHO_ROOT is the host architecture and is signed.
+#            Closes the Rosetta 2 gap, the one divergence masking cannot reproduce.
 #
-# Usage: bash .github/scripts/clean-machine-assert.sh absent notools nobuild
+# Usage: bash .github/scripts/clean-machine-assert.sh absent notools nobuild macho
 set -uo pipefail
 
 LOG="${INSTALL_LOG:-logs/install.log}"
@@ -147,6 +149,51 @@ for check in "$@"; do
         if grep -qiE "error: command '(cc|gcc|clang|cl)' failed|no such file or directory: 'cc'|clang: error|cargo: not found|error: linker \`cc\` not found" "$LOG"; then
           fail "compiler invocation appears in the install log"
           grep -iE "error: command '(cc|gcc|clang|cl)' failed|clang: error" "$LOG" | head -10
+        fi
+      fi
+      ;;
+
+    macho)
+      # The one thing masking cannot reproduce: Rosetta 2 is preinstalled on hosted
+      # runners and absent from a factory-fresh Mac, so an x86_64-only payload runs
+      # green here and dies with "bad CPU type in executable" for the user. Assert the
+      # architecture rather than hope the runner lacks Rosetta.
+      # `lipo` is an xcrun shim and is gone after masking, so read `file -b`, exactly
+      # as the desktop lane does. Keyed off `uname -m`, since macos-15-intel is x86_64.
+      root="${MACHO_ROOT:-${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth}}"
+      want="$(uname -m)"
+      [ "$want" = "aarch64" ] && want=arm64
+      if [ ! -d "$root" ]; then
+        fail "macho requested but $root does not exist"
+      else
+        n=0 bad_arch="" unsigned=""
+        while IFS= read -r f; do
+          desc="$(file -b "$f" 2>/dev/null || true)"
+          case "$desc" in *Mach-O*) ;; *) continue ;; esac
+          n=$((n + 1))
+          # Substring, not equality: a universal binary lists every slice it carries,
+          # and one that includes the host arch is fine.
+          case "$desc" in
+            *"$want"*) ;;
+            *) bad_arch="$bad_arch $f [$desc]" ;;
+          esac
+          # arm64 only: AMFI SIGKILLs unsigned code there ("Killed: 9"), while x86_64
+          # loads it happily, so an unsigned x86_64 payload is not the same defect.
+          # Ad-hoc is enough, which is what the linker emits by default.
+          if [ "$want" = "arm64" ] && ! codesign -v "$f" >/dev/null 2>&1; then
+            unsigned="$unsigned $f"
+          fi
+        done < <(find "$root" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' -o -name '*.node' \) 2>/dev/null)
+        if [ "$n" = "0" ]; then
+          # An empty scan reads exactly like a clean one, so the check would pass on a
+          # wrong root and prove nothing.
+          fail "no Mach-O found under $root; the arch/signature assertion proved nothing"
+        elif [ -n "$bad_arch" ]; then
+          fail "Mach-O is not $want, so it runs here only under Rosetta 2, which a fresh Mac does not have:$bad_arch"
+        elif [ -n "$unsigned" ]; then
+          fail "unsigned Mach-O, which AMFI kills on arm64:$unsigned"
+        else
+          ok "$n Mach-O files under $root are $want$([ "$want" = arm64 ] && echo ' and signed')"
         fi
       fi
       ;;

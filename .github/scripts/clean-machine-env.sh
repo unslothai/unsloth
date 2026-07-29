@@ -49,6 +49,22 @@ TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja
 
 note() { echo "[clean-machine] $*"; }
 
+# Move a path aside and record the reverse in restore.sh. PATH scrubbing only HIDES
+# these; uv, the py launcher and framework lookups find them regardless, so absence
+# has to be real. The restore line is guarded: the install may have recreated the
+# path, and an unguarded `mv` would bury the original inside it.
+mask_aside() {
+  local src="$1" dst="${2:-$1.masked}" as=""
+  [ -e "$src" ] || return 0
+  [ -w "$(dirname "$src")" ] || as="sudo"
+  if $as mv "$src" "$dst" 2>/dev/null; then
+    note "moved $src aside"
+    printf "[ -e '%s' ] || %s mv '%s' '%s' 2>/dev/null || true\n" "$src" "$as" "$dst" "$src" >> "$RESTORE"
+  else
+    note "WARN could not move $src"
+  fi
+}
+
 # ── PATH scrub ────────────────────────────────────────────────────────────────
 # Keep only OS-default system dirs: drops Homebrew, the hosted Python toolcache,
 # setup-* shims, pipx, cargo and every other preinstalled developer dir.
@@ -115,6 +131,35 @@ if [ "$MODE" = "mask" ]; then
       else
         note "WARN could not move $app"
       fi
+    done
+    # /usr/local EXISTS on a factory-fresh Mac: a SIP-exempt firmlink, and empty. What
+    # is absent is its CONTENTS, /usr/local/bin included. So empty it rather than
+    # remove it. Runs before the Homebrew block below so /usr/local/Homebrew is stashed
+    # once, with one restore line, in the right order.
+    if [ -d /usr/local ]; then
+      STASH="$WORK/usr-local"
+      mkdir -p "$STASH"
+      for entry in /usr/local/* /usr/local/.[!.]*; do
+        [ -e "$entry" ] || continue
+        base="$(basename "$entry")"
+        if sudo mv "$entry" "$STASH/$base" 2>/dev/null; then
+          note "emptied /usr/local/$base"
+          printf "[ -e '/usr/local/%s' ] || sudo mv '%s/%s' '/usr/local/%s' 2>/dev/null || true\n" \
+            "$base" "$STASH" "$base" "$base" >> "$RESTORE"
+        else
+          note "WARN could not move $entry"
+        fi
+      done
+    fi
+    # The hosted toolcache and the python.org framework are what a PATH scrub cannot
+    # reach: uv discovers interpreters by probing well-known locations.
+    mask_aside "${AGENT_TOOLSDIRECTORY:-$HOME/hostedtoolcache}"
+    mask_aside /Library/Frameworks/Python.framework
+    # Developer dotdirs and caches. A virgin $HOME has none of these, and a populated
+    # uv/pip cache can satisfy a resolution that would fail on a user's machine.
+    for d in .cargo .rustup .nvm .rbenv .pyenv .local .cache \
+             Library/Caches/uv Library/Caches/pip Library/Caches/Homebrew; do
+      mask_aside "$HOME/$d"
     done
     for brewdir in /opt/homebrew /usr/local/Homebrew; do
       if [ -d "$brewdir" ]; then
