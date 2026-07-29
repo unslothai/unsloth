@@ -1481,7 +1481,7 @@ def test_stripping_comments_stays_linear_in_the_code_spans(changelog_module):
     line = "`a` <!--x--> " * 16_000
     assert len(line) < changelog_module.CHANGELOG_MAX_BYTES
     started = time.monotonic()
-    visible, in_comment = changelog_module._strip_comments(line, False)
+    visible, in_comment = changelog_module._strip_comments(line, False, False)
     elapsed = time.monotonic() - started
     # Roughly 40ms scanning forward against roughly 11s restarting each time.
     assert elapsed < 2.0, f"comment stripping took {elapsed:.1f}s"
@@ -1850,3 +1850,100 @@ def test_only_punctuation_is_escapable_in_a_link_destination(run_scanner):
     # A space still ends the destination, escaped or not, so there is no link.
     spaced = run_scanner("links", "[guide](a\\ b.md)\n")
     assert spaced == "[guide](a\\ b.md)\n"
+
+
+def test_one_definition_does_not_hide_the_next(run_scanner):
+    """Definitions may run consecutively (spec 0.31.2 section 4.7): a block of
+    them is how a changelog collects its link targets. A definition is not
+    paragraph text, so it opens no paragraph for the next one to be unable to
+    interrupt. The resolver counted one as prose, which left every definition
+    after the first outside the set of lines a definition may start on, so only
+    the first was rewritten and the rest resolved against Studio's own origin.
+    The backend already reads the line this way."""
+    text = (
+        "- AMD support is here, see [the AMD guide][amd] and the\n"
+        "  [Intel notes][xpu].\n\n"
+        "[amd]: docs/basics/amd.md\n"
+        "[xpu]: docs/basics/xpu.md\n"
+    )
+    resolved = run_scanner("links", text)
+    base = "https://github.com/unslothai/unsloth/blob/main/docs/basics/"
+    assert f"[amd]: {base}amd.md" in resolved
+    assert f"[xpu]: {base}xpu.md" in resolved
+    # A run of them stays a run however long it is.
+    run = run_scanner("links", "[a]: docs/a.md\n[b]: docs/b.md\n[c]: docs/c.md\n")
+    assert run.count("https://github.com/unslothai/unsloth/blob/main/docs/") == 3
+    # Prose between them still opens a paragraph, which the next line may not
+    # interrupt, so that line is text of the paragraph and not a definition.
+    prose = run_scanner("links", "[a]: docs/a.md\nintro\n[b]: docs/b.md\n")
+    assert "[b]: docs/b.md" in prose
+
+
+def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
+    """A multiline comment is ordinarily closed by a `-->` written on a line of
+    its own, and a wrapped line may open with emphasis. The guard asking whether
+    the closer is reachable read any line whose first character was punctuation
+    as the start of a new block, so neither shape counted as more of the
+    paragraph carrying the comment. The comment then never closed, and the
+    collapsed popup showed the author's internal note to the user."""
+    closer = run_scanner(
+        "preview",
+        "- DoRA training is available in Studio. <!-- TODO confirm the exact\n"
+        "  flag name before release\n-->\n",
+    )
+    assert preview_leads(closer) == ["DoRA training is available in Studio."]
+    # A continuation may open with emphasis, which is text and not a block.
+    starred = run_scanner(
+        "preview",
+        "- DoRA training is available. <!-- TODO confirm the\n  *before* release -->\n",
+    )
+    assert preview_leads(starred) == ["DoRA training is available."]
+    underscored = run_scanner(
+        "preview",
+        "- DoRA training is available. <!-- TODO confirm the\n  _draft_ note -->\n",
+    )
+    assert preview_leads(underscored) == ["DoRA training is available."]
+    # A real block still ends the paragraph, so the opener below one is the
+    # ordinary text a renderer shows and hides nothing under it.
+    broken = run_scanner("links", "Note <!-- open\n## 2.0\nsecret --> [d](docs/a.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in broken
+    # So does a list item with content, which may interrupt a paragraph.
+    item = run_scanner("links", "Note <!-- open\n- bullet\nsecret --> [d](docs/a.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in item
+
+
+def test_a_comment_written_as_an_item_first_content_is_a_block(
+    changelog_module, run_scanner
+):
+    """A comment is an HTML block (spec 0.31.2 section 4.6, type 2), so one
+    written as a list item's first content opens inside that item, exactly as a
+    fence written there does. The scanners looked for the opener at the margin
+    of the line as written, so a marker in front of it hid the block: the
+    resolver rewrote a destination inside raw HTML, which Streamdown then shows
+    the reader as a literal URL, and the preview quoted the hidden note back at
+    them as though the bullet were Markdown."""
+    item = run_scanner("links", "- <!-- new --> AMD support, see [the guide](docs/amd.md)\n")
+    assert item == "- <!-- new --> AMD support, see [the guide](docs/amd.md)\n"
+    # Every marker opens an item, and a nested one is still an item.
+    for text in (
+        "* <!-- new --> see [the guide](docs/amd.md)\n",
+        "1. <!-- new --> see [the guide](docs/amd.md)\n",
+        "- outer\n  - <!-- new --> see [the guide](docs/amd.md)\n",
+    ):
+        assert "github.com" not in run_scanner("links", text)
+    # The multiline form hides the lines under it up to the closer, as a
+    # comment written at the item's own content column already did.
+    multiline = run_scanner("links", "- <!-- hidden\n  [a](docs/x.md)\n  -->\n")
+    assert "[a](docs/x.md)" in multiline and "github.com" not in multiline
+    # It is still scoped to the item it was written in, so a line dedented out
+    # of that item ends the block along with the item.
+    dedented = run_scanner("links", "- <!-- hidden\n[a](docs/x.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/x.md" in dedented
+    # The preview reads it the same way: an item holding only the block has
+    # nothing to preview, and the bullet below it is a bullet.
+    preview = run_scanner("preview", "- <!-- new --> hidden note\n- Real bullet\n")
+    assert preview_leads(preview) == ["Real bullet"]
+    # The parser reads it the same way too: the item keeps its content column,
+    # so a heading written inside the block is nested and indexes nothing.
+    text = "## 1.0\n\n- <!-- hidden\n\n  ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]

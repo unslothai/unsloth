@@ -221,18 +221,25 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         # The line as list tracking sees it: blank wherever nothing renders.
         structural = ""
         opened_block = False
-        in_block = open_fence is not None or in_html_block or in_raw_html is not None
-        # A fence or an HTML block inside a list item runs only to the end of
-        # that item, so a line dedented out of the item closes both. Lazy
-        # continuation cannot reach into either, so any content to the left of
-        # the item ends the block along with the item. A raw block inside an
-        # item ends on a blank line as well: the item takes the break, so what
-        # follows it is a block of the item's own.
-        leaves = _indent_width(line) < block_column if line.strip() else in_raw_html is not None
+        in_block = (
+            open_fence is not None or in_html_block or in_raw_html is not None or in_comment
+        )
+        # A fence, a comment or an HTML block inside a list item runs only to
+        # the end of that item, so a line dedented out of the item closes both.
+        # Lazy continuation cannot reach into any of them, so any content to the
+        # left of the item ends the block along with the item. A raw block or a
+        # comment inside an item ends on a blank line as well: the item takes
+        # the break, so what follows it is a block of the item's own.
+        leaves = (
+            _indent_width(line) < block_column
+            if line.strip()
+            else in_raw_html is not None or in_comment
+        )
         if in_block and block_column and leaves:
             open_fence = None
             in_html_block = False
             in_raw_html = None
+            in_comment = False
             block_column = 0
             # The paragraph the line could have continued is block content, so
             # it closes the item rather than reading as more of it.
@@ -261,23 +268,33 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             # A block already open owns this line, so the line is its content
             # rather than a block written at the column it happens to start in.
             hidden = in_comment or in_raw_html is not None
+            # A comment is an HTML block too, so one written as a list item's
+            # first content opens inside that item exactly as a fence does: the
+            # opener is read past a marker on the same line.
+            block_open = (
+                not in_comment
+                and _COMMENT_BLOCK_OPEN.match(_item_content(line, after_paragraph)) is not None
+            )
             # Commented-out sections are not rendered, so they are not releases.
-            visible, in_comment = _strip_comments(line, in_comment)
+            visible, in_comment = _strip_comments(line, in_comment, block_open)
             # An HTML block written as a list item's first content opens inside
             # that item, as a fence does, so an opener is read past a marker on
             # the same line. The marker itself stays, so the item it opens is
-            # still tracked.
-            content = _item_content(visible, after_paragraph)
-            marker = visible[: len(visible) - len(content)]
+            # still tracked. A comment blanks its own line, so that line is read
+            # as written instead: the block renders as nothing, but the item it
+            # is the content of still opens.
+            source = line if block_open else visible
+            content = _item_content(source, after_paragraph)
+            marker = source[: len(source) - len(content)]
             # Nor is anything inside a raw HTML block such as <pre>.
             stripped, in_raw_html = _strip_raw_html(content, in_raw_html)
-            opened_block = in_raw_html is not None
+            opened_block = in_raw_html is not None or (block_open and in_comment)
             # Taken before the opener is hidden: it renders as nothing, but its
             # indentation still closes a list item it sits to the left of, and a
             # marker on its line still opens one. A comment or a raw block keeps
             # only those, since the text it hides is not Markdown and must not
             # open a list of its own.
-            if stripped != content:
+            if block_open or stripped != content:
                 if not hidden:
                     structural = _hidden_structure(line, marker)
                 visible = ""
@@ -323,7 +340,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         # so the block belongs to the item it is really written inside.
         if opened_block:
             block_column = lists.columns[-1] if lists.columns else 0
-        elif open_fence is None and not in_html_block and in_raw_html is None:
+        elif open_fence is None and not in_html_block and in_raw_html is None and not in_comment:
             block_column = 0
         # At an open item's content column a heading is nested, not a boundary.
         if lists.columns and _indent_width(visible) >= lists.columns[0]:
@@ -709,20 +726,23 @@ def _is_escaped(line: str, index: int) -> bool:
     return slashes % 2 == 1
 
 
-def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+def _strip_comments(line: str, in_comment: bool, block_open: bool) -> tuple[str, bool]:
     """Return the line with HTML-comment spans removed, and the trailing state.
 
     Only a comment that starts a line opens a block and hides the lines below
     it. One written mid-sentence is inline HTML: it hides the rest of its own
     line at most, so a note mentioning `<!--` cannot swallow later releases.
     Delimiters inside inline code are literal and hide nothing.
+
+    "Starts a line" is read inside the container, so `block_open` is decided by
+    the caller from the item's content rather than from the raw line.
     """
     if in_comment:
         close = line.find(_COMMENT_CLOSE)
         # The closing line belongs to the block, tail included.
         return ("", False) if close != -1 else ("", True)
 
-    if _COMMENT_BLOCK_OPEN.match(line):
+    if block_open:
         # `<!-->` and `<!--->` are complete comments, so the closer may overlap
         # the opener; searching past it would swallow every later release.
         return ("", _COMMENT_CLOSE not in line)
@@ -1002,7 +1022,13 @@ def _renders_visibly(markdown: str) -> bool:
         if not in_comment and (_FENCE_PATTERN.match(line) or opens_raw):
             # A code block or raw HTML block renders even when it is empty.
             return True
-        visible, in_comment = _strip_comments(line, in_comment)
+        # No containers are tracked here, so the opener is read at the margin.
+        # The answer does not turn on the difference: an item renders its marker
+        # whatever the block inside it hides, so a section whose only content is
+        # a commented-out item renders something either way.
+        visible, in_comment = _strip_comments(
+            line, in_comment, _COMMENT_BLOCK_OPEN.match(line) is not None
+        )
         if visible.strip():
             return True
     return False

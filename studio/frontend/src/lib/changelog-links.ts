@@ -98,6 +98,12 @@ const HTML_BLOCK_TAGS = new Set(
 // Lines that are blocks in their own right, so no paragraph is open after.
 const BLOCK_LINE =
   /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
+// A definition is a block of its own but may not interrupt a paragraph, so it
+// ends the one above it only when there is none to continue. It opens none of
+// its own either, or the definition below it could never start: they are
+// allowed to run consecutively (spec 0.31.2 section 4.7). Same rule as
+// `_LINK_DEFINITION` in the backend's `after_paragraph`.
+const LINK_DEFINITION = /^ {0,3}\[(?:[^[\]\\]|\\.)+\]:/;
 const LINE_ENDINGS = /\r\n?/g;
 // A scheme, a protocol-relative host, or a fragment: already absolute enough.
 // `//` needs a host after it, so `///docs` stays a repository path.
@@ -120,12 +126,16 @@ const COMMENT_BLOCK_OPEN = /^ {0,3}<!--/;
  * to it is hidden. `closesBelow` says one does; without it the opener is the
  * ordinary text a renderer shows, so a note that merely mentions `<!--` may not
  * hide the links below it.
+ *
+ * "Starts a line" is read inside the container, so `blockOpen` is decided by
+ * the caller from the item's content rather than from the raw line.
  */
 function maskComments(
   line: string,
   inComment: boolean,
   runOn: boolean,
   closesBelow: boolean,
+  blockOpen: boolean,
 ): [string, boolean, boolean] {
   if (inComment) {
     // The closing line belongs to the block, tail included.
@@ -140,7 +150,7 @@ function maskComments(
     const resumed = closed + COMMENT_CLOSE.length;
     return maskInline(line, resumed, closesBelow);
   }
-  if (COMMENT_BLOCK_OPEN.test(line)) {
+  if (blockOpen) {
     // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
     // opener; searching past it would blank the rest of the file.
     return [" ".repeat(line.length), !line.includes(COMMENT_CLOSE), false];
@@ -203,8 +213,9 @@ function maskInline(
  * Whether `line` is written outside the container an open block belongs to. A
  * fence and an HTML block hold no lazy continuation line, so content to the
  * left of the item, or outside the quote, ends the block with its container.
- * A raw block written inside a list item ends on a blank line as well: the item
- * takes the break, so what follows it is a block of the item's own.
+ * A raw block or a comment written inside a list item ends on a blank line as
+ * well: the item takes the break, so what follows it is a block of the item's
+ * own.
  */
 function leavesContainer(
   line: string,
@@ -394,11 +405,11 @@ function classify(lines: string[]): Classified {
     // that returns early leaves no quoted paragraph open behind it.
     const above = quote;
     quote = NO_QUOTE;
-    // A fence or an HTML block runs only to the end of the container it was
-    // written in, so a line dedented out of that item or written outside that
-    // quote closes both.
+    // A fence, a comment or an HTML block runs only to the end of the container
+    // it was written in, so a line dedented out of that item or written outside
+    // that quote closes both.
     const quotes = quoteDepth(original);
-    let inBlock = openFence !== null || inRawHtml || inHtmlBlock;
+    let inBlock = openFence !== null || inRawHtml || inHtmlBlock || inComment;
     if (
       inBlock &&
       leavesContainer(
@@ -406,12 +417,13 @@ function classify(lines: string[]): Classified {
         quotes,
         blockColumn,
         blockQuotes,
-        inRawHtml && blockColumn > 0 && blockQuotes === 0,
+        (inRawHtml || inComment) && blockColumn > 0 && blockQuotes === 0,
       )
     ) {
       openFence = null;
       inRawHtml = false;
       inHtmlBlock = false;
+      inComment = false;
       endBlock();
       inBlock = false;
     }
@@ -498,27 +510,40 @@ function classify(lines: string[]): Classified {
     // than a block written at the column it happens to start in.
     const hidden = inComment;
     const carried = runOn;
+    // A comment is an HTML block too, so one written as a list item's first
+    // content opens inside that item exactly as a fence does: the opener is
+    // read past a marker on the same line and from the column its container
+    // starts at, not from the margin of the line as written.
+    const opensComment =
+      !(hidden || carried) &&
+      COMMENT_BLOCK_OPEN.test(itemContent(container, afterParagraph));
     // Only now, outside every fence, does a comment hide what follows.
     const [line, stillInComment, stillRunOn] = maskComments(
       original,
       inComment,
       runOn,
       closesBelow[index + 1] ?? false,
+      opensComment,
     );
     inComment = stillInComment;
     runOn = stillRunOn;
     // A line an inline comment runs on into is still a line of the paragraph
     // that carries it: only its text is hidden, never its block structure.
     const structure = carried ? original : line;
-    // The same container reading as above, now that the comments are masked.
-    const visible = containerContent(line, lists, quotes);
+    // The same container reading as above, now that the comments are masked. A
+    // comment blanks its own line, so that line is read as written instead: the
+    // block renders as nothing, but the item it is the content of still opens.
+    const source = opensComment ? original : line;
+    const visible = containerContent(source, lists, quotes);
     // An HTML block written as a list item's first content opens inside that
     // item, as a fence does, so an opener is read past a marker on the same
     // line. The marker survives into the structural line, so the item it opens
     // is still tracked.
     const content = itemContent(visible, afterParagraph);
     const marker =
-      content === visible ? "" : line.slice(0, line.length - content.length);
+      content === visible
+        ? ""
+        : source.slice(0, source.length - content.length);
     // Taken before an HTML opener is hidden: it renders as nothing, but its
     // indentation still closes a list item it sits to the left of. A comment
     // or a <pre> keeps only its column and its marker, since the text it hides
@@ -530,6 +555,15 @@ function classify(lines: string[]): Classified {
         : structure,
       above,
     );
+    // Read once the opener has closed the items it is dedented out of, so the
+    // comment block belongs to the item it is really written inside.
+    if (inComment !== hidden) {
+      if (inComment) {
+        startBlock(quotes);
+      } else {
+        endBlock();
+      }
+    }
     for (let at = 0; at < line.length; at += 1) {
       if (line[at] === " " && original[at] !== " ") {
         const from = at;
@@ -577,7 +611,10 @@ function classify(lines: string[]): Classified {
     }
     text.push(index);
     masked.push(line);
-    afterParagraph = !blank && !BLOCK_LINE.test(structure);
+    afterParagraph =
+      !blank &&
+      !BLOCK_LINE.test(structure) &&
+      (afterParagraph || !LINK_DEFINITION.test(structure));
     quote = quoteState(structure, above.inQuote);
   });
 

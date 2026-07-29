@@ -268,12 +268,16 @@ interface ContentLine {
  * paragraph: its `-->` may arrive on a later line of that paragraph, and only
  * the text up to it is hidden. `closesBelow` says one does; without it the
  * opener is the ordinary text a renderer shows and hides nothing below.
+ *
+ * "Starting a line" is read inside the container, so `blockOpen` is decided by
+ * the caller from the item's content rather than from the raw line.
  */
 function stripCommentSpans(
   line: string,
   startInComment: boolean,
   runOn: boolean,
   closesBelow: boolean,
+  blockOpen: boolean,
 ): [string, boolean, boolean] {
   if (startInComment) {
     // The closing line belongs to the block, tail included.
@@ -289,7 +293,7 @@ function stripCommentSpans(
     }
     // Only up to the closer: the tail is the paragraph's own text again.
     index = closed + COMMENT_CLOSE.length;
-  } else if (COMMENT_BLOCK_OPEN.test(line)) {
+  } else if (blockOpen) {
     // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
     // opener; searching past it would hide every later release.
     return ["", !line.includes(COMMENT_CLOSE), false];
@@ -362,17 +366,20 @@ function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
  * but the line that opens one is still a block written at its own column, so it
  * closes a list item it sits to the left of. Only the column survives, since
  * the text it hides is not Markdown. A line inside a block already open is that
- * block's content rather than a block of its own, so it keeps neither.
+ * block's content rather than a block of its own, so it keeps neither. A marker
+ * the hidden block is the content of survives with the column, so the item it
+ * opens is still tracked.
  */
 function structuralLine(
   line: string,
   visible: string,
   hidden: boolean,
+  marker: string,
 ): string {
   if (visible.trim() || hidden) {
     return visible;
   }
-  return hiddenStructure(line);
+  return hiddenStructure(line, marker);
 }
 
 interface ScanState {
@@ -455,22 +462,35 @@ function visibleContent(
   // than a block written at the column it happens to start in.
   const hidden = state.inComment || state.inRawHtml !== null;
   const carried = state.runOn;
+  // A comment is an HTML block too, so one written as a list item's first
+  // content opens inside that item exactly as a fence does: the opener is read
+  // past a marker on the same line rather than from the margin.
+  const content = itemContent(line, state.afterParagraph);
+  const opensComment =
+    !(state.inComment || carried) && COMMENT_BLOCK_OPEN.test(content);
   // Commented-out notes are not rendered, so they are not previewed either.
   const [uncommented, stillInComment, stillRunOn] = stripCommentSpans(
     line,
     state.inComment,
     state.runOn,
     closesBelow,
+    opensComment,
   );
   state.inComment = stillInComment;
   state.runOn = stillRunOn;
   const [visible, stillInRaw] = stripRawHtml(uncommented, state.inRawHtml);
   state.inRawHtml = stillInRaw;
   // Taken before the opener is hidden: it renders as nothing, but its
-  // indentation still closes a list item it sits to the left of. A line an
-  // inline comment runs on into is still a line of the paragraph that carries
-  // it, so only its text is hidden, never its block structure.
-  const structural = carried ? line : structuralLine(line, visible, hidden);
+  // indentation still closes a list item it sits to the left of, and a marker
+  // on its line still opens one. A line an inline comment runs on into is still
+  // a line of the paragraph that carries it, so only its text is hidden, never
+  // its block structure.
+  const marker = opensComment
+    ? line.slice(0, line.length - content.length)
+    : "";
+  const structural = carried
+    ? line
+    : structuralLine(line, visible, hidden, marker);
   if (
     !carried &&
     stillInRaw === null &&
@@ -649,17 +669,21 @@ function nextFence(
   return closes ? null : open;
 }
 
-/** Whether a fence, a raw block or an HTML block is open. */
+/** Whether a fence, a raw block, a comment or an HTML block is open. */
 function inBlock(state: ScanState): boolean {
   return (
-    state.openFence !== null || state.inRawHtml !== null || state.inHtmlBlock
+    state.openFence !== null ||
+    state.inRawHtml !== null ||
+    state.inHtmlBlock ||
+    state.inComment
   );
 }
 
 /**
- * A fence or an HTML block inside a list item runs only to the end of that
- * item, so a line dedented out of the item closes both. Lazy continuation
- * cannot reach into either, so any content to the left of the item ends it.
+ * A fence, a comment or an HTML block inside a list item runs only to the end
+ * of that item, so a line dedented out of the item closes both. Lazy
+ * continuation cannot reach into any of them, so any content to the left of the
+ * item ends it.
  */
 function closeDedentedBlock(line: string, state: ScanState): void {
   if (state.blockColumn === 0 || !inBlock(state)) {
@@ -669,6 +693,7 @@ function closeDedentedBlock(line: string, state: ScanState): void {
     state.openFence = null;
     state.inRawHtml = null;
     state.inHtmlBlock = false;
+    state.inComment = false;
     state.blockColumn = 0;
   }
 }
