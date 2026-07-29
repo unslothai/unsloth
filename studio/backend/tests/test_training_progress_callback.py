@@ -99,7 +99,12 @@ def _state():
     return SimpleNamespace(global_step = 0, epoch = 0.0, num_input_tokens_seen = 0)
 
 
-def _drive(callback, steps = 3, control = None, on_step = None):
+def _drive(
+    callback,
+    steps = 3,
+    control = None,
+    on_step = None,
+):
     """Run the HuggingFace callback lifecycle the way Trainer.train() does."""
     state = _state()
     control = control if control is not None else SimpleNamespace(should_training_stop = False)
@@ -128,9 +133,7 @@ def _make_owner():
     # has no _create_progress_callback; go straight to the class under test.
     owner = object.__new__(UnslothTrainer)
     UnslothTrainer.__init__(owner)
-    owner._update_progress(
-        is_training = True, total_steps = 4, status_message = "Starting training..."
-    )
+    owner._update_progress(is_training = True, total_steps = 4, status_message = "Starting training...")
     return owner
 
 
@@ -248,8 +251,9 @@ def test_embedding_train_begin_reports_nothing_once_a_stop_was_requested():
     event_queue = _FakeQueue()
     control = SimpleNamespace(should_training_stop = False)
 
-    _drive(_make_embedding_callback(event_queue, should_stop = lambda: True), steps = 1,
-           control = control)
+    _drive(
+        _make_embedding_callback(event_queue, should_stop = lambda: True), steps = 1, control = control
+    )
 
     assert [e for e in event_queue.events if e["type"] == "status"] == []
     assert control.should_training_stop is True
