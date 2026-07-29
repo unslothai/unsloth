@@ -83,6 +83,9 @@ def test_external_selection_invalidates_older_local_intent():
     assert external.index("await cancelLoadingForReplacement();") < external.index(
         "store.setCheckpoint(value, null);"
     )
+    assert external.index("clearPendingReplacementRollback();") < external.index(
+        "store.setCheckpoint(value, null);"
+    )
     assert "isModelSelectionIntentCurrent(selectionIntentId)" in external
 
 
@@ -192,6 +195,19 @@ def test_shared_loading_pick_stays_visible_until_cancel_settles():
     )
     failed_unload = cancel.split("} catch (error) {", 1)[1].split("} finally {", 1)[0]
     assert "await run.completionPromise;" in failed_unload
+
+
+def test_backend_load_request_settles_before_cancellation_releases_its_slot():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    api = _read("features/chat/api/chat-api.ts")
+    cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
+    cancel = cancel.split("const cancelLoadingWithCheckpointPolicy", 1)[0]
+    assert cancel.count("await unloadModel(") >= 2
+    assert cancel.index("await run.completionPromise;") < cancel.rindex(
+        "await unloadModel("
+    )
+    assert runtime.count("retainRequestOnAbort: true") >= 2
+    assert "signal: options?.retainRequestOnAbort ? undefined : options?.signal" in api
 
 
 def test_active_model_reload_cancellation_marks_rollback_unloaded():

@@ -562,6 +562,14 @@ export function useChatModelRuntime() {
           // backend model. Do not let a replacement start before the cancelled
           // frontend task has observed that outcome.
           await run.completionPromise;
+          // /unload can win the race before /load registers its target. Once
+          // the retained request settles, unload again so a late activation
+          // cannot escape cancellation.
+          if (run.backendLoadStarted) {
+            await unloadModel({
+              model_path: run.backendLoadModelId ?? backendLoadModelId,
+            });
+          }
           // A standalone cancellation can race before the target reaches the
           // backend. In that case /unload leaves the resident model untouched,
           // so derive the UI checkpoint from the backend instead of clearing it
@@ -642,6 +650,10 @@ export function useChatModelRuntime() {
   const invalidatePendingModelSelection = useCallback((): number => {
     loadIntentRef.current += 1;
     return loadIntentRef.current;
+  }, []);
+
+  const clearPendingReplacementRollback = useCallback((): void => {
+    pendingReplacementRollback = null;
   }, []);
 
   const isModelSelectionIntentCurrent = useCallback((intentId: number) => {
@@ -1403,6 +1415,7 @@ export function useChatModelRuntime() {
             }, {
               dialogOwner: run,
               signal: abortCtrl.signal,
+              retainRequestOnAbort: true,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -1659,6 +1672,7 @@ export function useChatModelRuntime() {
                 }, {
                   dialogOwner: run,
                   signal: abortCtrl.signal,
+                  retainRequestOnAbort: true,
                 });
                 if (abortCtrl.signal.aborted) {
                   throw new Error("Cancelled");
@@ -2156,6 +2170,7 @@ export function useChatModelRuntime() {
     cancelLoading,
     cancelLoadingForReplacement,
     invalidatePendingModelSelection,
+    clearPendingReplacementRollback,
     isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,

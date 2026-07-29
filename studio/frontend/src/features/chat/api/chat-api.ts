@@ -151,13 +151,20 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
-  options?: { dialogOwner?: unknown; signal?: AbortSignal },
+  options?: {
+    dialogOwner?: unknown;
+    signal?: AbortSignal;
+    retainRequestOnAbort?: boolean;
+  },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/load", {
     method: "POST",
-    signal: options?.signal,
+    // Once a load POST is dispatched, its caller may use /unload to cancel it.
+    // Retaining this request lets that caller wait until the backend has
+    // acknowledged either completion or cancellation.
+    signal: options?.retainRequestOnAbort ? undefined : options?.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...payload,
