@@ -133,12 +133,15 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
-@pytest.mark.parametrize("attention_mask,past_length", [
-    (None, 8),
-    (None, 0),
-    ("ones", 8),
-    ("left_pad", 8),
-])
+@pytest.mark.parametrize(
+    "attention_mask,past_length",
+    [
+        (None, 8),
+        (None, 0),
+        ("ones", 8),
+        ("left_pad", 8),
+    ],
+)
 def test_sdpa_mask_matches_transformers_on_cuda(attention_mask, past_length):
     """CUDA counterpart of the test above.
 
@@ -155,7 +158,11 @@ def test_sdpa_mask_matches_transformers_on_cuda(attention_mask, past_length):
     batch_size, query_length = 4, 5
     key_value_length = query_length + past_length
     inputs_embeds = torch.zeros(
-        batch_size, query_length, 16, dtype = torch.float32, device = "cuda",
+        batch_size,
+        query_length,
+        16,
+        dtype = torch.float32,
+        device = "cuda",
     )
     if attention_mask == "ones":
         mask = torch.ones(batch_size, key_value_length, dtype = torch.int64, device = "cuda")
@@ -168,11 +175,17 @@ def test_sdpa_mask_matches_transformers_on_cuda(attention_mask, past_length):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
         expected = legacy._prepare_4d_causal_attention_mask_for_sdpa(
-            mask, (batch_size, query_length), inputs_embeds, past_length,
+            mask,
+            (batch_size, query_length),
+            inputs_embeds,
+            past_length,
             sliding_window = 3,
         )
     actual = compat._prepare_4d_causal_attention_mask_for_sdpa(
-        mask, (batch_size, query_length), inputs_embeds, past_length,
+        mask,
+        (batch_size, query_length),
+        inputs_embeds,
+        past_length,
         sliding_window = 3,
     )
 
