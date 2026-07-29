@@ -1264,6 +1264,13 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
+// The Canvas instructions createOpenAIStreamAdapter appends to the outbound system
+// prompt. Named so the token recount below prices the same text the request carries.
+export const CANVAS_TOOL_INSTRUCTION =
+  "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
+export const CANVAS_FALLBACK_INSTRUCTION =
+  "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
+
 /**
  * The OpenAI-form messages a completion would send for `messages`, for the token
  * recount that fills the context usage bar. Mirrors the prune + system-prompt half of
@@ -1291,7 +1298,8 @@ export async function buildOutboundMessagesForTokenCount(
       Boolean(message),
     );
 
-  const params = useChatRuntimeStore.getState().params;
+  const { params, artifactsEnabled, supportsTools } =
+    useChatRuntimeStore.getState();
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -1315,6 +1323,27 @@ export async function buildOutboundMessagesForTokenCount(
       role: "system",
       content: combinedSystemPrompt,
     });
+  }
+
+  // Canvas appends one of these to the system prompt on every request, tool schema or
+  // not, so a count without it reads low by that instruction and can say a chat fits
+  // when the next completion would not. The adapter's image gate is never the reason
+  // render_html is off here: the count route refuses messages carrying an image.
+  const canvasInstruction = artifactsEnabled
+    ? supportsTools
+      ? CANVAS_TOOL_INSTRUCTION
+      : CANVAS_FALLBACK_INSTRUCTION
+    : "";
+  if (canvasInstruction) {
+    const first = outboundMessages[0];
+    if (first && first.role === "system" && typeof first.content === "string") {
+      outboundMessages[0] = {
+        ...first,
+        content: `${first.content}\n\n${canvasInstruction}`,
+      };
+    } else {
+      outboundMessages.unshift({ role: "system", content: canvasInstruction });
+    }
   }
 
   return outboundMessages as OpenAIChatMessage[];
@@ -2809,8 +2838,8 @@ export function createOpenAIStreamAdapter(
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
-          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+          ? CANVAS_TOOL_INSTRUCTION
+          : CANVAS_FALLBACK_INSTRUCTION
         : null;
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
