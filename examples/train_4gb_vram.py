@@ -12,9 +12,12 @@ import os
 # CUDA at import time, which lazily initializes the allocator before this can apply.
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# Unsloth must be imported before `datasets`/`transformers` — its _gpu_init redirects
+# a read-only HF cache, and Hub/Transformers modules freeze the cache constants on
+# their own import, so importing them first silently defeats the redirect.
+from unsloth import FastLanguageModel
 import torch
 from datasets import load_dataset
-from unsloth import FastLanguageModel
 from trl import SFTTrainer, SFTConfig
 
 

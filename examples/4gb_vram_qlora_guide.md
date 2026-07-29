@@ -47,24 +47,24 @@ To fine-tune without spiking past 3.8GB VRAM, every hyperparameter must be caref
 
 1. **`per_device_train_batch_size = 1`**: Keeps forward activation memory at absolute minimum.
 2. **`gradient_accumulation_steps = 8`** (or `4`): Simulates an effective batch size of 8 without increasing peak VRAM footprint.
-3. **`gradient_checkpointing = "unsloth"`**: Trades ~20% compute time to offload intermediate activations, cutting memory usage by up to 60%.
+3. **`use_gradient_checkpointing = "unsloth"`** (passed to `FastLanguageModel.get_peft_model(...)`, not `SFTConfig`): Trades ~20% compute time to offload intermediate activations, cutting memory usage by up to 60%.
 4. **`max_seq_length = 1024`**: Attention memory scales quadratically ($O(N^2)$). Capping sequence length at 1024 tokens prevents sudden OOM spikes during long training samples.
 5. **`optim = "paged_adamw_8bit"`**: Uses 8-bit optimizer states and allows CPU memory paging if GPU VRAM experiences momentary spikes.
 
 ---
 
-## 4. trl 1.x API Note
+## 4. trl>=0.18.2,<=0.24.0 API Note
 
-In **trl 1.x**, the `SFTTrainer` constructor was simplified. Parameters like `dataset_text_field`, `max_seq_length`, `packing`, and `dataset_num_proc` were **removed from `SFTTrainer`** and moved into `SFTConfig` (which extends `TrainingArguments`). The `tokenizer` parameter was renamed to `processing_class`.
+In the **trl** versions this repo supports (`>=0.18.2,<=0.24.0`, per `pyproject.toml`), the `SFTTrainer` constructor was simplified. Parameters like `dataset_text_field`, `max_seq_length`, `packing`, and `dataset_num_proc` were **removed from `SFTTrainer`** and moved into `SFTConfig` (which extends `TrainingArguments`). The `tokenizer` parameter was renamed to `processing_class`.
 
-| Old (trl < 1.0) | New (trl 1.x) |
+| Old (trl < 0.18) | New (trl>=0.18.2,<=0.24.0) |
 | :--- | :--- |
 | `SFTTrainer(..., dataset_text_field="text")` | `SFTConfig(dataset_text_field="text")` |
 | `SFTTrainer(..., max_seq_length=1024)` | `SFTConfig(max_length=1024)` |
 | `SFTTrainer(..., packing=False)` | `SFTConfig(packing=False)` |
 | `SFTTrainer(..., tokenizer=tokenizer)` | `SFTTrainer(..., processing_class=tokenizer)` |
 
-See `train_4gb_vram.py` in this directory for a complete, trl 1.x-compatible executable script.
+See `train_4gb_vram.py` in this directory for a complete, compatible executable script.
 
 ---
 
