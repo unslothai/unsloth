@@ -3,6 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+
+// Every localStorage key written by a panel width store.
+const PANEL_WIDTH_KEYS = ["sidebar_width"];
 
 // The store reads window at import time, so stub it before importing.
 const stubWindow = {
@@ -49,4 +53,20 @@ test("re-evaluates the cap per call, so a resize can re-clamp", () => {
   assert.equal(clampSidebarWidth(SIDEBAR_WIDTH_MAX), 360);
   stubWindow.innerWidth = 1440;
   assert.equal(clampSidebarWidth(SIDEBAR_WIDTH_MAX), SIDEBAR_WIDTH_MAX);
+});
+
+// The reset action promises to clear every stored preference, so a persisted
+// panel width that is missing from the list survives the reload.
+test("persisted panel widths are cleared by the preference reset", async () => {
+  const source = await readFile(
+    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  const keys = source.slice(
+    source.indexOf("const PREFS_KEYS"),
+    source.indexOf("];", source.indexOf("const PREFS_KEYS")),
+  );
+  for (const key of PANEL_WIDTH_KEYS) {
+    assert.ok(keys.includes(`"${key}"`), `${key} missing from PREFS_KEYS`);
+  }
 });
