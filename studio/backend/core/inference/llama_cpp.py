@@ -95,6 +95,8 @@ from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
+    is_reprompt_repeat as _is_reprompt_repeat,
+    is_reprompt_restatement as _is_reprompt_restatement,
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
 )
@@ -361,12 +363,32 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
-_FORCED_REPEAT_PLAN_SIGNAL = re.compile(
-    r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
+# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired with
+# an action verb. Sentence-anchored: mid-sentence the same words are prose that names
+# a tool ("The API I should invoke is foo() because ..."), and suppressing that loses
+# a real answer. "should"/"must" sit outside the need|have|ought group because they
+# take a bare infinitive. "invoke"/"query" stay out of the verb list: they read as
+# technical prose far more often than as a stall.
+_FORCED_PLAN_INTENT = re.compile(
+    r"(?:^|[.!?]\s+)\s*"
+    r"(?:i\s+(?:(?:need|have|ought)\s+to|should|must)|need\s+to|going\s+to|must|should)"
+    r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render)\b",
+    re.I | re.M,
+)
+# "the answer is not in the context" announces a *missing* answer, so the negated
+# forms are excluded or the plan behind them would ship as the final response.
+_FINAL_ANSWER_SIGNAL = re.compile(
+    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:"
+    r"|(?:the\s+)?answer\s+is(?!\s+(?:not|unavailable|unknown|unclear|missing)\b))\b",
     re.I,
 )
-_FINAL_ANSWER_SIGNAL = re.compile(
-    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",
+# A plan that pivots ("I should call web_search, but Tokyo is the capital") has an
+# answer attached, so the turn must survive. Leaking a plan sentence is cosmetic;
+# dropping an answer is not, so the doubtful case keeps the output. The pivot has to
+# carry text of its own: "I should call web_search, though." answers nothing.
+_ANSWER_PIVOT = re.compile(
+    r"\b(?:but|however|although|though|that\s+said|in\s+the\s+meantime|meanwhile)\b"
+    r"[\W_]*(?:\w+[\W_]+){1,}\w",
     re.I,
 )
 
@@ -458,14 +480,28 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
 
 
-def _should_suppress_forced_no_tool_output(text: str) -> bool:
-    """Suppress only repeated forced-turn planning text, not final answers."""
+def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
+    """Suppress only repeated forced-turn planning text, not final answers.
+
+    ``previous`` is the stall text that triggered the nudge, so a retry that
+    moved on can be told from one that just said the same thing again.
+    """
     stripped = text.strip()
     if not stripped or len(stripped) >= _REPROMPT_MAX_CHARS:
         return False
     if _FINAL_ANSWER_SIGNAL.search(stripped):
         return False
-    return _FORCED_REPEAT_PLAN_SIGNAL.search(stripped) is not None
+    plan = _FORCED_PLAN_INTENT.search(stripped)
+    if plan is not None:
+        # Only the plan itself is safe to drop; anything the turn pivots to after it
+        # is the answer the user is waiting for.
+        return _ANSWER_PIVOT.search(stripped[plan.end() :]) is None
+    if not _is_short_intent_without_action(stripped):
+        return False
+    # INTENT_SIGNAL also fires on lead-ins to a real answer ("Now I have the results.
+    # The capital is Tokyo."), so a bare intent match is a stall only when the retry
+    # adds nothing. No ``previous`` keeps the standalone "is this a stall?" contract.
+    return not previous or _is_reprompt_restatement(stripped, previous)
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -11866,6 +11902,10 @@ class LlamaCppBackend:
         # direct answer ("4", "Hello!") won't match. Pattern shared with the
         # safetensors loop (tool_call_parser.INTENT_SIGNAL).
         _reprompt_count = 0
+        # Budgeted apart from _reprompt_count so a pre-tool nudge can't spend it.
+        _post_tool_reprompts = 0
+        # Text that triggered the last nudge; if the retry restates it, stop.
+        _last_reprompt_text = ""
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
         # re-prompt slots don't extend the budget. Mirrors the safetensors guard.
         _tool_iters_done = 0
@@ -11873,7 +11913,7 @@ class LlamaCppBackend:
 
         # Reserve extra iterations for re-prompts so they don't consume the
         # caller's tool-call budget; only when tool iterations are allowed.
-        _extra = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+        _extra = _MAX_REPROMPTS + 1 if max_tool_iterations > 0 else 0
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -12518,12 +12558,10 @@ class LlamaCppBackend:
                     )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
-                        # If the model described its intent (forward-looking
-                        # language) without calling a tool, nudge it to act.
-                        # Fires at most once per request, only on short
-                        # responses with intent signals -- "4" or "Hello!"
-                        # won't trigger it. Use content if available, else
-                        # fall back to reasoning text (reasoning-only stalls).
+                        # Intent described without a tool call: nudge it to act. Up
+                        # to _MAX_REPROMPTS times, only on short responses with intent
+                        # signals -- "4" or "Hello!" won't trigger it. Uses content,
+                        # else reasoning text (reasoning-only stalls).
                         _stripped = content_accum.strip()
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
@@ -12533,18 +12571,33 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
+                        # A post-tool stall still deserves a nudge, but each retry
+                        # re-runs tools, so allow only one. RAG autoinject never lands
+                        # in history, so _auto keeps a doc-grounded turn from reading
+                        # as pre-tool (mirrors safetensors rag_autoinjected).
+                        _already_acted = bool(_auto) or any(
+                            record.executed for record in tool_controller.history
+                        )
+                        if _already_acted:
+                            _reprompt_used, _reprompt_cap = _post_tool_reprompts, 1
+                        else:
+                            _reprompt_used, _reprompt_cap = _reprompt_count, _MAX_REPROMPTS
                         # None keeps the default-on re-prompt; False disables it.
                         if (
                             auto_heal_tool_calls
                             and (nudge_tool_calls is None or nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
-                            and _reprompt_count < _MAX_REPROMPTS
+                            and _reprompt_used < _reprompt_cap
+                            and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
                             and _is_short_intent_without_action(_stripped)
                         ):
                             _reprompt_count += 1
+                            if _already_acted:
+                                _post_tool_reprompts += 1
+                            _last_reprompt_text = _stripped
                             logger.info(
-                                f"Re-prompt {_reprompt_count}/{_MAX_REPROMPTS}: "
+                                f"Re-prompt {_reprompt_used + 1}/{_reprompt_cap}: "
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )
@@ -12582,7 +12635,10 @@ class LlamaCppBackend:
 
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
-                            if not _should_suppress_forced_no_tool_output(_stripped):
+                            if not _should_suppress_forced_no_tool_output(
+                                _stripped,
+                                _last_reprompt_text,
+                            ):
                                 if cumulative_display:
                                     forced_visible_text = _strip_tool_markup(
                                         cumulative_display,
@@ -12912,6 +12968,10 @@ class LlamaCppBackend:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                    # A real execution opens the post-tool phase; carrying the pre-tool
+                    # stall text over would read the same sentence as a repeat and
+                    # swallow the one post-tool nudge.
+                    _last_reprompt_text = ""
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()
