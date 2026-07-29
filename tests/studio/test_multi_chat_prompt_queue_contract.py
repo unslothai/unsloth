@@ -142,7 +142,7 @@ def test_compare_wait_rejects_when_pre_stream_validation_fails():
     assert "PRE_STREAM_RUN_FAILED_EVENT" in compare
     assert "getCompareThreadIds().includes(failedThreadId)" in compare
     assert "reject(error);" in compare
-    assert "notifyPreStreamRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
+    assert "notifyPreStreamRunFailed(resolvedThreadId ?? null, runReservationToken)" in CHAT_ADAPTER
     assert "notifyPromptQueueRunFailed(threadId)" in QUEUE_BOUNDARY
 
 
@@ -211,8 +211,15 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert '"reasoningEnabled"' in QUEUED_SETTINGS
     assert '"reasoningEffort"' in QUEUED_SETTINGS
     assert '"preserveThinking"' in QUEUED_SETTINGS
+    assert '"deepResearchEnabled"' in QUEUED_SETTINGS
+    assert '"researchWebsitePolicy"' in QUEUED_SETTINGS
+    assert "if (queuedRunSettings)" in CHAT_ADAPTER
+    assert "if (!queuedRunSettings)" in CHAT_ADAPTER
     assert "pendingSettingsIds" in target
-    assert "void aui.threadListItem().initialize()" in target
+    assert "const queuedThreadInitialization = initialState.remoteId" in target
+    assert "append: async (prompt) =>" in target
+    assert "const initialization = await queuedThreadInitialization;" in target
+    assert "if (initialization && !initialization.ok)" in target
     assert "discardQueuedChatRunSettings(settingsId)" in target
     assert "discardQueuedChatRunSettingsForThread(threadId);" in THREAD
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
@@ -288,13 +295,23 @@ def test_research_transfers_its_pre_stream_reservation_to_run_ownership():
         "const sandboxSessionId",
     )
     assert "let researchReservationPending = true;" in research
-    assert "getPreStreamRunReservationToken()" in research
+    assert "const runReservationToken = getPreStreamRunReservationToken();" in CHAT_ADAPTER
     assert "researchReservationPending = !releasePreStreamRunForThread(" in research
     assert "if (researchReservationPending)" in research
-    assert "researchReservationToken," in research
+    assert "runReservationToken," in research
     assert research.index("researchReservationPending = !releasePreStreamRunForThread(") < (
         research.index("runtime.setThreadRunning(threadKey, true")
     )
+
+
+def test_background_document_status_failures_retry_instead_of_dispatching():
+    status_check = _between(
+        THREAD,
+        "async function targetHasIndexingDocuments(",
+        "function getActivePromptQueueItem(",
+    )
+    assert "await listThreadDocuments(threadId)" in status_check
+    assert "return true;" in status_check.split("} catch {", 1)[1]
 
 
 def test_persisted_new_chat_accepts_its_promoted_remote_id():

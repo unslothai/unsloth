@@ -397,7 +397,10 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       (doc) => doc.status === "pending" || doc.status === "running",
     );
   } catch {
-    return item.target.isIndexing();
+    // Once the originating composer unmounts, its local indexing flag is
+    // unavailable. A failed status read is not evidence that indexing ended;
+    // keep the item parked and retry instead of sending without its documents.
+    return true;
   }
 }
 
@@ -2035,14 +2038,19 @@ const Composer: FC<{
   const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
     const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
     const initialState = aui.threadListItem().getState();
-    if (!initialState.remoteId) {
-      // switchToNewThread() reuses an uninitialized local thread. Claim its
-      // durable identity now so another New Chat cannot merge two parked
-      // prompts into the same conversation.
-      void aui.threadListItem().initialize().catch(() => {
-        // Dispatch will surface the unavailable thread if initialization fails.
-      });
-    }
+    // switchToNewThread() reuses an uninitialized local thread. Claim its
+    // durable identity now so another New Chat cannot merge two parked
+    // prompts into the same conversation. Settle (rather than reject) early so
+    // a queue waiting on capacity does not create an unhandled rejection.
+    const queuedThreadInitialization = initialState.remoteId
+      ? null
+      : aui
+          .threadListItem()
+          .initialize()
+          .then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
     const usesThreadDocumentsAtQueueStart =
@@ -2106,7 +2114,11 @@ const Composer: FC<{
       getRunningThreadIds: () => {
         return getQueueThreadIds();
       },
-      append: (prompt) => {
+      append: async (prompt) => {
+        const initialization = await queuedThreadInitialization;
+        if (initialization && !initialization.ok) {
+          throw initialization.error;
+        }
         const thread = getThreadRuntime();
         if (!thread) {
           throw new Error("Prompt queue thread runtime is unavailable");

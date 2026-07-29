@@ -2114,6 +2114,10 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // Capture before the first await. If this run is cancelled during
+      // preflight, a later send may own the singleton by the time cleanup
+      // resumes; every release below must remain scoped to this token.
+      const runReservationToken = getPreStreamRunReservationToken();
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
@@ -2130,15 +2134,18 @@ export function createOpenAIStreamAdapter(
           useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
       );
       if (runtime.deepResearchEnabled && threadAlreadyResearched) {
-        runtime.setDeepResearchEnabled(false);
-        runtime = useChatRuntimeStore.getState();
+        if (queuedRunSettings) {
+          runtime = { ...runtime, deepResearchEnabled: false };
+        } else {
+          runtime.setDeepResearchEnabled(false);
+          runtime = useChatRuntimeStore.getState();
+        }
       }
       if (
         runtime.deepResearchEnabled &&
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base")
       ) {
-        const researchReservationToken = getPreStreamRunReservationToken();
         let researchReservationPending = true;
         try {
         if (runtime.modelLoading) {
@@ -2271,7 +2278,7 @@ export function createOpenAIStreamAdapter(
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         researchReservationPending = !releasePreStreamRunForThread(
           threadKey,
-          researchReservationToken,
+          runReservationToken,
         );
         runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
         let report = "";
@@ -2324,7 +2331,9 @@ export function createOpenAIStreamAdapter(
             createdRun,
             detachResearchFollow,
           );
-          runtime.setDeepResearchEnabled(false);
+          if (!queuedRunSettings) {
+            runtime.setDeepResearchEnabled(false);
+          }
           if (abortSignal.aborted) {
             const detached = Boolean(
               (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
@@ -2386,7 +2395,7 @@ export function createOpenAIStreamAdapter(
           if (researchReservationPending) {
             notifyPreStreamRunFailed(
               resolvedThreadId ?? null,
-              researchReservationToken,
+              runReservationToken,
             );
           }
         }
@@ -2439,7 +2448,7 @@ export function createOpenAIStreamAdapter(
         // model-load gates run. Release only that failed dispatch; do not pulse
         // running state, because queues treat a real running on->off transition
         // as a completed generation and would advance remaining prompts.
-        notifyPreStreamRunFailed(resolvedThreadId ?? null);
+        notifyPreStreamRunFailed(resolvedThreadId ?? null, runReservationToken);
       };
 
       // Wait for in-progress model load before inferring.
@@ -2898,7 +2907,7 @@ export function createOpenAIStreamAdapter(
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        releasePreStreamRunForThread(threadKey);
+        releasePreStreamRunForThread(threadKey, runReservationToken);
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
@@ -2986,7 +2995,7 @@ export function createOpenAIStreamAdapter(
         if (runSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
-      releasePreStreamRunForThread(threadKey);
+      releasePreStreamRunForThread(threadKey, runReservationToken);
       // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
       // backend leaves external-provider runs out of active_generations for the same reason.
       runtime.setThreadRunning(threadKey, true, {
