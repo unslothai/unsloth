@@ -367,11 +367,10 @@ export function TrainModelSelector() {
     if (!next) {
       return;
     }
-    selectTrainingModel(
-      next,
-      inferTrainingModelTypeFromFlags(inferredFlags),
-      options,
-    );
+    selectTrainingModel(next, inferTrainingModelTypeFromFlags(inferredFlags), {
+      ...options,
+      ...inferredFlags,
+    });
     picker.closePicker();
   }
 

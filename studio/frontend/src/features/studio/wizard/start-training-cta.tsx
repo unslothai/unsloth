@@ -40,9 +40,6 @@ function resolveStartTrainingError(input: {
     datasetSource,
     configValidation,
   } = input;
-  if (modelError) {
-    return t("studio.training.modelUnverified");
-  }
   if (isIncompatible) {
     return !isAudioModel && isDatasetAudio === true
       ? t("studio.training.audioIncompatible")
@@ -66,6 +63,9 @@ function resolveStartTrainingError(input: {
   }
   if (startError) {
     return startError;
+  }
+  if (modelError) {
+    return t("studio.training.modelUnverified");
   }
   return datasetUnverified ? t("studio.training.datasetUnverified") : null;
 }
@@ -155,8 +155,16 @@ export function StartTrainingCta() {
     datasetSource,
     configValidation,
   });
-  const isDatasetWarning =
-    !(startError || modelError || isIncompatible) && datasetUnverified;
+  const isWarning =
+    !(startError || isIncompatible || !configValidation.ok) &&
+    !!(modelError || datasetUnverified);
+  const showsModelWarning =
+    !!modelError &&
+    !startError &&
+    !isIncompatible &&
+    configValidation.ok &&
+    hasModel &&
+    hasDataset;
 
   return (
     <div className="flex flex-col gap-2">
@@ -186,16 +194,16 @@ export function StartTrainingCta() {
         <div
           className={cn(
             "flex items-start justify-between gap-2 text-ui-11p5 leading-relaxed",
-            isDatasetWarning ? "text-status-warning" : "text-destructive",
+            isWarning ? "text-status-warning" : "text-destructive",
           )}
         >
           <p
-            role={isDatasetWarning ? "status" : "alert"}
+            role={isWarning ? "status" : "alert"}
             className="min-w-0 break-words"
           >
             {errorMessage}
           </p>
-          {modelError && (
+          {showsModelWarning && (
             <button
               type="button"
               onClick={ensureModelDefaultsLoaded}

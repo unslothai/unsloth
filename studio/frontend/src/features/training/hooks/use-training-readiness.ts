@@ -52,7 +52,6 @@ function deriveTrainingReadiness(
       hasModel &&
       hasDataset &&
       !isLoadingModel &&
-      !modelError &&
       !state.isCheckingDataset &&
       !isIncompatible &&
       configValidation.ok,

@@ -696,8 +696,17 @@ export const zhCN = {
       datasetPending: "数据集待定",
       method: "方法",
       length: "长度",
+      stepZero: "{count} 步",
+      step: "{count} 步",
+      stepTwo: "{count} 步",
+      stepFew: "{count} 步",
+      stepMany: "{count} 步",
       steps: "{count} 步",
+      epochZero: "{count} 轮",
       epoch: "{count} 轮",
+      epochTwo: "{count} 轮",
+      epochFew: "{count} 轮",
+      epochMany: "{count} 轮",
       epochs: "{count} 轮",
       batch: "批大小",
       context: "上下文",
@@ -1029,6 +1038,8 @@ export const zhCN = {
       chooseModelAndDataset: "选择模型和数据集",
       modelUnverified:
         "无法验证此模型的设置。请检查网络连接或 Hugging Face token，然后重试。",
+      legacyDatasetScriptUnsupported:
+        "此 Hub 数据集依赖旧版自定义脚本，此训练流程不支持该脚本。",
       datasetUnverified:
         "无法验证数据集与此模型是否兼容。请检查网络连接或 Hugging Face token；开始训练时会重试检查。",
       setupChanged: "检查期间，训练设置发生了变化。请确认设置后重新开始训练。",

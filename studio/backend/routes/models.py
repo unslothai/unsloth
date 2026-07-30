@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import structlog
 from loggers import get_logger
-from utils.utils import log_and_http_error
+from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re
 
@@ -1823,6 +1823,9 @@ def _get_max_position_embeddings(config) -> Optional[int]:
     return None
 
 
+_MODEL_WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
+
+
 def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
     """Total size of model weight files from HF Hub."""
     try:
@@ -1833,10 +1836,9 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
         if not info.siblings:
             return None
 
-        weight_exts = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
         total = 0
         for sibling in info.siblings:
-            if sibling.rfilename and any(sibling.rfilename.endswith(ext) for ext in weight_exts):
+            if sibling.rfilename and sibling.rfilename.endswith(_MODEL_WEIGHT_EXTENSIONS):
                 if sibling.size is not None:
                     total += sibling.size
 
@@ -1846,10 +1848,87 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
         return None
 
 
+def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
+    try:
+        snapshot = Path(snapshot_path).resolve(strict = True)
+        snapshots_dir = snapshot.parent.resolve(strict = True)
+        repo_dir = snapshots_dir.parent.resolve(strict = True)
+        if (
+            not snapshot.is_dir()
+            or snapshots_dir.name != "snapshots"
+            or not repo_dir.is_dir()
+        ):
+            return None
+        blobs_dir = repo_dir / "blobs"
+        resolved_blobs_dir = (
+            blobs_dir.resolve(strict = True) if blobs_dir.is_dir() else None
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    total = 0
+    scan_failed = False
+
+    def _record_walk_error(_error: OSError) -> None:
+        nonlocal scan_failed
+        scan_failed = True
+
+    try:
+        for root, _, filenames in os.walk(
+            snapshot,
+            followlinks = False,
+            onerror = _record_walk_error,
+        ):
+            root_path = Path(root)
+            for filename in filenames:
+                if not filename.endswith(_MODEL_WEIGHT_EXTENSIONS):
+                    continue
+                try:
+                    candidate = (root_path / filename).resolve(strict = True)
+                    if not candidate.is_file():
+                        continue
+                    if not candidate.is_relative_to(snapshot) and not (
+                        resolved_blobs_dir is not None
+                        and candidate.is_relative_to(resolved_blobs_dir)
+                    ):
+                        continue
+                    total += candidate.stat().st_size
+                except (OSError, RuntimeError, ValueError):
+                    scan_failed = True
+    except OSError:
+        return None
+    return total if total > 0 and not scan_failed else None
+
+
+def _model_config_inspection_target(
+    model_name: str,
+    prefer_local_cache: bool,
+    local_path: Optional[str],
+) -> str:
+    if not prefer_local_cache or is_local_path(model_name):
+        return model_name
+    from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+
+    snapshot = latest_snapshot_from_cache_path(
+        local_path,
+        "model",
+        canonical_model_repo_id(model_name),
+        ("config.json", "adapter_config.json"),
+    )
+    if snapshot is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = "Selected cached model is no longer available.",
+        )
+    return snapshot
+
+
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
     hf_token: Optional[str] = Query(None),
+    prefer_local_cache: bool = False,
+    local_path: Optional[str] = None,
     header_hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -1869,18 +1948,34 @@ async def get_model_config(
         logger.info(f"Getting model config for: {model_name}")
         from utils.models.model_config import detect_audio_type
 
+        inspection_target = _model_config_inspection_target(
+            model_name,
+            prefer_local_cache,
+            local_path,
+        )
         config_dict = load_model_defaults(model_name)
 
         # Detect capabilities (HF token for gated models).
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
-        audio_type = detect_audio_type(model_name, hf_token = hf_token)
+        is_vision = is_vision_model(
+            inspection_target,
+            hf_token = hf_token,
+            local_files_only = prefer_local_cache,
+        )
+        is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
+        audio_type = detect_audio_type(
+            inspection_target,
+            hf_token = hf_token,
+            local_files_only = prefer_local_cache,
+        )
 
         is_lora = False
         base_model = None
         max_position_embeddings = None
         try:
-            model_config = ModelConfig.from_identifier(model_name)
+            model_config = ModelConfig.from_identifier(
+                inspection_target,
+                hf_token = hf_token,
+            )
             is_lora = model_config.is_lora
             base_model = model_config.base_model if is_lora else None
             max_position_embeddings = _get_max_position_embeddings(model_config)
@@ -1894,7 +1989,7 @@ async def get_model_config(
                 from utils.transformers_version import _load_config_json
                 from types import SimpleNamespace
 
-                _cfg = _load_config_json(model_name, hf_token = hf_token)
+                _cfg = _load_config_json(inspection_target, hf_token = hf_token)
                 if _cfg is not None:
 
                     def _to_ns(d):
@@ -1922,9 +2017,15 @@ async def get_model_config(
             model_type = derive_model_type(is_vision, audio_type, is_embedding),
             base_model = base_model,
             max_position_embeddings = max_position_embeddings,
-            model_size_bytes = _get_model_size_bytes(model_name, hf_token),
+            model_size_bytes = (
+                _get_snapshot_model_size_bytes(inspection_target)
+                if prefer_local_cache
+                else _get_model_size_bytes(model_name, hf_token)
+            ),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,

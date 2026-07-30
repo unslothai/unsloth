@@ -155,13 +155,15 @@ export function DatasetSelector() {
         repoId: d.repoId,
         cachePath: d.cachePath ?? null,
       }));
-    const localItems: DatasetDeviceItem[] = localRows.map((d) => ({
-      kind: "local",
-      key: `local:${d.path}`,
-      title: d.title || d.id,
-      detail: d.sourceLabel,
-      path: d.path,
-    }));
+    const localItems: DatasetDeviceItem[] = localRows
+      .filter((d) => !d.partial)
+      .map((d) => ({
+        kind: "local",
+        key: `local:${d.path}`,
+        title: d.title || d.id,
+        detail: d.sourceLabel,
+        path: d.path,
+      }));
     return [...cachedItems, ...localItems].sort((a, b) =>
       a.title.localeCompare(b.title),
     );

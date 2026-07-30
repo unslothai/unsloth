@@ -664,8 +664,17 @@ export const ja = {
       datasetPending: "データセット未選択",
       method: "手法",
       length: "長さ",
+      stepZero: "{count} ステップ",
+      step: "{count} ステップ",
+      stepTwo: "{count} ステップ",
+      stepFew: "{count} ステップ",
+      stepMany: "{count} ステップ",
       steps: "{count} ステップ",
+      epochZero: "{count} エポック",
       epoch: "{count} エポック",
+      epochTwo: "{count} エポック",
+      epochFew: "{count} エポック",
+      epochMany: "{count} エポック",
       epochs: "{count} エポック",
       batch: "バッチ",
       context: "コンテキスト",
@@ -1003,6 +1012,8 @@ export const ja = {
       chooseModelAndDataset: "モデルとデータセットを選択",
       modelUnverified:
         "このモデルの設定を確認できませんでした。接続または Hugging Face トークンを確認してから、再試行してください。",
+      legacyDatasetScriptUnsupported:
+        "この Hub データセットは従来のカスタムスクリプトに依存しているため、このトレーニングフローではサポートされていません。",
       datasetUnverified:
         "データセットがこのモデルと互換性があるか確認できませんでした。接続または Hugging Face トークンを確認してください。トレーニング開始時にもう一度確認します。",
       setupChanged:

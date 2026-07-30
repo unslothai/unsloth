@@ -630,8 +630,17 @@ export const fr = {
       datasetPending: "Jeu de données en attente",
       method: "Méthode",
       length: "Durée",
+      stepZero: "{count} étape",
+      step: "{count} étape",
+      stepTwo: "{count} étapes",
+      stepFew: "{count} étapes",
+      stepMany: "{count} étapes",
       steps: "{count} étapes",
+      epochZero: "{count} époque",
       epoch: "{count} époque",
+      epochTwo: "{count} époques",
+      epochFew: "{count} époques",
+      epochMany: "{count} époques",
       epochs: "{count} époques",
       batch: "Lot",
       context: "Contexte",
@@ -1007,6 +1016,8 @@ export const fr = {
       chooseModelAndDataset: "Choisir un modèle et un jeu de données",
       modelUnverified:
         "Impossible de vérifier les paramètres de ce modèle. Vérifiez votre connexion ou votre token Hugging Face, puis réessayez.",
+      legacyDatasetScriptUnsupported:
+        "Ce jeu de données du Hub repose sur un ancien script personnalisé et n’est pas pris en charge dans ce flux d’entraînement.",
       datasetUnverified:
         "Impossible de vérifier si le jeu de données est compatible avec ce modèle. Vérifiez votre connexion ou votre token Hugging Face ; le démarrage de l'entraînement relancera la vérification.",
       setupChanged:

@@ -67,18 +67,22 @@ def test_saved_token_is_not_reported_as_connected():
     assert 't("studio.preview.connected")' not in preview
 
 
-def test_model_defaults_error_blocks_readiness_and_offers_retry():
+def test_model_defaults_error_warns_without_blocking_readiness_and_offers_retry():
     readiness = TRAINING_READINESS.read_text(encoding = "utf-8")
     cta = START_TRAINING_CTA.read_text(encoding = "utf-8")
 
     assert "modelError: string | null;" in readiness
     assert "const modelError = state.modelDefaultsError;" in readiness
-    assert "!modelError &&" in readiness
+    assert "!modelError &&" not in readiness
     assert "current.modelError === next.modelError" in readiness
     assert 't("studio.training.modelUnverified")' in cta
+    assert "!!(modelError || datasetUnverified)" in cta
     assert "ensureModelDefaultsLoaded: state.ensureModelDefaultsLoaded" in cta
     assert "onClick={ensureModelDefaultsLoaded}" in cta
-    assert "{modelError && (" in cta
+    assert "{showsModelWarning && (" in cta
+    assert "const showsModelWarning =" in cta
+    assert "!!modelError &&" in cta
+    assert "!startError &&" in cta
 
 
 def test_training_start_prepares_token_once_before_transport():
@@ -120,8 +124,8 @@ def test_training_start_prepares_token_once_before_transport():
         "async function checkSelectedDataset", 1
     )[0]
     assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
-    assert "buildTrainingStartPayload(attempt.config)" in submit_attempt
-    assert "payload.hf_token = hfToken" in submit_attempt
+    assert "buildTrainingStartPayload(attempt.config, hfToken)" in submit_attempt
+    assert "payload.hf_token = hfToken" not in submit_attempt
     assert submit_attempt.index("attempt.enterTransport()") < submit_attempt.index(
         "await startTraining(payload)"
     )
@@ -222,7 +226,7 @@ def test_accepted_training_start_stays_locked_during_preparation():
     assert "previousTrainingRunActive: isTrainingRunActive(previousState)" in navigation
     assert "disabled: trainingRunActive" in subnav
     assert "min-w-0 flex-1" in subnav
-    assert "overflow-x-auto" in subnav
+    assert "flex-wrap" in subnav
     assert "gap-3" in subnav and "sm:gap-6" in subnav
 
 
@@ -256,12 +260,12 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     snapshot = source.split("function captureTrainingStartInputs", 1)[1].split(
         "type TrainingStartInputs", 1
     )[0]
-    assert "buildTrainingStartPayload(config)" in snapshot
-    assert "payload.hf_token = null" in snapshot
-    assert "payload.model_known_cached = false" in snapshot
-    assert "payload.model_local_path = null" in snapshot
-    assert "payload.dataset_known_cached = false" in snapshot
-    assert "payload.dataset_local_path = null" in snapshot
+    assert "buildTrainingStartPayload(config, null)" in snapshot
+    assert "payload.hf_token = null" not in snapshot
+    assert "payload.model_known_cached =" not in snapshot
+    assert "payload.model_local_path =" not in snapshot
+    assert "payload.dataset_known_cached =" not in snapshot
+    assert "payload.dataset_local_path =" not in snapshot
     assert "isUntrainableModelFormat(config.modelFormat)" in snapshot
     assert "modelType: config.modelType" in snapshot
     assert "isVisionModel: config.isVisionModel" in snapshot

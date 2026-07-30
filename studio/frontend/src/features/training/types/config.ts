@@ -21,6 +21,13 @@ export interface ModelCacheReferenceOptions {
   modelFormat?: ModelInventoryFormat | null;
 }
 
+export interface TrainingModelSelectionOptions
+  extends ModelCacheReferenceOptions {
+  isEmbedding?: boolean | null;
+  isAudio?: boolean | null;
+  isVision?: boolean | null;
+}
+
 export interface DatasetCacheReferenceOptions {
   knownCached?: boolean;
   localPath?: string | null;
@@ -129,7 +136,7 @@ export interface TrainingConfigActions {
   selectTrainingModel: (
     model: string | null,
     modelType: ModelType | null,
-    options?: ModelCacheReferenceOptions,
+    options?: TrainingModelSelectionOptions,
   ) => void;
   setSelectedModelCacheReference: (
     model: string,

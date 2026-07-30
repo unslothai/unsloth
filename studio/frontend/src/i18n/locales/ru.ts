@@ -612,9 +612,18 @@ export const ru = {
       datasetPending: "Ожидание датасета",
       method: "Метод",
       length: "Длительность",
+      stepZero: "{count} шагов",
+      step: "{count} шаг",
+      stepTwo: "{count} шага",
+      stepFew: "{count} шага",
+      stepMany: "{count} шагов",
       steps: "{count} шагов",
-      epoch: "Эпох: {count}",
-      epochs: "Эпох: {count}",
+      epochZero: "{count} эпох",
+      epoch: "{count} эпоха",
+      epochTwo: "{count} эпохи",
+      epochFew: "{count} эпохи",
+      epochMany: "{count} эпох",
+      epochs: "{count} эпохи",
       batch: "Батч",
       context: "Контекст",
       lr: "LR",
@@ -975,6 +984,8 @@ export const ru = {
       chooseModelAndDataset: "Выберите модель и датасет",
       modelUnverified:
         "Не удалось проверить настройки этой модели. Проверьте подключение или токен Hugging Face, затем повторите попытку.",
+      legacyDatasetScriptUnsupported:
+        "Этот датасет Hub использует устаревший пользовательский скрипт и не поддерживается в этом процессе обучения.",
       datasetUnverified:
         "Не удалось проверить совместимость датасета с этой моделью. Проверьте подключение или токен Hugging Face — проверка повторится при запуске обучения.",
       setupChanged:

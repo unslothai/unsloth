@@ -80,6 +80,7 @@ logger = get_logger(__name__)
 
 _LOCAL_MODEL_PROBE_LIMIT = 2000
 _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS = 5.0
+_REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS = 10.0
 
 
 class _LocalModelProbeIncomplete(RuntimeError):
@@ -225,43 +226,80 @@ def _has_adapter_metadata(path: Path) -> bool:
 
 def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
+    from hub.utils.hf_errors import hf_error_status
 
     repo_id = canonical_model_repo_id(model_name)
-    try:
-        info = hf_model_info(
-            repo_id,
-            token = hf_token,
-            timeout = _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
-        )
-    except Exception as error:
-        logger.warning(
-            "Could not inspect remote model files for %s (%s)",
-            model_name,
-            type(error).__name__,
-        )
-        from hub.utils.hf_errors import hf_error_status
-
-        status_code = hf_error_status(error)
-        if status_code is not None:
-            detail = (
-                "Hugging Face model verification is rate-limited. Retry shortly."
-                if status_code == 429
-                else (
-                    "The Hugging Face model could not be verified. "
-                    "Check the repository ID and your access token."
+    timeouts = (
+        _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
+        _REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS,
+    )
+    for attempt, timeout in enumerate(timeouts):
+        try:
+            info = hf_model_info(
+                repo_id,
+                token = hf_token,
+                timeout = timeout,
+            )
+            break
+        except Exception as error:
+            status_code = hf_error_status(error)
+            if status_code is None:
+                upstream_status = getattr(
+                    getattr(error, "response", None),
+                    "status_code",
+                    None,
+                )
+                if isinstance(upstream_status, int) and 500 <= upstream_status < 600:
+                    status_code = upstream_status
+            transient_status = (
+                status_code in (408, 429)
+                or (
+                    isinstance(status_code, int)
+                    and 500 <= status_code < 600
                 )
             )
+            if status_code in (401, 403):
+                raise HTTPException(
+                    status_code = 422,
+                    detail = (
+                        "Hugging Face denied access to this model. Add a valid Hugging Face "
+                        "token with repository access and accept any required access terms, "
+                        "then try again."
+                    ),
+                ) from error
+            retry_available = attempt + 1 < len(timeouts)
+            if transient_status:
+                if retry_available:
+                    continue
+                if status_code == 429:
+                    raise HTTPException(
+                        status_code = 429,
+                        detail = (
+                            "Hugging Face model verification is rate-limited. Retry shortly."
+                        ),
+                    ) from error
+            elif status_code is not None:
+                raise HTTPException(
+                    status_code = status_code,
+                    detail = (
+                        "The Hugging Face model could not be verified. "
+                        "Check the repository ID and your access token."
+                    ),
+                ) from error
+            elif retry_available:
+                continue
+            logger.warning(
+                "Could not inspect remote model files for %s after retry (%s)",
+                model_name,
+                type(error).__name__,
+            )
             raise HTTPException(
-                status_code = status_code,
-                detail = detail,
+                status_code = 503,
+                detail = (
+                    "Hugging Face model metadata is temporarily unavailable. "
+                    "Retry before starting training."
+                ),
             ) from error
-        raise HTTPException(
-            status_code = 503,
-            detail = (
-                "Hugging Face model metadata is temporarily unavailable. "
-                "Retry before starting training."
-            ),
-        ) from error
 
     root_files: set[str] = set()
     has_gguf = False
@@ -1082,7 +1120,7 @@ async def stop_training(
 
 @router.post("/reset")
 async def reset_training(
-    body: TrainingResetRequest = TrainingResetRequest(),
+    body: Optional[TrainingResetRequest] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     """Reset training state so the user can return to configuration."""
@@ -1090,7 +1128,7 @@ async def reset_training(
         backend = get_training_backend()
         result = await asyncio.to_thread(
             backend.reset_training_state,
-            expected_job_id = body.expected_job_id,
+            expected_job_id = body.expected_job_id if body is not None else None,
         )
         if result == "superseded":
             return {"status": "superseded"}

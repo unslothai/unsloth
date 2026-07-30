@@ -73,6 +73,8 @@ type DatasetPreviewRequest = {
   subset: string | null | undefined;
   split: string | null | undefined;
   isVlm: boolean;
+  preferLocalCache: boolean;
+  localPath: string | null;
 };
 
 type DatasetPreviewDialogProps = {
@@ -81,6 +83,9 @@ type DatasetPreviewDialogProps = {
   datasetName: string | null;
   datasetSource?: DatasetSource;
   hfToken: string | null;
+  datasetKnownCached?: boolean;
+  datasetLocalPath?: string | null;
+  datasetStreaming?: boolean;
   datasetSubset?: string | null;
   datasetSplit?: string | null;
   mode?: "preview" | "mapping";
@@ -94,6 +99,9 @@ export function DatasetPreviewDialog({
   datasetName,
   datasetSource,
   hfToken,
+  datasetKnownCached = false,
+  datasetLocalPath,
+  datasetStreaming = false,
   datasetSubset,
   datasetSplit,
   mode = "preview",
@@ -118,11 +126,23 @@ export function DatasetPreviewDialog({
       subset: datasetSubset,
       split: datasetSplit,
       isVlm,
+      preferLocalCache:
+        datasetSource === "huggingface" &&
+        datasetKnownCached &&
+        !datasetStreaming,
+      localPath:
+        datasetSource === "huggingface" && !datasetStreaming
+          ? (datasetLocalPath ?? null)
+          : null,
     };
   }, [
     open,
     datasetName,
+    datasetSource,
     hfToken,
+    datasetKnownCached,
+    datasetLocalPath,
+    datasetStreaming,
     datasetSubset,
     datasetSplit,
     isVlm,
@@ -306,6 +326,8 @@ export function DatasetPreviewDialog({
       subset: previewRequest.subset,
       split: previewRequest.split,
       isVlm: previewRequest.isVlm,
+      preferLocalCache: previewRequest.preferLocalCache,
+      localPath: previewRequest.localPath,
     })
       .then((res) => {
         if (!cancelled) {

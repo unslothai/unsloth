@@ -39,8 +39,7 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
 type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
-  const payload = buildTrainingStartPayload(config);
-  payload.hf_token = null;
+  const payload = buildTrainingStartPayload(config, null);
   payload.model_format = isUntrainableModelFormat(config.modelFormat)
     ? config.modelFormat
     : null;
@@ -319,6 +318,10 @@ function applyDetectedDatasetModality(
   isImage: boolean,
   isAudio: boolean,
 ): boolean {
+  if (attempt.config.datasetStreaming && (isImage || isAudio)) {
+    useTrainingConfigStore.getState().setDatasetStreaming(false);
+    return attempt.cancel(TRAINING_SETUP_CHANGED_ERROR);
+  }
   if (
     isImage === attempt.config.isDatasetImage &&
     isAudio === attempt.config.isDatasetAudio
@@ -328,7 +331,6 @@ function applyDetectedDatasetModality(
   return attempt.updateConfig({
     isDatasetImage: isImage,
     isDatasetAudio: isAudio,
-    ...(isImage || isAudio ? { datasetStreaming: false } : {}),
   });
 }
 
@@ -388,8 +390,7 @@ async function submitFreshTrainingRun(
     return attempt.cancel(validation.message);
   }
 
-  const payload = buildTrainingStartPayload(attempt.config);
-  payload.hf_token = hfToken;
+  const payload = buildTrainingStartPayload(attempt.config, hfToken);
   if (!attempt.enterTransport()) {
     return false;
   }
@@ -420,9 +421,11 @@ async function checkSelectedDataset(
 ): Promise<CheckFormatResponse | null> {
   const config = attempt.config;
   const preferLocalCache =
-    config.datasetSource === "huggingface" && config.datasetKnownCached;
+    config.datasetSource === "huggingface" &&
+    config.datasetKnownCached &&
+    !config.datasetStreaming;
   const datasetLocalPath =
-    config.datasetSource === "huggingface" ? config.datasetLocalPath : null;
+    preferLocalCache ? config.datasetLocalPath : null;
 
   try {
     const check = await checkDatasetFormat({

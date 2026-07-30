@@ -1659,11 +1659,12 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "knownCached: selection.knownCached" in restore
     assert "localPath: selection.localPath" in restore
 
-    assert "version: 14," in store
+    assert "version: 15," in store
     migration = store.split("if (version < 14)", 1)[1]
     migration = migration.split("return s as unknown as TrainingConfigStore", 1)[0]
     assert "createUploadBrowseDatasetSelection(uploadedFile)" in migration
     assert "createHfBrowseDatasetSelection(dataset" in migration
+    assert 's.isEmbeddingModel = s.modelType === "embeddings";' in store
 
     toggle = _read("features/studio/sections/dataset-panel-controls.tsx")
     assert "restoreBrowseDatasetSource();" in toggle
@@ -1717,14 +1718,19 @@ def test_start_cta_prioritizes_current_blockers_over_previous_start_errors():
     source = _read("features/studio/wizard/start-training-cta.tsx")
     resolver = source.split("function resolveStartTrainingError", 1)[1]
     resolver = resolver.split("function resolveStartTrainingButtonLabel", 1)[0]
+    incompatibility = resolver.index("if (isIncompatible)")
     model_error = resolver.index("if (modelError)")
     start_error = resolver.index("if (startError)")
     dataset_warning = resolver.index(
         'return datasetUnverified ? t("studio.training.datasetUnverified") : null;'
     )
-    assert model_error < start_error < dataset_warning
-    assert "{modelError && (" in source
-    assert "modelError && !startError" not in source
+    assert incompatibility < start_error < model_error < dataset_warning
+    assert "{showsModelWarning && (" in source
+    assert "const showsModelWarning =" in source
+    assert "!!modelError &&" in source
+    assert "!startError &&" in source
+    assert "!isIncompatible &&" in source
+    assert "configValidation.ok &&" in source
 
 
 def test_training_config_changes_clear_previous_start_error():
@@ -1742,6 +1748,13 @@ def test_training_setup_changed_error_uses_localization():
     assert "Training setup changed while it was being checked." not in runtime
 
 
+def test_training_start_legacy_dataset_error_uses_localization():
+    source = _read("features/training/lib/training-start-errors.ts")
+
+    assert 'translate("studio.training.legacyDatasetScriptUnsupported")' in source
+    assert "This Hub dataset relies on a legacy custom script" not in source
+
+
 def test_training_start_attempt_is_bound_to_checked_inputs():
     source = _read("features/training/lib/start-fresh-training-run.ts")
     assert "private expectedConfig: TrainingConfigStore;" in source
@@ -1755,8 +1768,8 @@ def test_training_start_attempt_is_bound_to_checked_inputs():
     assert source.count("abortIfInputsChanged()") >= 5
     assert "this.expectedConfig = { ...this.expectedConfig, ...update };" in source
     assert source.count("this.expectedConfig = useTrainingConfigStore.getState();") == 1
-    assert "buildTrainingStartPayload(attempt.config)" in source
-    assert "buildTrainingStartPayload(useTrainingConfigStore.getState())" not in source
+    assert "buildTrainingStartPayload(attempt.config, hfToken)" in source
+    assert "buildTrainingStartPayload(useTrainingConfigStore.getState()," not in source
     assert "hasIncompatibleTrainingModalities(attempt.config)" in source
     assert "payload.model_known_cached = false;" not in source
     assert "payload.model_local_path = null;" not in source
@@ -1765,6 +1778,36 @@ def test_training_start_attempt_is_bound_to_checked_inputs():
 
     readiness = _read("features/training/hooks/use-training-readiness.ts")
     assert "hasIncompatibleTrainingModalities(state)" in readiness
+
+
+def test_training_start_payload_mapper_receives_token_explicitly():
+    mapper = _read("features/training/api/mappers.ts")
+    start = _read("features/training/lib/start-fresh-training-run.ts")
+
+    assert "hfToken: string | null," in mapper
+    assert "hf_token: hfToken," in mapper
+    assert "getHfToken" not in mapper
+    snapshot = start.split("function captureTrainingStartInputs", 1)[1].split(
+        "type TrainingStartInputs", 1
+    )[0]
+    assert "buildTrainingStartPayload(config, null)" in snapshot
+    assert "payload.hf_token = null" not in snapshot
+
+
+def test_run_preview_uses_the_app_locale_for_numbers_and_plural_rules():
+    source = _read("features/studio/wizard/run-preview-card.tsx")
+
+    assert "const locale = useLocale();" in source
+    assert "new Intl.NumberFormat(locale)" in source
+    assert "new Intl.PluralRules(locale)" in source
+    assert "pluralRules.select(lengthCount)" in source
+    assert "numberFormatter.format(lengthCount)" in source
+    assert "PREVIEW_COUNT_KEYS[lengthUnit]" in source
+    assert 'one: "studio.preview.step"' in source
+    assert 'one: "studio.preview.epoch"' in source
+    assert 'few: "studio.preview.epochFew"' in source
+    assert "numberFormatter.format(contextLength)" in source
+    assert ".toLocaleString()" not in source
 
 
 def test_freeform_device_model_keeps_local_path_intent():
@@ -1867,6 +1910,80 @@ def test_new_model_selection_replaces_the_previous_model_type():
     assert "modelType: s.modelType" not in selector
 
 
+def test_picker_capabilities_survive_model_config_probe_failures():
+    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    store = _read("features/training/stores/training-config-store.ts")
+    api = _read("features/training/api/models-api.ts")
+    vision_probe = api.split("export async function checkVisionModel", 1)[1].split(
+        "export async function checkEmbeddingModel", 1
+    )[0]
+    loader = store.split(
+        "const loadAndApplyModelDefaults = (modelName: string) =>", 1
+    )[1]
+    failure = loader.split(".catch((error) =>", 1)[1].split(
+        "const runDatasetCheck =", 1
+    )[0]
+
+    assert "...options," in selector
+    assert "...inferredFlags," in selector
+    assert 'options?.isVision ?? effectiveModelType === "vision"' in store
+    assert 'options?.isAudio ?? effectiveModelType === "audio"' in store
+    assert (
+        'options?.isEmbedding ?? effectiveModelType === "embeddings"' in store
+    )
+    non_persisted = store.split(
+        "const NON_PERSISTED_STATE_KEYS", 1
+    )[1].split("function partializePersistedState", 1)[0]
+    assert '"isEmbeddingModel"' not in non_persisted
+    assert "inferTrainingModelTypeFromFlags({" in failure
+    assert "isAudio: state.isAudioModel," in failure
+    assert "isEmbedding: state.isEmbeddingModel," in failure
+    assert "isAudioModel: false" not in failure
+    assert "isEmbeddingModel: false" not in failure
+    assert "throw new Error(" in vision_probe
+    assert "return false;" not in vision_probe
+
+
+def test_streaming_dataset_preflight_does_not_read_local_cache():
+    source = _read("features/training/lib/start-fresh-training-run.ts")
+    store = _read("features/training/stores/training-config-store.ts")
+    check = source.split("async function checkSelectedDataset", 1)[1].split(
+        "function needsManualMapping", 1
+    )[0]
+    modality = source.split("function applyDetectedDatasetModality", 1)[1].split(
+        "function openManualMapping", 1
+    )[0]
+    background_check = store.split("const runDatasetCheck =", 1)[1].split(
+        "const recheckSelectedDatasetForStreamingMode", 1
+    )[0]
+    streaming_setter = store.split(
+        "setDatasetStreaming: (datasetStreaming) =>", 1
+    )[1].split("setDatasetSliceStart:", 1)[0]
+
+    assert "!config.datasetStreaming" in check
+    assert "preferLocalCache ? config.datasetLocalPath : null" in check
+    assert "requestedPreferLocalCache && !state.datasetStreaming" in background_check
+    assert "isHfSelection && preferLocalCache" in background_check
+    assert "recheckSelectedDatasetForStreamingMode(false)" in streaming_setter
+    assert "recheckSelectedDatasetForStreamingMode(true)" in streaming_setter
+    assert "setDatasetStreaming(false)" in modality
+    assert "attempt.cancel(TRAINING_SETUP_CHANGED_ERROR)" in modality
+    cache_setter = store.split(
+        "setSelectedDatasetCacheReference: (dataset, localPath) =>", 1
+    )[1].split("ensureModelDefaultsLoaded:", 1)[0]
+    assert "const cacheReferenceChanged =" in cache_setter
+    assert "cacheReferenceChanged && !state.datasetStreaming" in cache_setter
+    assert "recheckSelectedDatasetForStreamingMode(false)" in cache_setter
+
+
+def test_embedding_payload_survives_legacy_persisted_state():
+    mapper = _read("features/training/api/mappers.ts")
+
+    assert (
+        'config.isEmbeddingModel || config.modelType === "embeddings"' in mapper
+    )
+
+
 def test_picker_shell_handles_ime_focus_and_short_viewports():
     shell = _read("components/resource-picker/picker-shell.tsx")
 
@@ -1901,3 +2018,66 @@ def test_manual_training_method_wins_over_delayed_auto_selection():
         "setDatasetSource:", 1
     )[0]
     assert "_trainingMethodEditGeneration += 1;" in setter
+
+
+def test_selected_cache_references_flow_into_metadata_requests():
+    model_api = _read("features/training/api/models-api.ts")
+    store = _read("features/training/stores/training-config-store.ts")
+    page = _read("features/studio/studio-page.tsx")
+    preview = _read("features/studio/sections/dataset-preview-dialog.tsx")
+
+    assert 'params.set("prefer_local_cache", "true")' in model_api
+    assert 'params.set("local_path", options.localPath)' in model_api
+    loader = store.split(
+        "const loadAndApplyModelDefaults = (modelName: string) =>", 1
+    )[1].split("const runDatasetCheck =", 1)[0]
+    assert "requestedKnownCached" in loader
+    assert "requestedLocalPath" in loader
+    assert "requestMatchesSelection()" in loader
+    assert "preferLocalCache," in loader
+    assert "localPath: preferLocalCache ? requestedLocalPath : null" in loader
+
+    assert "datasetKnownCached={config.datasetKnownCached}" in page
+    assert "datasetLocalPath={config.datasetLocalPath}" in page
+    assert "datasetStreaming={config.datasetStreaming}" in page
+    assert "!datasetStreaming" in preview
+    assert "preferLocalCache: previewRequest.preferLocalCache" in preview
+    assert "localPath: previewRequest.localPath" in preview
+
+
+def test_partial_local_datasets_are_not_selectable():
+    selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    device_items = selector.split(
+        "const deviceItems = useMemo<DatasetDeviceItem[]>", 1
+    )[1].split("const pickerView =", 1)[0]
+
+    assert device_items.count(".filter((d) => !d.partial)") == 2
+
+
+def test_multitask_model_search_fans_out_concurrently_and_closes_iterators():
+    source = _read("features/hub/hooks/use-hub-model-search.ts")
+    merge = _read("features/hub/lib/merge-task-iterators.ts")
+
+    assert "const cursors: TaskCursor<T>[] = [];" in merge
+    assert "let pending = pull();" in merge
+    assert "for (const task of taskList)" in merge
+    assert "cursors.filter((candidate) => candidate.active)" in merge
+    assert "const result = await cursor.take(" in merge
+    assert "const controller = new AbortController();" in merge
+    assert "combineAbortSignals(" in merge
+    assert "controller.abort();" in merge
+    assert "await Promise.allSettled(" in merge
+    assert "iterator.return(undefined)" in merge
+    assert "if (!yielded && failures.length > 0)" in merge
+    assert "throw next.reason" not in merge
+    assert source.count("mergeTaskIterators(") >= 4
+
+
+def test_page_title_halo_uses_the_configured_accent():
+    css = _read("index.css")
+    halo = css.split(".page-title-halo {", 1)[1].split("}", 1)[0]
+
+    assert "var(--primary)" in halo
+    assert "#e4e3df" not in halo
+    assert "#ebeae6" not in halo
+    assert "#efeeea" not in halo

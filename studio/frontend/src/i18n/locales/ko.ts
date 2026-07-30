@@ -611,8 +611,17 @@ export const ko = {
       datasetPending: "데이터셋 선택 대기",
       method: "방법",
       length: "길이",
+      stepZero: "{count}스텝",
+      step: "{count}스텝",
+      stepTwo: "{count}스텝",
+      stepFew: "{count}스텝",
+      stepMany: "{count}스텝",
       steps: "{count}스텝",
+      epochZero: "{count}에포크",
       epoch: "{count}에포크",
+      epochTwo: "{count}에포크",
+      epochFew: "{count}에포크",
+      epochMany: "{count}에포크",
       epochs: "{count}에포크",
       batch: "배치",
       context: "컨텍스트",
@@ -970,6 +979,8 @@ export const ko = {
       chooseModelAndDataset: "모델과 데이터셋 선택",
       modelUnverified:
         "이 모델의 설정을 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인한 후 다시 시도하세요.",
+      legacyDatasetScriptUnsupported:
+        "이 Hub 데이터셋은 레거시 사용자 지정 스크립트를 사용하므로 이 학습 흐름에서는 지원되지 않습니다.",
       datasetUnverified:
         "데이터셋이 이 모델과 호환되는지 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인하세요. 학습을 시작하면 다시 확인합니다.",
       setupChanged:

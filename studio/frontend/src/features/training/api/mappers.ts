@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getHfToken } from "@/features/hub";
 import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
@@ -36,6 +35,7 @@ function buildS3PayloadConfig(config: TrainingConfigState) {
 
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
+  hfToken: string | null,
 ): TrainingStartRequest {
   const isCpt = config.trainingMethod === "cpt";
   const adapterMethod = config.trainingMethod !== "full";
@@ -46,7 +46,8 @@ export function buildTrainingStartPayload(
   const isDeepseekOcr =
     _selectedModelLower.includes("deepseek") &&
     _selectedModelLower.includes("ocr");
-  const isEmbedding = config.isEmbeddingModel;
+  const isEmbedding =
+    config.isEmbeddingModel || config.modelType === "embeddings";
   const isRawText = isRawTextDatasetFormat(config.datasetFormat);
   const hfDataset =
     config.datasetSource === "huggingface" ? config.dataset : null;
@@ -77,7 +78,7 @@ export function buildTrainingStartPayload(
     model_name: config.selectedModel ?? "",
     project_name: (config.projectName || "").trim() || null,
     training_type: toBackendTrainingType(config.trainingMethod),
-    hf_token: getHfToken() || null,
+    hf_token: hfToken,
     model_known_cached: config.modelKnownCached,
     model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
     model_format: config.modelFormat,

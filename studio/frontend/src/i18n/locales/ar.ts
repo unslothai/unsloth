@@ -613,9 +613,18 @@ export const ar = {
       datasetPending: "بانتظار مجموعة البيانات",
       method: "الطريقة",
       length: "الطول",
+      stepZero: "{count} خطوة",
+      step: "{count} خطوة",
+      stepTwo: "{count} خطوتان",
+      stepFew: "{count} خطوات",
+      stepMany: "{count} خطوة",
       steps: "{count} خطوة",
+      epochZero: "{count} حقبة",
       epoch: "{count} حقبة",
-      epochs: "{count} حقب",
+      epochTwo: "{count} حقبتان",
+      epochFew: "{count} حقب",
+      epochMany: "{count} حقبة",
+      epochs: "{count} حقبة",
       batch: "الدفعة",
       context: "السياق",
       lr: "معدل التعلّم",
@@ -969,6 +978,8 @@ export const ar = {
       chooseModelAndDataset: "اختر نموذجًا ومجموعة بيانات",
       modelUnverified:
         "تعذّر التحقق من إعدادات هذا النموذج. تحقق من اتصالك أو توكن Hugging Face، ثم أعد المحاولة.",
+      legacyDatasetScriptUnsupported:
+        "تعتمد مجموعة بيانات Hub هذه على برنامج نصي مخصص قديم، وهي غير مدعومة في مسار التدريب هذا.",
       datasetUnverified:
         "تعذّر التحقق من توافق مجموعة البيانات مع هذا النموذج. تحقق من اتصالك أو توكن Hugging Face — ستُعاد محاولة التحقق عند بدء التدريب.",
       setupChanged:

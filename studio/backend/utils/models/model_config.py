@@ -1004,6 +1004,10 @@ _AUDIO_TOKEN_PATTERNS = {
     ),
     "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
 }
+_AUDIO_TOKENIZER_CONFIG_PATHS = (
+    "tokenizer_config.json",
+    "LLM/tokenizer_config.json",
+)
 
 
 def detect_audio_type(
@@ -1075,24 +1079,39 @@ def _detect_audio_from_tokenizer(
 
     read_any = False  # parsed at least one tokenizer_config -> a None is definitive
 
-    # 1) Local HF cache first (works for gated/offline models)
+    # 1) Selected local directory or local HF cache first (works for gated/offline models)
     try:
-        repo_dir = get_cache_path(model_name)
-        if repo_dir is not None and repo_dir.exists():
-            snapshots_dir = repo_dir / "snapshots"
-            if snapshots_dir.exists():
-                for snapshot in snapshots_dir.iterdir():
-                    for tok_path in [
-                        "tokenizer_config.json",
-                        "LLM/tokenizer_config.json",
-                    ]:
-                        tok_file = snapshot / tok_path
-                        if tok_file.exists():
-                            tok_config = json.loads(tok_file.read_text(encoding = "utf-8-sig"))
-                            read_any = True
-                            result = _check_token_patterns(tok_config)
-                            if result:
-                                return result, True
+        roots: list[Path] = []
+        if is_local_path(model_name):
+            local_path = Path(normalize_path(model_name)).expanduser()
+            if local_path.is_file():
+                local_path = local_path.parent
+            if local_path.is_dir():
+                roots.append(local_path)
+        else:
+            repo_dir = get_cache_path(model_name)
+            if repo_dir is not None and repo_dir.is_dir():
+                snapshots_dir = repo_dir / "snapshots"
+                if snapshots_dir.is_dir():
+                    roots.extend(
+                        snapshot
+                        for snapshot in snapshots_dir.iterdir()
+                        if snapshot.is_dir()
+                    )
+
+        for root in roots:
+            for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
+                tok_file = root / tok_path
+                try:
+                    if not tok_file.is_file():
+                        continue
+                    tok_config = json.loads(tok_file.read_text(encoding = "utf-8-sig"))
+                    read_any = True
+                    result = _check_token_patterns(tok_config)
+                    if result:
+                        return result, True
+                except Exception as e:
+                    logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
@@ -1107,12 +1126,11 @@ def _detect_audio_from_tokenizer(
     except Exception:
         return None, read_any
 
-    paths_to_try = ["tokenizer_config.json", "LLM/tokenizer_config.json"]
     token = hf_token or os.environ.get("HF_TOKEN")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     transient = False  # a fetch failed for a non-404 reason (network/5xx)
-    for tok_path in paths_to_try:
+    for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
         url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
         try:
             resp = requests.get(url, headers = headers, timeout = 15)

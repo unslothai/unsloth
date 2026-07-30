@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 from fastapi import HTTPException
@@ -533,6 +533,80 @@ def test_remote_format_probe_uses_token_and_shorthand():
     )
 
 
+def test_remote_format_probe_retries_transient_failure():
+    route = _load_route_module("training_route_remote_adapter_metadata_retry")
+    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+
+    with patch(
+        "huggingface_hub.model_info",
+        side_effect = [OSError("timed out"), info],
+    ) as model_info:
+        assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
+
+    assert model_info.call_args_list == [
+        call(
+            "unsloth/test",
+            token = "hf-token",
+            timeout = route._REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
+        ),
+        call(
+            "unsloth/test",
+            token = "hf-token",
+            timeout = route._REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS,
+        ),
+    ]
+
+
+@pytest.mark.parametrize("status_code", [408, 429, 502])
+def test_remote_format_probe_retries_transient_hub_status(status_code):
+    route = _load_route_module(f"training_route_remote_status_retry_{status_code}")
+    transient_error = RuntimeError("transient Hub failure")
+    transient_error.response = SimpleNamespace(status_code = status_code)
+    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
+
+    with patch(
+        "huggingface_hub.model_info",
+        side_effect = [transient_error, info],
+    ) as model_info:
+        assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
+
+    assert model_info.call_count == 2
+    assert model_info.call_args_list[1].kwargs["timeout"] == (
+        route._REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS
+    )
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_remote_format_probe_maps_hub_access_denial_to_validation_error(status_code):
+    route = _load_route_module(f"training_route_remote_access_denied_{status_code}")
+    access_error = RuntimeError("access denied")
+    access_error.response = SimpleNamespace(status_code = status_code)
+
+    with patch("huggingface_hub.model_info", side_effect = access_error) as model_info:
+        with pytest.raises(HTTPException) as exc_info:
+            route._remote_untrainable_model_format("test", "hf-token")
+
+    assert exc_info.value.status_code == 422
+    assert "denied access" in exc_info.value.detail.lower()
+    assert "token" in exc_info.value.detail.lower()
+    model_info.assert_called_once()
+
+
+@pytest.mark.parametrize("status_code", [408, 502])
+def test_remote_format_probe_exhausted_transient_status_reports_unavailable(status_code):
+    route = _load_route_module(f"training_route_remote_status_exhausted_{status_code}")
+    transient_error = RuntimeError("transient Hub failure")
+    transient_error.response = SimpleNamespace(status_code = status_code)
+
+    with patch("huggingface_hub.model_info", side_effect = transient_error) as model_info:
+        with pytest.raises(HTTPException) as exc_info:
+            route._remote_untrainable_model_format("test", "hf-token")
+
+    assert exc_info.value.status_code == 503
+    assert "temporarily unavailable" in exc_info.value.detail.lower()
+    assert model_info.call_count == 2
+
+
 def test_remote_format_probe_rejects_gguf_only_repository():
     route = _load_route_module("training_route_remote_gguf_metadata")
     info = SimpleNamespace(
@@ -705,6 +779,25 @@ def test_reset_route_reports_superseded_job_without_mutation():
 
     assert response == {"status": "superseded"}
     assert calls == ["job_old"]
+
+
+def test_reset_route_without_body_uses_unscoped_reset():
+    route = _load_route_module("training_route_unscoped_reset")
+    calls: list[str | None] = []
+    backend = SimpleNamespace(
+        reset_training_state = lambda expected_job_id = None: (
+            calls.append(expected_job_id) or "ok"
+        )
+    )
+
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+    ):
+        response = asyncio.run(route.reset_training(current_subject = "test-user"))
+
+    assert response == {"status": "ok"}
+    assert calls == [None]
 
 
 def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):

@@ -2926,7 +2926,10 @@ html[data-chat-font] .aui-root {
   }
 
   .page-title-halo {
-    text-shadow: 0 0 24px #e4e3df, 0 0 56px #ebeae6, 0 0 96px #efeeea;
+    text-shadow:
+      0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
+      0 0 56px color-mix(in srgb, var(--primary) 12%, transparent),
+      0 0 96px color-mix(in srgb, var(--primary) 8%, transparent);
   }
 
   .dark .page-title-halo {

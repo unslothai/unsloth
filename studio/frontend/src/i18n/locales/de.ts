@@ -647,8 +647,17 @@ export const de = {
       datasetPending: "Datensatz ausstehend",
       method: "Methode",
       length: "Länge",
+      stepZero: "{count} Schritte",
+      step: "{count} Schritt",
+      stepTwo: "{count} Schritte",
+      stepFew: "{count} Schritte",
+      stepMany: "{count} Schritte",
       steps: "{count} Schritte",
+      epochZero: "{count} Epochen",
       epoch: "{count} Epoche",
+      epochTwo: "{count} Epochen",
+      epochFew: "{count} Epochen",
+      epochMany: "{count} Epochen",
       epochs: "{count} Epochen",
       batch: "Batch",
       context: "Kontext",
@@ -1017,6 +1026,8 @@ export const de = {
       chooseModelAndDataset: "Modell und Datensatz auswählen",
       modelUnverified:
         "Die Modelleinstellungen konnten nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token und versuchen Sie es erneut.",
+      legacyDatasetScriptUnsupported:
+        "Dieser Hub-Datensatz basiert auf einem veralteten benutzerdefinierten Skript und wird in diesem Trainingsablauf nicht unterstützt.",
       datasetUnverified:
         "Die Kompatibilität des Datensatzes mit diesem Modell konnte nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token. Beim Start des Trainings wird die Prüfung erneut versucht.",
       setupChanged:

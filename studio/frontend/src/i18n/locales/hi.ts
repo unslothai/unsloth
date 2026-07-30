@@ -613,8 +613,17 @@ export const hi = {
       datasetPending: "डेटासेट लंबित",
       method: "विधि",
       length: "लंबाई",
+      stepZero: "{count} स्टेप्स",
+      step: "{count} स्टेप",
+      stepTwo: "{count} स्टेप्स",
+      stepFew: "{count} स्टेप्स",
+      stepMany: "{count} स्टेप्स",
       steps: "{count} स्टेप्स",
+      epochZero: "{count} एपॉक",
       epoch: "{count} एपॉक",
+      epochTwo: "{count} एपॉक",
+      epochFew: "{count} एपॉक",
+      epochMany: "{count} एपॉक",
       epochs: "{count} एपॉक",
       batch: "बैच",
       context: "कॉन्टेक्स्ट",
@@ -971,6 +980,8 @@ export const hi = {
       chooseModelAndDataset: "मॉडल और डेटासेट चुनें",
       modelUnverified:
         "इस मॉडल की सेटिंग्स सत्यापित नहीं की जा सकीं। अपना कनेक्शन या Hugging Face टोकन जांचें, फिर पुनः प्रयास करें।",
+      legacyDatasetScriptUnsupported:
+        "यह Hub डेटासेट एक पुराने कस्टम स्क्रिप्ट पर निर्भर है और इस ट्रेनिंग फ़्लो में समर्थित नहीं है।",
       datasetUnverified:
         "यह सत्यापित नहीं किया जा सका कि डेटासेट इस मॉडल के साथ संगत है। अपना कनेक्शन या Hugging Face टोकन जांचें — ट्रेनिंग शुरू करने पर जांच फिर से की जाएगी।",
       setupChanged:

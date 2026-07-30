@@ -56,6 +56,9 @@ export function StudioPage(): ReactElement {
       datasetSource: s.datasetSource,
       dataset: s.dataset,
       uploadedFile: s.uploadedFile,
+      datasetKnownCached: s.datasetKnownCached,
+      datasetLocalPath: s.datasetLocalPath,
+      datasetStreaming: s.datasetStreaming,
       datasetSubset: s.datasetSubset,
       datasetSplit: s.datasetSplit,
       isVisionModel: s.isVisionModel,
@@ -227,6 +230,9 @@ export function StudioPage(): ReactElement {
                 : config.uploadedFile
             }
             hfToken={hfToken.trim() || null}
+            datasetKnownCached={config.datasetKnownCached}
+            datasetLocalPath={config.datasetLocalPath}
+            datasetStreaming={config.datasetStreaming}
             datasetSubset={config.datasetSubset}
             datasetSplit={config.datasetSplit}
             mode={dialogMode}

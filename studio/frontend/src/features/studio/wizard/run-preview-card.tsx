@@ -15,15 +15,36 @@ import {
   useTrainingResourceNotices,
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
-import { useT } from "@/i18n";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement, ReactNode } from "react";
+import { type ReactElement, type ReactNode, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTrainingResourceDisplayNames } from "../hooks/use-training-resource-display-names";
 
 const LEARNING_RATE_ZERO_RE = /\.?0+e/;
+const PREVIEW_COUNT_KEYS = {
+  step: {
+    zero: "studio.preview.stepZero",
+    one: "studio.preview.step",
+    two: "studio.preview.stepTwo",
+    few: "studio.preview.stepFew",
+    many: "studio.preview.stepMany",
+    other: "studio.preview.steps",
+  },
+  epoch: {
+    zero: "studio.preview.epochZero",
+    one: "studio.preview.epoch",
+    two: "studio.preview.epochTwo",
+    few: "studio.preview.epochFew",
+    many: "studio.preview.epochMany",
+    other: "studio.preview.epochs",
+  },
+} as const satisfies Record<
+  "step" | "epoch",
+  Record<Intl.LDMLPluralRule, TranslationKey>
+>;
 
 function formatLearningRate(lr: number): string {
   if (!Number.isFinite(lr) || lr === 0) {
@@ -264,6 +285,12 @@ export function RunPreviewCard({
   startCta: ReactElement;
 }): ReactElement {
   const t = useT();
+  const locale = useLocale();
+  const numberFormatter = useMemo(
+    () => new Intl.NumberFormat(locale),
+    [locale],
+  );
+  const pluralRules = useMemo(() => new Intl.PluralRules(locale), [locale]);
   const {
     selectedModel,
     modelKnownCached,
@@ -336,12 +363,12 @@ export function RunPreviewCard({
     hasDataset,
   });
   const methodMeta = TRAINING_METHOD_META[trainingMethod];
-  const lengthLabel =
-    maxSteps && maxSteps > 0
-      ? t("studio.preview.steps", { count: maxSteps.toLocaleString() })
-      : t(epochs === 1 ? "studio.preview.epoch" : "studio.preview.epochs", {
-          count: epochs,
-        });
+  const lengthUnit = maxSteps && maxSteps > 0 ? "step" : "epoch";
+  const lengthCount = lengthUnit === "step" ? maxSteps : epochs;
+  const lengthLabel = t(
+    PREVIEW_COUNT_KEYS[lengthUnit][pluralRules.select(lengthCount)],
+    { count: numberFormatter.format(lengthCount) },
+  );
 
   return (
     <aside
@@ -412,7 +439,7 @@ export function RunPreviewCard({
         />
         <MetaRow
           label={t("studio.preview.context")}
-          value={contextLength.toLocaleString()}
+          value={numberFormatter.format(contextLength)}
           mono={true}
         />
         <MetaRow

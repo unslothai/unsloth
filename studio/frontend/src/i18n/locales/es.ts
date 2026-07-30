@@ -631,8 +631,17 @@ export const es = {
       datasetPending: "Conjunto de datos pendiente",
       method: "Método",
       length: "Duración",
+      stepZero: "{count} pasos",
+      step: "{count} paso",
+      stepTwo: "{count} pasos",
+      stepFew: "{count} pasos",
+      stepMany: "{count} pasos",
       steps: "{count} pasos",
+      epochZero: "{count} épocas",
       epoch: "{count} época",
+      epochTwo: "{count} épocas",
+      epochFew: "{count} épocas",
+      epochMany: "{count} épocas",
       epochs: "{count} épocas",
       batch: "Lote",
       context: "Contexto",
@@ -1002,6 +1011,8 @@ export const es = {
       chooseModelAndDataset: "Elige un modelo y un conjunto de datos",
       modelUnverified:
         "No se pudo verificar la configuración de este modelo. Comprueba la conexión o el token de Hugging Face y vuelve a intentarlo.",
+      legacyDatasetScriptUnsupported:
+        "Este conjunto de datos de Hub depende de un script personalizado antiguo y no es compatible con este flujo de entrenamiento.",
       datasetUnverified:
         "No se pudo verificar si el conjunto de datos es compatible con este modelo. Comprueba la conexión o el token de Hugging Face; al iniciar el entrenamiento se volverá a intentar la comprobación.",
       setupChanged:

@@ -716,8 +716,17 @@ export const ptBR = {
       datasetPending: "Dataset pendente",
       method: "Método",
       length: "Duração",
+      stepZero: "{count} passos",
+      step: "{count} passo",
+      stepTwo: "{count} passos",
+      stepFew: "{count} passos",
+      stepMany: "{count} passos",
       steps: "{count} passos",
+      epochZero: "{count} épocas",
       epoch: "{count} época",
+      epochTwo: "{count} épocas",
+      epochFew: "{count} épocas",
+      epochMany: "{count} épocas",
       epochs: "{count} épocas",
       batch: "Lote",
       context: "Contexto",
@@ -1074,6 +1083,8 @@ export const ptBR = {
       chooseModelAndDataset: "Escolher modelo e dataset",
       modelUnverified:
         "Não foi possível verificar os parâmetros deste modelo. Verifique sua conexão ou seu token do Hugging Face e tente novamente.",
+      legacyDatasetScriptUnsupported:
+        "Este dataset do Hub depende de um script personalizado legado e não é compatível com este fluxo de treinamento.",
       datasetUnverified:
         "Não foi possível verificar se o dataset é compatível com este modelo. Verifique sua conexão ou seu token do Hugging Face; o início do treinamento tentará verificar novamente.",
       setupChanged:

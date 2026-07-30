@@ -17,6 +17,7 @@ import {
   primeCacheFromListing,
 } from "../lib/hf-cache";
 import { EMBEDDING_TAGS, estimateSizeFromDtypes } from "../lib/hf-model-meta";
+import { mergeTaskIterators } from "../lib/merge-task-iterators";
 import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
 import { fetchWithTimeout } from "../lib/network";
@@ -77,25 +78,6 @@ function taskMatches(
     !pipelineTag ||
     tasks.includes(pipelineTag as PipelineType)
   );
-}
-
-async function* mergeTaskIterators(
-  tasks: readonly PipelineType[],
-  createIter: (task?: PipelineType) => AsyncGenerator<unknown>,
-): AsyncGenerator<unknown> {
-  const seen = new Set<string>();
-  const taskList = tasks.length > 0 ? tasks : [undefined];
-  for (const task of taskList) {
-    for await (const model of createIter(task)) {
-      const name = (model as { name?: string }).name;
-      if (name) {
-        const key = name.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-      }
-      yield model;
-    }
-  }
 }
 
 export interface HfModelResult {
@@ -308,29 +290,31 @@ async function* mergedModelIterator(
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
 ): AsyncGenerator<unknown> {
-  const sortFetch = makeSortFetch(sortBy, direction, signal);
   const tasks = normalizeTaskFilter(task);
   const common = {
     additionalFields: ALL_FIELDS,
-    fetch: sortFetch,
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
   const unslothIter = mergeTaskIterators(
     tasks,
-    (task) =>
+    (task, taskSignal) =>
       listModels({
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
+        fetch: makeSortFetch(sortBy, direction, taskSignal),
         ...common,
       }) as AsyncGenerator<unknown>,
+    signal,
   );
   const generalIter = mergeTaskIterators(
     tasks,
-    (task) =>
+    (task, taskSignal) =>
       listModels({
         search: { query, ...(task ? { task } : {}) },
+        fetch: makeSortFetch(sortBy, direction, taskSignal),
         ...common,
       }) as AsyncGenerator<unknown>,
+    signal,
   );
 
   // Start the pinned lookup now so it runs in parallel with Phase 1 instead of blocking Phase 2.
@@ -400,7 +384,6 @@ async function* priorityThenListingIterator(
   const tasks = normalizeTaskFilter(task);
   const common = {
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(sortBy, direction, signal),
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
@@ -427,11 +410,13 @@ async function* priorityThenListingIterator(
 
   const generalIter = mergeTaskIterators(
     tasks,
-    (task) =>
+    (task, taskSignal) =>
       listModels({
         search: { owner: "unsloth", ...(task ? { task } : {}) },
+        fetch: makeSortFetch(sortBy, direction, taskSignal),
         ...common,
       }) as AsyncGenerator<unknown>,
+    signal,
   );
   for await (const model of generalIter) {
     const m = model as { name?: string };
@@ -726,7 +711,7 @@ export function useHubModelSearch(
         }
         return mergeTaskIterators(
           normalizeTaskFilter(task),
-          (task) =>
+          (task, taskSignal) =>
             listModels({
               // Unsloth-only scope restricts the plain sort browse to the org.
               search: {
@@ -734,10 +719,11 @@ export function useHubModelSearch(
                 ...(task ? { task } : {}),
               },
               additionalFields: ALL_FIELDS,
-              fetch: makeSortFetch(sortBy, sortDirection, signal),
+              fetch: makeSortFetch(sortBy, sortDirection, taskSignal),
               sort: sortBy,
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }) as AsyncGenerator<unknown>,
+          signal,
         );
       }
       // Unsloth-only typed query: search within the org rather than floating

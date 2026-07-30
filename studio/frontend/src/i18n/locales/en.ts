@@ -1065,8 +1065,17 @@ export const en = {
       datasetPending: "Dataset pending",
       method: "Method",
       length: "Length",
+      stepZero: "{count} steps",
+      step: "{count} step",
+      stepTwo: "{count} steps",
+      stepFew: "{count} steps",
+      stepMany: "{count} steps",
       steps: "{count} steps",
+      epochZero: "{count} epochs",
       epoch: "{count} epoch",
+      epochTwo: "{count} epochs",
+      epochFew: "{count} epochs",
+      epochMany: "{count} epochs",
       epochs: "{count} epochs",
       batch: "Batch",
       context: "Context",
@@ -1417,6 +1426,8 @@ export const en = {
       chooseModelAndDataset: "Choose model and dataset",
       modelUnverified:
         "Couldn't verify this model's settings. Check your connection or Hugging Face token, then retry.",
+      legacyDatasetScriptUnsupported:
+        "This Hub dataset relies on a legacy custom script and isn’t supported in this training flow.",
       datasetUnverified:
         "Couldn't verify the dataset is compatible with this model. Check your connection or Hugging Face token — starting training will retry the check.",
       setupChanged:
