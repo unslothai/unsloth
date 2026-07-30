@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 from typing import Optional
 
 from loggers import get_logger
@@ -33,6 +34,10 @@ class PreviewShareLink:
         self._url: Optional[str] = None
 
     def current(self, app) -> Optional[str]:
+        # No base while sharing is off, even on a --cloudflare launch where the
+        # studio URL is up: every /p request 404s, so advertising it misleads.
+        if not get_preview_sharing_enabled():
+            return None
         return getattr(app.state, "cloudflare_url", None) or self._url
 
     async def ensure(self, app) -> str:
@@ -61,6 +66,9 @@ class PreviewShareLink:
                     "connection and try again."
                 )
             self._url = url
+            # Backstop for an exit that bypasses _graceful_shutdown (run.py
+            # registers the same for startup tunnels). Idempotent.
+            atexit.register(stop_studio_tunnel)
             logger.info("preview_share_link.started")
             return url
 

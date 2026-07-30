@@ -259,15 +259,6 @@ _PREVIEW_ASSET_MEDIA_TYPES = {
 }
 
 
-# Unauthenticated marker for the tunnel probe; registered before /{run}.
-_PREVIEW_HEALTH_SERVICE = "Unsloth Preview"
-
-
-@router.get("/_health")
-async def preview_health():
-    return {"service": _PREVIEW_HEALTH_SERVICE}
-
-
 @router.get("/_assets/{asset_path:path}")
 async def preview_asset(asset_path: str):
     target = (_FRONTEND_DIST / asset_path).resolve()

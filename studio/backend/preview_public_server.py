@@ -21,6 +21,13 @@ logger = get_logger(__name__)
 # Bare /p (the JWT-authenticated listing route) is deliberately excluded.
 _PREVIEW_PATH_PREFIX = "/p/"
 
+# Tunnel-readiness probe, answered by the gate itself: a route on the shared
+# router would reserve "_health" inside the /{run} namespace on the
+# authenticated app too. Shadows only this exact path, only on this listener.
+_PREVIEW_HEALTH_PATH = "/p/_health"
+_PREVIEW_HEALTH_SERVICE = "Unsloth Preview"
+_PREVIEW_HEALTH_BODY = json.dumps({"service": _PREVIEW_HEALTH_SERVICE}).encode("utf-8")
+
 _BIND_TIMEOUT = 10.0
 _BIND_POLL_DELAY = 0.02
 _SHUTDOWN_TIMEOUT = 5.0
@@ -32,18 +39,18 @@ def is_public_preview_path(path: str) -> bool:
     return path.startswith(_PREVIEW_PATH_PREFIX)
 
 
-async def _send_not_found(send) -> None:
+async def _send_json(send, status: int, body: bytes) -> None:
     await send(
         {
             "type": "http.response.start",
-            "status": 404,
+            "status": status,
             "headers": [
                 (b"content-type", b"application/json"),
-                (b"content-length", str(len(_NOT_FOUND_BODY)).encode("ascii")),
+                (b"content-length", str(len(body)).encode("ascii")),
             ],
         }
     )
-    await send({"type": "http.response.body", "body": _NOT_FOUND_BODY, "more_body": False})
+    await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
 async def _ack_lifespan(receive, send) -> None:
@@ -71,7 +78,10 @@ class PreviewOnlyGate:
             await send({"type": "websocket.close", "code": 1008})
             return
         if scope_type != "http" or not is_public_preview_path(scope.get("path", "")):
-            await _send_not_found(send)
+            await _send_json(send, 404, _NOT_FOUND_BODY)
+            return
+        if scope.get("path") == _PREVIEW_HEALTH_PATH:
+            await _send_json(send, 200, _PREVIEW_HEALTH_BODY)
             return
         await self.app(scope, receive, send)
 

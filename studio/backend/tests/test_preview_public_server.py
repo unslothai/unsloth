@@ -221,6 +221,20 @@ def test_health_marker_matches_the_tunnel_probe(app):
     assert asyncio.run(_run())["service"] == ct._PREVIEW_PROBE_MARKER
 
 
+def test_health_does_not_shadow_a_run_on_the_authenticated_app(app, tmp_path):
+    # The probe lives in the gate, not the shared router: a run literally named
+    # "_health" keeps its token-checked page on the authenticated app.
+    from fastapi.testclient import TestClient
+
+    _make_run(tmp_path / "outputs", name = "_health")
+    token = preview_token.sign_preview_ref("_health")
+    response = TestClient(app).get(f"/p/_health?k={token}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    # And without a token it 404s like any other run, not like an open probe.
+    assert TestClient(app).get("/p/_health").status_code == 404
+
+
 def test_listener_start_is_idempotent(app):
     async def _run():
         listener = pps.PublicPreviewListener()
@@ -376,6 +390,27 @@ def test_stop_tears_down_tunnel_and_listener(monkeypatch, link):
 
     assert stopped["n"] == 1
     assert fake.stopped == 1
+    assert link.current(app) is None
+
+
+def test_ensure_registers_an_atexit_backstop(monkeypatch, link):
+    # Covers exits that bypass _graceful_shutdown (plain sys.exit): the quick
+    # tunnel must not outlive the studio process.
+    monkeypatch.setattr(psl, "listener", _FakeListener())
+    monkeypatch.setattr(psl, "start_preview_tunnel", lambda port: "https://x.trycloudflare.com")
+    registered = []
+    monkeypatch.setattr(psl.atexit, "register", registered.append)
+
+    asyncio.run(link.ensure(_FakeApp()))
+
+    assert registered == [psl.stop_studio_tunnel]
+
+
+def test_current_hides_the_base_while_sharing_is_off(monkeypatch, link):
+    app = _FakeApp(cloudflare_url = "https://studio.trycloudflare.com")
+    assert link.current(app) == "https://studio.trycloudflare.com"
+    monkeypatch.setattr(psl, "get_preview_sharing_enabled", lambda: False)
+    # Even a live studio-wide tunnel is not a share base: every /p request 404s.
     assert link.current(app) is None
 
 
