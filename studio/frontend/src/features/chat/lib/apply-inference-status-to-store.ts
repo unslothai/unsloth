@@ -3,7 +3,7 @@
 
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
-import { resolveInitialConfig } from "@/features/model-picker";
+import { resolveResidentInitialConfig } from "@/features/model-picker";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -215,11 +215,14 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel && !options.readoptingSameModel;
   // This model's remembered override, read only on a fresh store or a model
   // change, so a steady poll cannot re-pin a control the user just blanked.
+  // Through the resident resolver, not the raw id: an API-driven load reports the
+  // snapshot path a cached repo loaded from, while its settings are keyed by the
+  // repo id, and the plain lookup misses that record.
   const slotsUnseeded =
     prevState.loadedNParallel === null && prevState.nParallel === null;
   const remembered =
     status.is_gguf && (slotsUnseeded || slotsModelChanged)
-      ? resolveInitialConfig(checkpointId, status.gguf_variant ?? null)
+      ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)

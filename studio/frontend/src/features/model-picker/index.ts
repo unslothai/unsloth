@@ -49,4 +49,5 @@ export {
   type PerModelConfig,
   adoptLegacyConfigKey,
   resolveInitialConfig,
+  resolveResidentInitialConfig,
 } from "./model-config/per-model-config";

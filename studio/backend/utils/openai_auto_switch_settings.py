@@ -637,6 +637,59 @@ def resolve_model_override_keys(model_id: str) -> list[str]:
     return keys
 
 
+def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
+    """``(repo id, quant)`` for a key naming one quant of an HF-cache repo, else None.
+
+    The two spellings of such a repo fold together here: the repo id the picker keys a
+    cached row by, and the ``models--org--name/snapshots/<rev>`` path the loader takes
+    (which an older release keyed the same row by). The repo id is recovered from the
+    path exactly as the scanner and the auto-switch index derive it, so the two sides
+    cannot disagree about which model a key names.
+
+    None for anything that names no quant (a bare entry backs every quant of the repo,
+    like the bare repo id, so it is nobody's duplicate) and for any other local path
+    (a ``./models`` folder or loose ``.gguf`` is keyed by its path and by nothing else).
+    """
+    split = split_quant_suffix(model_id)
+    if split is None:
+        return None
+    base, quant = split
+    from core.inference.model_ids import hf_cache_repo_id
+
+    repo = hf_cache_repo_id(base)
+    if repo is None:
+        if _looks_like_filesystem_path(base):
+            return None
+        repo = base
+    return repo.strip().casefold(), quant.strip().casefold()
+
+
+def cached_repo_alias_keys(model_id: str) -> list[str]:
+    """Stored keys that name the same cached quant as ``model_id`` under the other spelling.
+
+    The auto-switch loader reads the concrete load path before the advertised repo id,
+    so a snapshot-path entry left behind by an upgrade outranks the repo-id entry a
+    Settings save writes and keeps applying the pre-migration launch config. One entry
+    per model, as the casing folds already are: the writer clears what it supersedes.
+
+    Excludes every spelling of ``model_id`` itself, which the caller writes or clears
+    on its own.
+    """
+    identity = _cached_repo_override_identity(model_id)
+    if identity is None:
+        return []
+    own = {key.strip().casefold() for key in resolve_model_override_keys(model_id)}
+    own.add(model_id.strip().casefold())
+    return [
+        key
+        for key, value in get_model_overrides().items()
+        if isinstance(key, str)
+        and isinstance(value, dict)
+        and key.strip().casefold() not in own
+        and _cached_repo_override_identity(key) == identity
+    ]
+
+
 def set_model_override(
     model_id: str,
     llama_extra_args: Optional[list[str]] = None,

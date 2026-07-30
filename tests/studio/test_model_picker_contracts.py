@@ -1081,7 +1081,7 @@ def test_hydration_restores_a_remembered_slot_override():
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
     assert (
-        "resolveInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+        "resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
     ), "the remembered override comes from per-model storage, not the echo"
     assert (
         "const slotsUnseeded = prevState.loadedNParallel === null && "
@@ -1102,6 +1102,40 @@ def test_hydration_restores_a_remembered_slot_override():
     assert src.index("slotsModelChanged && { nParallel: null }") < src.index(
         "nParallel: rememberedNParallel,"
     )
+
+
+def test_remembered_slots_are_read_through_the_cached_repo_alias():
+    """An API auto-switch loads a cached repo by its concrete snapshot path, so
+    ``status.model_identifier`` (what ``resolveInferenceCheckpointId`` returns) is that
+    path while the settings are keyed by the repo id ``modelConfigIdentity`` writes. Read
+    only the raw identifier and the resident model looks unremembered: the slot control
+    blanks on the model change and the next Save writes the blank over the saved
+    ``n_parallel``, locally and through the server mirror."""
+    config = " ".join(
+        _read("features/model-picker/model-config/per-model-config.ts").split()
+    )
+    # The raw identifier still wins, so a path-keyed record is never shadowed.
+    assert (
+        "const direct = resolveInitialConfig(modelId, ggufVariant); "
+        "if (direct.remembered) {" in config
+    )
+    assert "const alias = publicModelId(modelId);" in config
+    # Only a namespaced collapse, the rule residentModelIdMatches applies: every other
+    # path collapses onto a file stem two models can share.
+    assert 'if (alias === modelId || !alias.includes("/")) { return direct; }' in config
+
+    status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
+    assert "resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+    assert "resolveInitialConfig(checkpointId" not in status
+
+    # The backend applies the same model's override by the same alias, which is why the
+    # echo the adoption gate compares against carries the saved count at all.
+    route = _read_backend("routes/inference.py")
+    overrides = route.split("Apply the saved launch config so an API swap loads as the picker", 1)[
+        1
+    ].split("load_kwargs = {", 1)[0]
+    assert 'f"{override_id}:{variant}" if variant else None,' in overrides
+    assert "override_id," in overrides
 
 
 def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
@@ -1764,14 +1798,22 @@ def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
     repo id; the server backfill only mirrors what is stored, so nothing else moves it."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function adoptLegacyConfigKey(" in config
-    # A newer save under the current key wins, and the stale record still goes. The saved
-    # config is the third argument: passing it second writes an all-defaults record under a
-    # key built from the config object, and the delete below then loses the real one.
+    # The key is renamed in one write. Saving the second copy before dropping the first puts
+    # a full map one entry over its budget, and savePerModelConfig then evicts the oldest
+    # unrelated model, silently and still reporting success, with no eviction list handed
+    # back here, so that model's server override outlives its settings.
+    assert "savePerModelConfig(modelId, ggufVariant, legacy)" not in config
     assert (
-        "const moved = loadPerModelConfig(modelId, ggufVariant) ? true : "
-        "savePerModelConfig(modelId, ggufVariant, legacy);" in config
+        "const alreadySaved = findConfigKeyForModelVariant(map, modelId, ggufVariant) "
+        "!== null;" in config
     )
-    assert "deletePerModelConfig(legacyModelId, ggufVariant);" in config
+    # A newer save under the current key wins, and the stale record still goes.
+    assert "if (!(alreadySaved || isDefaultConfig(legacy)))" in config
+    assert "map[key] = toStoredConfig(legacy);" in config
+    assert (
+        "delete map[legacyKey]; deleteConfigEntriesForModelVariant(map, legacyModelId, "
+        "ggufVariant);" in config
+    )
     # Both entry points move it before anything reads the new key.
     page = " ".join(_read("features/hub/hub-page.tsx").split())
     assert page.count("adoptLegacyConfigKey(") == 2

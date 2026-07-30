@@ -26,7 +26,11 @@ const {
 const LEGACY_ID = "/home/u/.cache/models/snapshots/2f1c9ab";
 const MODEL_ID = "unsloth/Repo-GGUF";
 
-function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
+function config(
+  maxSeqLength: number,
+  kvCacheDtype: string | null = null,
+  chatTemplateOverride: string | null = null,
+) {
   return {
     customContextLength: null,
     maxSeqLength,
@@ -35,9 +39,16 @@ function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
     specDraftNMax: null,
     nParallel: null,
     tensorParallel: false,
-    chatTemplateOverride: null,
+    chatTemplateOverride,
   };
 }
+
+// MAX_ENTRIES in per-model-config.ts, which does not export it.
+const MAX_ENTRIES = 500;
+// MAX_PER_MODEL_CONFIG_STORAGE_BYTES is 1 MiB, so a handful of models carrying a large
+// chat template override sits against the byte budget well before the entry budget.
+const BIG_TEMPLATE = "x".repeat(60_000);
+const TEMPLATE_MODELS = 16;
 
 // The values have to be asserted, not just the key. Passing the config where the quant
 // goes writes an all-defaults record (normalize rejects the string, isDefaultConfig then
@@ -106,4 +117,64 @@ test("nothing to move is not a move", () => {
     32768,
   );
   assert.equal(listPerModelConfigs().length, 1);
+});
+
+// A save before the delete holds two copies of the record at once, which is one entry over
+// a full map. savePerModelConfig then evicts the oldest unrelated model to fit, silently
+// and still reporting success, and this path passes no eviction list, so that model's
+// server override keeps applying to API loads with nothing in the UI able to forget it.
+test("moving a legacy key at the entry budget keeps every other model", () => {
+  store.clear();
+  // A full map, with the stale record saved partway through so it is not the oldest entry
+  // and so cannot be the one eviction happens to take.
+  const half = Math.floor(MAX_ENTRIES / 2);
+  for (let i = 0; i < half; i += 1) {
+    savePerModelConfig(`org/unrelated-${i}`, "Q4_K_M", config(4096 + i * 128));
+  }
+  savePerModelConfig(LEGACY_ID, "Q4_K_M", config(32768, "q8_0"));
+  for (let i = half; i < MAX_ENTRIES - 1; i += 1) {
+    savePerModelConfig(`org/unrelated-${i}`, "Q4_K_M", config(4096 + i * 128));
+  }
+  assert.equal(listPerModelConfigs().length, MAX_ENTRIES);
+
+  assert.equal(adoptLegacyConfigKey(MODEL_ID, LEGACY_ID, "Q4_K_M"), true);
+
+  const adopted = resolveInitialConfig(MODEL_ID, "Q4_K_M");
+  assert.equal(adopted.remembered, true);
+  assert.equal(adopted.config.maxSeqLength, 32768);
+  assert.equal(adopted.config.kvCacheDtype, "q8_0");
+  // The oldest entry is the first eviction would take, and every model is still there: the
+  // move traded one key for another rather than adding a second copy.
+  assert.equal(
+    resolveInitialConfig("org/unrelated-0", "Q4_K_M").remembered,
+    true,
+  );
+  assert.equal(resolveInitialConfig(LEGACY_ID, "Q4_K_M").remembered, false);
+  assert.equal(listPerModelConfigs().length, MAX_ENTRIES);
+});
+
+test("moving a legacy key at the byte budget keeps every other model", () => {
+  store.clear();
+  for (let i = 0; i < TEMPLATE_MODELS; i += 1) {
+    savePerModelConfig(
+      `org/template-${i}`,
+      "Q4_K_M",
+      config(4096, null, BIG_TEMPLATE),
+    );
+  }
+  savePerModelConfig(LEGACY_ID, "Q4_K_M", config(32768, null, BIG_TEMPLATE));
+  assert.equal(listPerModelConfigs().length, TEMPLATE_MODELS + 1);
+
+  assert.equal(adoptLegacyConfigKey(MODEL_ID, LEGACY_ID, "Q4_K_M"), true);
+
+  const adopted = resolveInitialConfig(MODEL_ID, "Q4_K_M");
+  assert.equal(adopted.remembered, true);
+  assert.equal(adopted.config.maxSeqLength, 32768);
+  assert.equal(adopted.config.chatTemplateOverride, BIG_TEMPLATE);
+  assert.equal(
+    resolveInitialConfig("org/template-0", "Q4_K_M").remembered,
+    true,
+  );
+  assert.equal(resolveInitialConfig(LEGACY_ID, "Q4_K_M").remembered, false);
+  assert.equal(listPerModelConfigs().length, TEMPLATE_MODELS + 1);
 });

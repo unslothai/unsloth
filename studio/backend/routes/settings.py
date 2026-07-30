@@ -43,6 +43,7 @@ from utils.openai_auto_switch_settings import (
     MAX_GPU_ID,
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
+    cached_repo_alias_keys,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
     get_model_overrides,
@@ -469,6 +470,14 @@ def update_openai_auto_switch_override(
                     bare_id = _bare_model_id(payload.model_id)
                     if bare_id:
                         requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
+                if requested_extra_args is None:
+                    # Same for the other spelling of a cached repo, which this save retires
+                    # below: its flags have nowhere else to live once the entry goes, and the
+                    # page can neither show nor restore them.
+                    for alias_id in cached_repo_alias_keys(payload.model_id):
+                        requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
+                        if requested_extra_args is not None:
+                            break
         # Not validated on an explicit remove: a 400 would only leave the override in place.
         extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
         if payload.remove is True:
@@ -517,6 +526,11 @@ def update_openai_auto_switch_override(
                     llama_extra_args = [],
                     max_seq_length = None,
                 )
+            # And the other spelling of a cached repo, for the same reason: the loader reads
+            # the load path before the advertised id, so a forget that clears only the id
+            # leaves the snapshot-path entry applying the settings just forgotten.
+            for alias_id in cached_repo_alias_keys(payload.model_id):
+                set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
         else:
             # Save under the key a load resolves to, as the removal branch does: the literal
             # id would leave two keys for one model, making every other casing ambiguous.
@@ -538,6 +552,17 @@ def update_openai_auto_switch_override(
                 gpu_ids = payload.gpu_ids,
                 fill_absent_fields = payload.fill_absent_fields,
             )
+            # A repo cached outside the active HF cache is keyed by its repo id here while
+            # the loader reads the snapshot path it loads from first, and an older release
+            # keyed that same row by the path, so an upgraded install can hold both. Retire
+            # the spelling this save supersedes (its flags were carried over above), or the
+            # leftover outranks the key just written and every API load applies the settings
+            # the user replaced. After the write, so a rejected save deletes nothing. Not on
+            # a fill: that pass only adds what is missing, and the one-time migration
+            # mirroring both spellings must not delete either.
+            if not payload.fill_absent_fields:
+                for alias_id in cached_repo_alias_keys(target_id):
+                    set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
     except ValueError as exc:
         raise log_and_http_error(
             exc,

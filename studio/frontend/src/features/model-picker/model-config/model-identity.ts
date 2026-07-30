@@ -14,6 +14,7 @@ export {
   isStandaloneGgufPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  publicModelId,
 } from "@/features/hub/lib/model-identity";
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";

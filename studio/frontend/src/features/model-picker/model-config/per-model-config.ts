@@ -7,6 +7,7 @@ import {
   modelStorageKey,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  publicModelId,
 } from "./model-identity";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 
@@ -766,6 +767,12 @@ export function deletePerModelConfig(
  *
  * Returns whether anything moved. A config already saved under *modelId* wins and the
  * stale record is dropped, so this can never overwrite a newer save.
+ *
+ * The key is renamed in one write rather than saved and then deleted. Holding both copies
+ * at once puts the map over its entry or byte budget when it is already at it, and the
+ * save then evicts the oldest unrelated model: silently, still reporting success, and with
+ * no eviction list to hand back, so that model's server override keeps applying to API
+ * loads while nothing in the UI has it to forget. A rename cannot grow the entry count.
  */
 export function adoptLegacyConfigKey(
   modelId: string,
@@ -775,17 +782,47 @@ export function adoptLegacyConfigKey(
   if (!legacyModelId || legacyModelId === modelId) {
     return false;
   }
-  const legacy = loadPerModelConfig(legacyModelId, ggufVariant);
-  if (!legacy) {
+  const map = readMap();
+  const legacyKey = findConfigKeyForModelVariant(
+    map,
+    legacyModelId,
+    ggufVariant,
+  );
+  if (!legacyKey) {
     return false;
   }
-  const moved = loadPerModelConfig(modelId, ggufVariant)
-    ? true
-    : savePerModelConfig(modelId, ggufVariant, legacy);
-  if (moved) {
-    deletePerModelConfig(legacyModelId, ggufVariant);
+  // Never interpret, move or destroy a record a newer client wrote, on either id: the same
+  // guard loadPerModelConfig, savePerModelConfig and deletePerModelConfig each apply.
+  if (
+    storedConfigVersion(map[legacyKey]) > STORAGE_SCHEMA_VERSION ||
+    hasFutureConfigForModelVariant(map, legacyModelId, ggufVariant) ||
+    hasFutureConfigForModelVariant(map, modelId, ggufVariant)
+  ) {
+    return false;
   }
-  return moved;
+  const legacy = normalize(map[legacyKey]);
+  // What is already saved under modelId wins; the stale record still goes.
+  const alreadySaved =
+    findConfigKeyForModelVariant(map, modelId, ggufVariant) !== null;
+  const bytesBefore = serializedMapSize(map);
+  delete map[legacyKey];
+  deleteConfigEntriesForModelVariant(map, legacyModelId, ggufVariant);
+  if (!(alreadySaved || isDefaultConfig(legacy))) {
+    const [key] = storageKeysForModelVariant(modelId, ggufVariant);
+    map[key] = toStoredConfig(legacy);
+  }
+  // Only the key strings change length, and a repo id is normally shorter than the
+  // snapshot path it replaces. If it is not, and that tips the map past its byte cap,
+  // leave storage exactly as it was: the stale record is still readable and a later
+  // attempt can still move it, where evicting an unrelated model would not be undoable.
+  const bytesAfter = serializedMapSize(map);
+  if (
+    bytesAfter > bytesBefore &&
+    bytesAfter > MAX_PER_MODEL_CONFIG_STORAGE_BYTES
+  ) {
+    return false;
+  }
+  return writeMap(map);
 }
 
 export function resolveInitialConfig(
@@ -797,4 +834,35 @@ export function resolveInitialConfig(
     return { config: saved, remembered: true };
   }
   return { config: { ...DEFAULT_PER_MODEL_CONFIG }, remembered: false };
+}
+
+/**
+ * Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
+ *
+ * An API auto-switch hands the loader the concrete snapshot path (the resolver index
+ * only ever holds paths), so ``model_identifier`` names that path while this model's
+ * settings are keyed by its repo id -- what ``modelConfigIdentity`` writes for a cached
+ * repo, and what the backend's override lookup already tries alongside the path. Reading
+ * the raw identifier alone therefore reports the resident model as unremembered, blanking
+ * a control the model is running with; the next save then writes that blank back over the
+ * saved record.
+ *
+ * Only a namespaced collapse is adopted, the rule ``residentModelIdMatches`` applies: an
+ * HF snapshot path collapses onto a repo id that names exactly one model, while every
+ * other path collapses onto a file stem two models can share, and reading a stem would
+ * apply one model's saved settings to another.
+ */
+export function resolveResidentInitialConfig(
+  modelId: string,
+  ggufVariant?: string | null,
+): { config: PerModelConfig; remembered: boolean } {
+  const direct = resolveInitialConfig(modelId, ggufVariant);
+  if (direct.remembered) {
+    return direct;
+  }
+  const alias = publicModelId(modelId);
+  if (alias === modelId || !alias.includes("/")) {
+    return direct;
+  }
+  return resolveInitialConfig(alias, ggufVariant);
 }
