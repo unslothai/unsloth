@@ -770,22 +770,12 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif data_collator is None:
-                # Nothing else blocks packing and no collator was passed, so the flag is the
-                # only cause left. Don't name a setter: compute_metrics and
-                # preprocess_logits_for_metrics both set it, for_inference() sets it, and
-                # LOGITS_ERROR_STRING tells users to set it by hand.
+                # compute_metrics, preprocess_logits_for_metrics, for_inference() and the
+                # user can all set it, so name the flag and not a setter.
                 reason = "UNSLOTH_RETURN_LOGITS=1"
-            # No token count: this runs before max_seq_length / max_length / the model's own
-            # limit are reconciled, so any value read here is pre-reconciliation and often wrong.
-            message = (
-                f"Unsloth: Sample packing skipped ({reason} detected) even though "
-                f"packing=True was requested."
-            )
-            # Only claim data loss where packing would really have saved the tokens.
-            # "bfd" truncates every example to seq_length before binning, and a skipped
-            # dataset prep never truncates at all, so neither loses anything to the skip.
-            # Legacy trl whose pack_dataset has no `strategy` behaves as wrapped, so
-            # mirror the test in _WRAPPED_PACKING_SETUP (rl_replacements.py).
+            # Only "wrapped" packing would have saved the tokens: "bfd" truncates to
+            # seq_length before binning, and a skipped prep never truncates. Legacy trl
+            # with no `strategy` acts wrapped, as in _WRAPPED_PACKING_SETUP.
             try:
                 from trl.data_utils import pack_dataset
                 pack_has_strategy = "strategy" in inspect.signature(pack_dataset).parameters
@@ -794,19 +784,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
             would_wrap = (
                 getattr(config_arg, "packing_strategy", None) == "wrapped" or not pack_has_strategy
             )
-            # rl.py sets skip_prepare_dataset for an UnslothVisionDataCollator, but that
-            # runs inside the wrapped __init__ below, so test the collator directly.
+            # rl.py sets skip_prepare_dataset for a vision collator inside the wrapped
+            # __init__ below, after this runs, so test the collator directly.
             prep_skipped = bool(
                 (getattr(config_arg, "dataset_kwargs", None) or {}).get("skip_prepare_dataset")
             ) or isinstance(data_collator, _UnslothVisionDataCollatorBase)
+            # No token count: max_seq_length / max_length / the model limit are not
+            # reconciled yet, so anything read here is usually wrong.
+            message = f"Unsloth: packing=True ignored ({reason})."
             if would_wrap and not prep_skipped:
-                message += (
-                    " Sequences longer than the max sequence length will now be TRUNCATED"
-                    " instead of split across additional sequences, which can silently drop a"
-                    " large fraction of tokens from long samples. If your dataset has long"
-                    " documents (e.g. raw-text CPT), pre-split or pre-pack them before"
-                    " training to avoid data loss."
-                )
+                message += " Long samples are truncated, not split."
             logger.warning(message)
 
         packing_active = False

@@ -1285,7 +1285,7 @@ def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
             train_dataset = Dataset.from_dict({"text": ["sample"]}),
         )
 
-    messages = [r.message for r in caplog.records if "Sample packing skipped" in r.message]
+    messages = [r.message for r in caplog.records if "packing=True ignored" in r.message]
     assert len(messages) == 1
     assert "UNSLOTH_RETURN_LOGITS" in messages[0]
     assert "custom data collator" not in messages[0]
@@ -1302,7 +1302,7 @@ def _warn_once(caplog, **trainer_kwargs):
             train_dataset = Dataset.from_dict({"text": ["sample"]}),
             **trainer_kwargs,
         )
-    messages = [r.message for r in caplog.records if "Sample packing skipped" in r.message]
+    messages = [r.message for r in caplog.records if "packing=True ignored" in r.message]
     assert len(messages) == 1
     return messages[0]
 
@@ -1322,7 +1322,7 @@ def test_packing_skip_warning_claims_data_loss_only_for_wrapped(
         config.packing_strategy = strategy
 
     message = _warn_once(caplog, args = config)
-    assert ("TRUNCATED" in message) is expect_data_loss
+    assert ("truncated, not split" in message) is expect_data_loss
 
 
 def test_packing_skip_warning_treats_legacy_trl_as_wrapped(monkeypatch, caplog):
@@ -1337,7 +1337,7 @@ def test_packing_skip_warning_treats_legacy_trl_as_wrapped(monkeypatch, caplog):
     )
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
 
-    assert "TRUNCATED" in _warn_once(caplog, args = config)
+    assert "truncated, not split" in _warn_once(caplog, args = config)
 
 
 def test_packing_skip_warning_is_silent_when_preparation_is_skipped(monkeypatch, caplog):
@@ -1352,7 +1352,7 @@ def test_packing_skip_warning_is_silent_when_preparation_is_skipped(monkeypatch,
         dataset_kwargs = {"skip_prepare_dataset": True},
     )
 
-    assert "TRUNCATED" not in _warn_once(caplog, args = config)
+    assert "truncated, not split" not in _warn_once(caplog, args = config)
 
 
 def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
@@ -1370,7 +1370,7 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
             train_dataset = Dataset.from_dict({"text": ["sample"]}),
         )
 
-    messages = [r.message for r in caplog.records if "Sample packing skipped" in r.message]
+    messages = [r.message for r in caplog.records if "packing=True ignored" in r.message]
     assert len(messages) == 1
     assert "custom data collator" in messages[0]
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
