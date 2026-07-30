@@ -493,20 +493,6 @@ def _estimate_message_tokens(msg: dict) -> int:
         return 1
 
 
-def _estimate_messages_tokens(messages: list) -> int:
-    """Char-estimate of a whole message list.
-
-    Counts ``reasoning_content`` unconditionally. Whether a template renders prior
-    reasoning is not knowable here: Qwen3.5 gates on ``loop.index0 >
-    ns.last_query_index``, gemma-4 on that index ``or preserve_thinking``, and
-    Kimi-K2-Thinking splits at ``ns.last_non_tool_call_assistant_msg`` instead, while a
-    GGUF can carry any template at all. Under-counting leaves the retry above ``n_ctx``
-    and burns the retry budget, so the estimate stays conservative and the caller clips
-    reasoning first to shrink what over-counting would otherwise hold onto.
-    """
-    return sum(_estimate_message_tokens(msg) for msg in messages)
-
-
 def _truncate_middle_messages(messages: list, keep_ratio: float):
     """Drop whole turn-groups from the middle of an OpenAI message list.
 
@@ -540,10 +526,7 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     if len(groups) <= 1 + protected_tail:
         return messages, 0
 
-    # Size on what the template renders: an unrendered trace in a protected turn would
-    # otherwise be undroppable weight and force the whole middle out to hit the target.
-    est_of = {id(msg): _estimate_message_tokens(msg) for msg in messages}
-    total_est = sum(est_of.values())
+    total_est = sum(_estimate_message_tokens(m) for m in messages)
     target_est = int(total_est * keep_ratio)
 
     anchor = groups[0]
@@ -557,7 +540,7 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     while kept_middle and current_est > target_est:
         victim = kept_middle.pop(0)
         dropped += len(victim)
-        current_est -= sum(est_of[id(m)] for m in victim)
+        current_est -= sum(_estimate_message_tokens(m) for m in victim)
 
     if dropped == 0:
         return messages, 0
@@ -575,42 +558,12 @@ _CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
 _CLIP_KEEP_CHARS = (1500, 400)
 
 
-def _clip_reasoning_contents(messages: list, keep: int = _CLIP_KEEP_CHARS[-1]) -> int:
-    """Clip every oversized assistant ``reasoning_content`` middle-out.
-
-    Runs before the prompt is sized, and unconditionally, for two reasons. Unlike
-    group-dropping it can shrink a protected turn, so a huge trace in the anchor or tail
-    stops forcing the whole middle out. And the overflow target is a fraction of the
-    estimate, so a giant trace inflates the target as well as the total and a
-    target-gated clip would stop while the trace still outweighed the conversation it is
-    competing with. Reasoning is the most expendable content on overflow, so on this
-    recovery path it goes to the tight budget straight away.
-    """
-    clipped = 0
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        rc = msg.get("reasoning_content")
-        if not isinstance(rc, str) or len(rc) <= 2 * keep + len(_CLIP_MARKER):
-            continue
-        msg["reasoning_content"] = rc[:keep] + _CLIP_MARKER + rc[-keep:]
-        clipped += 1
-    return clipped
-
-
-def _clip_long_contents(
-    messages: list,
-    target_est: int,
-    reasoning: bool = True,
-    contents: bool = True,
-) -> int:
+def _clip_long_contents(messages: list, target_est: int) -> int:
     """Clip oversized string contents middle-out until ``target_est`` is met.
 
-    Assistant ``reasoning_content`` is clipped first (longest and most
-    expendable on overflow), then tool results, earlier user turns, and
-    the final message last.  Message count and roles never change, so
-    tool pairing holds even when group-dropping could not free enough.
-    Returns messages clipped.
+    Tool results first, then earlier user turns, the final message last.
+    Message count and roles never change, so tool pairing holds even when
+    group-dropping could not free enough. Returns messages clipped.
     """
 
     def _candidates():
@@ -619,22 +572,10 @@ def _clip_long_contents(
         last = [messages[-1]] if messages else []
         return tools + users + last
 
-    def _reasoning_candidates():
-        return [
-            m
-            for m in messages
-            if m.get("role") == "assistant" and isinstance(m.get("reasoning_content"), str)
-        ]
-
     clipped = 0
-    if reasoning:
-        clipped += _clip_reasoning_contents(messages, target_est)
-    if not contents:
-        return clipped
-    # Pass 2: clip content fields as before.
     for keep in _CLIP_KEEP_CHARS:
         for msg in _candidates():
-            if _estimate_messages_tokens(messages) <= target_est:
+            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
                 return clipped
             content = msg.get("content")
             if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
@@ -650,9 +591,7 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
-    # Before sizing: see _clip_reasoning_contents for why this cannot wait for a target.
-    clipped = _clip_reasoning_contents(messages)
-    total_est = _estimate_messages_tokens(messages)
+    total_est = sum(_estimate_message_tokens(m) for m in messages)
     if counts:
         n_prompt, n_ctx = counts
         keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
@@ -665,8 +604,9 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
     if dropped:
         body["messages"] = new_messages
-    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
-        clipped += _clip_long_contents(body.get("messages") or [], target_est, reasoning = False)
+    clipped = 0
+    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
+        clipped = _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
     if n_ctx:
@@ -16489,13 +16429,8 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
         if m.get("role") == "assistant":
             has_content = bool(m.get("content"))
             has_tool_calls = bool(m.get("tool_calls"))
-            has_reasoning = bool(m.get("reasoning_content"))
-            if not has_content and not has_tool_calls and not has_reasoning:
-                continue
             if not has_content and not has_tool_calls:
-                # llama.cpp requires a content or tool_calls key and only reads
-                # reasoning_content after that check, so keep the turn but give it one.
-                m = {**m, "content": ""}
+                continue
         out.append(m)
     return out
 

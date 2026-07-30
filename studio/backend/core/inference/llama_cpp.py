@@ -8655,11 +8655,10 @@ class LlamaCppBackend:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
                     if "qwen3.5" in mid or "qwen3.6" in mid:
-                        # Scan path segments right to left: the identifier can be a
-                        # directory (auto-switch snapshot, quant subdir), so the size
-                        # nearest the leaf wins over a size-like parent (/8bit/, /8b/).
-                        # Trailing boundary stops "8bit" matching as 8B.
-                        # \s* and the M suffix keep parity with extract_model_size_b.
+                        # extract_model_size_b prefers MoE active params, reading
+                        # 35B-A3B as 3B. Match total params instead: scan segments
+                        # right to left so the size nearest the leaf beats a size-like
+                        # parent dir, and keep its \s* / M-suffix spellings.
                         size_re = r"(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])"
                         size_match = None
                         for seg in reversed(mid.replace("\\", "/").split("/")):
@@ -8675,8 +8674,11 @@ class LlamaCppBackend:
                                 thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
-                    # Pin off at launch so a template defaulting it true does not replay prior
-                    # chain-of-thought for callers that omit the field. Per-request still wins.
+                    # preserve_thinking is an independent kwarg. Default it OFF
+                    # at launch so direct OpenAI-compatible callers that omit the
+                    # field match the UI's default-off behavior (the bundled
+                    # gemma-4 template also defaults it false; the frontend sends
+                    # preserve_thinking per request once toggled on).
                     if self._supports_preserve_thinking:
                         reasoning_kw["preserve_thinking"] = False
                     cmd.extend(
