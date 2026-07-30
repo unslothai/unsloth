@@ -21,7 +21,7 @@ SAVE_PATH = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "unslo
 
 
 def _load_is_vlm():
-    tree = ast.parse(open(SAVE_PATH).read())
+    tree = ast.parse(open(SAVE_PATH, encoding = "utf-8").read())
     func = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_is_vlm"
     )
