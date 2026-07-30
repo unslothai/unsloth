@@ -520,6 +520,23 @@ def _local_gguf_variants_for_autoload(row: dict, cache_root: Path) -> list[str]:
     return [variant.quant for variant in response.variants if variant.downloaded]
 
 
+def _listed_gguf_variants(row: dict, cache_root: Path) -> list[str]:
+    """Every quant the same call reports, ready or not: what Settings and the
+    Hub cards show, so a torn download can still be resumed or deleted."""
+    import asyncio
+
+    from hub.services.models import gguf_variants
+
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            row["repo_id"],
+            prefer_local_cache = True,
+            local_path = row["cache_path"],
+        )
+    )
+    return sorted(variant.quant for variant in response.variants)
+
+
 def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_path, monkeypatch):
     """The newest snapshot can hold shard 1 of an interrupted split download while
     a complete quant sits in an older one. Both ends are asserted because they
@@ -556,13 +573,15 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "newer_files, offered",
+    "newer_files, listed, offered",
     [
         # With nothing complete anywhere the newest snapshot holding quants is
-        # still reported, as shipped, and still agrees with the load id.
+        # still reported, so it can be resumed or deleted, but a quant missing a
+        # shard is not something auto-load can hand to /load.
         pytest.param(
             {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
             ["Q8_0"],
+            [],
             id = "nothing-complete-anywhere",
         ),
         # When that snapshot holds a whole quant beside the half-downloaded one,
@@ -572,13 +591,14 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
                 "Model-Q8_0.gguf": b"\0" * 64,
                 "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16,
             },
+            ["Q4_K_M", "Q8_0"],
             ["Q8_0"],
             id = "one-whole-quant-beside-a-half-one",
         ),
     ],
 )
 def test_gguf_variants_still_list_when_no_snapshot_is_complete(
-    newer_files, offered, tmp_path, monkeypatch
+    newer_files, listed, offered, tmp_path, monkeypatch
 ):
     """The completeness preference must not empty the list, and must not offer a
     quant whose shards are missing while a whole one sits beside it."""
@@ -592,6 +612,7 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
 
     load_dir = Path(rows[0]["load_id"])
     assert load_dir == repo_dir / "snapshots" / NEWER
+    assert _listed_gguf_variants(rows[0], tmp_path) == listed
     assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == offered
 
 
@@ -820,7 +841,7 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
 
     listed = list_gguf_variants_from_hf_cache("Org/Model", root = tmp_path)
     assert listed is not None
-    variants, reported_vision = listed
+    variants, reported_vision, _complete = listed
     # The quant on disk stays offered either way; only the flag may move.
     assert [v.quant for v in variants] == ["Q4_K_M"]
     assert reported_vision is has_vision
@@ -1780,3 +1801,150 @@ def test_the_ignored_cache_entries_track_huggingface_hub(tmp_path):
     if not upstream:
         pytest.skip("this huggingface_hub does not export FILES_TO_IGNORE")
     assert set(inventory_scan._CACHE_ENTRIES_TO_IGNORE) == set(upstream)
+
+
+def _primary_gguf_predicates(rel_paths: list[str]) -> dict:
+    """Both copies of the primary-GGUF classification, fed one revision whose
+    files sit at *rel_paths* under the snapshot. huggingface_hub records only the
+    bare file_name, so a companion is identifiable from file_path alone."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+    from routes import models as models_route
+
+    files = [
+        SimpleNamespace(
+            file_path = f"/cache/models--Org--Model/snapshots/{SNAPSHOT}/{rel}",
+            file_name = rel.rsplit("/", 1)[-1],
+            size_on_disk = 64,
+            blob_path = None,
+            blob_last_modified = 1.0,
+        )
+        for rel in rel_paths
+    ]
+    repo_info = SimpleNamespace(
+        repo_path = None,
+        revisions = [SimpleNamespace(commit_hash = SNAPSHOT, snapshot_path = "/s", files = files)],
+    )
+    return {
+        "inventory": cache_inventory._repo_gguf_size_bytes(repo_info),
+        "route": models_route._repo_gguf_size_bytes(repo_info),
+    }
+
+
+@pytest.mark.parametrize(
+    "rel_paths",
+    [
+        ["MTP/drafter-Q4_K_M.gguf"],
+        ["mtp-model-Q8_0.gguf"],
+        ["mmproj-F16.gguf"],
+    ],
+)
+def test_a_companion_only_repo_is_not_a_gguf_model(rel_paths):
+    """An MTP drafter or a vision projector is a companion, never a loadable
+    weight. Counting one made the repo a chattable GGUF row with no selectable
+    variant, and hid a real Transformers model sharing the repo behind a GGUF
+    that does not exist."""
+    assert _primary_gguf_predicates(rel_paths) == {"inventory": 0, "route": 0}
+
+
+def test_a_companion_beside_a_real_quant_is_not_counted_twice():
+    """The negative control: the companion drops out of the size, the primary
+    weight still makes the repo a GGUF model."""
+    assert _primary_gguf_predicates(
+        ["Model-Q4_K_M.gguf", "MTP/drafter-Q4_K_M.gguf"]
+    ) == {"inventory": 64, "route": 64}
+
+
+def test_the_two_primary_gguf_predicates_agree():
+    """routes.models keeps its own copy for the compatibility route. They drifted
+    once already; a disagreement means one endpoint lists a repo the other hides."""
+    from routes import models as models_route
+    from hub.services.models import common
+
+    names = [
+        "Model-Q4_K_M.gguf",
+        "MTP/drafter-Q4_K_M.gguf",
+        "mtp-model-Q8_0.gguf",
+        "mmproj-F16.gguf",
+        "config.json",
+    ]
+    assert [models_route._is_main_gguf_filename(n) for n in names] == [
+        common._is_main_gguf_filename(n) for n in names
+    ]
+
+
+def test_an_mtp_only_recovered_repo_does_not_become_a_chattable_gguf_row(
+    tmp_path, monkeypatch
+):
+    """End to end for the recovery path. Un-hiding a repo behind a dangling ref
+    must not classify it more loosely than a healthy one: with only a drafter in
+    the snapshot there is nothing to load."""
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"MTP/drafter-Q4_K_M.gguf": b"\0" * 64}},
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    assert _autoload_rows(tmp_path, monkeypatch, gguf = True) == []
+
+
+def test_an_all_incomplete_repo_is_offered_by_repo_id_as_partial(tmp_path, monkeypatch):
+    """The lister returns its untrimmed offer when no snapshot holds a whole
+    quant, so the repo stays manageable. That fallback carried no completeness
+    set, so every torn quant reached the repo-id caller marked ready -- and
+    Settings/Agents filters on the per-variant flag, not the row's."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from hub.services.models import gguf_variants
+
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16}},
+        refs = {"main": SNAPSHOT},
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        response = asyncio.run(
+            gguf_variants.get_gguf_variants_response("Org/Model", prefer_local_cache = True)
+        )
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+    assert [(v.quant, bool(v.downloaded), bool(v.partial)) for v in response.variants] == [
+        ("Q4_K_M", False, True)
+    ]
+
+
+def test_a_whole_repo_is_still_offered_by_repo_id_as_downloaded(tmp_path, monkeypatch):
+    """Negative control for the fallback: passing the completeness set through
+    must not demote a repo whose quant is actually whole."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from hub.services.models import gguf_variants
+
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"Model-Q4_K_M.gguf": b"\0" * 64}},
+        refs = {"main": SNAPSHOT},
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        response = asyncio.run(
+            gguf_variants.get_gguf_variants_response("Org/Model", prefer_local_cache = True)
+        )
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+    assert [(v.quant, bool(v.downloaded), bool(v.partial)) for v in response.variants] == [
+        ("Q4_K_M", True, False)
+    ]

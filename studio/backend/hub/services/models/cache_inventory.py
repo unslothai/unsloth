@@ -119,13 +119,17 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            # Snapshot-relative, not file_name: huggingface_hub stores the bare
+            # name, and a companion is only recognisable from its directory, so
+            # an MTP/ drafter would otherwise count as a primary model.
+            name = _cached_repo_file_name(f)
+            if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
                     unique_blobs[str(blob_path)] = size
                 else:
-                    unique_blobs[f"{rev_id}:{f.file_name}"] = size
+                    unique_blobs[f"{rev_id}:{name}"] = size
     return sum(unique_blobs.values())
 
 
@@ -150,7 +154,7 @@ def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
 
@@ -228,15 +232,15 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
     repo_path = getattr(repo_info, "repo_path", None)
     for revision in repo_info.revisions:
         for f in revision.files:
+            name = _cached_repo_file_name(f)
             if include_companions:
-                if not _is_gguf_filename(f.file_name):
+                if not _is_gguf_filename(name):
                     continue
-            elif not _is_main_gguf_filename(f.file_name):
+            elif not _is_main_gguf_filename(name):
                 continue
             blob_path = getattr(f, "blob_path", None)
             if not blob_path:
                 continue
-            name = _cached_repo_file_name(f)
             identity = _cached_blob_hash(blob_path, repo_path)
             if identity is None:
                 size = int(getattr(f, "size_on_disk", 0) or 0)

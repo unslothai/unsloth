@@ -2943,9 +2943,19 @@ def _is_mmproj_filename(name: str) -> bool:
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A GGUF file that is a primary weight, not an mmproj vision
-    adapter."""
-    return _is_gguf_filename(name) and not _is_mmproj_filename(name)
+    """A GGUF file that is a primary weight, not an mmproj vision adapter or
+    an MTP drafter. Same rule as ``hub.services.models.common``; pass a
+    snapshot-relative path to catch the ``MTP/`` subdir copies too."""
+    return (
+        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
+    )
+
+
+def _cached_repo_file_name(file_obj) -> str:
+    """Snapshot-relative name for a cached file. huggingface_hub records the
+    bare ``file_name``, which cannot tell an ``MTP/`` drafter from a quant."""
+    from hub.services.models.cache_inventory import _cached_repo_file_name as impl
+    return impl(file_obj)
 
 
 def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
@@ -2994,13 +3004,16 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            # Snapshot-relative: file_name is the bare name, so an MTP/ drafter
+            # is only distinguishable from a primary quant by its directory.
+            name = _cached_repo_file_name(f)
+            if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
                     unique_blobs[str(blob_path)] = size
                 else:
-                    unique_blobs[f"{rev_id}:{f.file_name}"] = size
+                    unique_blobs[f"{rev_id}:{name}"] = size
     return sum(unique_blobs.values())
 
 
@@ -3038,7 +3051,7 @@ def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
 
@@ -3077,7 +3090,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         Path(snapshot)
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
-        and any(_is_main_gguf_filename(f.file_name) for f in revision.files)
+        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
     # Newest first, skipping any holding no whole quant: an interrupted download

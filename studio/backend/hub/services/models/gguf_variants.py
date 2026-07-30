@@ -625,8 +625,11 @@ async def get_gguf_variants_response(
         if local_only:
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision = cached
-                return _local_response(repo_id, variants, has_vision)
+                variants, has_vision, complete = cached
+                # The lister returns its offer untrimmed when no snapshot holds a
+                # whole quant, so pass the completed set: those rows stay listed
+                # for management but must not be reported ready.
+                return _local_response(repo_id, variants, has_vision, complete)
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
@@ -656,8 +659,11 @@ async def get_gguf_variants_response(
         except Exception:
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision = cached
-                return _local_response(repo_id, variants, has_vision)
+                variants, has_vision, complete = cached
+                # The lister returns its offer untrimmed when no snapshot holds a
+                # whole quant, so pass the completed set: those rows stay listed
+                # for management but must not be reported ready.
+                return _local_response(repo_id, variants, has_vision, complete)
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
