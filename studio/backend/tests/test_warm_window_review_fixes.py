@@ -4,7 +4,7 @@
 """The warm window's remaining sharp edges, one test per edge.
 
 Deferring the ML stack creates an interval between the socket binding and the
-stack being importable. Five separate things went wrong in that interval, and
+stack being importable. Several separate things went wrong in that interval, and
 each is cheap to assert once it is named:
 
   * the generation counter advanced on the cached path, so ordinary get_device()
@@ -14,7 +14,11 @@ each is cheap to assert once it is named:
     unprompted outbound request at boot;
   * two sync helpers reached the inference singleton from the event-loop thread
     ahead of the offloads meant to cover them;
-  * the torch-warm kill switch also disabled MLX self-heal.
+  * the torch-warm kill switch also disabled MLX self-heal;
+  * purging a half-imported package raced a request retrying the same import;
+  * the post-warm worker outlived its lifespan, then starved the next one;
+  * /api/health published a verdict read mid-re-detect, and treated a torn
+    event-set/DEVICE-None state as a settled answer.
 """
 
 from __future__ import annotations
