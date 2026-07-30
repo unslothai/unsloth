@@ -38,8 +38,12 @@ _GEMMA_TEMPLATE_OPENERS = (
 # [THINK] is absent because no template emits it; the output parsers consume it.
 # DeepSeek is the one family that delimits with the fullwidth bar U+FF5C rather than
 # "|", so it needs its own branch, written as \uXXXX escapes to keep this file pure
-# ASCII. Its names are ASCII plus U+2581, which keeps the branch off ordinary CJK
-# text that happens to use a fullwidth bar.
+# ASCII. That branch is the one exception to the closed list: it matches ANY Latin /
+# U+2581 name between fullwidth bars, because DeepSeek spells a dozen of them and keeps
+# adding more. The shape is distinctive enough to carry it -- "<" immediately followed by
+# a fullwidth bar is not something prose produces -- but a CJK author writing a
+# fullwidth-bar placeholder around a Latin key does get rewritten. Restricting the
+# charset keeps it off real CJK content, which is the common case.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
@@ -50,6 +54,14 @@ _CONTROL_MARKUP = re.compile(
     r"|assistant|constrain|channel|message|eo[tm](?:_id)?|final"
     # Command-R / Aya spell every delimiter in caps: <|START_OF_TURN_TOKEN|> etc.
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
+    # Gemma-4's media placeholders (its own image_token / audio_token / video_token,
+    # also chat_templates.py:917-921) and Llama-3.1's built-in-tool sentinel
+    # (chat_templates.py:496). These are reserved vocabulary, so a pasted copy is not
+    # cosmetic: a processor counts "<|image|>" against the media it was handed, and one
+    # extra is a hard ValueError out of MllamaProcessor / Gemma4Processor on the very
+    # vision and audio renders neutralized above (#7066). The optional close also
+    # covers Gemma-4's <|image> / <|audio> openers.
+    r"|image|audio|video|python_tag"
     r"|return|system|start|think|turn|user|call|\")\|?>"
     r"|\uff5c[A-Za-z\u2581_]{1,40}\uff5c>"
     # "tools" is the Qwen / Hermes tool catalog block. The template interpolates the
@@ -59,7 +71,20 @@ _CONTROL_MARKUP = re.compile(
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think)>"
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
-    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\]|TOOL_CALLS\]|ARGS\])"
+    # "[ARGS]" is deliberately absent even though Mistral emits "[TOOL_CALLS]NAME[ARGS]".
+    # It is the standard CLI-synopsis metavariable ("usage: tool [OPTIONS] [ARGS]") and
+    # the most common bracket collision there is -- it even appears as a live string in
+    # this repo. It also cannot forge anything on its own: the call block only opens at
+    # "[TOOL_CALLS]", which IS broken, and a schema "enum" / "pattern" carrying it would
+    # otherwise be rewritten into a grammar literal the model is then forced to emit.
+    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\]|TOOL_CALLS\])"
+    # Llama-2 opens its system block with "<<SYS>>" INSIDE the first [INST], so the
+    # doubled angle is the opener, not a single "<". Both meta-llama/Llama-2-*-chat-hf's
+    # own template and the "llama" entry this repo's MODEL_TO_TEMPLATE_MAPPER installs
+    # at generate time emit it, and a later user turn carries no system block at all,
+    # so a pasted pair invents one (#7066). Anchored on the second "<" of the pair, so
+    # "<SYS>>", a C++ "cout << SYS" and a heredoc "<<-'SYS'" all stay as typed.
+    r"|(?<=<)<(?=/?SYS>>)"
 )
 
 # Turn-boundary subset, for replayed ASSISTANT content: that text is
@@ -77,10 +102,15 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
-    r"|(?:start|end)_of_turn>"
+    # "/?" for the same reason the control pattern has it: Gemma's delimiters are bare
+    # tags, so a replayed "</start_of_turn>" is as much a boundary as "<start_of_turn>".
+    r"|/?(?:start|end)_of_turn>"
     r"|turn\|>"
     r")"
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT)\])"
+    # Llama-2's system section is a boundary for the same reason [SYSTEM_PROMPT] is:
+    # the template only ever emits it in the first user turn, never in an assistant one.
+    r"|(?<=<)<(?=/?SYS>>)"
 )
 
 
@@ -134,6 +164,33 @@ def _neutralize_argument_leaves(value):
     return value
 
 
+def _neutralized_arguments(arguments):
+    """Neutralize a replayed call's ``arguments``, or None when already clean.
+
+    OpenAI ships ``arguments`` as JSON *text*, and every consumer decodes it back to an
+    object AFTER this runs: ``_normalize_tool_call_arguments`` below re-renders through
+    ``json.loads`` when a template rejects a string, and llama.cpp does the same in
+    ``workaround::func_args_not_string`` for any template whose capability probe reports
+    object arguments. So rewriting the raw text lets "\\u003ctool_call|\\u003e" through
+    untouched and the decoded marker forges a turn (#7066). Parse first, rewrite the
+    decoded leaves, then re-serialize, and leave a clean payload byte-identical so the
+    prefix cache still hits.
+    """
+    if isinstance(arguments, str):
+        try:
+            decoded = json.loads(arguments)
+        except (ValueError, TypeError):
+            decoded = None
+        if decoded is not None:
+            safe = _neutralize_argument_leaves(decoded)
+            if safe != decoded:
+                return json.dumps(safe, ensure_ascii = False)
+            # Parsed clean: the text itself cannot hold a marker the decode would show.
+            return None
+    new_arguments = _neutralize_argument_leaves(arguments)
+    return new_arguments if new_arguments != arguments else None
+
+
 def _neutralize_replayed_tool_call(tool_calls: list) -> list:
     """Neutralize a replayed tool call's name and arguments, keeping "id" exact.
 
@@ -143,25 +200,42 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
     identity on every dispatchable name (Studio composes ^[a-zA-Z0-9_-]{1,64}$), and
     a tool result's "name" takes the same rewrite, so the two still agree when
     Gemma-4 pairs them by name.
+
+    Both replay shapes are covered: the OpenAI nested one and the flat
+    {"id", "name", "arguments"} one that every template's "if tool_call.function"
+    guard exists to render.
     """
     out: list = []
     for call in tool_calls:
-        function = call.get("function") if isinstance(call, dict) else None
-        if not isinstance(function, dict):
+        if not isinstance(call, dict):
             out.append(call)
             continue
+        function = call.get("function")
+        # Same fallback the catalog below takes, for the same reason: Harmony / gpt-oss,
+        # Qwen 2.5 / 3, Granite-4 and Llama-4 all guard with "{%- if tool_call.function
+        # %}{%- set tool_call = tool_call.function %}" and otherwise read "name" /
+        # "arguments" off the call itself, so a flat replay renders the identical
+        # concatenation and needs the identical rewrite (#7066).
+        target = function if isinstance(function, dict) else call
         updates: dict = {}
-        name = function.get("name")
+        name = target.get("name")
         if isinstance(name, str) and name:
             new_name = neutralize_control_markup(name)
             if new_name != name:
                 updates["name"] = new_name
-        arguments = function.get("arguments")
+        arguments = target.get("arguments")
         if arguments is not None:
-            new_arguments = _neutralize_argument_leaves(arguments)
-            if new_arguments != arguments:
+            new_arguments = _neutralized_arguments(arguments)
+            if new_arguments is not None:
                 updates["arguments"] = new_arguments
-        out.append({**call, "function": {**function, **updates}} if updates else call)
+        if not updates:
+            out.append(call)
+        elif target is function:
+            out.append({**call, "function": {**function, **updates}})
+        else:
+            # "id" is the dispatch handle, so only "name" / "arguments" are rewritten
+            # and no "function" object is invented for a call that never had one.
+            out.append({**call, **updates})
     return out
 
 

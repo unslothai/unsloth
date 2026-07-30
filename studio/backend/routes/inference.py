@@ -15794,6 +15794,11 @@ def _build_passthrough_payload(
     safe_tools = neutralize_tool_descriptions(openai_tools)
     if safe_tools:
         body["tools"] = _llama_compatible_tools(safe_tools)
+        # A mixed catalog keeps safe_tools non-empty while still dropping the one tool
+        # the client forced, and forwarding that choice would both name a function the
+        # catalog no longer advertises and hand llama-server the raw markup we just
+        # removed. Fall back to "auto" so the request stays self-consistent (#7066).
+        tool_choice = _reconciled_tool_choice(tool_choice, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:
@@ -15827,6 +15832,64 @@ def _build_passthrough_payload(
         # of the model's load-time default.
         body["chat_template_kwargs"] = chat_template_kwargs
     return body
+
+
+def _forced_tool_name(tool_choice):
+    """The function name a ``tool_choice`` pins, or None when it pins nothing.
+
+    OpenAI spells it ``{"type": "function", "function": {"name": ...}}`` and Anthropic
+    ``{"type": "tool", "name": ...}``; the string forms ("auto" / "none" / "required")
+    pin no particular tool.
+    """
+    if not isinstance(tool_choice, dict):
+        return None
+    function = tool_choice.get("function")
+    name = function.get("name") if isinstance(function, dict) else tool_choice.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def _reconciled_tool_choice(tool_choice, safe_tools):
+    """Downgrade a forced ``tool_choice`` to "auto" when its tool was dropped (#7066)."""
+    forced = _forced_tool_name(tool_choice)
+    if forced is None:
+        return tool_choice
+    available = set()
+    for tool in safe_tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        name = function.get("name") if isinstance(function, dict) else tool.get("name")
+        if isinstance(name, str):
+            available.add(name)
+    if forced in available:
+        return tool_choice
+    logger.warning(
+        "Forcing tool %r is no longer possible: it was dropped from the catalog for "
+        "carrying chat control markup. Falling back to tool_choice=auto.",
+        forced,
+    )
+    return "auto"
+
+
+def _nudge_retry_messages(body, data, allowed_tools):
+    """The nudge retry's message list, re-neutralized like the enable-tools loop.
+
+    The appended suffix is not sanitized text: the assistant turn replays the model's
+    own failed output, which can echo a boundary the client asked it to repeat, and the
+    user turn interpolates ``allowed_tools``, which ``heal_gate`` derives from the RAW
+    catalog on the /v1/messages path -- so a name dropped from ``tools`` for carrying
+    markup would come straight back as prose the template renders as structure (#7066).
+
+    Wrapping the whole concatenation is safe rather than just the suffix: the rewrite is
+    idempotent and returns each unchanged message object as-is, so the already
+    neutralized prefix stays byte-identical and llama-server still reuses the slot's KV
+    cache, which is the entire point of appending instead of rebuilding.
+    """
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    return neutralize_control_markup_in_messages(
+        [*body.get("messages", []), *nudge_messages(data, allowed_tools)]
+    )
 
 
 async def _anthropic_passthrough_retry_url(llama_backend, exc):
@@ -16184,7 +16247,7 @@ async def _anthropic_passthrough_non_streaming(
         ):
             retry_body = {
                 **body,
-                "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+                "messages": _nudge_retry_messages(body, data, _allowed_tools),
             }
             try:
                 retry_resp = await _post(retry_body)
@@ -17800,7 +17863,7 @@ async def _openai_passthrough_non_streaming_upstream(
     ):
         retry_body = {
             **body,
-            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+            "messages": _nudge_retry_messages(body, data, _allowed_tools),
         }
         try:
             retry_resp = await _post(retry_body)
