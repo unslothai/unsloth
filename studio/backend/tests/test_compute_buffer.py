@@ -501,7 +501,11 @@ class TestPipelineParallelPredicate:
     has to detect them. Verified causally: on two GPUs, a -ot pattern matching no
     tensor changes no placement but takes the measured rate from 8.00 to 2.00."""
 
-    def _off(self, args = None, env = None):
+    def _off(
+        self,
+        args = None,
+        env = None,
+    ):
         from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
         return _pipeline_parallel_disabled_by_args(args, env = env or {})
 
@@ -545,6 +549,7 @@ class TestPipelineParallelPredicate:
     def test_wired_into_the_fit(self):
         # The flag has to reach _cc_bytes, else the predicate is dead code.
         import inspect
+
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "_pipeline_parallel_disabled_by_args(extra_args)" in src
         assert "layer_split = n_gpus > 1 and not _pipeline_parallel_off" in src
