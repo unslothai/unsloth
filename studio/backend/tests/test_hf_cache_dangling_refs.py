@@ -1851,9 +1851,10 @@ def test_a_companion_only_repo_is_not_a_gguf_model(rel_paths):
 def test_a_companion_beside_a_real_quant_is_not_counted_twice():
     """The negative control: the companion drops out of the size, the primary
     weight still makes the repo a GGUF model."""
-    assert _primary_gguf_predicates(
-        ["Model-Q4_K_M.gguf", "MTP/drafter-Q4_K_M.gguf"]
-    ) == {"inventory": 64, "route": 64}
+    assert _primary_gguf_predicates(["Model-Q4_K_M.gguf", "MTP/drafter-Q4_K_M.gguf"]) == {
+        "inventory": 64,
+        "route": 64,
+    }
 
 
 def test_the_two_primary_gguf_predicates_agree():
@@ -1874,9 +1875,7 @@ def test_the_two_primary_gguf_predicates_agree():
     ]
 
 
-def test_an_mtp_only_recovered_repo_does_not_become_a_chattable_gguf_row(
-    tmp_path, monkeypatch
-):
+def test_an_mtp_only_recovered_repo_does_not_become_a_chattable_gguf_row(tmp_path, monkeypatch):
     """End to end for the recovery path. Un-hiding a repo behind a dangling ref
     must not classify it more loosely than a healthy one: with only a drafter in
     the snapshot there is nothing to load."""

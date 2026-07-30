@@ -2946,9 +2946,7 @@ def _is_main_gguf_filename(name: str) -> bool:
     """A GGUF file that is a primary weight, not an mmproj vision adapter or
     an MTP drafter. Same rule as ``hub.services.models.common``; pass a
     snapshot-relative path to catch the ``MTP/`` subdir copies too."""
-    return (
-        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
-    )
+    return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
 
 
 def _cached_repo_file_name(file_obj) -> str:
