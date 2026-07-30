@@ -2060,10 +2060,8 @@ def run_server(
         # must survive its terminal (e.g. nohup). If the app dies without
         # running its cleanup, exit instead of orphaning on the port.
         from main import _desktop_owner
-
         if _desktop_owner() is not None:
             from utils.parent_watchdog import start_parent_watchdog
-
             owner_pid = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_PID", "")
             start_parent_watchdog(
                 _trigger_shutdown,
