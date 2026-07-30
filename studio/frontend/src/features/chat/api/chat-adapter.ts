@@ -2501,13 +2501,13 @@ export function createOpenAIStreamAdapter(
       // Re-read store after auto-load / model-ready wait.
       const liveRuntime = useChatRuntimeStore.getState();
       runtime = queuedRunSettings
-        ? queuedRunSettings.params.checkpoint
-          ? {
+        ? {
             ...liveRuntime,
             ...queuedRunSettings,
-            params: queuedRunSettings.params,
+            params: queuedRunSettings.params.checkpoint
+              ? queuedRunSettings.params
+              : liveRuntime.params,
           }
-          : liveRuntime
         : liveRuntime;
       const { params } = runtime;
       const {

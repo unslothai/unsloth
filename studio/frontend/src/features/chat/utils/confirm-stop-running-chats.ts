@@ -47,17 +47,25 @@ export async function confirmStopRunningChatsIfNeeded(
     .filter(([threadId, on]) => on && localRunByThreadId[threadId])
     .map(([threadId]) => threadId);
   const promptQueueThreadIds = getLocalPromptQueueThreadIds();
-  const queuedRunIds = new Set<string>();
   const promptQueuesByThreadId = usePromptQueueUI.getState().byThreadId;
+  const aliasesByQueuedRun = new Map<string, string[]>();
   for (const threadId of promptQueueThreadIds) {
     const entry = promptQueuesByThreadId[threadId];
     if (!entry) {
       continue;
     }
-    if (!queuedRunIds.has(entry.runId)) {
-      queuedRunIds.add(entry.runId);
-      running.push(threadId);
+    const aliases = aliasesByQueuedRun.get(entry.runId) ?? [];
+    aliases.push(threadId);
+    aliasesByQueuedRun.set(entry.runId, aliases);
+  }
+  const runningIds = new Set(running);
+  for (const aliases of aliasesByQueuedRun.values()) {
+    if (aliases.some((threadId) => runningIds.has(threadId))) {
+      continue;
     }
+    const threadId = aliases[0];
+    running.push(threadId);
+    runningIds.add(threadId);
   }
   running = [...new Set(running)];
   let count = running.length;

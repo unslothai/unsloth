@@ -108,6 +108,16 @@ def test_saved_queues_survive_navigation_but_abandoned_temporary_queues_stop():
     assert temporary_toggle.index("requestTemporaryPromptQueueStop()") < temporary_toggle.index(
         "if (onEmptyScratchChat) return"
     )
+    cancel_registrar = _between(
+        RUNTIME_PROVIDER,
+        "function CancelRegistrar()",
+        "function ThreadBackendAutosave(",
+    )
+    assert "thread?.getState().isRunning" in cancel_registrar
+    assert "unsubscribe = thread.subscribe(" in cancel_registrar
+    assert cancel_registrar.index("thread.subscribe(") < cancel_registrar.index(
+        "clearThreadCancel(mainThreadId);\n        unsubscribe();"
+    )
 
 
 def test_composer_only_queues_behind_the_current_chat():
@@ -178,6 +188,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "temporary: incognitoAtQueueStart" in THREAD
     assert "temporary: promptQueueRunIsTemporary(run)" in THREAD
     assert "entry.temporary" in QUEUE_BOUNDARY
+    assert "params: queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
+    assert ": liveRuntime.params" in CHAT_ADAPTER
     assert (
         "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
         in CHAT_ADAPTER
@@ -207,6 +219,8 @@ def test_stop_delete_archive_and_clear_are_thread_scoped():
     assert "requestPromptQueueStop();" in CLEAR_ALL_CHATS
     assert "threadIds !== undefined && threadIds.length === 0" in QUEUE_BOUNDARY
     assert "detail: threadIds ? { threadIds } : undefined" in QUEUE_BOUNDARY
+    assert "const aliasesByQueuedRun = new Map<string, string[]>()" in CONFIRM_MODEL_SWAP
+    assert "aliases.some((threadId) => runningIds.has(threadId))" in CONFIRM_MODEL_SWAP
 
 
 def test_sidebar_exposes_queue_activity_for_each_thread():

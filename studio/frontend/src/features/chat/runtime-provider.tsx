@@ -1447,9 +1447,27 @@ function CancelRegistrar(): ReactElement | null {
     useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
     return () => {
       const store = useChatRuntimeStore.getState();
-      if (!store.runningByThreadId[mainThreadId]) {
-        store.clearThreadCancel(mainThreadId);
+      let thread = null;
+      try {
+        thread = runtime?.threads.getById(mainThreadId) ?? null;
+      } catch {
+        // The runtime already discarded this thread, so its handle is stale.
       }
+      if (!thread?.getState().isRunning) {
+        store.clearThreadCancel(mainThreadId);
+        return;
+      }
+      // assistant-ui enters its running state before adapter preflight turns
+      // on runningByThreadId. Keep the only cancel handle after navigation,
+      // then release it when assistant-ui reports that the run actually ended.
+      let unsubscribe = () => {};
+      unsubscribe = thread.subscribe(() => {
+        if (thread.getState().isRunning) {
+          return;
+        }
+        useChatRuntimeStore.getState().clearThreadCancel(mainThreadId);
+        unsubscribe();
+      });
     };
   }, [aui, mainThreadId]);
 
