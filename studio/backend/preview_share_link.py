@@ -46,35 +46,48 @@ class PreviewShareLink:
             return None
         return getattr(app.state, "cloudflare_url", None) or self._url
 
+    async def _settled_studio_url(self, app) -> Optional[str]:
+        # A --cloudflare launch may still be bringing its startup tunnel up
+        # (the pending flag is set before the socket binds); wait for the
+        # outcome instead of racing it for the shared tunnel slot.
+        deadline = time.monotonic() + _STUDIO_TUNNEL_WAIT_SECONDS
+        waited = False
+        while getattr(app.state, "cloudflare_tunnel_pending", False):
+            if time.monotonic() >= deadline:
+                raise PreviewLinkUnavailable(
+                    "The studio's public address is still starting. Try again shortly."
+                )
+            waited = True
+            await asyncio.sleep(0.5)
+        # The kill switch may have flipped while we waited; a disable persists
+        # the setting before it can queue behind ensure's lock.
+        if waited and not get_preview_sharing_enabled():
+            raise PreviewSharingDisabled(_DISABLED_MESSAGE)
+        return getattr(app.state, "cloudflare_url", None)
+
     async def ensure(self, app) -> str:
         async with self._lock:
             # Under the lock so a create queued behind a disable fails instead
             # of resurrecting the tunnel that disable just tore down.
             if not get_preview_sharing_enabled():
                 raise PreviewSharingDisabled(_DISABLED_MESSAGE)
-            # A --cloudflare launch may still be bringing its startup tunnel up
-            # (uvicorn serves before it finishes); wait for its outcome instead
-            # of racing it for the shared tunnel slot.
-            deadline = time.monotonic() + _STUDIO_TUNNEL_WAIT_SECONDS
-            waited = False
-            while getattr(app.state, "cloudflare_tunnel_pending", False):
-                if time.monotonic() >= deadline:
-                    raise PreviewLinkUnavailable(
-                        "The studio's public address is still starting. Try again shortly."
-                    )
-                waited = True
-                await asyncio.sleep(0.5)
-            # The kill switch may have flipped while we waited; a disable
-            # persists the setting before it can queue behind this lock.
-            if waited and not get_preview_sharing_enabled():
-                raise PreviewSharingDisabled(_DISABLED_MESSAGE)
-            studio_url = getattr(app.state, "cloudflare_url", None)
+            studio_url = await self._settled_studio_url(app)
             if studio_url:
                 return studio_url
             if self._url:
                 return self._url
 
             port = await listener.start(app)
+            # The startup tunnel may have begun while the listener bound;
+            # recheck before racing it for the shared slot.
+            try:
+                studio_url = await self._settled_studio_url(app)
+            except BaseException:
+                await listener.stop()
+                raise
+            if studio_url:
+                await listener.stop()
+                return studio_url
             # Blocking: downloads cloudflared on first use, then waits for the probe.
             url = None
             try:

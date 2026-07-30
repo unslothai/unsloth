@@ -482,6 +482,40 @@ def test_ensure_rechecks_the_kill_switch_after_waiting(monkeypatch, link):
     assert fake.started == 0
 
 
+def test_ensure_rechecks_the_startup_tunnel_after_binding_the_listener(monkeypatch, link):
+    # A request can pass the first pending check before run.py arms the flag;
+    # the recheck after listener.start must catch the started tunnel instead
+    # of racing it for the shared slot.
+    class _State:
+        def __init__(self):
+            self.cloudflare_url = None
+            self.armed = False
+
+        @property
+        def cloudflare_tunnel_pending(self):
+            if self.armed:
+                # The startup tunnel settles by publishing its URL.
+                self.cloudflare_url = "https://studio.trycloudflare.com"
+            return False
+
+    state = _State()
+    app = _types.SimpleNamespace(state = state)
+
+    class _RacingListener(_FakeListener):
+        async def start(self, app):
+            state.armed = True  # the startup tunnel began while we bound
+            return await super().start(app)
+
+    fake = _RacingListener()
+    monkeypatch.setattr(psl, "listener", fake)
+    monkeypatch.setattr(
+        psl, "start_preview_tunnel", lambda port: pytest.fail("must not race the startup tunnel")
+    )
+
+    assert asyncio.run(link.ensure(app)) == "https://studio.trycloudflare.com"
+    assert fake.stopped == 1
+
+
 def test_ensure_gives_up_when_the_studio_tunnel_never_settles(monkeypatch, link):
     monkeypatch.setattr(psl, "_STUDIO_TUNNEL_WAIT_SECONDS", 0.0)
     app = _FakeApp()

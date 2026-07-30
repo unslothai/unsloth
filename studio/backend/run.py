@@ -1969,17 +1969,23 @@ def run_server(
     # the CLI applies it in its own parent).
     _apply_supplied_password(password)
 
+    _tunnel_will_start = _cloudflare_tunnel_should_start(
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        is_colab = _IS_COLAB,
+    )
+    # Set BEFORE the socket binds: uvicorn serves before the startup tunnel
+    # below runs, and the preview share link must never observe the gap and
+    # race that tunnel for the shared slot.
+    app.state.cloudflare_tunnel_pending = _tunnel_will_start
+
     # Never publish with the seeded default password active: prompt first (or
     # warn / fail closed headless; see _terminal_password_gate). Runs BEFORE the
     # socket binds so a pre-gate listener can't hand out the injected credential.
     _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
-        tunnel_will_start = _cloudflare_tunnel_should_start(
-            cloudflare = cloudflare,
-            host = host,
-            secure = secure,
-            api_only = api_only,
-            is_colab = _IS_COLAB,
-        ),
+        tunnel_will_start = _tunnel_will_start,
         host = host,
         secure = secure,
         api_only = api_only,
@@ -2073,9 +2079,8 @@ def run_server(
     _cloudflare_requested = _cloudflare_enabled
 
     if _cloudflare_enabled:
-        # Uvicorn is already serving: the pending flag stops the preview share
-        # link from racing this startup tunnel for the shared slot.
-        app.state.cloudflare_tunnel_pending = True
+        # cloudflare_tunnel_pending was set before the socket bound; this block
+        # settles it so waiting preview-link requests can proceed.
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
 
@@ -2088,6 +2093,8 @@ def run_server(
             logger.debug("Cloudflare tunnel skipped: %s", e)
         finally:
             app.state.cloudflare_tunnel_pending = False
+    else:
+        app.state.cloudflare_tunnel_pending = False
 
     # --secure fails closed: no tunnel means no public link, so exit rather than
     # silently fall back to a raw port.
