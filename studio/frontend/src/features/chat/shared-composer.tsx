@@ -36,6 +36,11 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import {
+  confirmStopRunningChatsIfNeeded,
+  getLocalPromptQueueThreadIds,
+} from "./utils/confirm-stop-running-chats";
+import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
@@ -990,6 +995,16 @@ export function SharedComposer({
     }
     if (content.length === 0) return;
 
+    const compareStopDecision = isGeneralizedCompare
+      ? await confirmStopRunningChatsIfNeeded(
+          "Loading models for comparison",
+          "reload",
+        )
+      : null;
+    if (compareStopDecision && !compareStopDecision.proceed) {
+      return;
+    }
+
     setText("");
     setPendingImages([]);
     setPendingAudio(null);
@@ -1213,6 +1228,16 @@ export function SharedComposer({
             );
           }
         }
+        const latePromptQueueThreadIds = getLocalPromptQueueThreadIds();
+        const promptQueueThreadIds = Array.from(
+          new Set([
+            ...(compareStopDecision?.promptQueueThreadIds ?? []),
+            ...latePromptQueueThreadIds,
+          ]),
+        );
+        if (promptQueueThreadIds.length > 0) {
+          requestPromptQueueStop(promptQueueThreadIds);
+        }
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
@@ -1227,6 +1252,8 @@ export function SharedComposer({
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          force_cancel_active:
+            compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
             ? {
                 gpu_memory_mode: effectiveGpuMemoryMode,

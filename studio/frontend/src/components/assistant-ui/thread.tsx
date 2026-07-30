@@ -2172,8 +2172,14 @@ const Composer: FC<{
         }
         const settingsId = registerQueuedChatRunSettings(
           getQueueThreadIds(),
-          runSettingsAtQueueStart,
+          {
+            ...runSettingsAtQueueStart,
+            params: { ...runSettingsAtQueueStart.params },
+          },
         );
+        // Deep Research is a one-shot mode. The registered clone keeps it for
+        // this item while later items from the same saved list use normal chat.
+        runSettingsAtQueueStart.deepResearchEnabled = false;
         pendingSettingsIds.add(settingsId);
         try {
           const runtime =
