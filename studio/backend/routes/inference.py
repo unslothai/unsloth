@@ -4883,7 +4883,13 @@ def _guard_chat_load_against_training(
         except Exception as e:
             logger.warning("Could not probe diffusion shim for chat-load guard: %s", e)
             diffusion_ngl = None
-    if is_gguf and diffusion_kind is not False and diffusion_ngl == 0:
+    # `is True`, not `is not False`: only a CONFIRMED diffusion GGUF is known to
+    # place nothing on the device at ngl 0. An unclassified one (unreadable header,
+    # name without the family) may be an ordinary GGUF, and --gpu-layers 0 is not
+    # zero VRAM there -- a device pin, tensor mode, mmproj or a GPU drafter all keep
+    # it resident (see LlamaCppBackend._zero_offload_keeps_gpu_visible). Matches the
+    # scaling block below, which already refuses to size an unknown classification.
+    if is_gguf and diffusion_kind is True and diffusion_ngl == 0:
         return
 
     diffusion_gpu = None
