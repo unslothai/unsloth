@@ -139,7 +139,6 @@ def _cache_entries_to_ignore() -> frozenset:
     """
     try:
         from huggingface_hub.utils import _cache_manager
-
         names = getattr(_cache_manager, "FILES_TO_IGNORE", None)
         if names:
             return frozenset(names)

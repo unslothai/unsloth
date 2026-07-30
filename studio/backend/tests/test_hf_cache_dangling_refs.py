@@ -1583,7 +1583,13 @@ def test_only_the_shared_key_orders_snapshots_by_mtime(module, allowed):
 
 # --- review-round regressions -------------------------------------------------
 
-def _repo_with(cache_root: Path, snapshots: dict, refs: dict, name: str = "models--Org--Model"):
+
+def _repo_with(
+    cache_root: Path,
+    snapshots: dict,
+    refs: dict,
+    name: str = "models--Org--Model",
+):
     """A cache repo with arbitrary per-snapshot contents and ref targets."""
     repo_dir = cache_root / name
     (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
