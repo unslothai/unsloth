@@ -89,10 +89,32 @@ function parseErrorText(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
+/**
+ * A long endpoint (`/api/inference/load`, `/unload`) pads its body so a proxy
+ * cannot time the request out, which means its status is committed before the
+ * work finishes. A failure discovered after that can only arrive in-band, under
+ * a 200, as `_deferred_error`. Anything else keeps its real status code.
+ */
+function deferredError(body: unknown): { status: number; message: string } | null {
+  const deferred =
+    body && typeof body === "object"
+      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
+          ._deferred_error
+      : undefined;
+  if (!deferred || typeof deferred !== "object") return null;
+  const status =
+    typeof deferred.status_code === "number" ? deferred.status_code : 500;
+  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+}
+
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(parseErrorText(response.status, body));
+  }
+  const deferred = deferredError(body);
+  if (deferred) {
+    throw new Error(deferred.message);
   }
   return body as T;
 }

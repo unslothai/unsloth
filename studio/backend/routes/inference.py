@@ -11,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, List, Literal, Optional, Union
@@ -1563,6 +1564,79 @@ def _tracked_cancel_unstarted_cleanup(tracker):
         tracker.__exit__(None, None, None)
 
     return _cleanup
+
+
+# Cloudflare quick tunnels (--secure mode) drop a request whose origin has sent
+# no body bytes for ~100s, and a 600 GB GGUF load runs for 100-330s: the browser
+# shows "Request failed" on a load the server completes fine. Measured against a
+# real quick tunnel, flushing the status line early is NOT enough -- a response
+# with headers at t=0 and no body still 524s -- but a single space every 20s
+# survives indefinitely. So a slow call commits a 200 and pads until its payload
+# is ready. Leading whitespace is legal JSON, so clients parse the body as-is.
+_TUNNEL_KEEPALIVE_AFTER_S = 15.0
+_TUNNEL_KEEPALIVE_EVERY_S = 20.0
+
+# Underscored so it cannot collide with a real field or the OpenAI ``error``
+# envelope: once the status is committed, a late failure can only travel in-band.
+_DEFERRED_ERROR_KEY = "_deferred_error"
+
+
+def _deferred_error_body(status_code: int, detail) -> bytes:
+    body = {_DEFERRED_ERROR_KEY: {"status_code": status_code, "detail": detail}}
+    return json.dumps(body).encode()
+
+
+async def _tunnel_safe_json(coro, *, label: str):
+    """Await ``coro``, padding the response body if it outruns the tunnel timer.
+
+    A call that finishes within ``_TUNNEL_KEEPALIVE_AFTER_S`` keeps the current
+    contract exactly, HTTPException and its status code included. Only a slower
+    one switches to a padded stream, and it pays for that by having to report a
+    late failure in the body: the status line is long gone by the time it is
+    known. Every failure raised before the delay elapses -- argument validation,
+    an unknown identifier, the download-manager and sidecar 409s -- still gets a
+    real status code, because those all raise in the first moments.
+
+    A client disconnect does not cancel the work: the load should finish and
+    leave the model resident either way, as it does today.
+    """
+    task = asyncio.ensure_future(coro)
+    # A client that disconnects mid-pad leaves nobody to await the task, and an
+    # unretrieved exception would log "Task exception was never retrieved".
+    # Retrieving it here does not consume it: result() below still raises.
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
+    if done:
+        return task.result()  # re-raises exactly as an un-wrapped await would
+
+    logger.info(
+        f"{label} exceeded {_TUNNEL_KEEPALIVE_AFTER_S:.0f}s; "
+        "padding the response so a proxy cannot time it out"
+    )
+
+    async def _body():
+        while True:
+            finished, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_EVERY_S)
+            if not finished:
+                yield b" "
+                continue
+            try:
+                payload = task.result()
+            except HTTPException as exc:
+                logger.info(f"{label} failed with {exc.status_code} after the response committed")
+                yield _deferred_error_body(exc.status_code, exc.detail)
+            except Exception as exc:
+                logger.exception(f"{label} failed after the response was committed")
+                yield _deferred_error_body(500, f"{type(exc).__name__}: {exc}")
+            else:
+                yield json.dumps(jsonable_encoder(payload)).encode()
+            return
+
+    return _SameTaskStreamingResponse(
+        _body(),
+        media_type = "application/json",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 async def _aclose_stream_resources(
@@ -5406,23 +5480,27 @@ async def load_model(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     _raise_if_sidecar_swap_in_progress()
-    # Hold the lifecycle gate across the load so idle auto-unload can't unload the
-    # model mid-load. Auto-switch calls _load_model_impl directly since it already
-    # holds this gate.
-    async with inference_lifecycle_gate():
-        _raise_if_sidecar_swap_in_progress()
-        # The active-generation gate runs inside _load_model_impl, once it knows this is a real
-        # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
-        return await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
-                force = request.force_cancel_active,
-                action = "Loading a model",
-                cancel = cancel,
-            ),
-        )
+
+    async def _load():
+        # Hold the lifecycle gate across the load so idle auto-unload can't unload the
+        # model mid-load. Auto-switch calls _load_model_impl directly since it already
+        # holds this gate.
+        async with inference_lifecycle_gate():
+            _raise_if_sidecar_swap_in_progress()
+            # The active-generation gate runs inside _load_model_impl, once it knows this is a real
+            # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
+            return await _load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active,
+                    action = "Loading a model",
+                    cancel = cancel,
+                ),
+            )
+
+    return await _tunnel_safe_json(_load(), label = "Model load")
 
 
 async def _load_model_impl(
@@ -6868,6 +6946,17 @@ async def install_latest_transformers_route(
 
 @router.post("/unload", response_model = UnloadResponse)
 async def unload_model(request: UnloadRequest, current_subject: str = Depends(get_current_subject)):
+    """Unload a model from memory.
+
+    Padded like /load: tearing a 600 GB GGUF down has been measured at 160s,
+    past the proxy timer. See ``_tunnel_safe_json``.
+    """
+    return await _tunnel_safe_json(
+        _unload_model_impl(request, current_subject), label = "Model unload"
+    )
+
+
+async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
