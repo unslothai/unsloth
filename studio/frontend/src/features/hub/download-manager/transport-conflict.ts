@@ -9,19 +9,23 @@ import {
   apiTransportStatusWithRetry,
   effectiveTransportMode,
 } from "./download-api-adapter";
-import type { DownloadRequest } from "./download-manager-types";
+import {
+  ACTIVE_STATES,
+  TRANSPORT_STATUS_TIMEOUT_MS,
+} from "./download-manager-config";
 import {
   findActiveJobForRepo,
   getState,
   hasVariantRepoActivity,
   jobKeyOf,
+  removeJob,
   repoKeyOf,
   setConflict,
 } from "./download-manager-state";
-import { startJob } from "./poll-loop";
+import type { DownloadRequest } from "./download-manager-types";
+import { probeAndAdopt, startJob } from "./poll-loop";
 import { runtimeRegistry } from "./runtime-registry";
 import { getTransportMode } from "./transport-preference";
-import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
 
 function reportConflictStartError(error: unknown): void {
   const description =
@@ -100,6 +104,28 @@ function isJobActiveFor(req: DownloadRequest): boolean {
   return Boolean(job && ACTIVE_STATES.has(job.state));
 }
 
+async function ensureActiveJobRuntime(req: DownloadRequest): Promise<boolean> {
+  const key = jobKeyOf(req.kind, req.repoId, req.variant);
+  if (!isJobActiveFor(req)) return false;
+  if (runtimeRegistry.runtimes.has(key)) return true;
+
+  const timeout = disposableTimeoutSignal(TRANSPORT_STATUS_TIMEOUT_MS);
+  try {
+    await probeAndAdopt(req.kind, req.repoId, timeout.signal, {
+      includeVariants: req.kind === "model",
+      fresh: true,
+    });
+  } finally {
+    timeout.dispose();
+  }
+  if (runtimeRegistry.runtimes.has(key)) return true;
+
+  // A persisted active mirror without a runtime cannot make progress. Remove it
+  // and let the backend start response authoritatively create or adopt the job.
+  removeJob(key);
+  return false;
+}
+
 async function runWithPendingStartGuard(
   req: DownloadRequest,
   action: () => Promise<DownloadStartOwnershipOutcome>,
@@ -108,7 +134,8 @@ async function runWithPendingStartGuard(
   // Distinguish attaching to an exact live transfer from creating one so a
   // caller can avoid cancelling a shared job that it does not own.
   if (hasActiveOrPendingStart(req)) {
-    return isJobActiveFor(req) ? "existing" : "busy";
+    if (!isJobActiveFor(req)) return "busy";
+    if (await ensureActiveJobRuntime(req)) return "existing";
   }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
   try {

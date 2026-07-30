@@ -40,6 +40,17 @@ export interface ManagedModelDownloadDependencies {
   jobKey: (kind: "model", repoId: string, variant: string | null) => string;
 }
 
+type SharedDownloadLifecycle = {
+  consumers: Set<symbol>;
+  startPromise: Promise<DownloadStartOutcome> | null;
+  startSettled: boolean;
+  owned: boolean;
+  cancelWhenOwned: boolean;
+  cancellation: Promise<void> | null;
+};
+
+const sharedDownloads = new Map<string, SharedDownloadLifecycle>();
+
 function sameVariant(left: string | null, right: string | null): boolean {
   return (
     (left?.trim().toLowerCase() ?? "") === (right?.trim().toLowerCase() ?? "")
@@ -52,12 +63,60 @@ function abortReason(signal: AbortSignal): unknown {
   );
 }
 
+function waitForPromiseOrAbort(
+  promise: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(abortReason(signal));
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      () => {
+        cleanup();
+        resolve();
+      },
+    );
+  });
+}
+
+function beginCancellation(
+  key: string,
+  shared: SharedDownloadLifecycle,
+  dependencies: ManagedModelDownloadDependencies,
+): Promise<void> {
+  if (shared.cancellation) {
+    return shared.cancellation;
+  }
+  const cancellation = Promise.resolve(dependencies.cancel(key))
+    .catch(() => undefined)
+    .then(() => undefined)
+    .finally(() => {
+      if (sharedDownloads.get(key) === shared) {
+        sharedDownloads.delete(key);
+      }
+    });
+  shared.cancellation = cancellation;
+  return cancellation;
+}
+
 /**
  * Start (or attach to) a Download Manager model job and wait for its terminal
- * event. The listener is registered before requestStart so a fast backend
- * completion cannot be missed. Aborting the chat cancels the exact managed job.
+ * event. Concurrent consumers of the exact job share ownership: one consumer
+ * leaving cannot cancel work another still needs, and a successor cannot start
+ * until cancellation of the previous owned generation has finished.
  */
-export function coordinateManagedModelDownload(
+export async function coordinateManagedModelDownload(
   request: ManagedModelDownloadRequest,
   signal: AbortSignal,
   dependencies: ManagedModelDownloadDependencies,
@@ -68,38 +127,77 @@ export function coordinateManagedModelDownload(
     managedRequest.repoId,
     managedRequest.variant,
   );
+  const prior = sharedDownloads.get(key);
+  if (prior?.cancellation) {
+    await waitForPromiseOrAbort(prior.cancellation, signal);
+    return coordinateManagedModelDownload(request, signal, dependencies);
+  }
+
+  const existing = sharedDownloads.get(key);
+  const shared: SharedDownloadLifecycle = existing ?? {
+    consumers: new Set<symbol>(),
+    startPromise: null,
+    startSettled: false,
+    owned: false,
+    cancelWhenOwned: false,
+    cancellation: null,
+  };
+  if (!existing) {
+    sharedDownloads.set(key, shared);
+  }
+  const consumer = Symbol(key);
+  shared.consumers.add(consumer);
 
   return new Promise((resolve, reject) => {
     let settled = false;
     let unsubscribe: (() => void) | null = null;
-    let startOutcome: DownloadStartOutcome | null = null;
 
     const cleanup = () => {
       signal.removeEventListener("abort", onAbort);
       unsubscribe?.();
       unsubscribe = null;
     };
-    const settle = (result: ManagedModelDownloadResult) => {
-      if (settled) {
-        return;
+    const detach = (cancelIfLast: boolean): Promise<void> | null => {
+      shared.consumers.delete(consumer);
+      if (shared.consumers.size > 0) {
+        return null;
       }
+      if (!shared.startSettled) {
+        shared.cancelWhenOwned ||= cancelIfLast;
+        return null;
+      }
+      if (cancelIfLast && shared.owned) {
+        return beginCancellation(key, shared, dependencies);
+      }
+      if (sharedDownloads.get(key) === shared) {
+        sharedDownloads.delete(key);
+      }
+      return null;
+    };
+    const settle = (result: ManagedModelDownloadResult) => {
+      if (settled) return;
       settled = true;
       cleanup();
+      detach(false);
       resolve(result);
     };
     const fail = (error: unknown) => {
-      if (settled) {
-        return;
-      }
+      if (settled) return;
       settled = true;
       cleanup();
+      detach(false);
       reject(error);
     };
     const onAbort = () => {
-      if (startOutcome === "started") {
-        Promise.resolve(dependencies.cancel(key)).catch(() => undefined);
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const cancellation = detach(true);
+      if (cancellation) {
+        cancellation.finally(() => reject(abortReason(signal)));
+      } else {
+        reject(abortReason(signal));
       }
-      fail(abortReason(signal));
     };
 
     if (signal.aborted) {
@@ -112,41 +210,44 @@ export function coordinateManagedModelDownload(
       managedRequest.repoId,
       {
         onComplete: (variant) => {
-          if (sameVariant(variant, managedRequest.variant)) {
-            settle("complete");
-          }
+          if (sameVariant(variant, managedRequest.variant)) settle("complete");
         },
         onCancelled: (variant) => {
-          if (sameVariant(variant, managedRequest.variant)) {
-            settle("cancelled");
-          }
+          if (sameVariant(variant, managedRequest.variant)) settle("cancelled");
         },
         onError: (variant) => {
-          if (sameVariant(variant, managedRequest.variant)) {
-            settle("error");
-          }
+          if (sameVariant(variant, managedRequest.variant)) settle("error");
         },
       },
     );
     signal.addEventListener("abort", onAbort, { once: true });
 
-    dependencies
-      .requestStart(managedRequest)
+    shared.startPromise ??= dependencies.requestStart(managedRequest);
+    shared.startPromise
       .then((outcome) => {
-        startOutcome = outcome;
-        // The abort may have landed while requestStart was still running its
-        // async preflight, before ownership was known. Cancel only when this
-        // request actually started the job, never when it attached to one.
-        if (signal.aborted) {
-          if (outcome === "started") {
-            Promise.resolve(dependencies.cancel(key)).catch(() => undefined);
+        shared.startSettled = true;
+        shared.owned = outcome === "started";
+        if (shared.consumers.size === 0) {
+          if (shared.owned && shared.cancelWhenOwned) {
+            beginCancellation(key, shared, dependencies);
+          } else if (sharedDownloads.get(key) === shared) {
+            sharedDownloads.delete(key);
           }
-          return;
         }
-        if (outcome !== "started" && outcome !== "existing") {
+        if (!settled && outcome !== "started" && outcome !== "existing") {
           settle(outcome);
         }
       })
-      .catch(() => settle("error"));
+      .catch(() => {
+        shared.startSettled = true;
+        shared.owned = false;
+        if (
+          shared.consumers.size === 0 &&
+          sharedDownloads.get(key) === shared
+        ) {
+          sharedDownloads.delete(key);
+        }
+        settle("error");
+      });
   });
 }

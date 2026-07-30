@@ -183,3 +183,157 @@ test("turns an unexpected start rejection into a managed error", async () => {
   );
   assert.equal(harness.unsubscribed(), true);
 });
+
+test("one consumer abort cannot cancel a shared owned download", async () => {
+  const listeners: Array<
+    Parameters<ManagedModelDownloadDependencies["subscribe"]>[2]
+  > = [];
+  const cancelledKeys: string[] = [];
+  let starts = 0;
+  const dependencies: ManagedModelDownloadDependencies = {
+    requestStart: async () => {
+      starts += 1;
+      return "started";
+    },
+    cancel: async (key) => {
+      cancelledKeys.push(key);
+    },
+    subscribe: (_kind, _repoId, nextListeners) => {
+      listeners.push(nextListeners);
+      return () => undefined;
+    },
+    jobKey: (kind, repoId, variant) => `${kind}:${repoId}#${variant}`,
+  };
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const first = coordinateManagedModelDownload(
+    REQUEST,
+    firstController.signal,
+    dependencies,
+  );
+  const second = coordinateManagedModelDownload(
+    REQUEST,
+    secondController.signal,
+    dependencies,
+  );
+  await Promise.resolve();
+
+  firstController.abort(new Error("first consumer left"));
+  await assert.rejects(first);
+  assert.equal(starts, 1);
+  assert.deepEqual(cancelledKeys, []);
+
+  for (const listener of listeners) {
+    listener.onComplete?.(REQUEST.variant, 123);
+  }
+  assert.equal(await second, "complete");
+  assert.deepEqual(cancelledKeys, []);
+});
+
+test("the last shared consumer cancels an owned download exactly once", async () => {
+  const cancelledKeys: string[] = [];
+  const dependencies: ManagedModelDownloadDependencies = {
+    requestStart: async () => "started",
+    cancel: async (key) => {
+      cancelledKeys.push(key);
+    },
+    subscribe: () => () => undefined,
+    jobKey: (kind, repoId, variant) => `${kind}:${repoId}#${variant}`,
+  };
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const first = coordinateManagedModelDownload(
+    REQUEST,
+    firstController.signal,
+    dependencies,
+  );
+  const second = coordinateManagedModelDownload(
+    REQUEST,
+    secondController.signal,
+    dependencies,
+  );
+  await Promise.resolve();
+
+  firstController.abort();
+  await assert.rejects(first);
+  assert.deepEqual(cancelledKeys, []);
+
+  secondController.abort();
+  await assert.rejects(second);
+  assert.deepEqual(cancelledKeys, [
+    `model:${REQUEST.repoId}#${REQUEST.variant}`,
+  ]);
+});
+
+test("a successor waits for owned cancellation before starting", async () => {
+  const listeners: Array<
+    Parameters<ManagedModelDownloadDependencies["subscribe"]>[2]
+  > = [];
+  let starts = 0;
+  let finishCancellation: (() => void) | undefined;
+  const cancellation = new Promise<void>((resolve) => {
+    finishCancellation = resolve;
+  });
+  const dependencies: ManagedModelDownloadDependencies = {
+    requestStart: async () => {
+      starts += 1;
+      return "started";
+    },
+    cancel: () => cancellation,
+    subscribe: (_kind, _repoId, nextListeners) => {
+      listeners.push(nextListeners);
+      return () => undefined;
+    },
+    jobKey: (kind, repoId, variant) => `${kind}:${repoId}#${variant}`,
+  };
+  const firstController = new AbortController();
+  const first = coordinateManagedModelDownload(
+    REQUEST,
+    firstController.signal,
+    dependencies,
+  );
+  await Promise.resolve();
+  firstController.abort(new Error("restart"));
+  let firstSettled = false;
+  void first.catch(() => {
+    firstSettled = true;
+  });
+
+  const successor = coordinateManagedModelDownload(
+    REQUEST,
+    new AbortController().signal,
+    dependencies,
+  );
+  await Promise.resolve();
+  assert.equal(starts, 1);
+  assert.equal(firstSettled, false);
+
+  finishCancellation?.();
+  await assert.rejects(first);
+  await Promise.resolve();
+  assert.equal(starts, 2);
+
+  listeners.at(-1)?.onComplete?.(REQUEST.variant, 123);
+  assert.equal(await successor, "complete");
+});
+
+
+test("a terminal event during start preflight does not request cancellation", async () => {
+  const harness = createHarness();
+  let finishStart: ((outcome: "started") => void) | undefined;
+  harness.dependencies.requestStart = () =>
+    new Promise((resolve) => {
+      finishStart = resolve;
+    });
+  const pending = coordinateManagedModelDownload(
+    REQUEST,
+    new AbortController().signal,
+    harness.dependencies,
+  );
+
+  harness.listeners().onComplete?.(REQUEST.variant, 123);
+  assert.equal(await pending, "complete");
+  finishStart?.("started");
+  await Promise.resolve();
+  assert.deepEqual(harness.cancelledKeys, []);
+});

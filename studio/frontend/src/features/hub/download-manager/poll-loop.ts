@@ -69,6 +69,7 @@ import {
   repoKeyOf,
   scheduleRemoval,
   setExpectedBytesForJob,
+  useDownloadManagerStore,
 } from "./download-manager-state";
 import {
   clearWatchdog,
@@ -842,6 +843,27 @@ async function probeCancelOutcome(
   }
 }
 
+function cancellationAttemptSettled(key: string, epoch: number): boolean {
+  const live = runtimeRegistry.runtimes.get(key);
+  if (live && live.epoch !== epoch) return true;
+  const job = getState().jobs[key];
+  return !job || job.state !== "cancelling";
+}
+
+function waitForCancellationAttempt(key: string, epoch: number): Promise<void> {
+  if (cancellationAttemptSettled(key, epoch)) return Promise.resolve();
+  return new Promise((resolve) => {
+    let unsubscribe: () => void = () => undefined;
+    const finish = () => {
+      if (!cancellationAttemptSettled(key, epoch)) return;
+      unsubscribe();
+      resolve();
+    };
+    unsubscribe = useDownloadManagerStore.subscribe(finish);
+    finish();
+  });
+}
+
 export async function cancelJob(key: string): Promise<void> {
   const job = getState().jobs[key];
   if (!job) return;
@@ -852,41 +874,45 @@ export async function cancelJob(key: string): Promise<void> {
   clearWatchdog(rt);
   if (rt) armCancelWatchdog(key, rt, cancelEpoch);
   try {
-    const result = await withDownloadTimeout<{ state: DownloadJobState }>(
-      (signal) => apiCancel(job, signal),
-    );
-    applyCancelResult(key, cancelEpoch, result);
-  } catch (err) {
-    const liveAtError = runtimeRegistry.runtimes.get(key);
-    if (rt && liveAtError && liveAtError.epoch !== cancelEpoch) return;
-    // apiCancel failed; the probe below is authoritative. Disarm the watchdog so
-    // it can't finalize "cancelled" mid-probe and tear down a still-running worker.
-    clearWatchdog(liveAtError);
+    try {
+      const result = await withDownloadTimeout<{ state: DownloadJobState }>(
+        (signal) => apiCancel(job, signal),
+      );
+      applyCancelResult(key, cancelEpoch, result);
+    } catch (err) {
+      const liveAtError = runtimeRegistry.runtimes.get(key);
+      if (rt && liveAtError && liveAtError.epoch !== cancelEpoch) return;
+      // apiCancel failed; the probe below is authoritative. Disarm the watchdog so
+      // it can't finalize "cancelled" mid-probe and tear down a still-running worker.
+      clearWatchdog(liveAtError);
 
-    const probe = await probeCancelOutcome(key, job, rt, cancelEpoch);
-    if (probe === "stale") return;
+      const probe = await probeCancelOutcome(key, job, rt, cancelEpoch);
+      if (probe === "stale") return;
 
-    const live = runtimeRegistry.runtimes.get(key);
-    if (rt && (!live || live.epoch !== cancelEpoch)) return;
+      const live = runtimeRegistry.runtimes.get(key);
+      if (rt && (!live || live.epoch !== cancelEpoch)) return;
 
-    if (probe.terminal !== null) {
-      if (probe.terminal === "complete") {
-        const current = getState().jobs[key];
-        finalize(key, "complete", { bytes: current?.downloadedBytes ?? 0 });
-      } else if (probe.terminal === "error") {
-        finalize(key, "error", { error: probe.error });
-      } else {
-        finalize(key, "cancelled");
+      if (probe.terminal !== null) {
+        if (probe.terminal === "complete") {
+          const current = getState().jobs[key];
+          finalize(key, "complete", { bytes: current?.downloadedBytes ?? 0 });
+        } else if (probe.terminal === "error") {
+          finalize(key, "error", { error: probe.error });
+        } else {
+          finalize(key, "cancelled");
+        }
+        return;
       }
-      return;
-    }
 
-    if (live) {
-      live.cancelRequested = false;
+      if (live) {
+        live.cancelRequested = false;
+      }
+      patchJob(key, { state: "running" });
+      toast.error("Couldn't cancel the download. It's still running.");
+      console.warn("Failed to cancel download", err);
     }
-    patchJob(key, { state: "running" });
-    toast.error("Couldn't cancel the download. It's still running.");
-    console.warn("Failed to cancel download", err);
+  } finally {
+    await waitForCancellationAttempt(key, cancelEpoch);
   }
 }
 

@@ -1501,26 +1501,29 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
 
-  async function canAutoLoad(payload: {
-    model_path: string;
-    max_seq_length: number;
-    is_lora: boolean;
-    gguf_variant?: string | null;
-    // GGUF-only: scopes the training guard to the same placement policy /load
-    // will use. Manual mode must match because it makes placement user-owned.
-    // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
-    // guard sizes conservatively, while Manual mode bypasses that estimate.
-    // The safetensors fallback omits both fields and uses HF auto-placement.
-    gpu_ids?: number[];
-    gpu_memory_mode?: "auto" | "manual";
-    cache_type_kv?: string | null;
-    tensor_parallel?: boolean | null;
-  }): Promise<boolean> {
+  async function canAutoLoad(
+    payload: {
+      model_path: string;
+      max_seq_length: number;
+      is_lora: boolean;
+      gguf_variant?: string | null;
+      // GGUF-only: scopes the training guard to the same placement policy /load
+      // will use. Manual mode must match because it makes placement user-owned.
+      // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
+      // guard sizes conservatively, while Manual mode bypasses that estimate.
+      // The safetensors fallback omits both fields and uses HF auto-placement.
+      gpu_ids?: number[];
+      gpu_memory_mode?: "auto" | "manual";
+      cache_type_kv?: string | null;
+      tensor_parallel?: boolean | null;
+    },
+    auth = { hfToken, trustRemoteCode },
+  ): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
-      hf_token: hfToken,
+      hf_token: auth.hfToken,
       load_in_4bit: true,
-      trust_remote_code: trustRemoteCode,
+      trust_remote_code: auth.trustRemoteCode,
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
@@ -1982,7 +1985,7 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
       if (rt.selectedGpuIds != null) {
         await ensureGpuDeviceCache();
       }
-      const defaultGpuIds = reconcilePersistedGpuIds(
+      const preflightGpuIds = reconcilePersistedGpuIds(
         rt.selectedGpuIds,
         rt.selectedGpuIndexKind,
       );
@@ -1994,7 +1997,7 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
           gguf_variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
           // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
-          gpu_ids: defaultGpuIds ?? undefined,
+          gpu_ids: preflightGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
         }))
       ) {
@@ -2041,6 +2044,108 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
           blockedByTrustRemoteCode: false,
         };
       }
+      let defaultGpuIds: number[] | null = null;
+      let defaultGpuMemoryMode = useChatRuntimeStore.getState().gpuMemoryMode;
+      let defaultHfToken: string | null = null;
+      let defaultTrustRemoteCode = false;
+      let defaultSpecSettings = resolveSpeculativeSettingsForLoad();
+      let placementStable = false;
+      const sameGpuIds = (
+        left: number[] | null,
+        right: number[] | null,
+      ): boolean =>
+        left === right ||
+        (left != null &&
+          right != null &&
+          left.length === right.length &&
+          left.every((value, index) => value === right[index]));
+
+      // Validation is asynchronous and the picker remains editable while the
+      // transfer runs. Only load from a snapshot that is still current after
+      // validation, otherwise retry with the latest placement and credentials.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let current = useChatRuntimeStore.getState();
+        if (current.selectedGpuIds != null) {
+          await ensureGpuDeviceCache();
+          current = useChatRuntimeStore.getState();
+        }
+        if (current.params.checkpoint || current.modelLoading) {
+          toast.dismiss(toastId);
+          if (current.modelLoading) {
+            await waitForModelReady(abortSignal);
+          }
+          return {
+            loaded: Boolean(useChatRuntimeStore.getState().params.checkpoint),
+            blockedByTrustRemoteCode: false,
+          };
+        }
+
+        const currentRawGpuIds = current.selectedGpuIds;
+        const currentGpuIndexKind = current.selectedGpuIndexKind;
+        const currentGpuIds = reconcilePersistedGpuIds(
+          currentRawGpuIds,
+          currentGpuIndexKind,
+        );
+        const currentGpuMemoryMode = current.gpuMemoryMode;
+        const currentHfToken = current.hfToken || null;
+        const currentTrustRemoteCode = current.params.trustRemoteCode ?? false;
+        const currentSpecSettings = resolveSpeculativeSettingsForLoad();
+        const allowed = await canAutoLoad(
+          {
+            model_path: DEFAULT_AUTO_LOAD_MODEL_ID,
+            max_seq_length: 0,
+            is_lora: false,
+            gguf_variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
+            gpu_ids: currentGpuIds ?? undefined,
+            gpu_memory_mode: currentGpuMemoryMode,
+          },
+          {
+            hfToken: currentHfToken,
+            trustRemoteCode: currentTrustRemoteCode,
+          },
+        );
+
+        const latest = useChatRuntimeStore.getState();
+        const latestSpecSettings = resolveSpeculativeSettingsForLoad();
+        if (latest.params.checkpoint || latest.modelLoading) {
+          toast.dismiss(toastId);
+          if (latest.modelLoading) {
+            await waitForModelReady(abortSignal);
+          }
+          return {
+            loaded: Boolean(useChatRuntimeStore.getState().params.checkpoint),
+            blockedByTrustRemoteCode: false,
+          };
+        }
+        const unchanged =
+          sameGpuIds(latest.selectedGpuIds, currentRawGpuIds) &&
+          latest.selectedGpuIndexKind === currentGpuIndexKind &&
+          latest.gpuMemoryMode === currentGpuMemoryMode &&
+          (latest.hfToken || null) === currentHfToken &&
+          (latest.params.trustRemoteCode ?? false) === currentTrustRemoteCode &&
+          latestSpecSettings.speculativeType ===
+            currentSpecSettings.speculativeType &&
+          latestSpecSettings.specDraftNMax ===
+            currentSpecSettings.specDraftNMax;
+        if (!unchanged) continue;
+        if (!allowed) {
+          toast.dismiss(toastId);
+          return { loaded: false, blockedByTrustRemoteCode };
+        }
+
+        defaultGpuIds = currentGpuIds;
+        defaultGpuMemoryMode = currentGpuMemoryMode;
+        defaultHfToken = currentHfToken;
+        defaultTrustRemoteCode = currentTrustRemoteCode;
+        defaultSpecSettings = currentSpecSettings;
+        placementStable = true;
+        break;
+      }
+      if (!placementStable) {
+        toast.dismiss(toastId);
+        return { loaded: false, blockedByTrustRemoteCode };
+      }
+
       updateAutoLoadToast(
         "Starting model…",
         "Download complete. Loading Qwen3.5-4B-MTP into memory.",
@@ -2048,7 +2153,7 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
       loadAttempts += 1;
       const loadResp = await loadModel({
         model_path: DEFAULT_AUTO_LOAD_MODEL_ID,
-        hf_token: hfToken,
+        hf_token: defaultHfToken,
         // Model default under both modes: Auto layers + no pin means
         // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
         // preflight above sends the same).
@@ -2056,9 +2161,9 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
-        trust_remote_code: trustRemoteCode,
-        speculative_type: specSettings.speculativeType,
-        spec_draft_n_max: specSettings.specDraftNMax,
+        trust_remote_code: defaultTrustRemoteCode,
+        speculative_type: defaultSpecSettings.speculativeType,
+        spec_draft_n_max: defaultSpecSettings.specDraftNMax,
         // GPU Memory mode is a standing preference, so honor it on auto-load.
         // The layer/MoE/split knobs and the context pin are per-model: the live
         // store may hold edits drafted for a staged pick, and a fresh default
@@ -2066,13 +2171,13 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
         // the cached-candidate path. The GPU pick deliberately differs (it's the
         // picker's current on-screen selection, which the canAutoLoad preflight
         // above already committed to).
-        gpu_memory_mode: rt.gpuMemoryMode,
+        gpu_memory_mode: defaultGpuMemoryMode,
         gpu_layers: GPU_LAYERS_AUTO,
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
       });
-      saveSpeculativeType(specSettings.speculativeType);
-      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
+      saveSpeculativeType(defaultSpecSettings.speculativeType);
+      persistGpuMemoryModeOnLoad(loadResp, defaultGpuMemoryMode);
       useChatRuntimeStore
         .getState()
         .setCheckpoint(

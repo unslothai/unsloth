@@ -1221,3 +1221,52 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
     )
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
+
+
+def test_first_chat_default_autoload_revalidates_final_load_snapshot():
+    """The load must validate and consume one stable post-transfer snapshot."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    after_download = src.split(
+        "const downloadResult = await downloadModelWithManager", 1
+    )[1]
+    before_load, load_and_after = after_download.split(
+        "const loadResp = await loadModel", 1
+    )
+
+    assert "for (let attempt = 0; attempt < 3; attempt += 1)" in before_load
+    assert "const allowed = await canAutoLoad(" in before_load
+    assert "const latest = useChatRuntimeStore.getState();" in before_load
+    assert "if (!unchanged) continue;" in before_load
+    assert "hf_token: defaultHfToken" in load_and_after
+    assert "trust_remote_code: defaultTrustRemoteCode" in load_and_after
+    assert "gpu_memory_mode: defaultGpuMemoryMode" in load_and_after
+    assert "gpu_ids: defaultGpuIds ?? undefined" in load_and_after
+
+
+def test_download_manager_start_adopts_or_discards_active_mirrors():
+    """An active persisted mirror cannot be treated as attached without runtime."""
+    src = _read("features/hub/download-manager/transport-conflict.ts")
+    guard = src.split("async function runWithPendingStartGuard", 1)[1]
+    guard = guard.split("export function requestStartWithOwnership", 1)[0]
+
+    assert "await ensureActiveJobRuntime(req)" in guard
+    helper = src.split("async function ensureActiveJobRuntime", 1)[1]
+    helper = helper.split("async function runWithPendingStartGuard", 1)[0]
+    assert "await probeAndAdopt(" in helper
+    assert "runtimeRegistry.runtimes.has(key)" in helper
+    assert "removeJob(key)" in helper
+
+
+def test_download_manager_cancel_resolves_after_cancelling_state_exits():
+    """Callers awaiting cancel receive a generation-scoped completion barrier."""
+    src = _read("features/hub/download-manager/poll-loop.ts")
+    cancel = src.split("export async function cancelJob", 1)[1]
+    cancel = cancel.split("export function adoptJob", 1)[0]
+
+    assert "finally {" in cancel
+    assert "await waitForCancellationAttempt(key, cancelEpoch);" in cancel
+    helper = src.split("function cancellationAttemptSettled", 1)[1]
+    helper = helper.split("export async function cancelJob", 1)[0]
+    assert 'job.state !== "cancelling"' in helper
+    assert "live.epoch !== epoch" in helper
+    assert "useDownloadManagerStore.subscribe(finish)" in helper
