@@ -845,8 +845,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
                 unreadable.add("adapter")
             continue
         if empty:
-            # The loader picks a name by existence, so a zero-byte weight is one it opens and
-            # cannot read. A numbered shard needs no note: it is simply absent from its family.
+            # The loader picks a name by existence, so a zero-byte weight is one it opens and cannot
+            # read. A numbered shard needs no note: it is simply absent from its family.
             empty_kind = _weight_family_kind(path.name)
             if empty_kind is not None and _WEIGHT_SHARD_RE.search(path.name) is None:
                 empty_whole[empty_kind].add(path.suffix.lower())
@@ -865,8 +865,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             base_evidence = not is_adapter
         kind = _weight_family_kind(path.name)
         if kind is None:
-            # Weights the classifier counted that this walk cannot group: a .ckpt, or a diffusion
-            # prefix. Absence of a family is not absence of a payload, so record that one is here.
+            # Weights the classifier counted but this walk cannot group (.ckpt, diffusion prefix).
+            # No family is not no payload, so record that one is here.
             if base_evidence:
                 ungrouped.add("base")
             continue
@@ -891,9 +891,9 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
     # from_pretrained reads the shard map from the index and never globs, so shards without one are
     # invisible. Named for the family: model-*.safetensors wants model.safetensors.index.json.
+    # With no index the loader looks past these shards, so they neither serve the row nor veto it;
+    # one whose index exists but cannot be used is picked and failed on instead.
     unloadable: set = set()
-    # No index at all and the loader never looks for these shards, so they neither serve the row nor
-    # veto it; one whose index exists but cannot be used is picked and failed on instead.
     invisible: set = set()
     for family in groups["base"]:
         index_path = snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json"
@@ -905,8 +905,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             invisible.add(family)
         elif _index_cannot_serve_its_shards(index_path, shard_names.get(family, set())):
             unloadable.add(family)
-    # peft resolves only the singular adapter_model.* and has no shard path, so it never looks at a
-    # numbered adapter set either.
+    # peft resolves only the singular adapter_model.*, so it never looks at a numbered adapter set.
     invisible |= set(groups["adapter"])
     return _SnapshotPayload(
         model_format,
@@ -984,8 +983,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             if suffix in payload.whole[kind]:
                 # Only the row's own kind proves it loads: a lone adapter_model.bin reads as
                 # checkpoint-like and would stand in for a row with no base weights. It vetoes
-                # nothing when the row's own payload is here but names no family, as a .ckpt or a
-                # diffusion prefix does, since then the weights it would stand in for do exist.
+                # nothing once the row's own payload is here but names no family (.ckpt, diffusion
+                # prefix), since then the weights it would stand in for do exist.
                 return kind != wanted and wanted not in payload.ungrouped
             if suffix in payload.empty_whole[kind]:
                 # The name exists, so the loader stops here and opens nothing.
@@ -998,8 +997,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             if not families:
                 continue
             if all(family in payload.invisible_families for family in families):
-                # Nothing names these shards, so the loader looks straight past them to the next
-                # name rather than failing on them. They cannot serve the row and cannot veto it.
+                # Nothing names these shards, so the loader looks past them to the next name rather
+                # than failing on them: they neither serve the row nor veto it.
                 unreachable = True
                 continue
             # An unloadable family counts as incomplete rather than vetoing the snapshot: a whole
@@ -1009,8 +1008,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 for family, indices in families.items()
             )
         if unreachable:
-            # Weights this kind recognises are here, no name the loader tries reaches them, and
-            # nothing else of this kind served the row.
+            # This kind's weights are here, nothing else of it served the row, and no name the
+            # loader tries reaches them.
             return True
     # No family either way. Absence is not evidence here: a diffusion or .ckpt payload classifies
     # from its suffix while naming no family this walk recognises, so it must not read as broken.

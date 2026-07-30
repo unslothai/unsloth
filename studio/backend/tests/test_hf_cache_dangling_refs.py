@@ -1698,9 +1698,8 @@ def test_a_torn_payload_stays_partial_when_the_ref_resolves(tmp_path, monkeypatc
 def test_selection_passes_over_a_newer_snapshot_whose_weight_file_is_empty(
     tmp_path, monkeypatch, weight
 ):
-    """A zero-byte weight file used to be skipped outright, so the newer revision classified as
-    holding nothing broken and won selection over a complete older one. The loader picks the name
-    by existence, so it opens the empty file and fails."""
+    """A zero-byte weight used to be skipped outright, so the newer revision read as holding nothing
+    broken and beat a whole older one. The loader picks the name by existence, then cannot open."""
     config = "adapter_config.json" if weight.startswith("adapter") else "config.json"
     body = b'{"peft_type":"LORA"}' if config == "adapter_config.json" else b'{"model_type":"llama"}'
     repo_dir = _repo_with(

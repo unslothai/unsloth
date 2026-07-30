@@ -442,8 +442,8 @@ def test_the_local_default_variant_is_one_that_can_load(
 
 
 def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch, tmp_path):
-    """The variant lister and the load both take the whole copy, so a resolver ordering on mtime
-    alone reads header metadata and chat templates out of a newer half download nothing loads."""
+    """The lister and the load take the whole copy, so mtime order alone would read metadata out of
+    a newer half download nothing loads."""
     import os
 
     from hub.utils.gguf import iter_snapshots_preferring_whole
@@ -463,7 +463,7 @@ def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch
     )
 
     assert iter_snapshots_preferring_whole("Org/Quant", "Q4_K_M") == [older, newer]
-    # Without a variant to judge there is nothing to prefer, so the mtime order stands.
+    # No variant to judge, so mtime order stands.
     assert iter_snapshots_preferring_whole("Org/Quant", None) == [newer, older]
 
 

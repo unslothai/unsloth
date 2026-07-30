@@ -443,11 +443,9 @@ def iter_snapshots_preferring_whole(
     gguf_variant: Optional[str],
     root = None,
 ):
-    """Cache snapshots newest first, but every one holding *gguf_variant* whole ahead of any holding
-    it short a shard.
-
-    The variant lister and the load both take the whole copy, so a resolver ordering on mtime alone
-    reads header metadata and chat templates out of a newer half download that nothing will load.
+    """Cache snapshots newest first, but ones holding *gguf_variant* whole ahead of ones short a
+    shard. The lister and the load both take the whole copy, so mtime order alone would read
+    metadata out of a newer half download nothing will load.
     """
     ordered = list(iter_hf_cache_snapshots(repo_id, root = root))
     if not gguf_variant or len(ordered) < 2:
