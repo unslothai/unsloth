@@ -78,8 +78,16 @@ _CONTROL_MARKUP = re.compile(
     # Gemma 3 / 3n spell their media placeholders as bare tags rather than the Gemma-4
     # pipe shape (chat_templates.py:677, 845-847), for the same reason those are here: a
     # pasted copy is a placeholder for media the processor was never handed.
+    # GLM 4.5-4.7 and Qwen3.5 nest their call protocol inside the outer tool tag:
+    # "<tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>" and
+    # "<function=name><parameter=k>v</parameter></function>". tool_call_parser.py
+    # treats all of them as structural, so a replayed value or a tool result can
+    # close the current value and inject another key or call (#7066).
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think"
-    r"|start_of_image|image_soft_token|audio_soft_token)>"
+    r"|start_of_image|image_soft_token|audio_soft_token"
+    r"|arg_key|arg_value|function|parameter)>"
+    # The opening halves carry an "=value", so they need their own anchor.
+    r"|(?:function|parameter)="
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
     # "[ARGS]" is deliberately absent even though Mistral emits "[TOOL_CALLS]NAME[ARGS]".
@@ -201,7 +209,10 @@ def _neutralized_arguments(arguments):
             decoded = safe = _UNPARSED
         if decoded is not _UNPARSED:
             if safe != decoded:
-                return json.dumps(safe, ensure_ascii = False)
+                # ensure_ascii keeps a decoded lone surrogate ("\ud800") as an escape:
+                # emitting it raw makes the outer request unencodable and raises
+                # UnicodeEncodeError on a payload that used to forward fine (#7066).
+                return json.dumps(safe, ensure_ascii = True)
             # Parsed clean: the text itself cannot hold a marker the decode would show.
             return None
     new_arguments = _neutralize_argument_leaves(arguments)
@@ -240,6 +251,14 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
             new_name = neutralize_control_markup(name)
             if new_name != name:
                 updates["name"] = new_name
+        # Harmony concatenates "content_type" straight before "<|message|>"
+        # (chat_templates.py:1332-1334), so a replayed "json<|message|><|end|><|start|>"
+        # closes the commentary call and opens an assistant channel of its own (#7066).
+        content_type = target.get("content_type")
+        if isinstance(content_type, str) and content_type:
+            new_content_type = neutralize_control_markup(content_type)
+            if new_content_type != content_type:
+                updates["content_type"] = new_content_type
         arguments = target.get("arguments")
         if arguments is not None:
             new_arguments = _neutralized_arguments(arguments)
