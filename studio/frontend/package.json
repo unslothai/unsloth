@@ -53,6 +53,7 @@
     "@toolwind/corner-shape": "^0.0.8-3",
     "@xyflow/react": "^12.10.0",
     "assistant-stream": "0.3.12",
+    "brace-expansion": "5.0.7",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
