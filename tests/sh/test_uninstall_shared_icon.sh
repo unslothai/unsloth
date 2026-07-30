@@ -28,9 +28,9 @@ assert_nofile() { _l="$1"; [ -f "$2" ] && { echo "  FAIL: $_l (unexpected $2)"; 
 assert_dir()    { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing dir $2)"; FAIL=$((FAIL+1)); }; }
 assert_nodir()  { _l="$1"; [ -d "$2" ] && { echo "  FAIL: $_l (unexpected dir $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 
-# Extract just the function definition (12-space indented in the WSL branch).
+# Match the function's closing brace without depending on its nesting depth.
 FUNC_FILE=$(mktemp -p "$_TMP_ROOT")
-sed -n '/_drop_shared_icon_if_unused() {/,/^            }/p' "$UNINSTALL_SH" > "$FUNC_FILE"
+sed -n '/_drop_shared_icon_if_unused() {/,/^[[:space:]]*}$/p' "$UNINSTALL_SH" > "$FUNC_FILE"
 # shellcheck disable=SC1090
 . "$FUNC_FILE"
 
