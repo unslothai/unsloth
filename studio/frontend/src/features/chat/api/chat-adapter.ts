@@ -1636,8 +1636,7 @@ async function autoLoadSmallestModel(): Promise<{
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
               // Sized like the load below: a remembered manual DiffusionGemma
-              // split (0 in particular) must not be refused by the training
-              // guard as a full-GGUF occupant.
+              // split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
             }

@@ -10,17 +10,13 @@ export const GPU_LAYERS_AUTO = -1;
 
 /** GPU placement a compare pane loads with.
  *
- * `own` is the pane's own per-model config; `shared` is the live-store snapshot
- * taken at Send (the settings the user pressed Send with, so a sequential load's
- * response echo cannot rewrite them mid-run).
+ * `own` is the pane's per-model config; `shared` is the live-store snapshot taken
+ * at Send, so a sequential load's response echo cannot rewrite it mid-run.
  *
- * The diffusion runner honours an explicit layer split (#7574), so a pane's OWN
- * split is sent rather than forced to Auto. The shared snapshot is NOT inherited
- * by a diffusion pane: its layer count is bounded by whichever chat GGUF was
- * loaded at Send, and no diffusion UI can show or clear an inherited split (the
- * mode row and the layer slider are hidden for diffusion, and a saved diffusion
- * config is stripped of both). A leaked count would silently repartition the
- * model, and a leaked 0 masks its devices entirely.
+ * A pane's OWN split is sent rather than forced to Auto, since the diffusion
+ * runner honours it (#7574). The shared snapshot is NOT inherited by a diffusion
+ * pane: its layer count is bounded by another GGUF, no diffusion UI can show or
+ * clear it, and a leaked 0 masks the devices entirely.
  */
 export function resolveComparePlacement(
   own: { gpuMemoryMode?: "auto" | "manual"; gpuLayers?: number },
@@ -37,15 +33,13 @@ export function resolveComparePlacement(
 
 /** Whether a pane must get the diffusion-safe placement above.
  *
- * An UNCLASSIFIED GGUF counts. The metadata preflight can only read a header
- * that is already on disk, so an undownloaded GGUF whose name does not carry
- * the DiffusionGemma family comes back `diffusion_unknown` -- and inheriting
- * the shared split there is the same leak as inheriting it for a confirmed
- * one, only discovered later: `/load` downloads the file, reads a diffusion
- * header, and applies the other model's count anyway.
+ * An UNCLASSIFIED GGUF counts: the preflight only reads a header already on disk,
+ * so an undownloaded GGUF with no family in its name comes back
+ * `diffusion_unknown`, and `/load` may then read a diffusion header and apply the
+ * inherited count anyway.
  *
- * Non-GGUF panes are excluded: they are definitively not a diffusion GGUF, and
- * they keep inheriting the snapshot (their load sends no placement at all).
+ * Non-GGUF panes are excluded: definitively not diffusion, and they send no
+ * placement at all.
  */
 export function shouldPinDiffusionPlacement(
   targetIsGguf: boolean,

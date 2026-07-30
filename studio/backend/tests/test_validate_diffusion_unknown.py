@@ -3,15 +3,13 @@
 
 """/api/inference/validate must report an INCONCLUSIVE diffusion check as such.
 
-`_classify_diffusion_gguf` is a tri-state: True (header or family name says
-DiffusionGemma), False (header read, ordinary architecture), None (nothing to
-read -- the GGUF is not downloaded yet -- and the name carries no family).
+`_classify_diffusion_gguf` is a tri-state: True (diffusion), False (header read,
+ordinary), None (nothing to read, and no family in the name).
 
-The response used to collapse None into `is_diffusion = False`, so a caller
-could not tell "ordinary GGUF" from "unknown". The staged-metadata preflight
-picks a GPU-layer split from exactly that answer, and /load then downloads the
-file, reads a diffusion header, and applies whatever split the request carried:
-an inherited 0 CPU-masks the runner, another count repartitions or OOMs it.
+The response used to collapse None into `is_diffusion = False`, so a caller could
+not tell "ordinary GGUF" from "unknown". The staged-metadata preflight picks a
+GPU-layer split from that answer, and /load may then apply it to a diffusion
+runner: an inherited 0 CPU-masks it, another count repartitions or OOMs it.
 """
 
 import asyncio
@@ -46,8 +44,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         diffusion_kind,
         is_gguf = True,
     ):
-        # include_context_length mirrors the real staged-metadata preflight (and
-        # skips the training guard, which allocates nothing to check here).
+        # Mirrors the real staged-metadata preflight; also skips the training guard.
         request = ValidateModelRequest(
             model_path = "someone/repacked-gguf",
             include_context_length = True,

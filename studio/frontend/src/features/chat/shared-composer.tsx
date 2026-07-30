@@ -1062,8 +1062,7 @@ export function SharedComposer({
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
         let resolvedIsDiffusion = sel.isDiffusion;
-        // Set when the preflight could not classify the GGUF either way (not
-        // downloaded yet / unreadable header, and no family in the name), so
+        // Set when the preflight could not classify the GGUF either way, so
         // resolvedIsDiffusion === false below must not be read as "ordinary".
         let diffusionUnknown = false;
         if (targetIsGguf && resolvedIsDiffusion === undefined) {
@@ -1110,18 +1109,12 @@ export function SharedComposer({
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
-        // The diffusion runner honours the layer split (#7574), so a pane's OWN
-        // saved split is sent instead of being forced to Auto. The shared
-        // snapshot is not: it is the live store of whichever chat GGUF was
-        // loaded at Send, and its layer count is bounded by THAT model. No
-        // diffusion UI can show or clear an inherited split (the mode row and
-        // the layer slider are hidden for diffusion, and a saved diffusion
-        // config is stripped of both), so a pane would silently run at another
-        // model's count -- and a leaked 0 masks its devices entirely. Only the
+        // A pane's OWN saved split is sent instead of being forced to Auto
+        // (#7574); the shared Send-time snapshot is not, since its layer count is
+        // bounded by another GGUF and no diffusion UI can show or clear it. Only
         // knobs the runner has no equivalent for (MoE offload, tensor parallel)
-        // stay hard-forced. An UNCLASSIFIED GGUF is pinned too: /load downloads
-        // it, may then read a diffusion header, and would apply the inherited
-        // count regardless.
+        // stay hard-forced. An UNCLASSIFIED GGUF is pinned too: /load may still
+        // read a diffusion header after downloading. See lib/gpu-placement.ts.
         const {
           gpuMemoryMode: effectiveGpuMemoryMode,
           gpuLayers: effectiveGpuLayers,

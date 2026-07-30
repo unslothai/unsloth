@@ -887,9 +887,8 @@ export function useChatModelRuntime() {
               ...(isGguf
                 ? {
                     gpu_memory_mode: loadGpuMemoryMode,
-                    // Sized like the follow-up /load: without it a manual
-                    // DiffusionGemma split is validated as a full-GGUF occupant
-                    // and 409s during training even when the split fits.
+                    // Sized like the follow-up /load: else a manual DiffusionGemma
+                    // split 409s during training even when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
                   }

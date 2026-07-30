@@ -2,12 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """The diffusion runner must honour the GPU-layer split (#7574).
 
-Studio used to accept a manual GPU-layers setting, drop it on the diffusion path, and launch
-the visual server with every layer pinned to GPU, so a GGUF larger than VRAM OOMed in
-cudaMalloc with no way out.
+Studio used to drop a manual GPU-layers setting on the diffusion path and pin every layer
+to GPU, so a GGUF larger than VRAM OOMed in cudaMalloc with no way out.
 
-The pure helpers are exercised directly; the wiring is checked at source level in the style of
-test_llama_cpp_wall_clock_cap.py, since importing the backend pulls in the whole studio stack.
+The pure helpers are exercised directly; the wiring is checked at source level, since
+importing the backend pulls in the whole studio stack.
 """
 
 from __future__ import annotations
@@ -40,9 +39,8 @@ def llama_cpp():
     except Exception as exc:  # missing optional studio dep on a bare checkout
         pytest.skip(f"llama_cpp not importable here: {exc}")
     finally:
-        # Do not leave studio/backend on the path for the rest of the session: it
-        # shadows generic top-level names (utils, state, models, hub, auth, storage)
-        # for every later test in the same run.
+        # Do not leave studio/backend on sys.path: it shadows generic top-level names
+        # (utils, state, models, hub, auth, storage) for every later test.
         if sys.path and sys.path[0] == backend:
             sys.path.pop(0)
     return module
@@ -119,8 +117,7 @@ def test_zero_layers_masks_the_child_devices(llama_cpp):
     """gpu_layers=0 must CUDA-mask the child, else _gpu_offload_active=False lies to the
     training VRAM coordinator and a GPU-resident runner survives into a training run.
 
-    Behavioural, not a source-text match: the point is the token the child receives,
-    and an explicit GPU pick must not win over a zero-layer request.
+    Behavioural, not a source-text match: what matters is the token the child receives.
     """
     arg = llama_cpp.LlamaCppBackend._diffusion_gpu_arg
     assert arg([3, 1], force_cpu = True) == ""
@@ -171,8 +168,7 @@ def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
     b._requested_spec_mode = "auto"
     b._spec_fallback_reason = b._speculative_type = b._spec_draft_n_max = None
     b._chat_template_override = b._mtp_draft_path = b._extra_args = None
-    # The dropped-split rows below model "the shim stayed old"; the shim-upgraded
-    # flip is exercised separately in test_zoo_upgrade_reloads_a_dropped_split.
+    # Dropped-split rows model "the shim stayed old"; the upgrade flip is separate.
     b.diffusion_split_supported = lambda: False
     return b
 
@@ -203,8 +199,7 @@ def _in_target_state(b, *, mode, layers):
         (8, 8, "manual", 4, False),  # a split change reloads
         (8, 8, "auto", -1, False),  # manual -> auto reloads
         (0, 0, "manual", 0, True),  # CPU-only split dedupes with itself
-        # The shim had no --ngl, so -1 is running but 20 is what was asked for.
-        # Comparing against the ask is what stops an endless reload.
+        # No --ngl: -1 runs but 20 was the ask; comparing on the ask stops a reload loop.
         (-1, 20, "manual", 20, True),
         (-1, 20, "manual", 8, False),
     ],
@@ -303,9 +298,8 @@ def test_training_guard_sees_the_layer_count():
 
 @pytest.mark.parametrize("name", ["shim", "shim.pyw", "SHIM.PY"])
 def test_probe_keys_on_argv_shape_not_suffix(llama_cpp, tmp_path, name):
-    """_find_diffusion_assets launches any UNSLOTH_DG_SHIM file as-is, so the probe
-    must answer for that exact file -- an extensionless or .pyw override previously
-    fell through to the installed package and answered for a different shim."""
+    """Any UNSLOTH_DG_SHIM file launches as-is, so the probe must answer for that exact
+    file; an extensionless or .pyw override used to fall through to the package."""
     shim = tmp_path / name
     shim.write_text('ap.add_argument("--ngl", type=int)\n', encoding = "utf-8")
     assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
@@ -380,9 +374,8 @@ def test_positive_split_scales_the_guard_estimate(llama_cpp, required, ngl, n_la
 
 
 def test_probe_ignores_a_sibling_shim_next_to_a_custom_override(llama_cpp, tmp_path):
-    """An UNSLOTH_DG_SHIM override named anything runs as-is; a capable shim.py in
-    the same directory must not vouch for it, or the launch appends --ngl to a
-    parser that exits on it."""
+    """An override runs as-is; a capable sibling shim.py must not vouch for it, or the
+    launch appends --ngl to a parser that exits on it."""
     override = tmp_path / "my_shim"
     override.write_text('ap.add_argument("--maxtok", type=int)\n', encoding = "utf-8")
     sibling = tmp_path / "shim.py"

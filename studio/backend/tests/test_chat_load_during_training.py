@@ -629,16 +629,15 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
 
     def test_zero_layer_diffusion_split_bypasses_the_training_guard(self):
-        """A confirmed DiffusionGemma at ngl 0 places no layers, so it cannot
-        compete with training for VRAM and must not be refused."""
+        """A confirmed DiffusionGemma at ngl 0 places no layers, so it must not be
+        refused."""
         captured = []
         self._guard_zero_layer(diffusion_kind = True, captured = captured)
         self.assertEqual(captured, [])
 
     def test_zero_layer_unclassified_gguf_still_hits_the_training_guard(self):
-        """An unreadable header is not a diffusion promise. --gpu-layers 0 on an
-        ordinary GGUF still holds VRAM whenever a device pin, tensor mode, mmproj
-        or a GPU drafter keeps it visible, so the estimate must still run."""
+        """An unreadable header is not a diffusion promise: --gpu-layers 0 on an
+        ordinary GGUF can still hold VRAM, so the estimate must run."""
         captured = []
         with self.assertRaises(HTTPException) as ctx:
             self._guard_zero_layer(diffusion_kind = None, captured = captured)

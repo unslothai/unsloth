@@ -10,13 +10,11 @@ import {
   shouldPinDiffusionPlacement,
 } from "../src/features/chat/lib/gpu-placement.ts";
 
-// The live-store snapshot a compare run takes at Send: the settings of whatever
-// chat GGUF was loaded then, Manual with 12 of ITS layers pinned to the GPU.
+// The Send-time snapshot: Manual with 12 of another chat GGUF's layers on GPU.
 const shared = { gpuMemoryMode: "manual" as const, gpuLayers: 12 };
 
 test("a diffusion pane never inherits another model's layer split", () => {
-  // An unremembered pane resolves to DEFAULT_PER_MODEL_CONFIG, which carries
-  // neither key -- so `??` would fall through to the shared snapshot.
+  // An unremembered pane carries neither key, so `??` would fall through to shared.
   assert.deepEqual(resolveComparePlacement({}, shared, true), {
     gpuMemoryMode: "auto",
     gpuLayers: GPU_LAYERS_AUTO,
@@ -65,10 +63,9 @@ test("an own value wins over the snapshot for a chat GGUF too", () => {
 
 // ── an unclassified GGUF must not inherit the split either ──
 //
-// The preflight only reads a header that is already on disk, so an undownloaded
-// GGUF whose repo/file name does not carry "DiffusionGemma" comes back
-// is_diffusion=false + diffusion_unknown=true. /load then downloads it, reads a
-// diffusion header, and applies whatever split the request carried.
+// An undownloaded GGUF with no "DiffusionGemma" in its name comes back
+// is_diffusion=false + diffusion_unknown=true; /load may then read a diffusion
+// header and apply whatever split the request carried.
 
 test("an unclassified GGUF pane gets the diffusion-safe placement", () => {
   assert.equal(shouldPinDiffusionPlacement(true, false, true), true);
@@ -94,8 +91,7 @@ test("an unclassified GGUF pane cannot inherit a CPU-masking zero", () => {
 });
 
 test("a CLASSIFIED ordinary GGUF still inherits the snapshot", () => {
-  // The whole point of the tri-state: a readable non-diffusion header keeps the
-  // pre-existing inheritance, so this fix costs the common path nothing.
+  // The point of the tri-state: the common path keeps its existing inheritance.
   assert.equal(shouldPinDiffusionPlacement(true, false, false), false);
   assert.deepEqual(
     resolveComparePlacement(
@@ -113,8 +109,7 @@ test("a confirmed diffusion GGUF is pinned however it was classified", () => {
 });
 
 test("a non-GGUF pane keeps inheriting the snapshot", () => {
-  // It sends no placement at all, and it is definitively not a diffusion GGUF,
-  // so an unknown flag must not flip it to Auto.
+  // It sends no placement at all, so an unknown flag must not flip it to Auto.
   assert.equal(shouldPinDiffusionPlacement(false, undefined, false), false);
   assert.equal(shouldPinDiffusionPlacement(false, undefined, true), false);
 });

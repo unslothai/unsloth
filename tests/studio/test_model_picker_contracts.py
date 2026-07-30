@@ -251,10 +251,9 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
 
 def test_compare_load_uses_each_models_gpu_config():
     src = _read("features/chat/shared-composer.tsx")
-    # The mode/layer rule now lives in lib/gpu-placement.ts, behaviourally covered
-    # by studio/frontend/tests/gpu-placement.test.ts, because a diffusion pane (or
-    # one whose GGUF could not be classified yet) must NOT inherit the snapshot.
-    # Assert the delegation, and the fallback itself at its new home.
+    # The mode/layer rule now lives in lib/gpu-placement.ts (behaviour covered by
+    # studio/frontend/tests/gpu-placement.test.ts): assert the delegation here, and
+    # the fallback itself at its new home.
     assert "} = resolveComparePlacement(" in src
     assert "shouldPinDiffusionPlacement(" in src
     placement = " ".join(_read("features/chat/lib/gpu-placement.ts").split())

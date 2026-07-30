@@ -193,8 +193,7 @@ export async function validateModel(
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
       // Only 0 changes the verdict: a zero-layer DiffusionGemma split places no
-      // layers on any device, so validate must not refuse it during training when
-      // /load would accept it.
+      // layers, so validate must not refuse what /load would accept.
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
@@ -221,9 +220,8 @@ export async function fetchGgufStagedMetadata(payload: {
   layerCount: number | null;
   moeLayerCount: number | null;
   isDiffusion: boolean;
-  /** The backend could not classify the GGUF either way, so `isDiffusion:
-   *  false` above is "not known to be diffusion". Callers that pick a GPU
-   *  split before the load must treat it as possibly-diffusion. */
+  /** Unclassifiable either way, so `isDiffusion: false` above means "not known to
+   *  be diffusion": callers picking a GPU split must assume possibly-diffusion. */
   diffusionUnknown: boolean;
 }> {
   let nativePathLease: string | null = null;
@@ -261,8 +259,7 @@ export async function fetchGgufStagedMetadata(payload: {
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
     isDiffusion: res.is_diffusion ?? false,
-    // Absent on a pre-#7575 backend: an old server never reported the
-    // inconclusive case, so treat the answer as classified, exactly as before.
+    // Absent on a pre-#7575 backend, which never reported the inconclusive case.
     diffusionUnknown: res.diffusion_unknown ?? false,
   };
 }

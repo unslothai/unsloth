@@ -744,22 +744,19 @@ export function loadedGpuMemoryFields(resp: {
           // loaded baseline) -- else a later switch back to Manual would snapshot
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
-          // Diffusion is the exception for the layer count: an "auto" diffusion
-          // response can be an older shim DROPPING a manual split (the backend
-          // reports what ran and keeps the ask in diffusion_requested_ngl).
-          // Resetting the slider would turn that ask into manual/-1 on the next
-          // Apply, unapplyable even after the unsloth_zoo upgrade that adds
-          // --ngl. Standing layers survive, like the standing mode below.
+          // Diffusion excepted: an "auto" diffusion response may be an older shim
+          // DROPPING a manual split (the ask lives in diffusion_requested_ngl).
+          // Resetting the slider would turn that ask into manual/-1, unapplyable
+          // even after the unsloth_zoo upgrade that adds --ngl.
           ...(resp.is_diffusion ? {} : { gpuLayers: GPU_LAYERS_AUTO }),
           nCpuMoe: 0,
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF reporting "auto" ran on the runner's own defaults, so an
-    // inert standing manual preference must survive it -- the next chat load
-    // still honors the user's choice. But "manual" means a layer split was
-    // actually applied (#7574): adopt it, or a refresh hydrates the store back
-    // to the persisted "auto" while the runner is serving a manual split.
+    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert
+    // standing manual preference must survive it. But "manual" means a split was
+    // actually applied (#7574): adopt it, or a refresh hydrates back to "auto"
+    // while the runner serves a manual split.
     ...(resp.is_diffusion && mode !== "manual" ? {} : { gpuMemoryMode: mode }),
     loadedGpuMemoryMode: mode,
     ggufLayerCount: resp.n_layers ?? null,
