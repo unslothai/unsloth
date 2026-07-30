@@ -412,12 +412,28 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel &&
     storedReasoningEnabled === null
   ) {
+    // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
+    // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't match
+    // first, and for "Qwen3.5-35B-A3B" the result is 35 (total params),
+    // not 3 (MoE active params). Mirrors the regex in
+    // use-chat-model-runtime.ts and the inline one in llama_cpp.py.
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-      const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-      if (sizeMatch && Number.parseFloat(sizeMatch[1]) < 9) {
-        reasoningDefault = false;
+      // Scan path segments right to left so the size nearest the leaf wins over
+      // a size-like parent dir; trailing boundary prevents matching "8bit".
+      const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
+      const sizeMatch = mid
+        .replace(/\\/g, "/")
+        .split("/")
+        .reduceRight<RegExpMatchArray | null>(
+          (found, seg) => found ?? seg.match(sizeRe),
+          null,
+        );
+      if (sizeMatch) {
+        const size = Number.parseFloat(sizeMatch[1]);
+        const sizeB = sizeMatch[2] === "m" ? size / 1000 : size;
+        if (sizeB <= 9) reasoningDefault = false;
       }
     }
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
