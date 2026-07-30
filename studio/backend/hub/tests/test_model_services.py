@@ -103,6 +103,34 @@ def test_big_endian_detection_ignores_model_name_be_token():
     )
 
 
+def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path):
+    root = tmp_path / "MTP"
+    root.mkdir()
+    main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
+    for file in (
+        main,
+        root / "gemma-4-12b-it-Q8_0-MTP.gguf",
+        root / "mtp-gemma-4-12b-it.gguf",
+    ):
+        file.write_bytes(b"x")
+
+    rows = local_inventory._scan_custom_folder(root)
+
+    assert rows
+    assert {(Path(row.load_id), row.model_format) for row in rows} == {(main, "gguf")}
+
+
+def test_unregistered_variant_identity_stays_scan_relative(tmp_path):
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "deadbeef"
+    snapshot.mkdir()
+    (snapshot / "model.gguf").write_bytes(b"x")
+
+    assert [v.quant for v in list_local_gguf_variants(str(snapshot))[0]] == ["model"]
+    assert [v.quant for v in gguf.list_local_gguf_variants(str(snapshot))[0]] == ["model"]
+
+
 def _cached_model_row(tmp_path: Path, *, partial: bool, active_cache: bool | None, size_bytes: int):
     path = tmp_path / f"cache-{active_cache}-{partial}-{size_bytes}"
     return model_common._local_model_info(

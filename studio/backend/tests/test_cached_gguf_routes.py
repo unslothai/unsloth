@@ -126,6 +126,27 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     assert row.active_cache is False
 
 
+def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
+    root = tmp_path / "MTP"
+    root.mkdir()
+    main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
+    companion = root / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    main.write_bytes(b"x")
+    companion.write_bytes(b"x")
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(root)}])
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+    paths = {row.path for row in rows}
+
+    assert str(main) in paths
+    assert str(companion) not in paths
+
+
 def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatch, tmp_path):
     """Only a repo outside the active cache needs a snapshot load_id."""
     active = tmp_path / "active"

@@ -22,7 +22,10 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from hub.utils.download_manifest import ExpectedFile
-from hub.utils.gguf import is_mtp_drafter_path
+from hub.utils.gguf import (
+    is_mtp_drafter_path,
+    list_local_gguf_variants as list_hub_local_gguf_variants,
+)
 from hub.utils.gguf_plan import (
     build_gguf_variant_plans,
     plan_from_expected_files,
@@ -35,6 +38,7 @@ from utils.models.model_config import (
     detect_gguf_model,
     detect_mtp_file,
     extract_model_size_b,
+    list_local_gguf_variants,
 )
 from utils.native_path_leases import native_gguf_companion_parent_allowed
 
@@ -426,9 +430,42 @@ def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
     sub.mkdir()
     copy = sub / "gemma-4-12b-it-BF16-MTP.gguf"
     copy.write_bytes(b"x")
+    deep = sub / "BF16" / copy.name
+    deep.parent.mkdir()
+    deep.write_bytes(b"x")
     assert detect_gguf_model(str(copy)) is None
     # Selecting the MTP dir itself must not surface the copies as models.
     assert detect_gguf_model(str(sub)) is None
+    assert list_local_gguf_variants(str(tmp_path))[0] == []
+    assert list_hub_local_gguf_variants(str(tmp_path))[0] == []
+
+
+def test_registered_mtp_root_keeps_main_and_excludes_companions(tmp_path, monkeypatch):
+    root = tmp_path / "MTP"
+    nested = root / "MTP"
+    nested.mkdir(parents = True)
+    main = root / "Qwen3.6-27B-MTP-UD-Q6_K_XL.gguf"
+    terminal = root / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    prefixed = root / "mtp-gemma-4-12b-it-Q8_0.gguf"
+    nested_copy = nested / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    for file, size in ((main, 1), (terminal, 20), (prefixed, 30), (nested_copy, 40)):
+        file.write_bytes(b"x" * size)
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders",
+        lambda: [{"path": str(root)}],
+    )
+
+    assert detect_gguf_model(str(main)) == str(main.resolve())
+    assert detect_gguf_model(str(root)) == str(main.resolve())
+    assert detect_gguf_model(str(terminal)) is None
+    assert detect_gguf_model(str(prefixed)) is None
+    assert detect_gguf_model(str(nested_copy)) is None
+    expected = [("UD-Q6_K_XL", main.name)]
+    assert [(v.quant, v.filename) for v in list_local_gguf_variants(str(root))[0]] == expected
+    assert [(v.quant, v.filename) for v in list_hub_local_gguf_variants(str(root))[0]] == expected
+    config = ModelConfig.from_identifier(str(main))
+    assert config is not None and config.is_gguf
+    assert config.gguf_file == str(main.resolve())
 
 
 # ── Root drafter wins over new-scheme MTP/ copies ────────────────────
