@@ -232,11 +232,16 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "...visibleExternalSettings" in CHAT_ADAPTER
     assert "visibleState.activeThreadEpoch" in CHAT_ADAPTER
     assert "activeThreadEpoch ===" in CHAT_ADAPTER
+    assert "visibleState.queuedSettingsEpoch" in CHAT_ADAPTER
+    assert "queuedSettingsEpoch ===" in CHAT_ADAPTER
+    assert "preserveVisibleSettings: true" in CHAT_ADAPTER
+    assert "trackQueuedSettings: !options?.preserveVisibleSettings" in CHAT_ADAPTER
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
-    assert ".setCheckpoint(visibleExternalSettings.params.checkpoint)" in CHAT_ADAPTER
+    assert "{ trackQueuedSettings: false }" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel()") >= 2
-    assert CHAT_ADAPTER.count("modelId: params.checkpoint") >= 2
+    assert CHAT_ADAPTER.count("await persistResolvedQueuedModel(params.checkpoint)") >= 2
+    assert "notifyQueuedRunFailed();\n          throw error;" in CHAT_ADAPTER
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "return pendingSettings[index].settings" in QUEUED_SETTINGS
@@ -272,6 +277,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "local: promptQueueRunUsesLocalModel(run)" in THREAD
     assert "temporary: incognitoAtQueueStart" in THREAD
     assert "temporary: promptQueueRunIsTemporary(run)" in THREAD
+    assert "dispatched: Boolean(getActivePromptQueueItem(run)?.dispatched)" in THREAD
+    assert "queueEntry?.dispatched" in THREAD
+    assert 'aria-label="Stop queued message"' in THREAD
     assert "entry.temporary" in QUEUE_BOUNDARY
     assert "queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
     assert "!runningByThreadId[threadId] && !cancel" in STOP_CHAT_THREAD

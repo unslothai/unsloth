@@ -1083,6 +1083,7 @@ type ChatRuntimeStore = {
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   activeThreadEpoch: number;
+  queuedSettingsEpoch: number;
   activeProjectId: string | null;
   /**
    * Temporary / incognito chat toggle. When on, the active conversation
@@ -1116,7 +1117,10 @@ type ChatRuntimeStore = {
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
-  setParams: (params: InferenceParams) => void;
+  setParams: (
+    params: InferenceParams,
+    options?: { trackQueuedSettings?: boolean },
+  ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
@@ -1155,7 +1159,11 @@ type ChatRuntimeStore = {
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setLastModelLoadError: (error: string | null) => void;
-  setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
+  setCheckpoint: (
+    modelId: string,
+    ggufVariant?: string | null,
+    options?: { trackQueuedSettings?: boolean },
+  ) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
@@ -1584,6 +1592,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedChatTemplateOverride: null,
   activeThreadId: null,
   activeThreadEpoch: 0,
+  queuedSettingsEpoch: 0,
   activeProjectId: null,
   incognito: false,
   settingsPanelOpen: false,
@@ -1651,7 +1660,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
-  setParams: (params) =>
+  setParams: (params, options) =>
     set((state) => {
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
@@ -1665,6 +1674,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
+        ...(options?.trackQueuedSettings === false
+          ? {}
+          : { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }),
         ...(checkpointChanged
           ? { contextUsage: null, contextUsageByThreadId: {} }
           : {}),
@@ -1823,7 +1835,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
-  setCheckpoint: (modelId, ggufVariant) =>
+  setCheckpoint: (modelId, ggufVariant, options) =>
     set((state) => {
       // Persist external selections so they survive a refresh. Local ids are
       // NOT persisted -- they're re-derived from the backend on mount, and a
@@ -1862,6 +1874,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
+        ...(options?.trackQueuedSettings === false
+          ? {}
+          : { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }),
         // Provenance and the spec-fallback reason both describe the model
         // being replaced, so they go together on a real change. Dropping only
         // one leaves the settings sheet pairing a stale reason with the wrong
@@ -1984,15 +1999,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }));
   },
   setReasoningEnabled: (reasoningEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
       }
-      return { reasoningEnabled };
+      return {
+        reasoningEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
     set({ lastOpenRouterChosenModel }),
-  setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
+  setReasoningStyle: (reasoningStyle) =>
+    set((state) => ({
+      reasoningStyle,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setReasoningEffort: (reasoningEffort) =>
     set((state) => {
       setScalarSettingVersion(
@@ -2000,7 +2022,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         reasoningEffort,
         state.reasoningEffort,
       );
-      return { reasoningEffort };
+      return {
+        reasoningEffort,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPreserveThinking: (preserveThinking) =>
     set((state) => {
@@ -2009,34 +2034,48 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         state.preserveThinking,
       );
-      return { preserveThinking };
+      return {
+        preserveThinking,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
       }
       if (toolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return toolsEnabled ? { toolsEnabled, deepResearchEnabled: false } : { toolsEnabled };
+      return {
+        ...(toolsEnabled
+          ? { toolsEnabled, deepResearchEnabled: false }
+          : { toolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return codeToolsEnabled
-        ? { codeToolsEnabled, deepResearchEnabled: false }
-        : { codeToolsEnabled };
+      return {
+        ...(codeToolsEnabled
+          ? { codeToolsEnabled, deepResearchEnabled: false }
+          : { codeToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setImageToolsEnabled: (imageToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       if (imageToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return imageToolsEnabled
-        ? { imageToolsEnabled, deepResearchEnabled: false }
-        : { imageToolsEnabled };
+      return {
+        ...(imageToolsEnabled
+          ? { imageToolsEnabled, deepResearchEnabled: false }
+          : { imageToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setDeepResearchEnabled: (deepResearchEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
       const permissionMode = loadPermissionMode();
       if (deepResearchEnabled) {
@@ -2060,23 +2099,33 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             permissionMode,
             confirmToolCalls:
               permissionMode === "ask" || permissionMode === "auto",
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           }
-        : { deepResearchEnabled };
+        : {
+            deepResearchEnabled,
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+          };
     }),
   setResearchWebsitePolicy: (researchWebsitePolicy) =>
-    set(() => {
+    set((state) => {
       saveResearchWebsitePolicy(researchWebsitePolicy);
-      return { researchWebsitePolicy };
+      return {
+        researchWebsitePolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setArtifactsEnabled: (artifactsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       if (artifactsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return artifactsEnabled
-        ? { artifactsEnabled, deepResearchEnabled: false }
-        : { artifactsEnabled };
+      return {
+        ...(artifactsEnabled
+          ? { artifactsEnabled, deepResearchEnabled: false }
+          : { artifactsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setShowCanvasMenuItem: (showCanvasMenuItem) =>
     set(() => {
@@ -2107,12 +2156,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { allowArtifactNetworkAccess };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return mcpEnabledForChat
-        ? { mcpEnabledForChat, deepResearchEnabled: false }
-        : { mcpEnabledForChat };
+      return {
+        ...(mcpEnabledForChat
+          ? { mcpEnabledForChat, deepResearchEnabled: false }
+          : { mcpEnabledForChat }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setConfirmToolCalls: (confirmToolCalls) =>
     set((state) => {
@@ -2120,13 +2172,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // The legacy toggle is a view over the permission level: on -> "ask",
       // off -> "off" (no prompts). While "full" is active the level is left
       // alone (the toggle is disabled in the UI anyway).
-      if (state.permissionMode === "full") return { confirmToolCalls };
+      if (state.permissionMode === "full") {
+        return {
+          confirmToolCalls,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+        };
+      }
       const permissionMode: PermissionMode = confirmToolCalls ? "ask" : "off";
       savePermissionMode(permissionMode);
-      return { confirmToolCalls, permissionMode };
+      return {
+        confirmToolCalls,
+        permissionMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPermissionMode: (permissionMode) =>
-    set(() => {
+    set((state) => {
       // "full" is session-only (never persisted, see init); ask/auto/off
       // persist and keep the legacy confirm toggle in sync (the gate is
       // requested for both ask and auto).
@@ -2140,18 +2201,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
-      return { permissionMode, bypassPermissions: false, confirmToolCalls };
+      return {
+        permissionMode,
+        bypassPermissions: false,
+        confirmToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setBypassPermissions: (bypassPermissions) =>
     // Deliberately not persisted (see init): a reload must not silently keep
     // the sandbox/confirmation bypass active without re-accepting the warning.
     // Turning bypass off returns to the last persisted ask/auto level.
-    set(() => {
+    set((state) => {
       if (bypassPermissions) {
         // Full access never prompts; mirror confirm_tool_calls=false in the
         // store so metadata does not report confirmations as enabled.
@@ -2161,6 +2228,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const permissionMode = loadPermissionMode();
@@ -2168,6 +2236,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
@@ -2202,38 +2271,60 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolConfirmations: next };
     }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
-      return { webFetchToolsEnabled };
+      return {
+        webFetchToolsEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
-  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagEnabled: (ragEnabled) =>
+    set((state) => ({
+      ragEnabled,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setRagSource: (ragSource) =>
-    set(() => {
+    set((state) => {
       saveRagSource(ragSource);
-      return { ragSource };
+      return {
+        ragSource,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagMode: (ragMode) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_MODE_KEY, ragMode);
-      return { ragMode };
+      return {
+        ragMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagTopK: (ragTopK) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
-      return { ragTopK };
+      return {
+        ragTopK,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInject: (ragAutoInject) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
-      return { ragAutoInject };
+      return {
+        ragAutoInject,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
-    set(() => {
+    set((state) => {
       saveString(
         CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
         String(ragAutoInjectMinScore),
       );
-      return { ragAutoInjectMinScore };
+      return {
+        ragAutoInjectMinScore,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagOcrScanned: (ragOcrScanned) =>
     set(() => {
@@ -2330,7 +2421,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         autoHealToolCalls,
         state.autoHealToolCalls,
       );
-      return { autoHealToolCalls };
+      return {
+        autoHealToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setNudgeToolCalls: (nudgeToolCalls) =>
     set((state) => {
@@ -2339,7 +2433,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nudgeToolCalls,
         state.nudgeToolCalls,
       );
-      return { nudgeToolCalls };
+      return {
+        nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
@@ -2348,7 +2445,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         maxToolCallsPerMessage,
         state.maxToolCallsPerMessage,
       );
-      return { maxToolCallsPerMessage };
+      return {
+        maxToolCallsPerMessage,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
     set((state) => {
@@ -2357,7 +2457,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         toolCallTimeout,
         state.toolCallTimeout,
       );
-      return { toolCallTimeout };
+      return {
+        toolCallTimeout,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   // Standing preference, but persisted only on a successful load (see
   // use-chat-model-runtime), not on selection -- so an unapplied pick the user

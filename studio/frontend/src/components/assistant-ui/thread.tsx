@@ -739,6 +739,7 @@ function syncPromptQueueUI() {
       total: runTotal,
       local: promptQueueRunUsesLocalModel(run),
       temporary: promptQueueRunIsTemporary(run),
+      dispatched: Boolean(getActivePromptQueueItem(run)?.dispatched),
     };
     for (const id of ids) {
       byThreadId[id] = entry;
@@ -4289,19 +4290,32 @@ const ComposerRightControls: FC<{
       </AuiIf>
       {isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <TooltipIconButton
-            tooltip="Queue message"
-            side="bottom"
-            type="button"
-            variant="default"
-            size="icon"
-            disabled={disabled || queueDisabled}
-            onClick={onQueueClick}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
-            aria-label="Queue message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
-          </TooltipIconButton>
+          {queueEntry?.dispatched ? (
+            <Button
+              type="button"
+              variant="default"
+              size="icon"
+              className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+              aria-label="Stop queued message"
+              onClick={stop}
+            >
+              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+            </Button>
+          ) : (
+            <TooltipIconButton
+              tooltip="Queue message"
+              side="bottom"
+              type="button"
+              variant="default"
+              size="icon"
+              disabled={disabled || queueDisabled}
+              onClick={onQueueClick}
+              className="aui-composer-send ml-1.5 size-8 rounded-full"
+              aria-label="Queue message"
+            >
+              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            </TooltipIconButton>
+          )}
         </AuiIf>
       ) : null}
       {isResearchActive ? (

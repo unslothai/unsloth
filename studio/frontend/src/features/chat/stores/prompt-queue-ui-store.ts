@@ -9,6 +9,7 @@ export type PromptQueueUIEntry = {
   total: number;
   local: boolean;
   temporary: boolean;
+  dispatched: boolean;
 };
 
 export type PromptQueueUIItemStatus =

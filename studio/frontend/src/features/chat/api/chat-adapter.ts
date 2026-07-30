@@ -1460,6 +1460,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 
 async function autoLoadSmallestModel(options?: {
   skipAdoptServerModel?: boolean;
+  preserveVisibleSettings?: boolean;
 }): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -1701,21 +1702,26 @@ async function autoLoadSmallestModel(options?: {
     const loadedModelId = loadResp.model || modelPath;
     useChatRuntimeStore
       .getState()
-      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
+      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined, {
+        trackQueuedSettings: !options?.preserveVisibleSettings,
+      });
     const store = useChatRuntimeStore.getState();
     store.setModelRequiresTrustRemoteCode(
       loadResp.requires_trust_remote_code ?? false,
     );
-    store.setParams({
-      ...store.params,
-      ...(candidate.kind === "gguf"
-        ? {}
-        : { maxSeqLength: effectiveMaxSeqLength }),
-      maxTokens:
-        candidate.kind === "gguf"
-          ? loadResp.context_length ?? 131072
-          : effectiveMaxSeqLength,
-    });
+    store.setParams(
+      {
+        ...store.params,
+        ...(candidate.kind === "gguf"
+          ? {}
+          : { maxSeqLength: effectiveMaxSeqLength }),
+        maxTokens:
+          candidate.kind === "gguf"
+            ? loadResp.context_length ?? 131072
+            : effectiveMaxSeqLength,
+      },
+      { trackQueuedSettings: !options?.preserveVisibleSettings },
+    );
     const autoModel: ChatModelSummary = {
       id: loadedModelId,
       name: loadResp.display_name ?? candidate.id,
@@ -2175,12 +2181,14 @@ async function resolveQueuedEmptyLocalModel(): Promise<{
     const visibleExternalSettings =
       snapshotQueuedChatRunSettings(visibleState);
     const visibleThreadEpoch = visibleState.activeThreadEpoch;
+    const visibleSettingsEpoch = visibleState.queuedSettingsEpoch;
     const visibleRoute = window.location.href;
     let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
     let modelRuntime: QueuedResolvedModelRuntime | null = null;
     try {
       result = await autoLoadSmallestModel({
         skipAdoptServerModel: true,
+        preserveVisibleSettings: true,
       });
       if (result.loaded) {
         modelRuntime = queuedResolvedModelFromStore(
@@ -2191,11 +2199,17 @@ async function resolveQueuedEmptyLocalModel(): Promise<{
       if (
         useChatRuntimeStore.getState().activeThreadEpoch ===
           visibleThreadEpoch &&
+        useChatRuntimeStore.getState().queuedSettingsEpoch ===
+          visibleSettingsEpoch &&
         window.location.href === visibleRoute
       ) {
         useChatRuntimeStore
           .getState()
-          .setCheckpoint(visibleExternalSettings.params.checkpoint);
+          .setCheckpoint(
+            visibleExternalSettings.params.checkpoint,
+            undefined,
+            { trackQueuedSettings: false },
+          );
         useChatRuntimeStore.setState({
           ...visibleExternalSettings,
           params: { ...visibleExternalSettings.params },
@@ -2238,6 +2252,22 @@ export function createOpenAIStreamAdapter(
         // on. Remove only that chat's queue; unrelated queues keep running.
         if (queuedRunSettings) {
           notifyPromptQueueRunFailed(resolvedThreadId ?? null);
+        }
+      };
+      const persistResolvedQueuedModel = async (modelId: string) => {
+        if (
+          !queuedRunSettings ||
+          queuedRunSettings.params.checkpoint ||
+          !resolvedThreadId ||
+          !modelId
+        ) {
+          return;
+        }
+        try {
+          await updateStoredChatThread(resolvedThreadId, { modelId });
+        } catch (error) {
+          notifyQueuedRunFailed();
+          throw error;
         }
       };
       if (queuedRunSettings) {
@@ -2347,16 +2377,7 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        if (
-          queuedRunSettings &&
-          !queuedRunSettings.params.checkpoint &&
-          resolvedThreadId &&
-          params.checkpoint
-        ) {
-          await updateStoredChatThread(resolvedThreadId, {
-            modelId: params.checkpoint,
-          });
-        }
+        await persistResolvedQueuedModel(params.checkpoint);
         const model = params.checkpoint.trim();
         if (!model || parseExternalModelId(model)) {
           throw new Error("Deep research requires a selected local model.");
@@ -2693,16 +2714,7 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      if (
-        queuedRunSettings &&
-        !queuedRunSettings.params.checkpoint &&
-        resolvedThreadId &&
-        params.checkpoint
-      ) {
-        await updateStoredChatThread(resolvedThreadId, {
-          modelId: params.checkpoint,
-        });
-      }
+      await persistResolvedQueuedModel(params.checkpoint);
       const {
         supportsTools,
         toolsEnabled,
