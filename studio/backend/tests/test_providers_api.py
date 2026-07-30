@@ -17,6 +17,7 @@ Requires a running Unsloth Studio server. Configure via env vars:
     export TOGETHER_API_KEY="..."
     export FIREWORKS_API_KEY="..."
     export PERPLEXITY_API_KEY="..."
+    export ATLASCLOUD_API_KEY="..."
 
 Run:
     cd studio/backend
@@ -53,6 +54,7 @@ _PROVIDER_CONFIGS: dict[str, tuple[str, str]] = {
     "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-mini"),
     "anthropic": ("ANTHROPIC_API_KEY", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_API_KEY", "deepseek-chat"),
+    "atlascloud": ("ATLASCLOUD_API_KEY", "deepseek-ai/deepseek-v4-pro"),
     "huggingface": ("HUGGINGFACE_API_KEY", "meta-llama/Llama-3.3-70B-Instruct"),
     "kimi": ("MOONSHOT_API_KEY", "moonshot-v1-8k"),
     "qwen": ("DASHSCOPE_API_KEY", "qwen-turbo"),
@@ -243,7 +245,9 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert len(providers) == 9, f"Expected 9 providers, got {len(providers)}: {providers}"
+        assert len(providers) == len(
+            EXPECTED_PROVIDER_TYPES
+        ), f"Expected {len(EXPECTED_PROVIDER_TYPES)} providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:

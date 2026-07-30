@@ -129,6 +129,22 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "OpenAI-compatible API. deepseek-chat = V3, deepseek-reasoner = R1 thinking mode.",
     },
+    "atlascloud": {
+        "display_name": "Atlas Cloud",
+        "base_url": "https://api.atlascloud.ai/v1",
+        "default_models": [
+            "deepseek-ai/deepseek-v4-pro",
+        ],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "OpenAI-compatible chat completions API.",
+        # The remote catalog also contains image and video models. Keep the
+        # chat picker scoped to verified LLM defaults while allowing manual IDs.
+        "model_list_mode": "curated",
+    },
     "mistral": {
         "display_name": "Mistral AI",
         "base_url": "https://api.mistral.ai/v1",
