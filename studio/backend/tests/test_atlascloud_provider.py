@@ -17,9 +17,7 @@ def test_atlascloud_registry_entry():
     assert info["base_url"] == "https://api.atlascloud.ai/v1"
     assert info["default_models"] == ["deepseek-ai/deepseek-v4-pro"]
     assert info["model_list_mode"] == "curated"
-    assert any(
-        entry["provider_type"] == "atlascloud" for entry in list_available_providers()
-    )
+    assert any(entry["provider_type"] == "atlascloud" for entry in list_available_providers())
 
 
 @pytest.mark.asyncio
