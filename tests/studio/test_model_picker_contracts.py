@@ -1111,9 +1111,7 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     only the raw identifier and the resident model looks unremembered: the slot control
     blanks on the model change and the next Save writes the blank over the saved
     ``n_parallel``, locally and through the server mirror."""
-    config = " ".join(
-        _read("features/model-picker/model-config/per-model-config.ts").split()
-    )
+    config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     # The raw identifier still wins, so a path-keyed record is never shadowed.
     assert (
         "const direct = resolveInitialConfig(modelId, ggufVariant); "
