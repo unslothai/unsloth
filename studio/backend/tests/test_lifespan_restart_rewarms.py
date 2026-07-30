@@ -73,11 +73,13 @@ def test_shutdown_runs_the_later_steps_even_if_clearing_raises():
             raise RuntimeError("read-only hardware module")
 
     cleared: list[str] = []
-    asyncio.run(run_lifespan_shutdown(
-        lambda: cleared.append("downloads"),
-        lambda: cleared.append("compiled_cache"),
-        Hostile(),
-    ))
+    asyncio.run(
+        run_lifespan_shutdown(
+            lambda: cleared.append("downloads"),
+            lambda: cleared.append("compiled_cache"),
+            Hostile(),
+        )
+    )
     assert cleared == ["downloads", "compiled_cache"]
 
 
@@ -85,7 +87,10 @@ def _restore(monkeypatch) -> None:
     """Put the module-level warm bookkeeping back after a test mutates it."""
     monkeypatch.setattr(warmup, "_thread", None, raising = False)
     monkeypatch.setattr(
-        warmup, "_status", {"started": False, "finished": False, "stages": {}}, raising = False,
+        warmup,
+        "_status",
+        {"started": False, "finished": False, "stages": {}},
+        raising = False,
     )
 
 
@@ -157,7 +162,8 @@ def test_the_lifespan_resets_the_warm_after_shutdown():
         raise AssertionError("lifespan not found in main.py")
 
     called = {
-        sub.func.id for sub in ast.walk(node)
+        sub.func.id
+        for sub in ast.walk(node)
         if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
     }
     assert "reset_background_warm" in called, (
