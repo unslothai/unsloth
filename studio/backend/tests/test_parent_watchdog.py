@@ -43,7 +43,9 @@ def test_fires_immediately_when_already_orphaned(monkeypatch):
     assert fired.is_set()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "dispatches to the Windows watcher, which opens the real pid")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "dispatches to the Windows watcher, which opens the real pid"
+)
 def test_stop_event_ends_the_watch(monkeypatch):
     monkeypatch.setattr(pw.os, "getppid", lambda: 4242)
     fired = threading.Event()
