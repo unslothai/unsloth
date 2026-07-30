@@ -94,7 +94,10 @@ def _exit():
     open({str(marker)!r}, "w").write("fired")
     os._exit(0)
 
-start_parent_watchdog(_exit, poll_seconds = 0.05)
+# Explicit owner pid, like the production handshake: under a child-subreaper
+# the parent can die and reparent us before this line runs, and a getppid
+# sample here would watch the subreaper forever.
+start_parent_watchdog(_exit, parent_pid = int(sys.argv[1]), poll_seconds = 0.05)
 time.sleep(30)
 os._exit(1)
 """
@@ -102,8 +105,8 @@ os._exit(1)
     parent = tmp_path / "parent.py"
     parent.write_text(
         f"""
-import subprocess, sys
-subprocess.Popen([sys.executable, {str(watcher)!r}])
+import os, subprocess, sys
+subprocess.Popen([sys.executable, {str(watcher)!r}, str(os.getpid())])
 """
     )
 
