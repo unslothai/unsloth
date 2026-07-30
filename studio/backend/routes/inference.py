@@ -15898,7 +15898,6 @@ def _nudge_retry_messages(body, data, allowed_tools):
     cache, which is the entire point of appending instead of rebuilding.
     """
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
-
     return neutralize_control_markup_in_messages(
         [*body.get("messages", []), *nudge_messages(data, allowed_tools)]
     )
