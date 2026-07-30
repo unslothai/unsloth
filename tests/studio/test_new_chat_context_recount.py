@@ -129,6 +129,10 @@ export const world: any = {
   countedModel: undefined as string | undefined,
   switchedToNewThread: 0,
   promptQueueStops: 0,
+  // Set to { value: x } to stand in for a non-conforming 200 on the count path. Wrapped
+  // so that { value: undefined } means "the reply omits input_tokens" rather than "no
+  // override", which a bare undefined cannot express.
+  countedTokensOverride: undefined as { value: any } | undefined,
 };
 
 const state: any = {
@@ -214,7 +218,10 @@ function buildLocalTokenCountReasoning(): Record<string, unknown> {
 async function countChatInputTokens(payload: any): Promise<any> {
   world.countedMessages.push(payload.messages);
   return {
-    input_tokens: 12 + payload.messages.length * 25,
+    input_tokens:
+      world.countedTokensOverride === undefined
+        ? 12 + payload.messages.length * 25
+        : world.countedTokensOverride.value,
     ...(world.countedModel === undefined ? {} : { model: world.countedModel }),
   };
 }
@@ -468,6 +475,39 @@ def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
     assert out["contextUsage"].get("completionTokens") == 0
     assert out["switched"] == 1, "hydration must not open a second thread"
     assert out["promptQueueStops"] == 1, "hydration must not re-stop the prompt queue"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    ["undefined", "null", '"1670"', "NaN", "Infinity", "{}"],
+    ids = ["missing", "null", "string", "nan", "infinity", "object"],
+)
+def test_a_count_that_is_not_a_finite_number_never_reaches_the_bar(reply):
+    """The response type is a compile-time assertion, so a 200 from anything other than a
+    matched backend can put a non-number on the bar. ContextUsageBar's own "nothing to
+    show" guard is `used <= 0`, which undefined does not satisfy, and its tooltip calls
+    toLocaleString on it. Leaving the bar hidden is the only safe answer."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            world.countedTokensOverride = {{ value: {reply} }};
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1, "the count must still be attempted"
+    assert out["contextUsage"] is None, (
+        f"a reply of {reply} was published to the bar; it renders as "
+        '"undefined / 8.2k" and throws from toLocaleString on hover'
+    )
 
 
 NO_LOCAL_MODEL = """

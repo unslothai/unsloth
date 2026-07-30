@@ -214,6 +214,10 @@ export async function refreshContextUsage(options?: {
       });
 
     if (stale()) return;
+    // The response type is a compile-time assertion only. Anything else answering 200 on
+    // this path publishes undefined into the bar, which renders "undefined / 8.2k" and
+    // throws from toLocaleString when the tooltip opens.
+    if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) return;
     // That endpoint counts with whatever is resident, never the model asked for, so a
     // load from another tab or API client landing between this client's last status
     // refresh and the count returns a total from a tokenizer whose window the bar is
