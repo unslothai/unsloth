@@ -29,7 +29,7 @@ def _read(rel: str) -> str:
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def test_models_api_sends_token_via_header_not_query():
