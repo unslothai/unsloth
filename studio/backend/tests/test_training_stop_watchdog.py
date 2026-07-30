@@ -430,13 +430,7 @@ def test_stop_training_expected_job_mismatch_leaves_current_run_untouched():
     b._stop_queue = queue.Queue()
     b._progress.status_message = "Training"
 
-    assert (
-        b.stop_training(
-            save = False,
-            expected_job_id = "job_old",
-        )
-        is False
-    )
+    assert b.stop_training(save = False, expected_job_id = "job_old") is False
     assert b._should_stop is False
     assert b._cancel_requested is False
     assert b._stop_queue.empty()
@@ -882,16 +876,12 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     assert [f["id"] for f in recs["finished"]] == ["job_old"], "must finish the captured run by id"
     assert recs["finished"][0]["status"] == "error"
     assert recs["finished"][0]["resume_blocked"] is True
-    assert json.loads(recs["finished"][0]["config_json"]) == {
-        "model_name": "org/model"
-    }
+    assert json.loads(recs["finished"][0]["config_json"]) == {"model_name": "org/model"}
     assert recs["insert_ids"] == ["job_old"], "buffered metrics must land on the captured run"
     assert b._metric_buffer == [], "the captured batch must be drained"
 
 
-def test_escalation_holds_provenance_lock_until_terminal_write_finishes(
-    monkeypatch,
-):
+def test_escalation_holds_provenance_lock_until_terminal_write_finishes(monkeypatch):
     b = TrainingBackend()
     b.current_job_id = "job_serialized"
     b._db_run_created = True

@@ -21,8 +21,7 @@ class _WorkerScopeVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign):
         if any(
-            isinstance(target, ast.Name) and target.id == "eval_steps"
-            for target in node.targets
+            isinstance(target, ast.Name) and target.id == "eval_steps" for target in node.targets
         ):
             self.eval_steps_bindings.append(node)
         self.generic_visit(node)
@@ -59,7 +58,4 @@ def test_training_worker_binds_eval_steps_before_forwarding_it():
     assert isinstance(binding.value.func.value, ast.Name)
     assert binding.value.func.value.id == "config"
     assert binding.value.func.attr == "get"
-    assert [argument.value for argument in binding.value.args] == [
-        "eval_steps",
-        0.0,
-    ]
+    assert [argument.value for argument in binding.value.args] == ["eval_steps", 0.0]

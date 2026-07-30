@@ -15,8 +15,7 @@ from utils.paths import outputs_root, resolve_output_dir
 def _is_foreign_absolute_path(path_value: str) -> bool:
     native = Path(path_value)
     return not native.is_absolute() and (
-        PureWindowsPath(path_value).is_absolute()
-        or PurePosixPath(path_value).is_absolute()
+        PureWindowsPath(path_value).is_absolute() or PurePosixPath(path_value).is_absolute()
     )
 
 
@@ -278,11 +277,7 @@ def _resource_resume_cache_key(config: dict) -> Optional[str]:
         return None
 
 
-def can_resume_run(
-    run: dict,
-    *,
-    resource_cache: Optional[dict[str, bool]] = None,
-) -> bool:
+def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = None) -> bool:
     if run.get("resumed_later"):
         return False
     # Set when a stop-and-save failed to write a current-step checkpoint.
@@ -305,9 +300,7 @@ def can_resume_run(
             or final_step < total_steps
         )
         resume_state_available = (
-            status == "stopped"
-            and has_remaining_steps
-            and has_resume_state(run.get("output_dir"))
+            status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
         )
     if not resume_state_available:
         return False

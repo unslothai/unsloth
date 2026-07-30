@@ -23,7 +23,11 @@ def _model_repo(root: Path, repo_id: str) -> Path:
     return repo_root
 
 
-def _snapshot(repo_root: Path, name: str, files: tuple[str, ...] = ()) -> Path:
+def _snapshot(
+    repo_root: Path,
+    name: str,
+    files: tuple[str, ...] = (),
+) -> Path:
     snap = repo_root / "snapshots" / name
     snap.mkdir()
     for filename in files:
@@ -137,9 +141,7 @@ def test_rejects_lookalike_repo_outside_known_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [allowed])
 
     assert (
-        latest_snapshot_from_cache_path(
-            str(repo_root), "model", "Org/Model", ("config.json",)
-        )
+        latest_snapshot_from_cache_path(str(repo_root), "model", "Org/Model", ("config.json",))
         is None
     )
 

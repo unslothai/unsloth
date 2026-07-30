@@ -61,8 +61,8 @@ def test_later_cancel_overrides_inflight_mlx_save_stop():
     stop_queue.put({"type": "stop", "save": True})
     stop_queue.put({"type": "stop", "save": False})
 
-    stop_save, stop_requested, _, is_stop_requested, stop_thread = (
-        worker._start_mlx_stop_poller(stop_queue)
+    stop_save, stop_requested, _, is_stop_requested, stop_thread = worker._start_mlx_stop_poller(
+        stop_queue
     )
     stop_thread.join(timeout = 2)
 

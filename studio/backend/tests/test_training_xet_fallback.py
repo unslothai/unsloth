@@ -258,9 +258,7 @@ def test_cancel_interrupts_sidecar_wait_before_respawn(monkeypatch):
 
     result: list[bool] = []
     respawn = threading.Thread(
-        target = lambda: result.append(
-            b._respawn_worker_disable_xet(expected_job_id = "job_old")
-        )
+        target = lambda: result.append(b._respawn_worker_disable_xet(expected_job_id = "job_old"))
     )
     respawn.start()
     assert sidecar_checked.wait(timeout = 2.0)

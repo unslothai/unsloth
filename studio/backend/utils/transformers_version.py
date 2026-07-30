@@ -252,10 +252,7 @@ def _higher_tier(a: str, b: str) -> str:
     return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
 
 
-def get_transformers_activation_tier(
-    model_name: str,
-    hf_token: str | None = None,
-) -> str:
+def get_transformers_activation_tier(model_name: str, hf_token: str | None = None) -> str:
     if _is_lora_adapter_dir(Path(model_name)):
         resolved = _resolve_base_model(model_name)
     else:

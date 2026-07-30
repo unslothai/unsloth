@@ -369,10 +369,7 @@ def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
 
 
 def _snapshot_module_subdirs(snapshot: Path) -> tuple[str, ...]:
-    return tuple(
-        root.relative_to(snapshot).as_posix()
-        for root in _st_load_roots(snapshot)[1:]
-    )
+    return tuple(root.relative_to(snapshot).as_posix() for root in _st_load_roots(snapshot)[1:])
 
 
 def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list:
@@ -490,7 +487,6 @@ def _evaluate_local_snapshot(
     """Inspect cached weights when the Hub scan cannot be used."""
     if snapshot_path is None:
         from utils.utils import hf_cache_snapshot_dir
-
         try:
             snapshot = hf_cache_snapshot_dir(model_name)
         except Exception:
@@ -564,9 +560,7 @@ def _evaluate_local_snapshot(
         model_name,
         True,
         unsafe_files = [{"path": rel, "level": "unscanned"} for rel in rel_paths],
-        reason = (
-            f"{context}; unscanned pickle weights with no safetensors alternative: {names}"
-        ),
+        reason = (f"{context}; unscanned pickle weights with no safetensors alternative: {names}"),
     )
 
 

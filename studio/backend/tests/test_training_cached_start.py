@@ -311,13 +311,8 @@ def test_client_error_probe_with_incomplete_cache_preserves_error(tmp_path):
     "index_mode",
     ["absent", "references-missing-shard", "omits-missing-shard"],
 )
-def test_client_error_probe_with_partial_shards_preserves_error(
-    tmp_path,
-    index_mode,
-):
-    route = _load_route_module(
-        f"training_route_client_error_partial_shards_{index_mode}"
-    )
+def test_client_error_probe_with_partial_shards_preserves_error(tmp_path, index_mode):
+    route = _load_route_module(f"training_route_client_error_partial_shards_{index_mode}")
     snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text("{}")
@@ -334,8 +329,7 @@ def test_client_error_probe_with_partial_shards_preserves_error(
             json.dumps(
                 {
                     "weight_map": {
-                        f"layer.{index}": shard
-                        for index, shard in enumerate(indexed_shards)
+                        f"layer.{index}": shard for index, shard in enumerate(indexed_shards)
                     },
                 },
             )
@@ -475,18 +469,18 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     config = _build_training_worker_config(captured)
     _apply_cache_pins(config)
     events: list[dict] = []
-    assert worker._verify_config_pins(
-        config,
-        SimpleNamespace(put = events.append),
-    ) is True
+    assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is True
     assert config["actual_model_repo_id"] == "unsloth/test"
     assert config["model_snapshot_path"] == str(snapshot.resolve())
     assert config["require_validated_model_snapshot"] is True
-    assert worker._cache_artifact_fallback_allowed(
-        config,
-        OSError("incomplete cache"),
-        "model",
-    ) is False
+    assert (
+        worker._cache_artifact_fallback_allowed(
+            config,
+            OSError("incomplete cache"),
+            "model",
+        )
+        is False
+    )
 
 
 def test_untrainable_gate_rejects_remote_adapter():
@@ -503,9 +497,7 @@ def test_untrainable_gate_rejects_remote_adapter():
 
 def test_remote_adapter_probe_uses_token_and_shorthand():
     route = _load_route_module("training_route_remote_adapter_metadata")
-    info = SimpleNamespace(
-        siblings = [SimpleNamespace(rfilename = "adapter_config.json")]
-    )
+    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
 
     with patch("huggingface_hub.model_info", return_value = info) as model_info:
         assert route._remote_model_is_adapter("test", "hf-token") is True
@@ -869,9 +861,7 @@ def test_exact_resume_rejects_latest_tier_load_mode_change(tmp_path):
     route = _load_route_module("training_route_resume_latest_tier")
     model = tmp_path / "models--unsloth--test" / "snapshots" / "model-commit"
     model.mkdir(parents = True)
-    (model / "config.json").write_text(
-        json.dumps({"quantization_config": {"load_in_4bit": True}})
-    )
+    (model / "config.json").write_text(json.dumps({"quantization_config": {"load_in_4bit": True}}))
     (model / "model.safetensors").write_bytes(b"x")
     dataset = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
     dataset.mkdir(parents = True)
@@ -1110,13 +1100,14 @@ def test_training_backend_forwards_cache_reference_config():
     assert "cache_pin_warnings" not in backend._db_config
     assert backend._db_config["model_snapshot_path"] is None
     assert backend._db_config["dataset_snapshot_path"] is None
-    assert backend._db_config["resource_provenance"] == {
-        "version": 1,
-        "status": "pending",
-    }
+    assert backend._db_config["resource_provenance"] == {"version": 1, "status": "pending"}
 
 
-def _dataset_repo_with_ref(root: Path, repo_id: str, commit: str = "rev") -> Path:
+def _dataset_repo_with_ref(
+    root: Path,
+    repo_id: str,
+    commit: str = "rev",
+) -> Path:
     repo_root = root / f"datasets--{repo_id.replace('/', '--')}"
     snap = repo_root / "snapshots" / commit
     snap.mkdir(parents = True)
@@ -1126,7 +1117,11 @@ def _dataset_repo_with_ref(root: Path, repo_id: str, commit: str = "rev") -> Pat
     return snap
 
 
-def _model_repo_with_ref(root: Path, repo_id: str, commit: str = "rev") -> Path:
+def _model_repo_with_ref(
+    root: Path,
+    repo_id: str,
+    commit: str = "rev",
+) -> Path:
     repo_root = root / f"models--{repo_id.replace('/', '--')}"
     snap = repo_root / "snapshots" / commit
     snap.mkdir(parents = True)
@@ -1163,8 +1158,7 @@ def test_apply_cache_pins_fresh_start_resolves_snapshots(tmp_path):
     [None, "/outputs/run/checkpoint-5"],
 )
 def test_apply_cache_pins_keeps_local_model_out_of_hub_cache_resolution(
-    tmp_path,
-    resume_from_checkpoint,
+    tmp_path, resume_from_checkpoint
 ):
     from core.training.training import (
         _apply_cache_pins,
@@ -1191,10 +1185,7 @@ def test_apply_cache_pins_keeps_local_model_out_of_hub_cache_resolution(
     assert resolve_training_model_load_target(config) == str(model_path)
 
 
-def test_legacy_cached_dataset_loads_offline_without_completion_manifest(
-    monkeypatch,
-    tmp_path,
-):
+def test_legacy_cached_dataset_loads_offline_without_completion_manifest(monkeypatch, tmp_path):
     from core.training import worker
     from core.training.training import _apply_cache_pins
 
@@ -1214,10 +1205,7 @@ def test_legacy_cached_dataset_loads_offline_without_completion_manifest(
     monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
     events: list[dict] = []
 
-    assert worker._verify_config_pins(
-        config,
-        SimpleNamespace(put = events.append),
-    ) is True
+    assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is True
     assert config["dataset_snapshot_path"] == str(snapshot.resolve())
     assert config["dataset_revision"] == "dataset-commit"
 
@@ -1251,7 +1239,6 @@ def test_legacy_cached_dataset_loads_offline_without_completion_manifest(
 
 def test_training_model_load_target_uses_verified_inactive_snapshot(tmp_path):
     from core.training.training import resolve_training_model_load_target
-
     model_snap = _model_repo_with_ref(tmp_path, "unsloth/test", "commit-old")
 
     assert resolve_training_model_load_target(
@@ -1267,7 +1254,6 @@ def test_training_model_load_target_uses_verified_inactive_snapshot(tmp_path):
 def test_training_model_load_target_rejects_evicted_strict_resume_pin(tmp_path):
     from core.training.provenance import ExactResumeResourcesUnavailable
     from core.training.training import resolve_training_model_load_target
-
     with pytest.raises(ExactResumeResourcesUnavailable, match = "model snapshot"):
         resolve_training_model_load_target(
             {
@@ -1286,9 +1272,7 @@ def test_backend_rechecks_exact_4bit_resume_after_sidecar_reservation(tmp_path):
 
     model = tmp_path / "models--unsloth--test" / "snapshots" / "model-rev"
     model.mkdir(parents = True)
-    (model / "config.json").write_text(
-        json.dumps({"quantization_config": {"load_in_4bit": True}})
-    )
+    (model / "config.json").write_text(json.dumps({"quantization_config": {"load_in_4bit": True}}))
     (model / "model.safetensors").write_bytes(b"x")
     dataset = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-rev"
     dataset.mkdir(parents = True)
@@ -1473,9 +1457,7 @@ def test_worker_security_scans_exact_model_load_target(offline):
         ),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append(
-                (target, kwargs["local_only_load"])
-            )
+            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["local_only_load"]))
             or decision,
         ),
         patch("utils.utils.hf_env_offline", return_value = offline),
@@ -1509,9 +1491,7 @@ def test_worker_remote_retry_security_scan_is_not_local_only():
         patch("utils.security.security_load_subdirs", return_value = ()),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append(
-                (target, kwargs["local_only_load"])
-            )
+            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["local_only_load"]))
             or decision,
         ),
         patch("utils.utils.hf_env_offline", return_value = False),
@@ -1544,15 +1524,11 @@ def test_worker_security_scopes_pinned_target_before_registry_fallback():
         ),
         patch(
             "utils.security.security_load_subdirs",
-            side_effect = lambda target, _token: (
-                ("LLM",) if target == snapshot else ("registry",)
-            ),
+            side_effect = lambda target, _token: (("LLM",) if target == snapshot else ("registry",)),
         ),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append(
-                (target, kwargs["load_subdirs"])
-            )
+            side_effect = lambda target, **kwargs: scanned.append((target, kwargs["load_subdirs"]))
             or decision,
         ),
         patch("utils.utils.hf_env_offline", return_value = False),
@@ -1595,8 +1571,7 @@ def test_worker_security_consent_uses_exact_target_and_base():
         patch(
             "utils.security.evaluate_remote_code_consent_for_targets",
             side_effect = (
-                lambda targets, **kwargs: consent_targets.extend(targets)
-                or consent_decision
+                lambda targets, **kwargs: consent_targets.extend(targets) or consent_decision
             ),
         ),
     ):
@@ -1623,10 +1598,7 @@ def test_worker_resolves_cached_model_snapshot():
         )
         == "/snap/dir"
     )
-    assert (
-        worker._resolve_cached_model_load_name({"model_name": "unsloth/test"})
-        == "unsloth/test"
-    )
+    assert worker._resolve_cached_model_load_name({"model_name": "unsloth/test"}) == "unsloth/test"
     assert (
         worker._resolve_cached_model_load_name(
             {"model_name": "unsloth/test", "model_snapshot_path": None}
@@ -1658,7 +1630,6 @@ def test_worker_4bit_tier_check_uses_model_load_target():
 def test_worker_strict_resume_rejects_4bit_tier_change():
     from core.training import worker
     from core.training.provenance import ExactResumeResourcesUnavailable
-
     with patch(
         "utils.transformers_version.latest_tier_active_for",
         return_value = True,
@@ -1796,9 +1767,7 @@ def test_worker_model_retry_refreshes_tokenizer_before_dataset():
 
     events: list[tuple[str, object]] = []
     trainer = SimpleNamespace(
-        pre_detect_and_load_tokenizer = (
-            lambda **kwargs: events.append(("tokenizer", kwargs))
-        )
+        pre_detect_and_load_tokenizer = (lambda **kwargs: events.append(("tokenizer", kwargs)))
     )
     config = {
         "max_seq_length": 2048,
@@ -1939,7 +1908,6 @@ def test_strict_resume_disables_cache_artifact_fallback():
 
 def test_strict_resume_cached_dataset_failure_never_loads_remote():
     from core.training import worker
-
     config = {
         "hf_dataset": "org/dataset",
         "dataset_snapshot_path": "/cache/exact",
@@ -1997,10 +1965,7 @@ def test_missing_pinned_dataset_fails_preflight_offline(monkeypatch):
         "dataset_snapshot_path": None,
     }
 
-    assert worker._verify_config_pins(
-        config,
-        SimpleNamespace(put = events.append),
-    ) is False
+    assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is False
     assert len(events) == 1
     assert "cannot be downloaded while offline" in events[0]["error"]
 
@@ -2026,7 +1991,6 @@ def test_mlx_adapter_accepts_and_preserves_dataset_cache_pins():
 
 def test_strict_resume_cached_dataset_none_never_loads_remote():
     from core.training import worker
-
     config = {
         "hf_dataset": "org/dataset",
         "dataset_snapshot_path": "/cache/exact",
@@ -2050,7 +2014,6 @@ def test_strict_resume_cached_dataset_none_never_loads_remote():
 
 def test_strict_resume_cached_eval_none_never_loads_remote():
     from core.training import worker
-
     config = {
         "hf_dataset": "org/dataset",
         "dataset_snapshot_path": "/cache/exact",
@@ -2078,7 +2041,6 @@ def test_strict_resume_cached_eval_none_never_loads_remote():
 
 def test_strict_resume_embedding_cached_dataset_none_never_loads_remote():
     from core.training import worker
-
     config = {
         "hf_dataset": "org/dataset",
         "dataset_snapshot_path": "/cache/exact",

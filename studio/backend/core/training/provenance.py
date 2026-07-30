@@ -20,8 +20,7 @@ _MODEL_LOAD_UNQUANTIZED = "unquantized"
 _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
 _REPO_ID_RE = re.compile(
-    r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95})"
-    r"(?:/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95}))?"
+    r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95})(?:/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95}))?"
 )
 _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _MODEL_WEIGHT_RE = re.compile(
@@ -90,9 +89,7 @@ class ExactResumeResourcesUnavailable(ValueError):
 
 
 def effective_training_load_in_4bit(
-    config: dict[str, Any],
-    model_load_target: str,
-    hf_token: Optional[str],
+    config: dict[str, Any], model_load_target: str, hf_token: Optional[str]
 ) -> bool:
     if not bool(config.get("load_in_4bit")):
         return False
@@ -100,8 +97,7 @@ def effective_training_load_in_4bit(
 
     latest_tier_active = latest_tier_active_for(model_load_target, hf_token)
     if latest_tier_active and (
-        config.get("require_exact_resume_resources")
-        or config.get("require_exact_model_resource")
+        config.get("require_exact_resume_resources") or config.get("require_exact_model_resource")
     ):
         raise ExactResumeResourcesUnavailable(
             "This checkpoint requires its original 4-bit model load mode, "
@@ -160,8 +156,7 @@ def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
-        resolved.is_relative_to(snapshot)
-        or resolved.is_relative_to(repo_dir / "blobs")
+        resolved.is_relative_to(snapshot) or resolved.is_relative_to(repo_dir / "blobs")
     ):
         return None
     try:
@@ -215,9 +210,8 @@ def _snapshot_has_dataset_data(snapshot: Path) -> bool:
                 relative = path.relative_to(snapshot).as_posix()
                 if resolved_dataset_snapshot_file(snapshot, relative) is None:
                     return False
-                if (
-                    lowered not in _DATASET_METADATA_FILENAMES
-                    and lowered.endswith(_DATASET_DATA_SUFFIXES)
+                if lowered not in _DATASET_METADATA_FILENAMES and lowered.endswith(
+                    _DATASET_DATA_SUFFIXES
                 ):
                     found_data = True
     except (OSError, RuntimeError, ValueError):
@@ -256,9 +250,7 @@ def exact_model_snapshot_path(
         resolved = Path(validated).resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
-    if not same_existing_path(resolved, requested) or not _snapshot_has_model_weights(
-        resolved
-    ):
+    if not same_existing_path(resolved, requested) or not _snapshot_has_model_weights(resolved):
         return None
     if require_quantized and not _snapshot_declares_quantization(resolved):
         return None
@@ -309,17 +301,12 @@ def exact_dataset_snapshot_path(path_value: Any, repo_id: Any) -> Optional[str]:
         resolved = validated.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
-    if not same_existing_path(resolved, requested) or not _snapshot_has_dataset_data(
-        resolved
-    ):
+    if not same_existing_path(resolved, requested) or not _snapshot_has_dataset_data(resolved):
         return None
     return str(resolved)
 
 
-def exact_dataset_snapshot_for_commit(
-    repo_id: Any,
-    commit: Any,
-) -> Optional[str]:
+def exact_dataset_snapshot_for_commit(repo_id: Any, commit: Any) -> Optional[str]:
     repo_id = _normalized_repo_id(repo_id)
     commit = _normalized_commit(commit)
     if repo_id is None or commit is None:
@@ -337,10 +324,7 @@ def exact_dataset_snapshot_for_commit(
     return None
 
 
-def _local_dataset_source_snapshot(
-    path_value: str,
-    repo_id: str,
-) -> Optional[tuple[str, str]]:
+def _local_dataset_source_snapshot(path_value: str, repo_id: str) -> Optional[tuple[str, str]]:
     if len(path_value) > 4096 or "\x00" in path_value:
         return None
     path = Path(path_value).expanduser()
@@ -408,13 +392,11 @@ def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
 
 def _dataset_snapshot_contains(snapshot: str, source_path: str) -> bool:
     from hub.utils.dataset_cache import dataset_snapshot_contains_file
-
     return dataset_snapshot_contains_file(snapshot, source_path)
 
 
 def _dataset_snapshot_file(snapshot: str, source_path: str) -> Optional[Path]:
     from hub.utils.dataset_cache import resolved_dataset_snapshot_file
-
     return resolved_dataset_snapshot_file(snapshot, source_path)
 
 
@@ -432,10 +414,7 @@ def _loaded_dataset_objects(value: Any):
     yield value
 
 
-def attest_loaded_dataset(
-    repo_id: Any,
-    *datasets: Any,
-) -> tuple[Optional[str], Optional[str]]:
+def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], Optional[str]]:
     repo_id = _normalized_repo_id(repo_id)
     if repo_id is None:
         return None, "dataset_revision_unattested"
@@ -464,10 +443,7 @@ def attest_loaded_dataset(
                     snapshot, source_path = local_source
                 else:
                     source_ref = _hf_dataset_source_ref(source)
-                    if (
-                        source_ref is None
-                        or source_ref[0].casefold() != repo_id.casefold()
-                    ):
+                    if source_ref is None or source_ref[0].casefold() != repo_id.casefold():
                         return None, "dataset_source_unattested"
                     snapshot = exact_dataset_snapshot_for_commit(
                         repo_id,
@@ -475,9 +451,7 @@ def attest_loaded_dataset(
                     )
                     source_path = source_ref[2]
                 resolved_source = (
-                    _dataset_snapshot_file(snapshot, source_path)
-                    if snapshot is not None
-                    else None
+                    _dataset_snapshot_file(snapshot, source_path) if snapshot is not None else None
                 )
                 if resolved_source is None:
                     return None, "dataset_snapshot_unavailable"
@@ -548,23 +522,17 @@ def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
     refs: set[tuple[str, str]] = set()
     for current in _loaded_model_objects(model):
         repo_id = _normalized_repo_id(
-            _object_value(current, "_name_or_path")
-            or _object_value(current, "name_or_path")
+            _object_value(current, "_name_or_path") or _object_value(current, "name_or_path")
         )
         commit = _normalized_commit(
-            _object_value(current, "_commit_hash")
-            or _object_value(current, "commit_hash")
+            _object_value(current, "_commit_hash") or _object_value(current, "commit_hash")
         )
         if repo_id is not None and commit is not None:
             refs.add((repo_id, commit))
     return refs
 
 
-def _attested_model_load_mode(
-    snapshot: str,
-    model: Any,
-    load_in_4bit: bool,
-) -> Optional[str]:
+def _attested_model_load_mode(snapshot: str, model: Any, load_in_4bit: bool) -> Optional[str]:
     if not load_in_4bit:
         return _MODEL_LOAD_UNQUANTIZED
     if _snapshot_declares_quantization(Path(snapshot)):
@@ -575,16 +543,11 @@ def _attested_model_load_mode(
 
 
 def attest_loaded_model(
-    config: dict[str, Any],
-    model: Any,
-    *,
-    load_target: Any,
-    load_in_4bit: bool,
+    config: dict[str, Any], model: Any, *, load_target: Any, load_in_4bit: bool
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     selected_repo = config.get("actual_model_repo_id")
     if selected_repo is None:
         from utils.utils import canonical_model_repo_id
-
         selected_repo = canonical_model_repo_id(str(config.get("model_name") or ""))
     direct = exact_model_snapshot_path(
         load_target,
@@ -696,8 +659,7 @@ def _normalized_reasons(values: Any) -> list[str]:
 
 
 def normalize_worker_provenance_event(
-    event: dict[str, Any],
-    config: dict[str, Any],
+    event: dict[str, Any], config: dict[str, Any]
 ) -> dict[str, Any]:
     reasons = _normalized_reasons(event.get("reasons"))
     model_event = event.get("model") if isinstance(event.get("model"), dict) else {}
@@ -716,19 +678,14 @@ def normalize_worker_provenance_event(
         )
         if model_snapshot is not None:
             event_load_mode = model_event.get("load_mode")
-            snapshot_is_quantized = _snapshot_declares_quantization(
-                Path(model_snapshot)
-            )
+            snapshot_is_quantized = _snapshot_declares_quantization(Path(model_snapshot))
             if bool(config.get("load_in_4bit")):
                 if (
                     event_load_mode in (None, _MODEL_LOAD_PREQUANTIZED_4BIT)
                     and snapshot_is_quantized
                 ):
                     model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
-                elif (
-                    event_load_mode == _MODEL_LOAD_RUNTIME_4BIT
-                    and not snapshot_is_quantized
-                ):
+                elif event_load_mode == _MODEL_LOAD_RUNTIME_4BIT and not snapshot_is_quantized:
                     model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
             elif event_load_mode in (None, _MODEL_LOAD_UNQUANTIZED):
                 model_load_mode = _MODEL_LOAD_UNQUANTIZED
@@ -804,7 +761,6 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     model_repo_id = config.get("actual_model_repo_id")
     if model_repo_id is None:
         from utils.utils import canonical_model_repo_id
-
         model_repo_id = canonical_model_repo_id(str(config.get("model_name") or ""))
     model_snapshot = exact_model_snapshot_path(
         config.get("model_snapshot_path"),
@@ -842,9 +798,7 @@ def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
     return model_snapshot, dataset_snapshot
 
 
-def exact_resume_resource_requirements(
-    config: dict[str, Any],
-) -> tuple[bool, bool]:
+def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bool]:
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
         return False, False

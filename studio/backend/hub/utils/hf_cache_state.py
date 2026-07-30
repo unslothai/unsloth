@@ -165,12 +165,7 @@ def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
 
 
 def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
-    if (
-        not ref
-        or ref in {".", ".."}
-        or Path(ref).name != ref
-        or PureWindowsPath(ref).name != ref
-    ):
+    if not ref or ref in {".", ".."} or Path(ref).name != ref or PureWindowsPath(ref).name != ref:
         return None
     try:
         repo_root = repo_dir.resolve(strict = True)
@@ -207,9 +202,7 @@ def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
 
 
 def validated_repo_cache_path(
-    local_path: Optional[str],
-    repo_type: str,
-    repo_id: str,
+    local_path: Optional[str], repo_type: str, repo_id: str
 ) -> Optional[tuple[Path, Path]]:
     if not local_path or not repo_id:
         return None
@@ -226,16 +219,9 @@ def validated_repo_cache_path(
         )
         if repo_dir is None:
             return None
-        allowed_roots = [
-            root.resolve(strict = True)
-            for root in hf_cache_roots()
-            if root.exists()
-        ]
+        allowed_roots = [root.resolve(strict = True) for root in hf_cache_roots() if root.exists()]
         repo_dir = repo_dir.resolve(strict = True)
-        if not any(
-            same_existing_path(repo_dir.parent, root)
-            for root in allowed_roots
-        ):
+        if not any(same_existing_path(repo_dir.parent, root) for root in allowed_roots):
             return None
         resolved.relative_to(repo_dir)
         return repo_dir, resolved
@@ -254,6 +240,7 @@ def latest_snapshot_from_cache_path(
         return None
     repo_dir, selected = validated
     try:
+
         def has_metadata(path: Path) -> bool:
             if not metadata_filenames:
                 return True

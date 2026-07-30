@@ -85,6 +85,7 @@ _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 class _LocalModelProbeIncomplete(RuntimeError):
     pass
 
+
 # Consecutive 1s polls without a step update that count as a stall. Applied only
 # once stepping: the pre-first-step phase (model load + tokenization) can take far
 # longer, and timing out there made a healthy long-prep run look frozen.
@@ -93,7 +94,6 @@ _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 
 def _stop_training_if_active(backend, *, save: bool, expected_job_id: Optional[str]):
     from core.training.lifecycle import training_lifecycle_guard
-
     with training_lifecycle_guard():
         is_active = backend.is_training_active()
         stopped = (
@@ -142,8 +142,7 @@ _MODEL_WEIGHT_CANDIDATES = (
     ("pytorch_model.bin.index.json", ".bin"),
 )
 _SHARDED_WEIGHT_NAME_PATTERN = re.compile(
-    r"^(?P<family>.+)-(?P<part>\d+)-of-(?P<total>\d+)"
-    r"(?P<suffix>(?:\.[^.]+)+)$",
+    r"^(?P<family>.+)-(?P<part>\d+)-of-(?P<total>\d+)(?P<suffix>(?:\.[^.]+)+)$",
     re.IGNORECASE,
 )
 
@@ -155,11 +154,7 @@ def _is_nonempty_file(path: Path) -> bool:
         return False
 
 
-def _has_complete_indexed_weights(
-    path: Path,
-    index_name: str,
-    expected_suffix: str,
-) -> bool:
+def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: str) -> bool:
     snapshot = os.path.abspath(os.path.normpath(str(path)))
     snapshot_key = os.path.normcase(snapshot)
     try:
@@ -171,18 +166,13 @@ def _has_complete_indexed_weights(
     if not isinstance(weight_map, dict):
         return False
     shards = list(weight_map.values())
-    if not shards or not all(
-        isinstance(shard, str) and shard for shard in shards
-    ):
+    if not shards or not all(isinstance(shard, str) and shard for shard in shards):
         return False
     families: dict[tuple[str, str, str, int], set[int]] = {}
     for shard in set(shards):
         joined = os.path.normpath(os.path.join(snapshot, shard))
         joined_key = os.path.normcase(joined)
-        contained = (
-            joined_key == snapshot_key
-            or joined_key.startswith(snapshot_key + os.sep)
-        )
+        contained = joined_key == snapshot_key or joined_key.startswith(snapshot_key + os.sep)
         shard_path = Path(joined)
         if (
             not contained
@@ -206,10 +196,7 @@ def _has_complete_indexed_weights(
                 total,
             )
             families.setdefault(family, set()).add(part)
-    return all(
-        len(parts) == family[3]
-        for family, parts in families.items()
-    )
+    return all(len(parts) == family[3] for family, parts in families.items())
 
 
 def _has_trainable_local_weights(path: Path) -> bool:
@@ -236,10 +223,7 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
-def _remote_model_is_adapter(
-    model_name: str,
-    hf_token: Optional[str],
-) -> bool:
+def _remote_model_is_adapter(model_name: str, hf_token: Optional[str]) -> bool:
     from huggingface_hub import model_info as hf_model_info
 
     repo_id = canonical_model_repo_id(model_name)
@@ -316,8 +300,7 @@ def _detect_local_gguf(path: Path) -> Optional[str]:
 
 
 def _reject_untrainable_model_request(
-    request: TrainingStartRequest,
-    actual_model_repo_id: Optional[str] = None,
+    request: TrainingStartRequest, actual_model_repo_id: Optional[str] = None
 ) -> Optional[tuple[str, str]]:
     model_format = (request.model_format or "").strip().lower()
     if model_format == "gguf":
@@ -346,18 +329,11 @@ def _reject_untrainable_model_request(
             snapshot = latest_snapshot_from_cache_path(
                 request.model_snapshot_path,
                 "model",
-                canonical_model_repo_id(
-                    actual_model_repo_id or request.model_name
-                ),
+                canonical_model_repo_id(actual_model_repo_id or request.model_name),
                 ("config.json", "adapter_config.json"),
             )
-        elif (
-            request.model_known_cached
-            or request.model_local_path
-            or offline_mode
-        ):
+        elif request.model_known_cached or request.model_local_path or offline_mode:
             from core.training.training import _resolve_model_snapshot
-
             snapshot = _resolve_model_snapshot(
                 request.model_name,
                 request.model_local_path,
@@ -396,9 +372,7 @@ def _reject_untrainable_model_request(
                 return
             raise HTTPException(
                 status_code = 400,
-                detail = (
-                    "Adapter models are inference-only and cannot be trained as base models."
-                ),
+                detail = ("Adapter models are inference-only and cannot be trained as base models."),
             )
     has_trainable_weights = _has_trainable_local_weights(path)
     if has_trainable_weights:
@@ -483,8 +457,7 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
 
 
 def _prepare_resume_resource_provenance(
-    request: TrainingStartRequest,
-    resume_run: dict,
+    request: TrainingStartRequest, resume_run: dict
 ) -> tuple[Optional[str], bool, bool, bool, Optional[str]]:
     stored = training_run_config(resume_run)
     from core.training.provenance import (
@@ -552,10 +525,7 @@ def _prepare_resume_resource_provenance(
         setattr(request, field, stored.get(field, default))
     try:
         validated_request = TrainingStartRequest.model_validate(
-            {
-                field: getattr(request, field)
-                for field in TrainingStartRequest.model_fields
-            }
+            {field: getattr(request, field) for field in TrainingStartRequest.model_fields}
         )
     except PydanticValidationError as error:
         raise HTTPException(
@@ -811,9 +781,7 @@ async def start_training(
         training_actual_model_repo_id = resume_actual_model_repo_id
         training_model_snapshot_path = request.model_snapshot_path
         if cached_model_pin is not None:
-            training_actual_model_repo_id, training_model_snapshot_path = (
-                cached_model_pin
-            )
+            training_actual_model_repo_id, training_model_snapshot_path = cached_model_pin
 
         # Convert request to backend kwargs.
         training_kwargs = {

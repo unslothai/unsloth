@@ -142,7 +142,6 @@ def test_loaded_model_metadata_attests_actual_quantized_redirect(tmp_path):
 
 def test_resume_load_target_validates_redirect_snapshot_against_actual_repo(tmp_path):
     from core.training.training import resolve_training_model_load_target
-
     actual = _model_snapshot(
         tmp_path,
         "org/actual-4bit",
@@ -270,10 +269,7 @@ def test_4bit_attestation_accepts_verified_runtime_quantization(tmp_path):
     assert event["model"]["load_mode"] == "runtime_4bit"
     assert updates["model_snapshot_path"] == str(model_snapshot)
     assert updates[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
-    assert (
-        updates[RESOURCE_PROVENANCE_KEY]["model_load_mode"]
-        == "runtime_4bit"
-    )
+    assert updates[RESOURCE_PROVENANCE_KEY]["model_load_mode"] == "runtime_4bit"
     assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
@@ -302,9 +298,10 @@ def test_config_only_snapshot_cannot_attest_model_weights(tmp_path):
     )
 
     assert event["model"]["status"] == "incomplete"
-    assert normalize_worker_provenance_event(event, config)[RESOURCE_PROVENANCE_KEY][
-        "status"
-    ] == "incomplete"
+    assert (
+        normalize_worker_provenance_event(event, config)[RESOURCE_PROVENANCE_KEY]["status"]
+        == "incomplete"
+    )
 
 
 def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
@@ -319,16 +316,11 @@ def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
     blob.write_bytes(b"weights")
     (snapshot / "model.safetensors").symlink_to("../../blobs/weight-blob")
 
-    assert exact_model_snapshot_path(str(snapshot), "org/model") == str(
-        snapshot.resolve()
-    )
+    assert exact_model_snapshot_path(str(snapshot), "org/model") == str(snapshot.resolve())
 
 
 @pytest.mark.parametrize("filename", ["model.safetensors", "config.json"])
-def test_exact_model_snapshot_rejects_external_file_symlink(
-    tmp_path,
-    filename,
-):
+def test_exact_model_snapshot_rejects_external_file_symlink(tmp_path, filename):
     snapshot = _model_snapshot(tmp_path, "org/model", "external-link")
     external = tmp_path / "external" / filename
     external.parent.mkdir()
@@ -343,9 +335,7 @@ def test_exact_model_snapshot_rejects_cross_snapshot_symlink(tmp_path):
     snapshot = _model_snapshot(tmp_path, "org/model", "selected")
     _model_snapshot(tmp_path, "org/model", "other")
     (snapshot / "model.safetensors").unlink()
-    (snapshot / "model.safetensors").symlink_to(
-        "../other/model.safetensors"
-    )
+    (snapshot / "model.safetensors").symlink_to("../other/model.safetensors")
 
     assert exact_model_snapshot_path(str(snapshot), "org/model") is None
 
@@ -405,9 +395,7 @@ def test_exact_dataset_snapshot_rejects_cross_snapshot_symlink(tmp_path):
         "other-commit",
     )
     (snapshot / "train.parquet").unlink()
-    (snapshot / "train.parquet").symlink_to(
-        "../other-commit/train.parquet"
-    )
+    (snapshot / "train.parquet").symlink_to("../other-commit/train.parquet")
 
     assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") is None
 
@@ -463,17 +451,14 @@ def test_supported_dataset_payloads_can_attest_exact_snapshot(tmp_path, filename
     snapshot.mkdir(parents = True)
     (snapshot / filename).write_bytes(b"payload")
 
-    assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") == str(
-        snapshot.resolve()
-    )
+    assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") == str(snapshot.resolve())
 
 
 def _loaded_dataset(*sources: str, num_bytes: int = 7):
     return SimpleNamespace(
         info = SimpleNamespace(
             download_checksums = {
-                source: {"num_bytes": num_bytes, "checksum": None}
-                for source in sources
+                source: {"num_bytes": num_bytes, "checksum": None} for source in sources
             }
         )
     )
@@ -483,10 +468,7 @@ def _loaded_dataset(*sources: str, num_bytes: int = 7):
     "source",
     [
         "hf://datasets/org/dataset@dataset-commit/train.parquet",
-        (
-            "https://huggingface.co/datasets/org/dataset/resolve/"
-            "dataset-commit/train.parquet"
-        ),
+        ("https://huggingface.co/datasets/org/dataset/resolve/dataset-commit/train.parquet"),
     ],
 )
 def test_loaded_hub_dataset_attests_consumed_commit_snapshot(tmp_path, source):
@@ -497,10 +479,7 @@ def test_loaded_hub_dataset_attests_consumed_commit_snapshot(tmp_path, source):
     )
     loaded = _loaded_dataset(source)
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        str(snapshot.resolve()),
-        None,
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
 
 
 def test_loaded_hub_dataset_attests_local_snapshot_source(tmp_path):
@@ -511,10 +490,7 @@ def test_loaded_hub_dataset_attests_local_snapshot_source(tmp_path):
     )
     loaded = _loaded_dataset(str(snapshot / "train.parquet"))
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        str(snapshot.resolve()),
-        None,
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
 
 
 def test_loaded_hub_dataset_rejects_source_size_mismatch(tmp_path):
@@ -528,10 +504,7 @@ def test_loaded_hub_dataset_rejects_source_size_mismatch(tmp_path):
         num_bytes = 6,
     )
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_snapshot_unavailable",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
 
 
 @pytest.mark.parametrize("num_bytes", [None, True, -1, "7"])
@@ -552,10 +525,7 @@ def test_loaded_hub_dataset_rejects_invalid_recorded_size(tmp_path, num_bytes):
         )
     )
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_revision_unattested",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_revision_unattested")
 
 
 def test_loaded_hub_dataset_accepts_snapshot_blob_symlink(tmp_path):
@@ -568,10 +538,7 @@ def test_loaded_hub_dataset_accepts_snapshot_blob_symlink(tmp_path):
     (snapshot / "train.parquet").symlink_to("../../blobs/payload")
     loaded = _loaded_dataset(str(snapshot / "train.parquet"))
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        str(snapshot.resolve()),
-        None,
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
 
 
 def test_loaded_hub_dataset_rejects_local_source_symlink_outside_repo(tmp_path):
@@ -586,10 +553,7 @@ def test_loaded_hub_dataset_rejects_local_source_symlink_outside_repo(tmp_path):
     source.symlink_to(external)
     loaded = _loaded_dataset(str(source))
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_source_unattested",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_source_unattested")
 
 
 def test_loaded_hub_dataset_rejects_cross_snapshot_symlink(tmp_path):
@@ -604,28 +568,17 @@ def test_loaded_hub_dataset_rejects_cross_snapshot_symlink(tmp_path):
         "other-commit",
     )
     (other_snapshot / "validation.parquet").write_bytes(b"validation")
-    (snapshot / "validation.parquet").symlink_to(
-        "../other-commit/validation.parquet"
-    )
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@dataset-commit/validation.parquet"
-    )
+    (snapshot / "validation.parquet").symlink_to("../other-commit/validation.parquet")
+    loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/validation.parquet")
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_snapshot_unavailable",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
 
 
 def test_loaded_hub_dataset_rejects_mixed_train_eval_commits(tmp_path):
     _dataset_snapshot(tmp_path, "org/dataset", "train-commit")
     _dataset_snapshot(tmp_path, "org/dataset", "eval-commit")
-    train = _loaded_dataset(
-        "hf://datasets/org/dataset@train-commit/train.parquet"
-    )
-    evaluation = _loaded_dataset(
-        "hf://datasets/org/dataset@eval-commit/train.parquet"
-    )
+    train = _loaded_dataset("hf://datasets/org/dataset@train-commit/train.parquet")
+    evaluation = _loaded_dataset("hf://datasets/org/dataset@eval-commit/train.parquet")
 
     assert attest_loaded_dataset("org/dataset", train, evaluation) == (
         None,
@@ -651,14 +604,9 @@ def test_loaded_hub_dataset_rejects_unattested_sources(tmp_path, source):
 
 
 def test_loaded_hub_dataset_requires_local_commit_payload(tmp_path):
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@evicted-commit/train.parquet"
-    )
+    loaded = _loaded_dataset("hf://datasets/org/dataset@evicted-commit/train.parquet")
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_snapshot_unavailable",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
 
 
 def test_loaded_hub_dataset_requires_every_consumed_source_file(tmp_path):
@@ -668,10 +616,7 @@ def test_loaded_hub_dataset_requires_every_consumed_source_file(tmp_path):
         "hf://datasets/org/dataset@dataset-commit/validation.parquet",
     )
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_snapshot_unavailable",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
 
 
 def test_loaded_hub_dataset_rejects_encoded_windows_traversal(tmp_path):
@@ -682,14 +627,9 @@ def test_loaded_hub_dataset_rejects_encoded_windows_traversal(tmp_path):
     )
     (snapshot.parent / "outside.parquet").write_bytes(b"outside")
     (snapshot / "..\\outside.parquet").write_bytes(b"outside")
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@dataset-commit/%2e%2e%5coutside.parquet"
-    )
+    loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/%2e%2e%5coutside.parquet")
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_snapshot_unavailable",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
 
 
 @pytest.mark.parametrize(
@@ -705,22 +645,15 @@ def test_loaded_hub_dataset_rejects_encoded_windows_traversal(tmp_path):
         "%00outside.parquet",
     ],
 )
-def test_dataset_snapshot_source_rejects_cross_platform_paths(
-    tmp_path,
-    source_path,
-):
+def test_dataset_snapshot_source_rejects_cross_platform_paths(tmp_path, source_path):
     from core.training import provenance
-
     snapshot = _dataset_snapshot(
         tmp_path,
         "org/dataset",
         "dataset-commit",
     )
 
-    assert provenance._dataset_snapshot_contains(
-        str(snapshot),
-        source_path,
-    ) is False
+    assert provenance._dataset_snapshot_contains(str(snapshot), source_path) is False
 
 
 def test_loaded_hub_dataset_rejects_external_snapshot_symlink(tmp_path):
@@ -732,14 +665,9 @@ def test_loaded_hub_dataset_rejects_external_snapshot_symlink(tmp_path):
     external = tmp_path / "external.parquet"
     external.write_bytes(b"external")
     (snapshot / "external.parquet").symlink_to(external)
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@dataset-commit/external.parquet"
-    )
+    loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/external.parquet")
 
-    assert attest_loaded_dataset("org/dataset", loaded) == (
-        None,
-        "dataset_snapshot_unavailable",
-    )
+    assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
 
 
 def test_loaded_hub_dataset_rejects_missing_local_snapshot_source(tmp_path):
@@ -761,14 +689,9 @@ def test_loaded_hub_dataset_matches_repo_id_case_insensitively(tmp_path):
         "Org/Dataset",
         "dataset-commit",
     )
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@dataset-commit/train.parquet"
-    )
+    loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/train.parquet")
 
-    assert attest_loaded_dataset("Org/Dataset", loaded) == (
-        str(snapshot.resolve()),
-        None,
-    )
+    assert attest_loaded_dataset("Org/Dataset", loaded) == (str(snapshot.resolve()), None)
 
 
 def test_shared_hf_loader_marks_only_successful_exact_dataset_load(tmp_path):
@@ -803,9 +726,7 @@ def test_shared_hf_loader_attests_first_remote_dataset_load(tmp_path):
         "org/dataset",
         "dataset-commit",
     )
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@dataset-commit/train.parquet"
-    )
+    loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/train.parquet")
     config = {
         "hf_dataset": "org/dataset",
         "train_split": "train",
@@ -837,9 +758,7 @@ def test_first_remote_hub_load_produces_resumable_provenance(tmp_path):
         "org/dataset",
         "dataset-commit",
     )
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@dataset-commit/train.parquet"
-    )
+    loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/train.parquet")
     config = {
         "model_name": "org/model",
         "model_snapshot_path": str(model),
@@ -858,9 +777,7 @@ def test_first_remote_hub_load_produces_resumable_provenance(tmp_path):
         object(),
         model_load_target = str(model),
         model_load_in_4bit = False,
-        dataset_loaded_from_exact_snapshot = config[
-            "_dataset_loaded_from_exact_snapshot"
-        ],
+        dataset_loaded_from_exact_snapshot = config["_dataset_loaded_from_exact_snapshot"],
     )
     persisted = {
         **config,
@@ -880,9 +797,7 @@ def test_embedding_hf_loader_attests_first_remote_dataset_load(tmp_path):
         "org/dataset",
         "dataset-commit",
     )
-    loaded = _loaded_dataset(
-        "hf://datasets/org/dataset@dataset-commit/train.parquet"
-    )
+    loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/train.parquet")
     config = {
         "hf_dataset": "org/dataset",
         "train_split": "train",
@@ -901,9 +816,12 @@ def test_embedding_hf_loader_attests_first_remote_dataset_load(tmp_path):
 
 @pytest.mark.parametrize("status", ["pending", "incomplete"])
 def test_unattested_current_provenance_without_hub_resources_can_resume(status):
-    assert resource_provenance_allows_resume(
-        {RESOURCE_PROVENANCE_KEY: {"version": 1, "status": status}}
-    ) is True
+    assert (
+        resource_provenance_allows_resume(
+            {RESOURCE_PROVENANCE_KEY: {"version": 1, "status": status}}
+        )
+        is True
+    )
 
 
 def test_unattested_current_hub_dataset_cannot_resume_mutable_revision(tmp_path):
@@ -936,10 +854,7 @@ def test_current_provenance_enforces_only_hub_resources(tmp_path):
     assert resource_provenance_allows_resume(config) is True
 
 
-def test_attested_hub_identity_cannot_be_shadowed_by_relative_local_path(
-    tmp_path,
-    monkeypatch,
-):
+def test_attested_hub_identity_cannot_be_shadowed_by_relative_local_path(tmp_path, monkeypatch):
     (tmp_path / "org" / "model").mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
     marker = {
@@ -1009,23 +924,29 @@ def test_resume_eligibility_rejects_unpinned_current_hub_and_preserves_legacy(mo
         "resumed_later": False,
     }
 
-    assert resume.can_resume_run(
-        {
-            **base_run,
-            "config_json": json.dumps(
-                {
-                    "model_name": "org/model",
-                    RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
-                }
-            ),
-        }
-    ) is False
-    assert resume.can_resume_run(
-        {
-            **base_run,
-            "config_json": json.dumps({"model_name": "legacy/model"}),
-        }
-    ) is True
+    assert (
+        resume.can_resume_run(
+            {
+                **base_run,
+                "config_json": json.dumps(
+                    {
+                        "model_name": "org/model",
+                        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+                    }
+                ),
+            }
+        )
+        is False
+    )
+    assert (
+        resume.can_resume_run(
+            {
+                **base_run,
+                "config_json": json.dumps({"model_name": "legacy/model"}),
+            }
+        )
+        is True
+    )
 
 
 def test_parent_persists_sanitized_attested_config_and_updates_respawn_state(tmp_path):

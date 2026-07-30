@@ -29,7 +29,11 @@ def _known_cache_root(monkeypatch, tmp_path):
     )
 
 
-def _dataset_repo(root: Path, repo_id: str, snapshot: str = "rev") -> tuple[Path, Path]:
+def _dataset_repo(
+    root: Path,
+    repo_id: str,
+    snapshot: str = "rev",
+) -> tuple[Path, Path]:
     repo_root = root / f"datasets--{repo_id.replace('/', '--')}"
     snap = repo_root / "snapshots" / snapshot
     snap.mkdir(parents = True)
@@ -91,10 +95,7 @@ def test_dataset_snapshot_rejects_lookalike_outside_known_cache(monkeypatch, tmp
     repo_root, _ = _dataset_repo(tmp_path / "outside", "Org/Data")
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [allowed])
 
-    assert (
-        dataset_cache.dataset_snapshot_from_cache_path(str(repo_root), "Org/Data")
-        is None
-    )
+    assert dataset_cache.dataset_snapshot_from_cache_path(str(repo_root), "Org/Data") is None
 
 
 def test_dataset_snapshot_ignores_symlinks_outside_cache(tmp_path):
@@ -212,8 +213,7 @@ def test_complete_dataset_snapshot_requires_exact_metadata_commit(monkeypatch, t
     )
 
     assert (
-        dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id)
-        == snapshot.resolve()
+        dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id) == snapshot.resolve()
     )
 
     mismatched = _metadata_manifest(
@@ -235,10 +235,7 @@ def test_complete_dataset_snapshot_requires_exact_metadata_commit(monkeypatch, t
     [(1, False), (2, False)],
 )
 def test_legacy_or_disk_derived_manifest_cannot_attest_dataset(
-    monkeypatch,
-    tmp_path,
-    version,
-    metadata_derived,
+    monkeypatch, tmp_path, version, metadata_derived
 ):
     repo_id = "Org/Data"
     _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
@@ -322,8 +319,7 @@ def test_complete_dataset_snapshot_accepts_hub_blob_symlink(monkeypatch, tmp_pat
     )
 
     assert (
-        dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id)
-        == snapshot.resolve()
+        dataset_cache.complete_dataset_snapshot_path(str(snapshot), repo_id) == snapshot.resolve()
     )
 
 
@@ -372,14 +368,8 @@ def test_newer_download_preserves_older_complete_snapshot(monkeypatch, tmp_path)
         hub_cache = tmp_path,
     )
 
-    assert (
-        dataset_cache.complete_dataset_snapshot_path(str(older), repo_id)
-        == older.resolve()
-    )
-    assert (
-        dataset_cache.complete_dataset_snapshot_path(str(newer), repo_id)
-        == newer.resolve()
-    )
+    assert dataset_cache.complete_dataset_snapshot_path(str(older), repo_id) == older.resolve()
+    assert dataset_cache.complete_dataset_snapshot_path(str(newer), repo_id) == newer.resolve()
 
 
 def test_dataset_completion_isolated_and_purged_by_hub_cache(monkeypatch, tmp_path):
@@ -433,10 +423,7 @@ def test_dataset_completion_isolated_and_purged_by_hub_cache(monkeypatch, tmp_pa
     )
 
 
-def test_dataset_completion_cache_ownership_uses_platform_case_rules(
-    monkeypatch,
-    tmp_path,
-):
+def test_dataset_completion_cache_ownership_uses_platform_case_rules(monkeypatch, tmp_path):
     hub_cache = tmp_path / "Case-Sensitive-Input"
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(
@@ -496,11 +483,7 @@ def test_dataset_completion_bounds_long_state_filenames(monkeypatch, tmp_path):
         '{"version":999,"repo_type":"dataset","repo_id":"Org/Data"}',
     ],
 )
-def test_dataset_completion_corrupt_schema_fails_closed(
-    monkeypatch,
-    tmp_path,
-    payload,
-):
+def test_dataset_completion_corrupt_schema_fails_closed(monkeypatch, tmp_path, payload):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -550,10 +533,7 @@ def test_dataset_completion_rejects_boolean_file_size(monkeypatch, tmp_path):
     )
 
 
-def test_preview_snapshot_returns_immutable_revision_with_cache_pin(
-    monkeypatch,
-    tmp_path,
-):
+def test_preview_snapshot_returns_immutable_revision_with_cache_pin(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-preview")
     (snapshot / "train.parquet").write_bytes(b"rows")
@@ -590,9 +570,7 @@ def test_app_processed_cache_is_deterministic_and_discoverable(monkeypatch, tmp_
     assert second.path == first.path
     assert second.cache_dir == first.cache_dir
     assert second.complete is True
-    assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == [
-        second
-    ]
+    assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == [second]
 
 
 def test_app_processed_cache_rejects_symlinked_parent(monkeypatch, tmp_path):
@@ -621,10 +599,7 @@ def test_app_processed_cache_rejects_symlinked_parent(monkeypatch, tmp_path):
     assert not (external / "snapshot-loads").exists()
 
 
-def test_app_processed_cache_does_not_scan_or_delete_through_parent_symlink(
-    monkeypatch,
-    tmp_path,
-):
+def test_app_processed_cache_does_not_scan_or_delete_through_parent_symlink(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
     (snapshot / "train.parquet").write_bytes(b"rows")
@@ -650,9 +625,7 @@ def test_app_processed_cache_does_not_scan_or_delete_through_parent_symlink(
     )
 
     assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == []
-    assert dataset_processed_cache.delete_app_processed_dataset_caches(
-        repo_id
-    ) == (False, [])
+    assert dataset_processed_cache.delete_app_processed_dataset_caches(repo_id) == (False, [])
     assert entry.path.is_dir()
 
 

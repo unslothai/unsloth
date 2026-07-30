@@ -32,7 +32,6 @@ class AppProcessedDatasetCache:
 
 def app_processed_dataset_cache_root() -> Path:
     from utils.paths.storage_roots import cache_root
-
     return cache_root() / "hf-datasets" / _CACHE_DIRNAME
 
 
@@ -80,12 +79,8 @@ def _safe_create_child(parent: Path, name: str, root: Path) -> Path:
     return resolved
 
 
-def _resolved_app_processed_dataset_cache_root(
-    *,
-    create: bool,
-) -> Optional[Path]:
+def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path]:
     from utils.paths.storage_roots import cache_root
-
     try:
         configured_root = Path(cache_root()).expanduser().absolute()
         root_path = app_processed_dataset_cache_root().expanduser().absolute()
@@ -128,11 +123,7 @@ def _atomic_write_metadata(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _metadata_payload(
-    repo_id: str,
-    hub_cache: Path,
-    commit_hash: str,
-    *,
-    complete: bool,
+    repo_id: str, hub_cache: Path, commit_hash: str, *, complete: bool
 ) -> dict[str, Any]:
     return {
         "version": _CACHE_VERSION,
@@ -143,10 +134,7 @@ def _metadata_payload(
     }
 
 
-def prepare_app_processed_dataset_cache(
-    repo_id: str,
-    snapshot: Path,
-) -> AppProcessedDatasetCache:
+def prepare_app_processed_dataset_cache(repo_id: str, snapshot: Path) -> AppProcessedDatasetCache:
     validated = validated_repo_cache_path(str(snapshot), "dataset", repo_id)
     if validated is None:
         raise FileNotFoundError(f"Cached dataset snapshot for {repo_id} is unavailable")
@@ -155,9 +143,7 @@ def prepare_app_processed_dataset_cache(
         snapshots = (repo_dir / "snapshots").resolve(strict = True)
         selected = selected.resolve(strict = True)
     except (OSError, RuntimeError, ValueError) as error:
-        raise FileNotFoundError(
-            f"Cached dataset snapshot for {repo_id} is unavailable"
-        ) from error
+        raise FileNotFoundError(f"Cached dataset snapshot for {repo_id} is unavailable") from error
     if selected.parent != snapshots or not selected.is_dir():
         raise FileNotFoundError(f"Cached dataset snapshot for {repo_id} is unavailable")
     commit_hash = normalized_commit_hash(selected.name)
@@ -212,10 +198,7 @@ def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -
     )
 
 
-def _read_cache_entry(
-    entry_path: Path,
-    root: Path,
-) -> Optional[AppProcessedDatasetCache]:
+def _read_cache_entry(entry_path: Path, root: Path) -> Optional[AppProcessedDatasetCache]:
     try:
         if entry_path.is_symlink() or not entry_path.is_dir():
             return None
@@ -290,8 +273,7 @@ def iter_app_processed_dataset_caches() -> Iterator[AppProcessedDatasetCache]:
 
 
 def app_processed_dataset_cache_from_path(
-    repo_id: str,
-    path_value: str,
+    repo_id: str, path_value: str
 ) -> Optional[AppProcessedDatasetCache]:
     requested = _canonical_path(path_value)
     if requested is None:
@@ -306,9 +288,7 @@ def app_processed_dataset_cache_from_path(
 
 
 def delete_app_processed_dataset_caches(
-    repo_id: str,
-    *,
-    hub_cache: Optional[Path] = None,
+    repo_id: str, *, hub_cache: Optional[Path] = None
 ) -> tuple[bool, list[str]]:
     from hub.utils.paths import is_valid_repo_id
 
@@ -344,9 +324,7 @@ def delete_app_processed_dataset_caches(
             resolved_target = target.resolve(strict = True)
             resolved_target.relative_to(root)
             if any(child.is_symlink() for child in resolved_target.iterdir()):
-                failures.append(
-                    f"Unsafe processed dataset cache entry under: {resolved_target}"
-                )
+                failures.append(f"Unsafe processed dataset cache entry under: {resolved_target}")
                 continue
             shutil.rmtree(resolved_target)
             deleted = True

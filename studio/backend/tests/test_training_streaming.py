@@ -378,9 +378,7 @@ def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
         patch.object(training_route, "load_model_defaults", return_value = {}),
     ):
-        response = asyncio.run(
-            training_route.start_training(request, current_subject = "test-user")
-        )
+        response = asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True
@@ -426,9 +424,7 @@ def test_streaming_start_happy_path_reaches_backend():
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
         patch.object(training_route, "load_model_defaults", return_value = {}),
     ):
-        response = asyncio.run(
-            training_route.start_training(request, current_subject = "test-user")
-        )
+        response = asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True

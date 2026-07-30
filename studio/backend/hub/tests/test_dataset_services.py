@@ -270,12 +270,7 @@ def test_delete_processed_dataset_scopes_to_selected_root(monkeypatch, tmp_path)
     assert (other_root / "Org___Data").exists()  # the other cache home is untouched
 
 
-def _app_cache_entry(
-    monkeypatch,
-    hub_cache: Path,
-    repo_id: str,
-    commit_hash: str,
-):
+def _app_cache_entry(monkeypatch, hub_cache: Path, repo_id: str, commit_hash: str):
     repo_root = hub_cache / f"datasets--{repo_id.replace('/', '--')}"
     snapshot = repo_root / "snapshots" / commit_hash
     snapshot.mkdir(parents = True)
@@ -375,11 +370,7 @@ def test_delete_app_only_cache_path_isolated_by_hub_root(monkeypatch, tmp_path):
     assert not first.path.exists()
     assert second.path.exists()
     assert (
-        first.hub_cache
-        / "datasets--Org--Data"
-        / "snapshots"
-        / "commit-a"
-        / "train.parquet"
+        first.hub_cache / "datasets--Org--Data" / "snapshots" / "commit-a" / "train.parquet"
     ).exists()
 
 
@@ -412,9 +403,7 @@ def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path
                         repo_type = "dataset",
                         repo_id = repo_id,
                         repo_path = str(repo_path),
-                        revisions = [
-                            SimpleNamespace(commit_hash = entry.commit_hash)
-                        ],
+                        revisions = [SimpleNamespace(commit_hash = entry.commit_hash)],
                     )
                 ],
                 delete_revisions = lambda *_args: _Strategy(),
@@ -464,10 +453,7 @@ def test_app_cache_symlinked_root_is_not_scanned_or_deleted(monkeypatch, tmp_pat
     root.symlink_to(external, target_is_directory = True)
 
     assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == []
-    assert cache_inventory._delete_app_processed_dataset_cache("Org/Data") == (
-        False,
-        [],
-    )
+    assert cache_inventory._delete_app_processed_dataset_cache("Org/Data") == (False, [])
     assert (external / "keep.txt").read_text() == "keep"
 
 
@@ -487,9 +473,7 @@ def test_app_cache_symlinked_entry_is_not_scanned_or_deleted(monkeypatch, tmp_pa
     entry.path.symlink_to(external, target_is_directory = True)
 
     assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == []
-    deleted, failures = cache_inventory._delete_app_processed_dataset_cache(
-        "Org/Data"
-    )
+    deleted, failures = cache_inventory._delete_app_processed_dataset_cache("Org/Data")
     assert deleted is False
     assert failures
     assert (external / "keep.txt").read_text() == "keep"

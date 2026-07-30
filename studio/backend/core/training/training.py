@@ -219,18 +219,10 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "enable_tensorboard": values.get("enable_tensorboard", False),
         "tensorboard_dir": values.get("tensorboard_dir", "runs"),
         "resume_from_checkpoint": values.get("resume_from_checkpoint"),
-        "require_exact_resume_resources": values.get(
-            "require_exact_resume_resources", False
-        ),
-        "require_exact_model_resource": values.get(
-            "require_exact_model_resource", False
-        ),
-        "require_exact_dataset_resource": values.get(
-            "require_exact_dataset_resource", False
-        ),
-        "require_validated_model_snapshot": values.get(
-            "require_validated_model_snapshot", False
-        ),
+        "require_exact_resume_resources": values.get("require_exact_resume_resources", False),
+        "require_exact_model_resource": values.get("require_exact_model_resource", False),
+        "require_exact_dataset_resource": values.get("require_exact_dataset_resource", False),
+        "require_validated_model_snapshot": values.get("require_validated_model_snapshot", False),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -330,14 +322,9 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["model_snapshot_path"] = None
         return
     requested_pin = config.get("model_snapshot_path")
-    require_validated_snapshot = bool(
-        config.get("require_validated_model_snapshot")
-    )
-    if require_validated_snapshot and not (
-        requested_pin and config.get("actual_model_repo_id")
-    ):
+    require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
+    if require_validated_snapshot and not (requested_pin and config.get("actual_model_repo_id")):
         from .provenance import ExactResumeResourcesUnavailable
-
         raise ExactResumeResourcesUnavailable(
             "The cached model snapshot selected during preflight is no longer available."
         )
@@ -345,10 +332,7 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     if resume and requested_pin:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
-        pinned_repo_id = (
-            config.get("actual_model_repo_id")
-            or canonical_model_repo_id(model_name)
-        )
+        pinned_repo_id = config.get("actual_model_repo_id") or canonical_model_repo_id(model_name)
         pin = latest_snapshot_from_cache_path(
             requested_pin, "model", pinned_repo_id, _MODEL_SNAPSHOT_METADATA
         )
@@ -357,7 +341,6 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
                 "require_exact_model_resource"
             ):
                 from .provenance import ExactResumeResourcesUnavailable
-
                 raise ExactResumeResourcesUnavailable(
                     "The exact model snapshot for this run is no longer available."
                 )
@@ -385,7 +368,6 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         if pin is None:
             if require_validated_snapshot:
                 from .provenance import ExactResumeResourcesUnavailable
-
                 raise ExactResumeResourcesUnavailable(
                     "The cached model snapshot selected during preflight is no longer available."
                 )
@@ -423,15 +405,9 @@ def resolve_training_model_load_target(values: dict[str, Any]) -> str:
         "actual_model_repo_id": values.get("actual_model_repo_id"),
         "resume_model_load_mode": values.get("resume_model_load_mode"),
         "resume_from_checkpoint": values.get("resume_from_checkpoint"),
-        "require_exact_resume_resources": values.get(
-            "require_exact_resume_resources", False
-        ),
-        "require_exact_model_resource": values.get(
-            "require_exact_model_resource", False
-        ),
-        "require_validated_model_snapshot": values.get(
-            "require_validated_model_snapshot", False
-        ),
+        "require_exact_resume_resources": values.get("require_exact_resume_resources", False),
+        "require_exact_model_resource": values.get("require_exact_model_resource", False),
+        "require_validated_model_snapshot": values.get("require_validated_model_snapshot", False),
         "load_in_4bit": values.get("load_in_4bit", True),
     }
     _apply_model_cache_pin(config, [])
@@ -447,7 +423,6 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
             validate_exact_model_pin,
             validate_exact_resource_pins,
         )
-
         if config.get("require_exact_resume_resources"):
             model_snapshot, dataset_snapshot = validate_exact_resource_pins(config)
             config["model_snapshot_path"] = model_snapshot
@@ -477,7 +452,6 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
                 "require_exact_dataset_resource"
             ):
                 from .provenance import ExactResumeResourcesUnavailable
-
                 raise ExactResumeResourcesUnavailable(
                     "The exact dataset snapshot for this run is no longer available."
                 )
@@ -487,9 +461,7 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
             )
         config["dataset_snapshot_path"] = str(snap) if snap else None
         snapshot = (
-            dataset_snapshot_from_cache_path(str(snap), hf_dataset)
-            if snap is not None
-            else None
+            dataset_snapshot_from_cache_path(str(snap), hf_dataset) if snap is not None else None
         )
         if snapshot is not None:
             config["dataset_revision"] = snapshot.name
@@ -782,9 +754,7 @@ class _MLXTrainerAdapter:
             "dataset_known_cached": bool(dataset_local_files_only),
             "dataset_snapshot_path": dataset_local_path,
             "dataset_revision": dataset_revision,
-            "require_exact_dataset_resource": bool(
-                require_exact_resume_resources
-            ),
+            "require_exact_dataset_resource": bool(require_exact_resume_resources),
         }
         self.is_cpt = bool(is_cpt)
         self._update_progress(status_message = "Queued MLX dataset load")
@@ -1116,12 +1086,10 @@ class TrainingBackend:
         **kwargs,
     ) -> bool:
         from .lifecycle import training_lifecycle_guard
-
         with training_lifecycle_guard():
             resume_checkpoint = kwargs.get("resume_from_checkpoint")
             if resume_checkpoint:
                 from .resume import get_resume_checkpoint_path
-
                 if get_resume_checkpoint_path(resume_checkpoint) is None:
                     message = "Resume checkpoint is no longer available."
                     with self._lock:
@@ -1157,9 +1125,7 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
-            if self._spawn_in_progress or (
-                self._proc is not None and self._proc.is_alive()
-            ):
+            if self._spawn_in_progress or (self._proc is not None and self._proc.is_alive()):
                 logger.warning("Training subprocess already running")
                 return False
 
@@ -1238,7 +1204,6 @@ class TrainingBackend:
                 or config.get("require_exact_model_resource")
             ) and config.get("load_in_4bit"):
                 from .provenance import effective_training_load_in_4bit
-
                 effective_training_load_in_4bit(
                     config,
                     config.get("model_snapshot_path") or config["model_name"],
@@ -1378,7 +1343,6 @@ class TrainingBackend:
     ) -> bool:
         """Send stop signal to the training subprocess."""
         from .lifecycle import training_lifecycle_guard
-
         with training_lifecycle_guard():
             return self._stop_training_with_lifecycle_reserved(
                 save = save,
@@ -1386,16 +1350,11 @@ class TrainingBackend:
             )
 
     def _stop_training_with_lifecycle_reserved(
-        self,
-        save: bool,
-        expected_job_id: Optional[str],
+        self, save: bool, expected_job_id: Optional[str]
     ) -> bool:
         with self._run_intent_lock:
             with self._lock:
-                if (
-                    expected_job_id is not None
-                    and self.current_job_id != expected_job_id
-                ):
+                if expected_job_id is not None and self.current_job_id != expected_job_id:
                     return False
                 run_id = self.current_job_id
             if not save and run_id:
@@ -1454,29 +1413,19 @@ class TrainingBackend:
         self._start_stop_watchdog(cancel = not save, expected_job_id = run_id)
         return True
 
-    def reset_training_state(
-        self,
-        expected_job_id: Optional[str] = None,
-    ) -> str:
+    def reset_training_state(self, expected_job_id: Optional[str] = None) -> str:
         from .lifecycle import training_lifecycle_guard
 
         with training_lifecycle_guard():
             with self._lock:
-                if (
-                    expected_job_id is not None
-                    and self.current_job_id != expected_job_id
-                ):
+                if expected_job_id is not None and self.current_job_id != expected_job_id:
                     return "superseded"
                 target_job_id = self.current_job_id
 
             is_active = self.is_training_active()
             with self._lock:
-                if (
-                    self.current_job_id != target_job_id
-                    or (
-                        expected_job_id is not None
-                        and self.current_job_id != expected_job_id
-                    )
+                if self.current_job_id != target_job_id or (
+                    expected_job_id is not None and self.current_job_id != expected_job_id
                 ):
                     return "superseded"
                 cancel_requested = self._cancel_requested
@@ -1491,12 +1440,8 @@ class TrainingBackend:
 
         with training_lifecycle_guard():
             with self._lock:
-                if (
-                    self.current_job_id != target_job_id
-                    or (
-                        expected_job_id is not None
-                        and self.current_job_id != expected_job_id
-                    )
+                if self.current_job_id != target_job_id or (
+                    expected_job_id is not None and self.current_job_id != expected_job_id
                 ):
                     return "superseded"
                 self._should_stop = False
@@ -1815,10 +1760,7 @@ class TrainingBackend:
         if proc is not None and proc.is_alive():
             proc.terminate()
 
-    def _respawn_worker_disable_xet(
-        self,
-        expected_job_id: Optional[str] = None,
-    ) -> bool:
+    def _respawn_worker_disable_xet(self, expected_job_id: Optional[str] = None) -> bool:
         """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
         stall. Runs on the exiting pump thread, reaps the terminated worker, and
         starts a fresh worker + pump. DB/progress run-state is preserved so the
@@ -1948,7 +1890,9 @@ class TrainingBackend:
                     )
                     return False
 
-                logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
+                logger.info(
+                    "Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid
+                )
                 new_pump = threading.Thread(target = self._pump_loop, daemon = True)
                 with self._lock:
                     self._in_model_load = False
@@ -2051,14 +1995,11 @@ class TrainingBackend:
         with self._lock:
             config = self._db_config or {}
             output_dir = (
-                self._output_dir
-                or self._cancel_cleanup_output_dir
-                or config.get("output_dir")
+                self._output_dir or self._cancel_cleanup_output_dir or config.get("output_dir")
             )
             resume_from_checkpoint = config.get("resume_from_checkpoint")
         if not output_dir:
             from .worker import _output_dir_from_resume_checkpoint
-
             output_dir = _output_dir_from_resume_checkpoint(resume_from_checkpoint)
         return str(output_dir) if output_dir else None
 
@@ -2252,25 +2193,16 @@ class TrainingBackend:
 
     def _handle_resource_provenance_event(self, event: dict[str, Any]) -> None:
         from .provenance import normalize_worker_provenance_event
-
         with self._provenance_lock:
             with self._lock:
-                if (
-                    not self.current_job_id
-                    or self._db_config is None
-                    or self._run_finalized
-                ):
+                if not self.current_job_id or self._db_config is None or self._run_finalized:
                     return
                 run_id = self.current_job_id
                 current_config = dict(self._db_config)
 
             updates = normalize_worker_provenance_event(event, current_config)
             with self._lock:
-                if (
-                    self.current_job_id != run_id
-                    or self._db_config is None
-                    or self._run_finalized
-                ):
+                if self.current_job_id != run_id or self._db_config is None or self._run_finalized:
                     return
                 self._db_config.update(updates)
                 if self._last_full_config is not None:
@@ -2283,7 +2215,6 @@ class TrainingBackend:
             for attempt in range(_DB_FINALIZE_RETRIES):
                 try:
                     from storage.studio_db import update_run_config_json
-
                     if not update_run_config_json(run_id, config_json):
                         logger.warning(
                             "Training provenance was not persisted because run %s is no longer active",
@@ -2691,11 +2622,7 @@ class TrainingBackend:
             with self._lock:
                 if expected_job_id is not None and self.current_job_id != expected_job_id:
                     return
-                if (
-                    not self.current_job_id
-                    or not self._db_run_created
-                    or self._run_finalized
-                ):
+                if not self.current_job_id or not self._db_run_created or self._run_finalized:
                     return
                 self._run_finalized = True
                 run_id = self.current_job_id

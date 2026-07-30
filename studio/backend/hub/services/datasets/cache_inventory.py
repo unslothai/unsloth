@@ -182,9 +182,7 @@ def _processed_dataset_cache_size(path: Path) -> int:
     try:
         for directory, dirnames, filenames in os.walk(path, followlinks = False):
             base = Path(directory)
-            dirnames[:] = [
-                name for name in dirnames if not (base / name).is_symlink()
-            ]
+            dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
             for filename in filenames:
                 entry = base / filename
                 try:
@@ -401,11 +399,7 @@ async def delete_cached_dataset_response(repo_id: str, cache_path: Optional[str]
 
 def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = None) -> dict:
     scans, _seen_roots = _collect_hf_cache_scans()
-    app_entry = (
-        app_processed_dataset_cache_from_path(repo_id, cache_path)
-        if cache_path
-        else None
-    )
+    app_entry = app_processed_dataset_cache_from_path(repo_id, cache_path) if cache_path else None
 
     # Group this dataset's copies by owning cache root, then target exactly one
     # cache so a delete never removes copies in other, previously selected caches.
@@ -429,10 +423,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
     # processed-cache delete rather than rejecting a legitimate row.
     if target_root is None and not (
         cache_path
-        and (
-            _is_processed_dataset_cache_path(repo_id, cache_path)
-            or app_entry is not None
-        )
+        and (_is_processed_dataset_cache_path(repo_id, cache_path) or app_entry is not None)
     ):
         raise HTTPException(status_code = 400, detail = "Invalid cache_path")
     candidate_entries = owners.get(target_root, []) if target_root is not None else []
@@ -571,9 +562,7 @@ def _delete_processed_dataset_cache(
 
 
 def _delete_app_processed_dataset_cache(
-    repo_id: str,
-    *,
-    hub_cache: Optional[Path] = None,
+    repo_id: str, *, hub_cache: Optional[Path] = None
 ) -> tuple[bool, list[str]]:
     deleted, failures = delete_app_processed_dataset_caches(
         repo_id,

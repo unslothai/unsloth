@@ -6,45 +6,26 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
 VALIDATION_HOOK = REPO / "studio/frontend/src/hooks/use-hf-token-validation.ts"
-TOKEN_INDICATOR = (
-    REPO / "studio/frontend/src/features/hub/components/hf-token-indicator.tsx"
-)
+TOKEN_INDICATOR = REPO / "studio/frontend/src/features/hub/components/hf-token-indicator.tsx"
 EN_LOCALE = REPO / "studio/frontend/src/i18n/locales/en.ts"
-RUN_PREVIEW = (
-    REPO / "studio/frontend/src/features/studio/wizard/run-preview-card.tsx"
-)
-TRAINING_READINESS = (
-    REPO / "studio/frontend/src/features/training/hooks/use-training-readiness.ts"
-)
-START_TRAINING_CTA = (
-    REPO / "studio/frontend/src/features/studio/wizard/start-training-cta.tsx"
-)
-STUDIO_NAVIGATION = (
-    REPO / "studio/frontend/src/features/studio/use-studio-navigation.ts"
-)
+RUN_PREVIEW = REPO / "studio/frontend/src/features/studio/wizard/run-preview-card.tsx"
+TRAINING_READINESS = REPO / "studio/frontend/src/features/training/hooks/use-training-readiness.ts"
+START_TRAINING_CTA = REPO / "studio/frontend/src/features/studio/wizard/start-training-cta.tsx"
+STUDIO_NAVIGATION = REPO / "studio/frontend/src/features/studio/use-studio-navigation.ts"
 TRAIN_SUBNAV = REPO / "studio/frontend/src/features/studio/studio-navigation.tsx"
-TRAINING_ACTIONS = (
-    REPO / "studio/frontend/src/features/training/hooks/use-training-actions.ts"
-)
+TRAINING_ACTIONS = REPO / "studio/frontend/src/features/training/hooks/use-training-actions.ts"
 FRESH_TRAINING_START = (
-    REPO
-    / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
+    REPO / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
 )
-RESUME_TRAINING_START = (
-    REPO
-    / "studio/frontend/src/features/training/lib/resume-training-run.ts"
-)
+RESUME_TRAINING_START = REPO / "studio/frontend/src/features/training/lib/resume-training-run.ts"
 TRAINING_RUNTIME_STORE = (
-    REPO
-    / "studio/frontend/src/features/training/stores/training-runtime-store.ts"
+    REPO / "studio/frontend/src/features/training/stores/training-runtime-store.ts"
 )
 TRAINING_RUNTIME_LIFECYCLE = (
-    REPO
-    / "studio/frontend/src/features/training/hooks/use-training-runtime-lifecycle.ts"
+    REPO / "studio/frontend/src/features/training/hooks/use-training-runtime-lifecycle.ts"
 )
 TRAINING_START_RUNTIME = (
-    REPO
-    / "studio/frontend/src/features/training/lib/training-start-runtime.ts"
+    REPO / "studio/frontend/src/features/training/lib/training-start-runtime.ts"
 )
 CONFIRM_TOKEN = REPO / "studio/frontend/src/features/hf-auth/confirm-token.ts"
 TRAIN_API = REPO / "studio/frontend/src/features/training/api/train-api.ts"
@@ -112,36 +93,32 @@ def test_training_start_prepares_token_once_before_transport():
     assert "prepareHfTokenForUse" not in api
 
     start_transport = api.split("export async function startTraining", 1)[1]
-    start_transport = start_transport.split(
-        "export async function stopTraining", 1
-    )[0]
+    start_transport = start_transport.split("export async function stopTraining", 1)[0]
     assert "body: JSON.stringify(payload)" in start_transport
     assert "hf_token: preparedToken.token" not in start_transport
 
-    resume_entrypoint = resume_start.split(
-        "export async function resumeTrainingRun", 1
-    )[1].split("type ResumeAttemptPhase", 1)[0]
+    resume_entrypoint = resume_start.split("export async function resumeTrainingRun", 1)[1].split(
+        "type ResumeAttemptPhase", 1
+    )[0]
     assert resume_entrypoint.index("await prepareResumeHfToken(") < (
         resume_entrypoint.index("submitResumeTrainingRun(")
     )
-    resume_token = resume_start.split(
-        "async function prepareResumeHfToken", 1
-    )[1].split("async function confirmResumeRemoteCode", 1)[0]
+    resume_token = resume_start.split("async function prepareResumeHfToken", 1)[1].split(
+        "async function confirmResumeRemoteCode", 1
+    )[0]
     assert "await prepareHfTokenForUse(payload.hf_token)" in resume_token
-    resume_transport = resume_start.split(
-        "async function submitResumeTrainingRun", 1
-    )[1]
+    resume_transport = resume_start.split("async function submitResumeTrainingRun", 1)[1]
     assert "await startTraining(payload)" in resume_transport
     assert resume_transport.index("attempt.enterTransport()") < (
         resume_transport.index("await startTraining(payload)")
     )
 
-    prepare_attempt = fresh_start.split(
-        "async function prepareAttemptHfToken", 1
-    )[1].split("async function prepareSelectedDataset", 1)[0]
-    submit_attempt = fresh_start.split(
-        "async function submitFreshTrainingRun", 1
-    )[1].split("async function checkSelectedDataset", 1)[0]
+    prepare_attempt = fresh_start.split("async function prepareAttemptHfToken", 1)[1].split(
+        "async function prepareSelectedDataset", 1
+    )[0]
+    submit_attempt = fresh_start.split("async function submitFreshTrainingRun", 1)[1].split(
+        "async function checkSelectedDataset", 1
+    )[0]
     assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
     assert "buildTrainingStartPayload(attempt.config)" in submit_attempt
     assert "payload.hf_token = hfToken" in submit_attempt
@@ -156,35 +133,33 @@ def test_training_start_claims_runtime_before_first_await():
     runtime_store = TRAINING_RUNTIME_STORE.read_text(encoding = "utf-8")
     start_runtime = TRAINING_START_RUNTIME.read_text(encoding = "utf-8")
 
-    entrypoint = fresh_start.split(
-        "export async function startFreshTrainingRun", 1
-    )[1].split("type AttemptHfTokenResult", 1)[0]
+    entrypoint = fresh_start.split("export async function startFreshTrainingRun", 1)[1].split(
+        "type AttemptHfTokenResult", 1
+    )[0]
     assert entrypoint.index("FreshTrainingStartAttempt.begin()") < entrypoint.index(
         "await prepareAttemptHfToken(attempt)"
     )
 
-    begin = fresh_start.split(
-        "static begin(): FreshTrainingStartAttempt | null", 1
-    )[1].split("get config(): TrainingConfigStore", 1)[0]
+    begin = fresh_start.split("static begin(): FreshTrainingStartAttempt | null", 1)[1].split(
+        "get config(): TrainingConfigStore", 1
+    )[0]
     assert "tryAcquireTrainingStart()" in begin
 
-    claim = runtime_store.split("tryBeginStarting: () =>", 1)[1].split(
-        "setStarting:", 1
-    )[0]
+    claim = runtime_store.split("tryBeginStarting: () =>", 1)[1].split("setStarting:", 1)[0]
     assert "isTrainingStartPending(state)" in claim
     assert "state.stopRequested" in claim
     assert "return { isStarting: true }" in claim
     assert "runtime.tryBeginStarting()" in start_runtime
 
-    resume_entrypoint = resume_start.split(
-        "export async function resumeTrainingRun", 1
-    )[1].split("type ResumeAttemptPhase", 1)[0]
+    resume_entrypoint = resume_start.split("export async function resumeTrainingRun", 1)[1].split(
+        "type ResumeAttemptPhase", 1
+    )[0]
     assert resume_entrypoint.index("ResumeTrainingStartAttempt.begin()") < (
         resume_entrypoint.index("await loadResumePayload(runId, attempt)")
     )
-    resume_begin = resume_start.split(
-        "static begin(): ResumeTrainingStartAttempt | null", 1
-    )[1].split("get hfToken(): string", 1)[0]
+    resume_begin = resume_start.split("static begin(): ResumeTrainingStartAttempt | null", 1)[
+        1
+    ].split("get hfToken(): string", 1)[0]
     assert "tryAcquireTrainingStart()" in resume_begin
 
 
@@ -194,26 +169,21 @@ def test_accepted_training_start_stays_locked_during_preparation():
     cta = START_TRAINING_CTA.read_text(encoding = "utf-8")
     navigation = STUDIO_NAVIGATION.read_text(encoding = "utf-8")
     subnav = TRAIN_SUBNAV.read_text(encoding = "utf-8")
-    history_grid = (
-        REPO / "studio/frontend/src/features/studio/history-card-grid.tsx"
-    ).read_text(encoding = "utf-8")
+    history_grid = (REPO / "studio/frontend/src/features/studio/history-card-grid.tsx").read_text(
+        encoding = "utf-8"
+    )
     history_view = (
         REPO / "studio/frontend/src/features/studio/historical-training-view.tsx"
     ).read_text(encoding = "utf-8")
     dataset_preview = (
-        REPO
-        / "studio/frontend/src/features/studio/sections/dataset-preview-dialog.tsx"
+        REPO / "studio/frontend/src/features/studio/sections/dataset-preview-dialog.tsx"
     ).read_text(encoding = "utf-8")
-    sidebar = (
-        REPO / "studio/frontend/src/components/app-sidebar.tsx"
-    ).read_text(encoding = "utf-8")
+    sidebar = (REPO / "studio/frontend/src/components/app-sidebar.tsx").read_text(encoding = "utf-8")
     completion_watch = (
-        REPO
-        / "studio/frontend/src/features/training/hooks/use-training-completion-watch.ts"
+        REPO / "studio/frontend/src/features/training/hooks/use-training-completion-watch.ts"
     ).read_text(encoding = "utf-8")
     unload_guard = (
-        REPO
-        / "studio/frontend/src/features/training/hooks/use-training-unload-guard.ts"
+        REPO / "studio/frontend/src/features/training/hooks/use-training-unload-guard.ts"
     ).read_text(encoding = "utf-8")
 
     for phase in (
@@ -247,7 +217,7 @@ def test_accepted_training_start_stays_locked_during_preparation():
 
     assert "initialStudioTab(selectedHistoryRunId, trainingRunActive)" in navigation
     assert "activeStudioTab(" in navigation
-    assert "trainingRunActive && requestedTab !== \"history\"" in navigation
+    assert 'trainingRunActive && requestedTab !== "history"' in navigation
     assert "jobId !== previousJobId && trainingRunActive" in navigation
     assert "previousTrainingRunActive: isTrainingRunActive(previousState)" in navigation
     assert "disabled: trainingRunActive" in subnav
@@ -261,8 +231,7 @@ def test_async_training_views_scope_results_to_the_current_request():
         REPO / "studio/frontend/src/features/studio/historical-training-view.tsx"
     ).read_text(encoding = "utf-8")
     dataset_preview = (
-        REPO
-        / "studio/frontend/src/features/studio/sections/dataset-preview-dialog.tsx"
+        REPO / "studio/frontend/src/features/studio/sections/dataset-preview-dialog.tsx"
     ).read_text(encoding = "utf-8")
 
     assert "result?.runId === runId" in history_view
@@ -284,9 +253,9 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     assert "getHfToken() === this.expectedHfToken" in input_guard
     assert "this.abortForChangedInputs()" in input_guard
     assert "TRAINING_SETUP_CHANGED_ERROR" in source
-    snapshot = source.split(
-        "function captureTrainingStartInputs", 1
-    )[1].split("type TrainingStartInputs", 1)[0]
+    snapshot = source.split("function captureTrainingStartInputs", 1)[1].split(
+        "type TrainingStartInputs", 1
+    )[0]
     assert "buildTrainingStartPayload(config)" in snapshot
     assert "payload.hf_token = null" in snapshot
     assert "payload.model_known_cached = false" in snapshot
@@ -297,14 +266,11 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     assert "modelType: config.modelType" in snapshot
     assert "isVisionModel: config.isVisionModel" in snapshot
     assert "isAudioModel: config.isAudioModel" in snapshot
-    assert (
-        "useTrainingConfigStore.getState() === this.expectedConfig"
-        not in source
-    )
+    assert "useTrainingConfigStore.getState() === this.expectedConfig" not in source
 
-    token_acceptance = source.split(
-        "acceptPreparedHfToken(token: string | null): boolean", 1
-    )[1].split("\n  updateConfig(", 1)[0]
+    token_acceptance = source.split("acceptPreparedHfToken(token: string | null): boolean", 1)[
+        1
+    ].split("\n  updateConfig(", 1)[0]
     assert "currentToken !== this.expectedHfToken" in token_acceptance
     assert "currentToken !== nextToken" in token_acceptance
     assert "useHfTokenStore.getState().setToken(nextToken)" in token_acceptance
@@ -337,9 +303,9 @@ def test_accepted_training_start_survives_runtime_resync_failure():
         "async function checkSelectedDataset", 1
     )[0]
 
-    accepted = source.split(
-        "settleAccepted(jobId: string, message: string)", 1
-    )[1].split("private abortForChangedInputs", 1)[0]
+    accepted = source.split("settleAccepted(jobId: string, message: string)", 1)[1].split(
+        "private abortForChangedInputs", 1
+    )[0]
     assert accepted.index('this.phase = "finished"') < accepted.index(
         "settleAcceptedTrainingStart("
     )
@@ -351,9 +317,9 @@ def test_accepted_training_start_survives_runtime_resync_failure():
     assert "Promise.resolve().then(emitTrainingRunsChanged)" in settle
     assert "syncTrainingRuntimeFromBackend()" in settle
 
-    cleanup = runtime.split(
-        "async function resetSupersededBackendJob", 1
-    )[1].split("export async function settleAcceptedTrainingStart", 1)[0]
+    cleanup = runtime.split("async function resetSupersededBackendJob", 1)[1].split(
+        "export async function settleAcceptedTrainingStart", 1
+    )[0]
     assert "await stopTraining(false, { expectedJobId: jobId })" in cleanup
     assert "await resetTraining({ expectedJobId: jobId })" in cleanup
     assert "resetRuntime()" not in cleanup
@@ -370,9 +336,9 @@ def test_superseded_start_cleanup_scopes_both_backend_mutations():
     runtime = TRAINING_START_RUNTIME.read_text(encoding = "utf-8")
     api = TRAIN_API.read_text(encoding = "utf-8")
 
-    cleanup = runtime.split(
-        "async function resetSupersededBackendJob", 1
-    )[1].split("export async function settleAcceptedTrainingStart", 1)[0]
+    cleanup = runtime.split("async function resetSupersededBackendJob", 1)[1].split(
+        "export async function settleAcceptedTrainingStart", 1
+    )[0]
     assert "cancelSupersededTrainingStart(jobId: string)" in runtime
     assert "stopTraining(false, { expectedJobId: jobId })" in cleanup
     assert "resetTraining({ expectedJobId: jobId })" in cleanup
@@ -392,17 +358,14 @@ def test_superseded_start_cleanup_scopes_both_backend_mutations():
 def test_resume_training_preserves_consent_and_error_contracts():
     source = RESUME_TRAINING_START.read_text(encoding = "utf-8")
 
-    consent = source.split(
-        "async function confirmResumeRemoteCode", 1
-    )[1].split("async function submitResumeTrainingRun", 1)[0]
+    consent = source.split("async function confirmResumeRemoteCode", 1)[1].split(
+        "async function submitResumeTrainingRun", 1
+    )[0]
     assert "await confirmRemoteCodeIfNeeded({" in consent
     assert "trustRemoteCode = true" in consent
     assert "approvedRemoteCodeFingerprint = fingerprint" in consent
     assert "payload.trust_remote_code = trustRemoteCode" in consent
-    assert (
-        "payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint"
-        in consent
-    )
+    assert "payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint" in consent
 
     failure = source.split("fail(error: unknown): false", 1)[1].split(
         "async function loadResumePayload", 1
@@ -423,9 +386,9 @@ def test_resume_token_identity_is_guarded_through_preflight():
     assert "this.expectedHfToken = getHfToken()" in attempt
     assert "getHfToken() !== this.expectedHfToken" in attempt
     assert "this.cancel(TRAINING_SETUP_CHANGED_ERROR)" in attempt
-    token_acceptance = attempt.split(
-        "acceptPreparedHfToken(token: string | null): boolean", 1
-    )[1].split("enterTransport(): boolean", 1)[0]
+    token_acceptance = attempt.split("acceptPreparedHfToken(token: string | null): boolean", 1)[
+        1
+    ].split("enterTransport(): boolean", 1)[0]
     assert "currentToken !== this.expectedHfToken" in token_acceptance
     assert "currentToken !== nextToken" in token_acceptance
     assert "useHfTokenStore.getState().setToken(nextToken)" in token_acceptance
@@ -434,9 +397,7 @@ def test_resume_token_identity_is_guarded_through_preflight():
     load = source.split("async function loadResumePayload", 1)[1].split(
         "async function prepareResumeHfToken", 1
     )[0]
-    assert load.index("await getTrainingRun(runId)") < load.index(
-        "attempt.isPreflightActive()"
-    )
+    assert load.index("await getTrainingRun(runId)") < load.index("attempt.isPreflightActive()")
     assert "payload.hf_token = attempt.hfToken || null" in load
     assert "getResumeHfToken" not in source
 
@@ -463,9 +424,7 @@ def test_accepted_training_stop_survives_runtime_resync_failure():
     actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1]
     stop = stop.split("const resumeTrainingRunFromHistory", 1)[0]
-    transport = stop.split(
-        "await syncTrainingRuntimeFromBackend().catch(() => undefined)", 1
-    )[0]
+    transport = stop.split("await syncTrainingRuntimeFromBackend().catch(() => undefined)", 1)[0]
     failure = stop.split("const message =", 1)[1].split(
         "await syncTrainingRuntimeFromBackend()", 1
     )[0]
@@ -498,12 +457,7 @@ def test_superseded_training_reset_preserves_the_current_runtime():
     assert "currentRuntime.resetGeneration !== expectedResetGeneration" in guarded_reset
     assert "await syncTrainingRuntimeFromBackend().catch(() => undefined)" in guarded_reset
     assert "return;" in guarded_reset
-    assert (
-        dismiss.count(
-            "await syncTrainingRuntimeFromBackend().catch(() => undefined)"
-        )
-        == 2
-    )
+    assert dismiss.count("await syncTrainingRuntimeFromBackend().catch(() => undefined)") == 2
     assert "await syncTrainingRuntimeFromBackend();" not in dismiss
 
 
@@ -514,17 +468,17 @@ def test_cancel_invalidates_fresh_and_resume_preflight_leases():
     runtime_store = TRAINING_RUNTIME_STORE.read_text(encoding = "utf-8")
     start_runtime = TRAINING_START_RUNTIME.read_text(encoding = "utf-8")
 
-    stop_setter = runtime_store.split("setStopRequested: (value)", 1)[1].split(
-        "setHydrating:", 1
-    )[0]
+    stop_setter = runtime_store.split("setStopRequested: (value)", 1)[1].split("setHydrating:", 1)[
+        0
+    ]
     assert "isStarting: value ? false : state.isStarting" in stop_setter
     assert "value && !state.stopRequested" in stop_setter
     assert "state.resetGeneration + 1" in stop_setter
     assert "currentRuntime.setStopRequested(false)" in actions
 
-    lease_guard = start_runtime.split(
-        "export function isTrainingStartLeaseActive", 1
-    )[1].split("export function releaseTrainingStart", 1)[0]
+    lease_guard = start_runtime.split("export function isTrainingStartLeaseActive", 1)[1].split(
+        "export function releaseTrainingStart", 1
+    )[0]
     assert "runtime.resetGeneration === lease.resetGeneration" in lease_guard
     assert "runtime.isStarting" in lease_guard
     assert "!runtime.stopRequested" in lease_guard

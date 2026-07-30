@@ -112,7 +112,11 @@ class _RealTemplateTokenizer:
 
 
 class _SizedDataset:
-    def __init__(self, size, splits = ()):
+    def __init__(
+        self,
+        size,
+        splits = (),
+    ):
         self.size = size
         self.info = SimpleNamespace(splits = {name: object() for name in splits})
 
@@ -237,7 +241,14 @@ def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
     train = _SizedDataset(40, ("train", "validation"))
     validation = _SizedDataset(20, ("train", "validation"))
 
-    def load_cached(repo_id, local_path, *, subset, split, token = None):
+    def load_cached(
+        repo_id,
+        local_path,
+        *,
+        subset,
+        split,
+        token = None,
+    ):
         cache_calls.append(split)
         return validation if split == "validation" else train
 
@@ -271,7 +282,14 @@ def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
     train = _SizedDataset(40, ("train", "validation"))
     validation = _SizedDataset(20, ("train", "validation"))
 
-    def load_cached(repo_id, local_path, *, subset, split, token = None):
+    def load_cached(
+        repo_id,
+        local_path,
+        *,
+        subset,
+        split,
+        token = None,
+    ):
         cache_calls.append(split)
         raise FileNotFoundError(split)
 
@@ -299,10 +317,7 @@ def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
     assert result[0]["dataset"] is train
     assert result[1] is validation
     assert cache_calls == ["train"]
-    assert remote_calls == [
-        ("train", "dataset-commit"),
-        ("validation", "dataset-commit"),
-    ]
+    assert remote_calls == [("train", "dataset-commit"), ("validation", "dataset-commit")]
 
 
 def test_first_remote_train_load_records_exact_dataset_snapshot(monkeypatch, tmp_path):
@@ -310,12 +325,7 @@ def test_first_remote_train_load_records_exact_dataset_snapshot(monkeypatch, tmp
 
     _patch_dataset_formatting(monkeypatch)
     trainer = _dataset_loader_self()
-    snapshot = (
-        tmp_path
-        / "datasets--org--dataset"
-        / "snapshots"
-        / "dataset-commit"
-    )
+    snapshot = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
     snapshot.mkdir(parents = True)
     (snapshot / "train.parquet").write_bytes(b"dataset")
     train = _SizedDataset(40)
@@ -344,12 +354,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
 
     _patch_dataset_formatting(monkeypatch)
     trainer = _dataset_loader_self()
-    snapshot = (
-        tmp_path
-        / "datasets--org--dataset"
-        / "snapshots"
-        / "dataset-commit"
-    )
+    snapshot = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
     snapshot.mkdir(parents = True)
     (snapshot / "train.parquet").write_bytes(b"dataset")
     stream = SimpleNamespace(
@@ -393,7 +398,14 @@ def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch):
     remote_train = _SizedDataset(50, ("train", "validation"))
     remote_validation = _SizedDataset(20, ("train", "validation"))
 
-    def load_cached(repo_id, local_path, *, subset, split, token = None):
+    def load_cached(
+        repo_id,
+        local_path,
+        *,
+        subset,
+        split,
+        token = None,
+    ):
         cache_calls.append(split)
         if split == "validation":
             raise FileNotFoundError(split)

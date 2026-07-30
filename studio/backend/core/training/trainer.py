@@ -205,9 +205,7 @@ class UnslothTrainer:
 
         # --- Detect VLM ---
         vision = (
-            is_vision_model(
-                lookup_name, hf_token = hf_token, local_files_only = local_files_only
-            )
+            is_vision_model(lookup_name, hf_token = hf_token, local_files_only = local_files_only)
             if not self.is_audio
             else False
         )
@@ -578,9 +576,7 @@ class UnslothTrainer:
 
             # VLM: vision model + image dataset (mutually exclusive with audio)
             vision = (
-                is_vision_model(
-                    lookup_name, hf_token = hf_token, local_files_only = local_files_only
-                )
+                is_vision_model(lookup_name, hf_token = hf_token, local_files_only = local_files_only)
                 if not self.is_audio
                 else False
             )
@@ -2318,7 +2314,6 @@ class UnslothTrainer:
                 if not dataset_source or not dataset_local_path:
                     return None
                 from hub.utils.dataset_cache import load_cached_hf_dataset
-
                 return load_cached_hf_dataset(
                     dataset_source,
                     dataset_local_path,
@@ -2475,6 +2470,7 @@ class UnslothTrainer:
                             from core.training.provenance import (
                                 exact_dataset_snapshot_path,
                             )
+
                             self.dataset_snapshot_path = exact_dataset_snapshot_path(
                                 dataset_local_path,
                                 dataset_source,
@@ -2598,10 +2594,7 @@ class UnslothTrainer:
                             if dataset_loaded_from_cache:
                                 try:
                                     eval_dataset = _load_selected_cached_dataset(eval_split)
-                                    if (
-                                        require_exact_resume_resources
-                                        and eval_dataset is None
-                                    ):
+                                    if require_exact_resume_resources and eval_dataset is None:
                                         raise FileNotFoundError(
                                             f"The exact cached dataset split '{eval_split}' "
                                             "is no longer available."
@@ -2672,8 +2665,7 @@ class UnslothTrainer:
                             excluded_split = (train_split or "train").partition("[")[0].strip(),
                             revision = dataset_revision,
                             strict_split_loading = (
-                                require_exact_resume_resources
-                                and dataset_loaded_from_cache
+                                require_exact_resume_resources and dataset_loaded_from_cache
                             ),
                         )
                         if eval_dataset is not None:

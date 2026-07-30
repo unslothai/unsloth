@@ -1239,9 +1239,7 @@ def test_seamless_training_model_picker_has_no_hidden_task_filter():
 
 
 def test_cached_training_rows_select_canonical_repo_identity():
-    src = _read(
-        "features/model-picker/components/train-model-picker-view-model.ts"
-    )
+    src = _read("features/model-picker/components/train-model-picker-view-model.ts")
     cached = src.split("function toCachedTrainModelDeviceItem", 1)[1]
     cached = cached.split("function toLocalTrainModelDeviceItem", 1)[0]
     assert "id: row.repoId" in cached
@@ -1249,9 +1247,7 @@ def test_cached_training_rows_select_canonical_repo_identity():
 
     local = src.split("function toLocalTrainModelDeviceItem", 1)[1]
     local = local.split("function hubTrainingModelCandidate", 1)[0]
-    display = _read(
-        "features/model-picker/lib/train-model-selection-display.ts"
-    )
+    display = _read("features/model-picker/lib/train-model-selection-display.ts")
     candidate = display.split("function toTrainModelDisplayCandidate", 1)[1]
     assert 'row.source === "hf_cache" ? row.repoId?.trim() : null' in candidate
     assert "id: cachedRepoId || row.loadId" in candidate
@@ -1265,9 +1261,7 @@ def test_cached_training_rows_select_canonical_repo_identity():
 
 
 def test_cached_training_rows_remain_display_candidates_after_inventory_dedupe():
-    display = _read(
-        "features/model-picker/lib/train-model-selection-display.ts"
-    )
+    display = _read("features/model-picker/lib/train-model-selection-display.ts")
     selector = _read("features/model-picker/components/train-model-selector.tsx")
     assert "function toCachedTrainModelDisplayCandidate" in display
     assert "id: row.repoId" in display
@@ -1289,9 +1283,7 @@ def test_training_picker_controls_keep_visible_keyboard_focus():
     dataset = _read("features/dataset-picker/components/dataset-selector.tsx")
     options = _read("components/resource-picker/selectable-picker-item.tsx")
     token = _read("features/hub/components/hf-token-indicator.tsx")
-    dataset_controls = _read(
-        "features/studio/sections/dataset-panel-controls.tsx"
-    )
+    dataset_controls = _read("features/studio/sections/dataset-panel-controls.tsx")
     dataset_section = _read("features/studio/sections/dataset-section.tsx")
     assert "PICKER_FOCUS_VISIBLE_CLASS" in trigger
     assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset
@@ -1324,16 +1316,11 @@ def test_local_dataset_picker_uses_cross_platform_path_identity():
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
     display = _read("features/dataset-picker/lib/display.ts")
     assert "cacheLocalPathMatchesSelection(item.path, candidate)" in selector
-    assert (
-        "cacheLocalPathMatchesSelection(candidate.path, uploadedFile)"
-        in display
-    )
+    assert "cacheLocalPathMatchesSelection(candidate.path, uploadedFile)" in display
     assert "item.path === query" not in selector
     assert "item.path === uploadedFile" not in selector
 
-    lists = _read(
-        "features/dataset-picker/components/dataset-selector-lists.tsx"
-    )
+    lists = _read("features/dataset-picker/components/dataset-selector-lists.tsx")
     assert "export type DatasetDeviceItem" in lists
     assert "export function DatasetDeviceList" in lists
     assert "export function DatasetHubList" in lists
@@ -1351,29 +1338,14 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     shell = _read("components/resource-picker/picker-shell.tsx")
     matcher = _read("components/resource-picker/device-item-match.ts")
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
-    model_selector = _read(
-        "features/model-picker/components/train-model-selector.tsx"
-    )
-    model_view_model = _read(
-        "features/model-picker/components/train-model-picker-view-model.ts"
-    )
+    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
+    model_view_model = _read("features/model-picker/components/train-model-picker-view-model.ts")
 
     assert "export type PickerExactQueryCommitResult" in shell
-    assert (
-        "onExactQueryCommit?: (query: string) => PickerExactQueryCommitResult;"
-        in shell
-    )
-    assert (
-        "const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;"
-        in selector
-    )
-    assert (
-        "const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;"
-        in model_selector
-    )
-    assert shell.index('commitResult?.kind === "handled"') < shell.index(
-        "if (showUseThis)"
-    )
+    assert "onExactQueryCommit?: (query: string) => PickerExactQueryCommitResult;" in shell
+    assert "const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;" in selector
+    assert "const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;" in model_selector
+    assert shell.index('commitResult?.kind === "handled"') < shell.index("if (showUseThis)")
     assert shell.index('commitResult?.kind === "ambiguous"') < shell.index(
         "const exactMatch = scrollRef.current"
     )
@@ -1410,18 +1382,11 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     assert "selectLocalDataset(item.path)" in exact_commit
     assert "onExactQueryCommit={commitExactQuery}" in selector
 
-    model_exact_commit = model_selector.split(
-        "function commitExactQuery", 1
-    )[1]
-    model_exact_commit = model_exact_commit.split(
-        "const display = selectedModel", 1
-    )[0]
+    model_exact_commit = model_selector.split("function commitExactQuery", 1)[1]
+    model_exact_commit = model_exact_commit.split("const display = selectedModel", 1)[0]
     assert 'if (tab === "hub")' in model_exact_commit
     assert "findCanonicalHubResourceId(query, hubResultIds)" in model_exact_commit
-    assert (
-        "resolveExactTrainModelDeviceItem("
-        in model_exact_commit
-    )
+    assert "resolveExactTrainModelDeviceItem(" in model_exact_commit
     assert 'resolution.kind === "ambiguous"' in model_exact_commit
     assert "focusValue: resolution.firstItem.path" in model_exact_commit
     assert 'resolution.kind === "none"' in model_exact_commit
@@ -1432,10 +1397,7 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     assert "localPath: model.localPath" in device_picker
     assert "modelFormat: model.modelFormat" in device_picker
     assert "onExactQueryCommit={commitExactQuery}" in model_selector
-    assert (
-        "cacheLocalPathMatchesSelection(item.path, candidate)"
-        in model_view_model
-    )
+    assert "cacheLocalPathMatchesSelection(item.path, candidate)" in model_view_model
 
 
 def test_cached_dataset_keyboard_commit_preserves_canonical_hub_identity():
@@ -1459,9 +1421,7 @@ def test_cached_dataset_keyboard_commit_preserves_canonical_hub_identity():
 def test_device_picker_title_resolution_preserves_ambiguity():
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    module_uri = (
-        FRONTEND / "components/resource-picker/device-item-match.ts"
-    ).resolve().as_uri()
+    module_uri = (FRONTEND / "components/resource-picker/device-item-match.ts").resolve().as_uri()
     script = (
         f"import {{ resolveDevicePickerItem }} from {json.dumps(module_uri)};\n"
         'const items = [{"id":"a","title":"Same"},'
@@ -1481,10 +1441,10 @@ def test_device_picker_title_resolution_preserves_ambiguity():
             "--no-warnings",
             "--input-type=module",
         ],
-        input=script,
-        text=True,
-        capture_output=True,
-        check=False,
+        input = script,
+        text = True,
+        capture_output = True,
+        check = False,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
@@ -1496,12 +1456,8 @@ def test_device_picker_title_resolution_preserves_ambiguity():
 
 
 def test_run_preview_reuses_local_inventory_display_names():
-    display_names = _read(
-        "features/studio/hooks/use-training-resource-display-names.ts"
-    )
-    model_display = _read(
-        "features/model-picker/lib/train-model-selection-display.ts"
-    )
+    display_names = _read("features/studio/hooks/use-training-resource-display-names.ts")
+    model_display = _read("features/model-picker/lib/train-model-selection-display.ts")
     dataset_display = _read("features/dataset-picker/lib/display.ts")
     preview = _read("features/studio/wizard/run-preview-card.tsx")
 
@@ -1513,10 +1469,7 @@ def test_run_preview_reuses_local_inventory_display_names():
     assert "trainModelSelectionDisplayName({" in display_names
     assert "datasetSelectionDisplayName({" in display_names
     assert "trainModelDisplayCandidateMatchesSelection({" in model_display
-    assert (
-        "cacheLocalPathMatchesSelection(candidate.path, uploadedFile)"
-        in dataset_display
-    )
+    assert "cacheLocalPathMatchesSelection(candidate.path, uploadedFile)" in dataset_display
     assert "useTrainingResourceDisplayNames({" in preview
     assert "resourceDisplayNames.modelName" in preview
     assert "displayName: resourceDisplayNames.datasetName" in preview
@@ -1537,23 +1490,18 @@ def test_training_model_lookups_preserve_platform_path_identity():
 
     identity = _read("features/hub/lib/model-identity.ts")
     normalizer = identity.split("export function normalizeModelIdentity", 1)[1]
-    normalizer = normalizer.split(
-        "export function normalizeGgufVariantIdentity", 1
-    )[0]
+    normalizer = normalizer.split("export function normalizeGgufVariantIdentity", 1)[0]
     assert "return trimmed.toLowerCase();" in normalizer
     assert "WINDOWS_DRIVE_PATH_RE.test(trimmed)" in normalizer
     assert 'slashPath.startsWith("//")' in normalizer
     assert "WSL_DRIVE_PATH_RE.test(slashPath)" in normalizer
-    assert normalizer.rstrip().endswith(
-        "return trimTrailingSeparators(trimmed, 1);\n}"
-    )
+    assert normalizer.rstrip().endswith("return trimTrailingSeparators(trimmed, 1);\n}")
+
 
 def test_model_identity_normalizes_cross_platform_trailing_separators():
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    module_uri = (
-        FRONTEND / "features/hub/lib/model-identity.ts"
-    ).resolve().as_uri()
+    module_uri = (FRONTEND / "features/hub/lib/model-identity.ts").resolve().as_uri()
     inputs = [
         "/opt/Models/Foo/",
         "/opt/Models/Foo",
@@ -1598,10 +1546,10 @@ def test_model_identity_normalizes_cross_platform_trailing_separators():
             "--no-warnings",
             "--input-type=module",
         ],
-        input=script,
-        text=True,
-        capture_output=True,
-        check=False,
+        input = script,
+        text = True,
+        capture_output = True,
+        check = False,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == expected
@@ -1639,7 +1587,7 @@ def test_inferred_picker_tab_is_locked_for_the_open_session():
 def test_dataset_display_name_handles_cross_platform_trailing_separators():
     source = _read("features/dataset-picker/lib/display.ts")
     path_display = _read("components/resource-picker/path-display-name.ts")
-    assert 'import { pathDisplayName }' in source
+    assert "import { pathDisplayName }" in source
     assert "pathDisplayName(value)" in source
     assert "datasetSelectionDisplayName({" in source
     assert "cacheLocalPathMatchesSelection(candidate.path, uploadedFile)" in source
@@ -1651,15 +1599,11 @@ def test_dataset_display_name_handles_cross_platform_trailing_separators():
 
 def test_local_model_trigger_uses_cross_platform_device_display_name():
     selector = _read("features/model-picker/components/train-model-selector.tsx")
-    view_model = _read(
-        "features/model-picker/components/train-model-picker-view-model.ts"
-    )
-    display_source = _read(
-        "features/model-picker/lib/train-model-selection-display.ts"
-    )
-    display = display_source.split(
-        "export function trainModelSelectionDisplayName", 1
-    )[1].split("export function toTrainModelDisplayCandidate", 1)[0]
+    view_model = _read("features/model-picker/components/train-model-picker-view-model.ts")
+    display_source = _read("features/model-picker/lib/train-model-selection-display.ts")
+    display = display_source.split("export function trainModelSelectionDisplayName", 1)[1].split(
+        "export function toTrainModelDisplayCandidate", 1
+    )[0]
 
     assert "isLocalTrainingModelSelection({" in display
     assert "trainModelDisplayCandidateMatchesSelection({" in display
@@ -1696,9 +1640,7 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "createUploadBrowseDatasetSelection(uploadedFile)" in upload_selection
 
     s3_selection = store.split("const selectS3SourceInternal", 1)[1]
-    s3_selection = s3_selection.split(
-        "const restoreBrowseDatasetSourceInternal", 1
-    )[0]
+    s3_selection = s3_selection.split("const restoreBrowseDatasetSourceInternal", 1)[0]
     for needle in (
         'datasetSource: "s3",',
         "browseDatasetSelection,",
@@ -1731,10 +1673,7 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
 
 def test_s3_training_payload_excludes_remembered_browse_sources():
     mapper = " ".join(_read("features/training/api/mappers.ts").split())
-    assert (
-        'const s3 = config.datasetSource === "s3" ? config.s3Config : null;'
-        in mapper
-    )
+    assert 'const s3 = config.datasetSource === "s3" ? config.s3Config : null;' in mapper
     assert (
         'const hfDataset = config.datasetSource === "huggingface" '
         "? config.dataset : null;" in mapper
@@ -1789,9 +1728,7 @@ def test_start_cta_prioritizes_current_blockers_over_previous_start_errors():
 
 
 def test_training_config_changes_clear_previous_start_error():
-    source = _read(
-        "features/training/hooks/use-training-runtime-lifecycle.ts"
-    )
+    source = _read("features/training/hooks/use-training-runtime-lifecycle.ts")
     assert "useTrainingConfigStore.subscribe" in source
     assert "runtime.startError !== null" in source
     assert "runtime.setStartError(null)" in source
@@ -1802,10 +1739,7 @@ def test_training_start_attempt_is_bound_to_checked_inputs():
     assert "private expectedConfig: TrainingConfigStore;" in source
     assert "private expectedInputs: TrainingStartInputs;" in source
     assert (
-        source.count(
-            "this.expectedInputs = captureTrainingStartInputs(this.expectedConfig);"
-        )
-        == 2
+        source.count("this.expectedInputs = captureTrainingStartInputs(this.expectedConfig);") == 2
     )
     assert "trainingStartInputsEqual(" in source
     assert "!this.configInputsChanged()" in source
@@ -1817,9 +1751,7 @@ def test_training_start_attempt_is_bound_to_checked_inputs():
     assert "buildTrainingStartPayload(useTrainingConfigStore.getState())" not in source
     assert "hasIncompatibleTrainingModalities(attempt.config)" in source
 
-    readiness = _read(
-        "features/training/hooks/use-training-readiness.ts"
-    )
+    readiness = _read("features/training/hooks/use-training-readiness.ts")
     assert "hasIncompatibleTrainingModalities(state)" in readiness
 
 
@@ -1828,16 +1760,10 @@ def test_dataset_hub_list_retains_the_active_hf_selection():
     hub_items = selector.split("const hubItems = useMemo", 1)[1]
     hub_items = hub_items.split("const hubPagination", 1)[0]
     assert 'datasetSource !== "huggingface"' in hub_items
-    assert (
-        "hfResults.some((item) => hubResourceIdsEqual(item.id, dataset))"
-        in hub_items
-    )
+    assert "hfResults.some((item) => hubResourceIdsEqual(item.id, dataset))" in hub_items
     assert "return [...hfResults, { id: dataset }];" in hub_items
     assert "hasExactDatasetMatch(" in selector
-    assert re.search(
-        r"hasExactDatasetMatch\(\s*activeQuery,\s*tab,\s*hubItems,",
-        selector,
-    )
+    assert re.search(r"hasExactDatasetMatch\(\s*activeQuery,\s*tab,\s*hubItems,", selector)
     assert "<DatasetHubList" in selector
     assert "items={hubItems}" in selector
 
@@ -1863,8 +1789,7 @@ def test_filtered_hub_pages_keep_the_pagination_sentinel_mounted():
         assert "compact={true}" in hub_list
         assert re.search(r"<div ref=\{sentinelRef\} className=\"h-px\" />", hub_list)
         assert not re.search(
-            rf"if \({empty_collection}\.length === 0\).*?"
-            r"if \(hasQuery\)\s*\{\s*return null;",
+            rf"if \({empty_collection}\.length === 0\).*?" r"if \(hasQuery\)\s*\{\s*return null;",
             hub_list,
             re.S,
         )
@@ -1872,13 +1797,9 @@ def test_filtered_hub_pages_keep_the_pagination_sentinel_mounted():
 
 def test_infinite_scroll_observes_a_late_mounted_sentinel():
     source = _read("features/hub/hooks/use-hub-infinite-scroll.ts")
+    assert re.search(r"const\s+\[sentinelNode,\s*setSentinelNode\]\s*=\s*useState", source)
     assert re.search(
-        r"const\s+\[sentinelNode,\s*setSentinelNode\]\s*=\s*useState",
-        source,
-    )
-    assert re.search(
-        r"const\s+sentinelRef\s*=\s*useCallback\("
-        r".*?setSentinelNode\(",
+        r"const\s+sentinelRef\s*=\s*useCallback\(.*?setSentinelNode\(",
         source,
         re.S,
     )
@@ -1887,15 +1808,9 @@ def test_infinite_scroll_observes_a_late_mounted_sentinel():
 
 def test_train_hub_selections_preserve_canonical_identity():
     helper = _read("components/resource-picker/hub-resource-id.ts")
-    model_selector = _read(
-        "features/model-picker/components/train-model-selector.tsx"
-    )
-    model_view = _read(
-        "features/model-picker/components/train-model-picker-view-model.ts"
-    )
-    dataset_selector = _read(
-        "features/dataset-picker/components/dataset-selector.tsx"
-    )
+    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
+    model_view = _read("features/model-picker/components/train-model-picker-view-model.ts")
+    dataset_selector = _read("features/dataset-picker/components/dataset-selector.tsx")
 
     assert "first?.trim().toLowerCase()" in helper
     assert "second?.trim().toLowerCase()" in helper
@@ -1909,9 +1824,7 @@ def test_train_hub_selections_preserve_canonical_identity():
 
 def test_new_model_selection_replaces_the_previous_model_type():
     inference = _read("features/training/lib/model-type-inference.ts")
-    selector = _read(
-        "features/model-picker/components/train-model-selector.tsx"
-    )
+    selector = _read("features/model-picker/components/train-model-selector.tsx")
 
     assert "export function inferTrainingModelTypeFromFlags" in inference
     assert "resolvePickerInferredModelType" not in inference
@@ -1941,18 +1854,15 @@ def test_manual_training_method_wins_over_delayed_auto_selection():
     source = _read("features/training/stores/training-config-store.ts")
 
     assert "let _trainingMethodEditGeneration = 0;" in source
-    loader = source.split(
-        "const loadAndApplyModelDefaults = (modelName: string) =>", 1
-    )[1].split("const runDatasetCheck =", 1)[0]
-    assert (
-        "const trainingMethodEditGeneration = _trainingMethodEditGeneration;"
-        in loader
-    )
+    loader = source.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1].split(
+        "const runDatasetCheck =", 1
+    )[0]
+    assert "const trainingMethodEditGeneration = _trainingMethodEditGeneration;" in loader
     assert re.search(
         r"_trainingMethodEditGeneration\s*!==\s*trainingMethodEditGeneration",
         loader,
     )
-    setter = source.split(
-        "setTrainingMethod: (trainingMethod) =>", 1
-    )[1].split("setDatasetSource:", 1)[0]
+    setter = source.split("setTrainingMethod: (trainingMethod) =>", 1)[1].split(
+        "setDatasetSource:", 1
+    )[0]
     assert "_trainingMethodEditGeneration += 1;" in setter

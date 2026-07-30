@@ -381,11 +381,7 @@ def _dataset_expected_files(info) -> list:
     ]
 
 
-def _exact_dataset_snapshot_target(
-    repo_id: str,
-    snapshot_path: str,
-    commit_hash,
-):
+def _exact_dataset_snapshot_target(repo_id: str, snapshot_path: str, commit_hash):
     from hub.utils import download_manifest
     from hub.utils.state_dir import repo_cache_basename
 
@@ -401,19 +397,14 @@ def _exact_dataset_snapshot_target(
     if (
         snapshot.name != normalized_commit
         or snapshot.parent.name != "snapshots"
-        or repo_dir.name.casefold()
-        != repo_cache_basename("dataset", repo_id).casefold()
+        or repo_dir.name.casefold() != repo_cache_basename("dataset", repo_id).casefold()
     ):
         return None
     return normalized_commit, snapshot, hub_cache
 
 
 def _write_dataset_completion_from_metadata(
-    repo_id: str,
-    snapshot_path: str,
-    commit_hash,
-    expected_files,
-    mode: str,
+    repo_id: str, snapshot_path: str, commit_hash, expected_files, mode: str
 ) -> bool:
     from hub.utils import download_manifest
 

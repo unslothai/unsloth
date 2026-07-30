@@ -183,10 +183,7 @@ def test_summary_batch_preserves_order_and_uses_request_local_cache(monkeypatch)
 
     monkeypatch.setattr(training_history, "can_resume_run", fake_can_resume)
     monkeypatch.setattr(training_history, "artifacts_present", lambda path: False)
-    rows = [
-        _run_row(id = run_id, output_dir = f"/tmp/{run_id}")
-        for run_id in ("b", "a", "c")
-    ]
+    rows = [_run_row(id = run_id, output_dir = f"/tmp/{run_id}") for run_id in ("b", "a", "c")]
 
     first = training_history._summaries_from_rows(rows, sharing_on = False)
     first_cache = observed_caches[0]
@@ -202,10 +199,7 @@ def test_summary_batch_preserves_order_and_uses_request_local_cache(monkeypatch)
 
 def test_list_training_runs_offloads_summary_batch(monkeypatch):
     offloads: list[tuple[object, tuple[object, ...]]] = []
-    rows = [
-        _run_row(id = run_id, output_dir = f"/tmp/{run_id}")
-        for run_id in ("b", "a", "c")
-    ]
+    rows = [_run_row(id = run_id, output_dir = f"/tmp/{run_id}") for run_id in ("b", "a", "c")]
 
     async def record_offload(function, *args):
         offloads.append((function, args))
@@ -238,12 +232,7 @@ def test_list_training_runs_offloads_summary_batch(monkeypatch):
     )
 
     assert [summary.id for summary in response.runs] == ["b", "a", "c"]
-    assert offloads == [
-        (
-            training_history._summaries_from_rows,
-            (rows, False),
-        )
-    ]
+    assert offloads == [(training_history._summaries_from_rows, (rows, False))]
 
 
 def _delete(
@@ -257,9 +246,7 @@ def _delete(
     deleted_runs: list[str] = []
     monkeypatch.setattr(training_history, "get_run", lambda run_id: dict(run_row))
     monkeypatch.setattr(training_history, "delete_run", deleted_runs.append)
-    monkeypatch.setattr(
-        training_history, "_active_training_output_dir", lambda: active_output_dir
-    )
+    monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: active_output_dir)
     monkeypatch.setattr(
         training_history,
         "list_other_run_output_dirs",
@@ -332,10 +319,7 @@ def test_delete_refuses_dirs_outside_outputs_root(monkeypatch, tmp_path):
     assert foreign_dir.exists()
 
 
-def test_canonical_output_dir_rejects_foreign_absolute_paths(
-    monkeypatch,
-    tmp_path,
-):
+def test_canonical_output_dir_rejects_foreign_absolute_paths(monkeypatch, tmp_path):
     windows_path = r"C:\Users\alice\Unsloth\outputs\run-1"
     foreign_path = (
         windows_path
@@ -391,9 +375,7 @@ def test_delete_without_flag_leaves_artifacts(monkeypatch, tmp_path):
 def test_delete_rejects_running_run(monkeypatch):
     from fastapi import HTTPException
 
-    monkeypatch.setattr(
-        training_history, "get_run", lambda run_id: _run_row(status = "running")
-    )
+    monkeypatch.setattr(training_history, "get_run", lambda run_id: _run_row(status = "running"))
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
@@ -422,9 +404,7 @@ def test_delete_artifacts_refused_while_dir_in_use_by_active_run(monkeypatch, tm
         training_history, "get_run", lambda run_id: _run_row(output_dir = str(run_dir))
     )
     monkeypatch.setattr(training_history, "delete_run", deleted_runs.append)
-    monkeypatch.setattr(
-        training_history, "_active_training_output_dir", lambda: str(run_dir)
-    )
+    monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: str(run_dir))
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
@@ -475,9 +455,7 @@ def test_active_dir_guard_compares_resolved_paths(monkeypatch, tmp_path):
         training_history, "get_run", lambda run_id: _run_row(output_dir = str(run_dir))
     )
     monkeypatch.setattr(training_history, "delete_run", lambda run_id: None)
-    monkeypatch.setattr(
-        training_history, "_active_training_output_dir", lambda: unnormalized
-    )
+    monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: unnormalized)
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
@@ -652,8 +630,7 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
 
 def test_guarded_delete_prevents_resume_from_spawning_after_artifacts_are_removed(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path
 ):
     from core.training.training import TrainingBackend
 
@@ -723,10 +700,7 @@ def test_guarded_delete_prevents_resume_from_spawning_after_artifacts_are_remove
     assert run_dir.exists() is False
 
 
-def test_guarded_delete_rechecks_shared_output_after_waiting_for_lifecycle(
-    monkeypatch,
-    tmp_path,
-):
+def test_guarded_delete_rechecks_shared_output_after_waiting_for_lifecycle(monkeypatch, tmp_path):
     from core.training.lifecycle import training_lifecycle_guard
 
     outputs = tmp_path / "outputs"
@@ -748,9 +722,7 @@ def test_guarded_delete_rechecks_shared_output_after_waiting_for_lifecycle(
 
     def guarded_delete():
         delete_attempted.set()
-        outcome.append(
-            training_history._delete_run_output_dir_guarded("run-1", str(run_dir))
-        )
+        outcome.append(training_history._delete_run_output_dir_guarded("run-1", str(run_dir)))
 
     with training_lifecycle_guard():
         delete_thread = threading.Thread(target = guarded_delete)

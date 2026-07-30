@@ -55,7 +55,6 @@ def hf_datasets_cache_roots() -> list[Path]:
 
     try:
         from datasets import config as datasets_config
-
         add(Path(datasets_config.HF_DATASETS_CACHE))
     except Exception:
         pass
@@ -154,8 +153,7 @@ def processed_dataset_cache_path(local_path: Optional[str], repo_id: str) -> Opt
         if (
             resolved.name.lower() != expected
             or not any(
-                same_existing_path(resolved.parent, root)
-                for root in hf_datasets_cache_roots()
+                same_existing_path(resolved.parent, root) for root in hf_datasets_cache_roots()
             )
             or not resolved.is_dir()
         ):
@@ -174,11 +172,7 @@ def latest_processed_dataset_cache_path(repo_id: str) -> Optional[Path]:
         if direct is not None:
             return direct
         try:
-            matches = [
-                entry
-                for entry in root.iterdir()
-                if entry.name.lower() == expected.lower()
-            ]
+            matches = [entry for entry in root.iterdir() if entry.name.lower() == expected.lower()]
         except OSError:
             continue
         if len(matches) != 1:
@@ -219,9 +213,7 @@ def latest_cached_dataset_snapshot(
     return newest
 
 
-def latest_cached_dataset_path(
-    repo_id: str, local_path: Optional[str] = None
-) -> Optional[Path]:
+def latest_cached_dataset_path(repo_id: str, local_path: Optional[str] = None) -> Optional[Path]:
     selected = dataset_cache_path_from_cache_path(local_path, repo_id)
     if selected is not None:
         return selected
@@ -231,10 +223,7 @@ def latest_cached_dataset_path(
     return latest_cached_dataset_snapshot(repo_id, local_path)
 
 
-def resolved_dataset_snapshot_file(
-    snapshot: str | Path,
-    source_path: str,
-) -> Optional[Path]:
+def resolved_dataset_snapshot_file(snapshot: str | Path, source_path: str) -> Optional[Path]:
     from hub.utils.download_manifest import expected_path_is_safe
 
     if not expected_path_is_safe(source_path):
@@ -244,14 +233,11 @@ def resolved_dataset_snapshot_file(
         repo_dir = snapshot_path.parent.parent.resolve(strict = True)
         if not same_existing_path(snapshot_path.parent, repo_dir / "snapshots"):
             return None
-        resolved = snapshot_path.joinpath(
-            *PurePosixPath(source_path).parts
-        ).resolve(strict = True)
+        resolved = snapshot_path.joinpath(*PurePosixPath(source_path).parts).resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
-        resolved.is_relative_to(snapshot_path)
-        or resolved.is_relative_to(repo_dir / "blobs")
+        resolved.is_relative_to(snapshot_path) or resolved.is_relative_to(repo_dir / "blobs")
     ):
         return None
     try:
@@ -262,17 +248,11 @@ def resolved_dataset_snapshot_file(
     return resolved
 
 
-def dataset_snapshot_contains_file(
-    snapshot: str | Path,
-    source_path: str,
-) -> bool:
+def dataset_snapshot_contains_file(snapshot: str | Path, source_path: str) -> bool:
     return resolved_dataset_snapshot_file(snapshot, source_path) is not None
 
 
-def complete_dataset_snapshot_path(
-    local_path: Optional[str],
-    repo_id: str,
-) -> Optional[Path]:
+def complete_dataset_snapshot_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
     snapshot = dataset_snapshot_from_cache_path(local_path, repo_id)
     if snapshot is None:
         return None
@@ -287,9 +267,8 @@ def complete_dataset_snapshot_path(
         hub_cache = repo_dir.parent.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
-    if (
-        not same_existing_path(snapshot, selected)
-        or not same_existing_path(snapshot.parent, repo_dir / "snapshots")
+    if not same_existing_path(snapshot, selected) or not same_existing_path(
+        snapshot.parent, repo_dir / "snapshots"
     ):
         return None
 
@@ -300,11 +279,7 @@ def complete_dataset_snapshot_path(
         snapshot.name,
         hub_cache = hub_cache,
     )
-    manifest_hub_cache = (
-        _canonical_path(manifest.hub_cache)
-        if manifest is not None
-        else None
-    )
+    manifest_hub_cache = _canonical_path(manifest.hub_cache) if manifest is not None else None
     if (
         manifest is None
         or manifest.repo_type != "dataset"
@@ -326,8 +301,7 @@ def complete_dataset_snapshot_path(
 
 
 def training_dataset_cache_pin(
-    repo_id: str,
-    local_path: Optional[str] = None,
+    repo_id: str, local_path: Optional[str] = None
 ) -> tuple[Optional[Path], Optional[str]]:
     if local_path:
         selected = dataset_cache_path_from_cache_path(local_path, repo_id)
@@ -349,9 +323,7 @@ def training_dataset_cache_pin(
     return snapshot, commit_hash
 
 
-def dataset_cache_path_from_cache_path(
-    local_path: Optional[str], repo_id: str
-) -> Optional[Path]:
+def dataset_cache_path_from_cache_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
     processed = processed_dataset_cache_path(local_path, repo_id)
     return processed or dataset_snapshot_from_cache_path(local_path, repo_id)
 
@@ -427,10 +399,7 @@ def is_cache_artifact_error(error: BaseException | None) -> bool:
 
 
 def dataset_cache_fallback_allowed(
-    error: BaseException | None,
-    *,
-    require_exact: bool,
-    revision: Optional[str],
+    error: BaseException | None, *, require_exact: bool, revision: Optional[str]
 ) -> bool:
     if require_exact:
         return False
@@ -452,22 +421,21 @@ def load_cached_hf_dataset(
     token: Optional[str] = None,
 ) -> Any:
     processed = processed_dataset_cache_path(local_path, repo_id)
-    snapshot = None if processed is not None else dataset_snapshot_from_cache_path(
-        local_path, repo_id
+    snapshot = (
+        None if processed is not None else dataset_snapshot_from_cache_path(local_path, repo_id)
     )
     if processed is None and snapshot is None:
         raise FileNotFoundError(f"Cached dataset path for {repo_id} is unavailable")
 
     from datasets import DownloadConfig
+
     if snapshot is not None:
         from datasets import load_dataset
     else:
         from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
     app_cache = (
-        prepare_app_processed_dataset_cache(repo_id, snapshot)
-        if snapshot is not None
-        else None
+        prepare_app_processed_dataset_cache(repo_id, snapshot) if snapshot is not None else None
     )
     kwargs: dict[str, Any] = {
         "path": repo_id if processed is not None else str(snapshot),

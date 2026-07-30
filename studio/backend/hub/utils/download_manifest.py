@@ -57,9 +57,7 @@ logger = get_logger(__name__)
 
 _MANIFEST_VERSION = 2
 _LEGACY_MANIFEST_VERSION = 1
-_SUPPORTED_MANIFEST_VERSIONS = frozenset(
-    {_LEGACY_MANIFEST_VERSION, _MANIFEST_VERSION}
-)
+_SUPPORTED_MANIFEST_VERSIONS = frozenset({_LEGACY_MANIFEST_VERSION, _MANIFEST_VERSION})
 _MARKER_VERSION = 2
 _LEGACY_MARKER_VERSION = 1
 _DATASET_COMPLETION_VARIANT_PREFIX = "_studio-dataset-complete-"
@@ -314,10 +312,7 @@ def read_manifest(
             recorded_repo_type != repo_type
             or not isinstance(recorded_repo_id, str)
             or recorded_repo_id.casefold() != repo_id.casefold()
-            or not (
-                recorded_variant is None
-                or isinstance(recorded_variant, str)
-            )
+            or not (recorded_variant is None or isinstance(recorded_variant, str))
             or (
                 recorded_variant.strip().casefold()
                 if isinstance(recorded_variant, str) and recorded_variant.strip()
@@ -353,9 +348,7 @@ def read_manifest(
     raw_variant = data.get("variant")
     transport = data.get("transport")
     commit_hash = (
-        normalized_commit_hash(data.get("commit_hash"))
-        if version == _MANIFEST_VERSION
-        else None
+        normalized_commit_hash(data.get("commit_hash")) if version == _MANIFEST_VERSION else None
     )
     metadata_derived = bool(
         version == _MANIFEST_VERSION
@@ -466,12 +459,7 @@ def expected_path_is_safe(path_value: str) -> bool:
     ):
         return False
     decoded = unquote(path_value)
-    if (
-        not decoded
-        or decoded in {".", ".."}
-        or "\x00" in decoded
-        or "\\" in decoded
-    ):
+    if not decoded or decoded in {".", ".."} or "\x00" in decoded or "\\" in decoded:
         return False
     posix = PurePosixPath(decoded)
     windows = PureWindowsPath(decoded)

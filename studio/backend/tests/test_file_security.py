@@ -230,9 +230,7 @@ def test_unavailable_hub_scan_falls_back_to_exact_snapshot(tmp_path):
 
     assert decision.blocked is True
     assert "Hub scan unavailable" in decision.reason
-    assert decision.unsafe_files == [
-        {"path": "pytorch_model.bin", "level": "unscanned"}
-    ]
+    assert decision.unsafe_files == [{"path": "pytorch_model.bin", "level": "unscanned"}]
 
 
 def test_unavailable_hub_scan_inspects_explicit_load_subdirs(tmp_path):
@@ -251,9 +249,7 @@ def test_unavailable_hub_scan_inspects_explicit_load_subdirs(tmp_path):
         )
 
     assert decision.blocked is True
-    assert decision.unsafe_files == [
-        {"path": "LLM/pytorch_model.bin", "level": "unscanned"}
-    ]
+    assert decision.unsafe_files == [{"path": "LLM/pytorch_model.bin", "level": "unscanned"}]
 
 
 def test_local_fallback_preserves_native_sentence_transformer_module_path(tmp_path):
@@ -311,9 +307,7 @@ def test_online_exact_scan_blocks_sentence_transformer_module_weight(tmp_path):
         decision = evaluate_file_security(str(snapshot))
 
     assert decision.blocked is True
-    assert decision.unsafe_files == [
-        {"path": "0_Transformer/pytorch_model.bin", "level": "unsafe"}
-    ]
+    assert decision.unsafe_files == [{"path": "0_Transformer/pytorch_model.bin", "level": "unsafe"}]
 
 
 def test_remote_gguf_named_repo_is_still_scanned():

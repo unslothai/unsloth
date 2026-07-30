@@ -1398,16 +1398,10 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
 
 
 def test_download_dataset_recovers_commit_completion_after_transient_metadata_failure(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path
 ):
     hub_cache = tmp_path / "hub"
-    snapshot = (
-        hub_cache
-        / "datasets--Org--Data"
-        / "snapshots"
-        / "dataset-commit"
-    )
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
     snapshot.mkdir(parents = True)
     (snapshot / "data.parquet").write_bytes(b"rows")
     metadata_calls = []
@@ -1459,16 +1453,10 @@ def test_download_dataset_recovers_commit_completion_after_transient_metadata_fa
 
 
 def test_download_dataset_promotes_existing_disk_manifest_after_metadata_recovers(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path
 ):
     hub_cache = tmp_path / "hub"
-    snapshot = (
-        hub_cache
-        / "datasets--Org--Data"
-        / "snapshots"
-        / "dataset-commit"
-    )
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
     snapshot.mkdir(parents = True)
     (snapshot / "data.parquet").write_bytes(b"rows")
     metadata_calls = []
@@ -1526,17 +1514,9 @@ def test_download_dataset_promotes_existing_disk_manifest_after_metadata_recover
     assert completion is not None
 
 
-def test_download_dataset_recovery_commit_mismatch_is_not_attested(
-    monkeypatch,
-    tmp_path,
-):
+def test_download_dataset_recovery_commit_mismatch_is_not_attested(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
-    snapshot = (
-        hub_cache
-        / "datasets--Org--Data"
-        / "snapshots"
-        / "downloaded-commit"
-    )
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "downloaded-commit"
     snapshot.mkdir(parents = True)
     (snapshot / "data.parquet").write_bytes(b"rows")
     metadata_calls = []
@@ -1598,12 +1578,7 @@ def test_download_dataset_recovery_commit_mismatch_is_not_attested(
 
 def test_download_dataset_disk_fallback_is_not_attested(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
-    snapshot = (
-        hub_cache
-        / "datasets--Org--Data"
-        / "snapshots"
-        / "dataset-commit"
-    )
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
     snapshot.mkdir(parents = True)
     (snapshot / "data.parquet").write_bytes(b"rows")
 
@@ -4224,9 +4199,7 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
         sys.modules,
         "huggingface_hub",
         SimpleNamespace(
-            snapshot_download = (
-                lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path)
-            )
+            snapshot_download = (lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path))
         ),
     )
 
@@ -4235,10 +4208,7 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
     assert written, "XET dataset download must still record a manifest"
     assert written[0][0][0:3] == ("dataset", "Org/Data", None)
     assert written[0][0][3][0].path == "data.parquet"
-    assert written[0][1] == {
-        "commit_hash": "dataset-commit",
-        "metadata_derived": True,
-    }
+    assert written[0][1] == {"commit_hash": "dataset-commit", "metadata_derived": True}
     assert snapshot_calls == [
         {
             "repo_id": "Org/Data",

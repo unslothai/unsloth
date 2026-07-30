@@ -69,20 +69,13 @@ def test_poll_stop_returns_on_broken_pipe():
     assert fn is not None
     handlers = []
     for node in ast.walk(fn):
-        if not isinstance(node, ast.ExceptHandler) or not isinstance(
-            node.type, ast.Tuple
-        ):
+        if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
             continue
-        exception_names = {
-            item.id for item in node.type.elts if isinstance(item, ast.Name)
-        }
+        exception_names = {item.id for item in node.type.elts if isinstance(item, ast.Name)}
         if {"EOFError", "OSError"}.issubset(exception_names):
             handlers.append(node)
     assert handlers
-    assert any(
-        handler.body and isinstance(handler.body[0], ast.Return)
-        for handler in handlers
-    )
+    assert any(handler.body and isinstance(handler.body[0], ast.Return) for handler in handlers)
 
 
 def test_unsloth_zoo_mlx_imports_have_friendly_error():

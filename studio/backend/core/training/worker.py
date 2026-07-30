@@ -85,12 +85,9 @@ def _resolve_cached_model_load_name(config: dict) -> str:
 
 
 def _effective_training_load_in_4bit(
-    config: dict,
-    model_load_target: str,
-    hf_token: str | None,
+    config: dict, model_load_target: str, hf_token: str | None
 ) -> bool:
     from .provenance import effective_training_load_in_4bit
-
     return effective_training_load_in_4bit(config, model_load_target, hf_token)
 
 
@@ -100,10 +97,7 @@ def _drop_model_pin(config: dict) -> str:
     return config["model_name"]
 
 
-def _drop_model_pin_for_fallback(
-    config: dict,
-    hf_token: str | None,
-) -> str:
+def _drop_model_pin_for_fallback(config: dict, hf_token: str | None) -> str:
     from utils.transformers_version import get_transformers_activation_tier
 
     active_target = _resolve_cached_model_load_name(config)
@@ -120,21 +114,15 @@ def _drop_model_pin_for_fallback(
 
 
 def _cache_artifact_fallback_allowed(
-    config: dict,
-    error: BaseException | None,
-    resource: str,
+    config: dict, error: BaseException | None, resource: str
 ) -> bool:
     require_exact = bool(
         config.get("require_exact_resume_resources")
         or config.get(f"require_exact_{resource}_resource")
-        or (
-            resource == "model"
-            and config.get("require_validated_model_snapshot")
-        )
+        or (resource == "model" and config.get("require_validated_model_snapshot"))
     )
     if resource == "dataset":
         from hub.utils.dataset_cache import dataset_cache_fallback_allowed
-
         return dataset_cache_fallback_allowed(
             error,
             require_exact = require_exact,
@@ -147,18 +135,11 @@ def _cache_artifact_fallback_allowed(
     return is_cache_artifact_error(error)
 
 
-def _require_strict_cached_dataset(
-    config: dict,
-    dataset: Any,
-    split: str,
-) -> Any:
+def _require_strict_cached_dataset(config: dict, dataset: Any, split: str) -> Any:
     if (
-        config.get("require_exact_resume_resources")
-        or config.get("require_exact_dataset_resource")
+        config.get("require_exact_resume_resources") or config.get("require_exact_dataset_resource")
     ) and dataset is None:
-        raise FileNotFoundError(
-            f"The exact cached dataset split '{split}' is no longer available."
-        )
+        raise FileNotFoundError(f"The exact cached dataset split '{split}' is no longer available.")
     return dataset
 
 
@@ -171,12 +152,10 @@ def _offline_mode_enabled() -> bool:
 
 def _verify_config_pins(config: dict, event_queue: Any) -> bool:
     require_model = bool(
-        config.get("require_exact_resume_resources")
-        or config.get("require_exact_model_resource")
+        config.get("require_exact_resume_resources") or config.get("require_exact_model_resource")
     )
     require_dataset = bool(
-        config.get("require_exact_resume_resources")
-        or config.get("require_exact_dataset_resource")
+        config.get("require_exact_resume_resources") or config.get("require_exact_dataset_resource")
     )
     if require_model or require_dataset:
         from core.training.provenance import (
@@ -187,9 +166,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
 
         try:
             model_snapshot = validate_exact_model_pin(config) if require_model else None
-            dataset_snapshot = (
-                validate_exact_dataset_pin(config) if require_dataset else None
-            )
+            dataset_snapshot = validate_exact_dataset_pin(config) if require_dataset else None
         except ExactResumeResourcesUnavailable as error:
             event_queue.put(
                 {
@@ -208,16 +185,13 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
     for message in config.get("cache_pin_warnings") or []:
         _send_status(event_queue, message)
     model_path = config.get("model_snapshot_path")
-    require_validated_snapshot = bool(
-        config.get("require_validated_model_snapshot")
-    )
+    require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
     if require_validated_snapshot and not model_path:
         event_queue.put(
             {
                 "type": "error",
                 "error": (
-                    "The cached model snapshot selected during preflight is no longer "
-                    "available."
+                    "The cached model snapshot selected during preflight is no longer available."
                 ),
                 "stack": "",
                 "ts": time.time(),
@@ -228,9 +202,8 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
         from utils.utils import canonical_model_repo_id
 
-        pinned_repo_id = (
-            config.get("actual_model_repo_id")
-            or canonical_model_repo_id(config["model_name"])
+        pinned_repo_id = config.get("actual_model_repo_id") or canonical_model_repo_id(
+            config["model_name"]
         )
         config["model_snapshot_path"] = latest_snapshot_from_cache_path(
             model_path,
@@ -316,10 +289,7 @@ def _load_cached_dataset_for_config(
 
 
 def _load_hf_train_and_eval_datasets(
-    config: dict,
-    token: str | None,
-    load_dataset: Callable,
-    status_callback: Callable[[str], None],
+    config: dict, token: str | None, load_dataset: Callable, status_callback: Callable[[str], None]
 ):
     hf_dataset = config["hf_dataset"]
     subset = config.get("subset")
@@ -402,9 +372,7 @@ def _load_hf_train_and_eval_datasets(
 
 
 def _load_embedding_hf_dataset(
-    config: dict,
-    load_dataset: Callable,
-    status_callback: Callable[[str], None],
+    config: dict, load_dataset: Callable, status_callback: Callable[[str], None]
 ):
     hf_dataset = str(config.get("hf_dataset") or "").strip()
     if not hf_dataset:
@@ -433,7 +401,6 @@ def _load_embedding_hf_dataset(
             )
             if dataset is not None:
                 from core.training.provenance import exact_dataset_snapshot_path
-
                 snapshot = exact_dataset_snapshot_path(
                     config.get("dataset_snapshot_path"),
                     hf_dataset,
@@ -503,11 +470,7 @@ def _reload_dataset_with_remote_model_tokenizer(
     return reload_dataset()
 
 
-def _model_load_security_error(
-    config: dict,
-    load_target: str,
-    hf_token: str | None,
-) -> dict | None:
+def _model_load_security_error(config: dict, load_target: str, hf_token: str | None) -> dict | None:
     from utils.models.model_config import get_base_model_from_lora_identifier
     from utils.security import (
         evaluate_file_security,
@@ -531,9 +494,7 @@ def _model_load_security_error(
         load_subdirs = security_load_subdirs(target, hf_token)
         if target == load_target and target != primary_name:
             load_subdirs = tuple(
-                dict.fromkeys(
-                    (*load_subdirs, *security_load_subdirs(primary_name, hf_token))
-                )
+                dict.fromkeys((*load_subdirs, *security_load_subdirs(primary_name, hf_token)))
             )
         decision = evaluate_file_security(
             target,
@@ -2158,9 +2119,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             random_state = model_random_state,
         )
     except Exception as error:
-        if not model_local_only or not _cache_artifact_fallback_allowed(
-            config, error, "model"
-        ):
+        if not model_local_only or not _cache_artifact_fallback_allowed(config, error, "model"):
             raise
         security_error = _model_load_security_error(config, model_name, hf_token)
         if security_error:
@@ -2322,9 +2281,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         loaded_model_for_provenance,
         model_load_target = model_load_name,
         model_load_in_4bit = bool(config.get("load_in_4bit")),
-        dataset_loaded_from_exact_snapshot = bool(
-            config.get("_dataset_loaded_from_exact_snapshot")
-        ),
+        dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
     )
 
     # Eval dataset (separate split or local file)
@@ -3527,9 +3484,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_local_only,
             )
         except Exception as error:
-            if not model_local_only or not _cache_artifact_fallback_allowed(
-                config, error, "model"
-            ):
+            if not model_local_only or not _cache_artifact_fallback_allowed(config, error, "model"):
                 raise
             security_error = _model_load_security_error(config, model_name, hf_token)
             if security_error:
@@ -3642,9 +3597,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 not success
                 and model_local_only
                 and not trainer.should_stop
-                and _cache_artifact_fallback_allowed(
-                    config, trainer.model_load_error, "model"
-                )
+                and _cache_artifact_fallback_allowed(config, trainer.model_load_error, "model")
             ):
                 security_error = _model_load_security_error(config, model_name, hf_token)
                 if security_error:
@@ -4128,9 +4081,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
             )
         except Exception as error:
-            if not model_local_only or not _cache_artifact_fallback_allowed(
-                config, error, "model"
-            ):
+            if not model_local_only or not _cache_artifact_fallback_allowed(config, error, "model"):
                 raise
             security_error = _model_load_security_error(config, model_name, hf_token)
             if security_error:
@@ -4334,9 +4285,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         loaded_model_for_provenance,
         model_load_target = model_load_name,
         model_load_in_4bit = False,
-        dataset_loaded_from_exact_snapshot = bool(
-            config.get("_dataset_loaded_from_exact_snapshot")
-        ),
+        dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
     )
 
     # ── 5. Create loss function ──

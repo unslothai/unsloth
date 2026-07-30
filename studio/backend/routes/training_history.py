@@ -56,11 +56,7 @@ def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
         try:
             candidate = resolve_output_dir(output_dir)
         except ValueError:
-            candidate = (
-                native_path
-                if native_path.is_absolute()
-                else outputs_base / native_path
-            )
+            candidate = native_path if native_path.is_absolute() else outputs_base / native_path
         resolved = candidate.resolve(strict = False)
         resolved.relative_to(outputs_base)
         return resolved
@@ -104,15 +100,9 @@ def _summary_from_row(
     )
 
 
-def _summaries_from_rows(
-    rows: list[dict],
-    sharing_on: bool,
-) -> list[TrainingRunSummary]:
+def _summaries_from_rows(rows: list[dict], sharing_on: bool) -> list[TrainingRunSummary]:
     resource_cache: dict[str, bool] = {}
-    return [
-        _summary_from_row(row, sharing_on, resource_cache)
-        for row in rows
-    ]
+    return [_summary_from_row(row, sharing_on, resource_cache) for row in rows]
 
 
 def _delete_run_output_dir(run_id: str, output_dir: str) -> bool:
@@ -150,7 +140,6 @@ def _delete_run_output_dir(run_id: str, output_dir: str) -> bool:
 
 def _active_training_output_dir() -> Optional[str]:
     from core.training import get_training_backend
-
     return get_training_backend().active_output_dir()
 
 
@@ -189,7 +178,6 @@ _ArtifactDeleteOutcome = Literal["deleted", "active", "shared", "failed"]
 
 def _delete_run_output_dir_guarded(run_id: str, output_dir: str) -> _ArtifactDeleteOutcome:
     from core.training.lifecycle import training_lifecycle_guard
-
     with training_lifecycle_guard():
         if _output_dirs_overlap(output_dir, _active_training_output_dir()):
             return "active"
