@@ -238,7 +238,7 @@ class TestRemoteLoraBase:
 
         with patch("urllib.request.urlopen", side_effect = fake_urlopen):
             assert _remote_lora_base("user/adapter") == "org/base"
-        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/raw/main/")
+        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/resolve/main/")
 
     @staticmethod
     def _seed_adapter_cache(
@@ -419,7 +419,7 @@ class TestCheckTokenizerConfigNeedsV5:
         monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
         assert _check_tokenizer_config_needs_v5("org/model") is True
         assert seen["url"] == (
-            "https://hf.mirror.internal/org/model/raw/main/tokenizer_config.json"
+            "https://hf.mirror.internal/org/model/resolve/main/tokenizer_config.json"
         )
 
 
@@ -778,7 +778,7 @@ class TestConfigJsonHfCacheFallback:
 
         with patch("urllib.request.urlopen", side_effect = fake_urlopen):
             assert _load_config_json("org/model") == {"model_type": "llama"}
-        assert seen["url"] == "https://hf.mirror.internal/org/model/raw/main/config.json"
+        assert seen["url"] == "https://hf.mirror.internal/org/model/resolve/main/config.json"
 
     def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}

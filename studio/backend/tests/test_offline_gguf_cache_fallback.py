@@ -2614,7 +2614,7 @@ class TestMetadataReadsUseTheHubProxy:
         from utils.transformers_version import _load_config_json
 
         assert _load_config_json("acme/ministral-3b") == payload
-        assert seen == [("GET", "http://hub.invalid/acme/ministral-3b/raw/main/config.json")]
+        assert seen == [("GET", "http://hub.invalid/acme/ministral-3b/resolve/main/config.json")]
 
     def test_tokenizer_config_read_goes_through_the_proxy(self, stub_proxy, monkeypatch):
         seen, _ = stub_proxy
@@ -2623,7 +2623,7 @@ class TestMetadataReadsUseTheHubProxy:
 
         _check_tokenizer_config_needs_v5("acme/ministral-3b")
         assert seen == [
-            ("GET", "http://hub.invalid/acme/ministral-3b/raw/main/tokenizer_config.json"),
+            ("GET", "http://hub.invalid/acme/ministral-3b/resolve/main/tokenizer_config.json"),
         ]
 
     def test_adapter_config_read_goes_through_the_proxy(self, stub_proxy, monkeypatch):
@@ -2633,7 +2633,7 @@ class TestMetadataReadsUseTheHubProxy:
 
         _remote_lora_base("acme/ministral-3b")
         assert seen == [
-            ("GET", "http://hub.invalid/acme/ministral-3b/raw/main/adapter_config.json"),
+            ("GET", "http://hub.invalid/acme/ministral-3b/resolve/main/adapter_config.json"),
         ]
 
     def test_no_proxy_bypass_keeps_the_metadata_read_direct(self, monkeypatch, tmp_path):
@@ -2678,7 +2678,7 @@ class TestMetadataReadsUseTheHubProxy:
 
             assert _load_config_json("acme/ministral-3b") == payload
             assert proxy_seen == []
-            assert hub_seen == [("GET", "/acme/ministral-3b/raw/main/config.json")]
+            assert hub_seen == [("GET", "/acme/ministral-3b/resolve/main/config.json")]
         finally:
             proxy.shutdown()
             hub.shutdown()
@@ -3073,3 +3073,88 @@ class TestLocalModelWithRemoteBaseIsGuarded:
             ):
                 bare.append(node.lineno)
         assert bare == [], f"unguarded base vision probe at line(s) {bare}"
+
+
+class TestMetadataUrlsUseTheDownloadRoute:
+    """A Hub-compatible mirror implements /{repo}/resolve/{rev}/{file}, the route
+    hf_hub_url builds. /raw is a huggingface.co web route a mirror need not serve, so
+    reads against a mirror 404 and the tier falls back to name matching."""
+
+    def test_url_matches_what_the_hub_client_would_build(self, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal")
+        from utils.transformers_version import _hf_raw_url
+
+        ours = _hf_raw_url("acme/ministral-3b", "config.json")
+        assert ours == "https://hf.mirror.internal/acme/ministral-3b/resolve/main/config.json"
+
+        try:
+            from huggingface_hub import hf_hub_url
+        except Exception:
+            return
+        theirs = hf_hub_url(
+            "acme/ministral-3b", "config.json", endpoint = "https://hf.mirror.internal",
+        )
+        assert ours == theirs, f"diverged from the hub client: {ours} vs {theirs}"
+
+    def test_trailing_slash_endpoint_does_not_double_up(self, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        from utils.transformers_version import _hf_raw_url
+
+        assert "//acme" not in _hf_raw_url("acme/m", "config.json").removeprefix("https://")
+
+    def test_no_raw_route_remains_in_the_metadata_readers(self):
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "utils" / "transformers_version.py").read_text(
+            encoding = "utf-8",
+        )
+        assert "/raw/main" not in src
+
+
+class TestLocalGgufWithoutABaseSkipsTheProbe:
+    """The exporter writes export_metadata.json with a null base_model for a non-LoRA
+    checkpoint. Guarding a lookup that never happens would make a wholly local load pay
+    the reachability probe."""
+
+    def test_guard_is_not_entered_without_a_base(self):
+        import ast
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "utils" / "models" / "model_config.py").read_text(
+            encoding = "utf-8",
+        )
+        tree = ast.parse(src)
+
+        bad = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With):
+                continue
+            for item in node.items:
+                ctx = item.context_expr
+                if not (
+                    isinstance(ctx, ast.Call)
+                    and getattr(ctx.func, "id", None) == "_offline_while_reading"
+                ):
+                    continue
+                arg = ctx.args[0] if ctx.args else None
+                if getattr(arg, "id", None) != "base":
+                    continue
+                # The base variant must sit under an `if base:` truthiness check.
+                guarded_by_if = any(
+                    isinstance(anc, ast.If)
+                    and getattr(anc.test, "id", None) == "base"
+                    and any(node is n or node in ast.walk(n) for n in anc.body)
+                    for anc in ast.walk(tree)
+                    if isinstance(anc, ast.If)
+                )
+                if not guarded_by_if:
+                    bad.append(node.lineno)
+        assert bad == [], f"_offline_while_reading(base) entered unconditionally at {bad}"
+
+    def test_none_target_would_otherwise_be_treated_as_remote(self):
+        """Why the check is needed: a null target is classified remote, not local."""
+        from utils.paths import is_local_path
+
+        assert is_local_path(None or "") is False

@@ -77,9 +77,16 @@ def _env_offline() -> bool:
 
 
 def _hf_raw_url(model_name: str, filename: str) -> str:
-    """Raw model metadata URL for the configured Hub endpoint."""
+    """Raw model metadata URL for the configured Hub endpoint.
+
+    /resolve, not /raw: hf_hub_url builds {endpoint}/{repo}/resolve/{rev}/{file}, and a
+    Hub-compatible mirror implements that download route while /raw is a huggingface.co
+    web route it need not serve. Both return the same bytes on huggingface.co itself
+    (/resolve redirects to the resolve-cache, which urllib follows), so this only widens
+    where the reads work. Small JSON, never LFS, so no pointer-vs-content difference.
+    """
     from utils.utils import hf_endpoint_url
-    return f"{hf_endpoint_url().rstrip('/')}/{model_name}/raw/main/{filename}"
+    return f"{hf_endpoint_url().rstrip('/')}/{model_name}/resolve/main/{filename}"
 
 
 def _hf_proxy_opener(url: str):

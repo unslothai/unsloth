@@ -2986,8 +2986,14 @@ class ModelConfig:
                     try:
                         meta = json.loads(meta_path.read_text(encoding = "utf-8-sig"))
                         base = meta.get("base_model")
-                        with _offline_while_reading(base):
-                            base_is_vision = bool(base and is_vision_model(base, hf_token = hf_token))
+                        # Only when there IS a base to read: the exporter writes null for
+                        # a non-LoRA checkpoint, and guarding a lookup that never happens
+                        # would make a wholly local load pay the reachability probe.
+                        if base:
+                            with _offline_while_reading(base):
+                                base_is_vision = bool(
+                                    is_vision_model(base, hf_token = hf_token)
+                                )
                         if base_is_vision:
                             logger.info(f"GGUF base model '{base}' is a vision model")
                     except Exception as e:
