@@ -6517,6 +6517,9 @@ async def validate_model(
             else getattr(config, "display_name", config.identifier),
             is_gguf = is_gguf,
             is_diffusion = is_gguf and diffusion_kind is True,
+            # `None` means the header could not be read and the name carries no family,
+            # so the caller must not read is_diffusion == False as "ordinary GGUF".
+            diffusion_unknown = is_gguf and diffusion_kind is None,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = requires_trust_remote_code,

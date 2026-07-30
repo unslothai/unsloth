@@ -25,12 +25,33 @@ export const GPU_LAYERS_AUTO = -1;
 export function resolveComparePlacement(
   own: { gpuMemoryMode?: "auto" | "manual"; gpuLayers?: number },
   shared: { gpuMemoryMode: "auto" | "manual"; gpuLayers: number },
-  isDiffusion: boolean,
+  treatAsDiffusion: boolean,
 ): { gpuMemoryMode: "auto" | "manual"; gpuLayers: number } {
   return {
     gpuMemoryMode:
-      own.gpuMemoryMode ?? (isDiffusion ? "auto" : shared.gpuMemoryMode),
+      own.gpuMemoryMode ?? (treatAsDiffusion ? "auto" : shared.gpuMemoryMode),
     gpuLayers:
-      own.gpuLayers ?? (isDiffusion ? GPU_LAYERS_AUTO : shared.gpuLayers),
+      own.gpuLayers ?? (treatAsDiffusion ? GPU_LAYERS_AUTO : shared.gpuLayers),
   };
+}
+
+/** Whether a pane must get the diffusion-safe placement above.
+ *
+ * An UNCLASSIFIED GGUF counts. The metadata preflight can only read a header
+ * that is already on disk, so an undownloaded GGUF whose name does not carry
+ * the DiffusionGemma family comes back `diffusion_unknown` -- and inheriting
+ * the shared split there is the same leak as inheriting it for a confirmed
+ * one, only discovered later: `/load` downloads the file, reads a diffusion
+ * header, and applies the other model's count anyway.
+ *
+ * Non-GGUF panes are excluded: they are definitively not a diffusion GGUF, and
+ * they keep inheriting the snapshot (their load sends no placement at all).
+ */
+export function shouldPinDiffusionPlacement(
+  targetIsGguf: boolean,
+  isDiffusion: boolean | undefined,
+  diffusionUnknown: boolean,
+): boolean {
+  if (!targetIsGguf) return false;
+  return isDiffusion === true || diffusionUnknown;
 }

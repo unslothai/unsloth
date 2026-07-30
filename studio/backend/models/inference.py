@@ -348,6 +348,14 @@ class ValidateModelResponse(BaseModel):
     is_diffusion: bool = Field(
         False, description = "Whether this is a block-diffusion model (DiffusionGemma)"
     )
+    diffusion_unknown: bool = Field(
+        False,
+        description = "Whether the diffusion check came back inconclusive: the GGUF is not "
+        "downloaded yet (or its header is unreadable) and its name does not carry the "
+        "DiffusionGemma family, so is_diffusion == False here means 'not known to be "
+        "diffusion', NOT 'known to be an ordinary GGUF'. Callers that choose a GPU-layer "
+        "split before the load must treat this as possibly-diffusion.",
+    )
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
     requires_trust_remote_code: bool = Field(

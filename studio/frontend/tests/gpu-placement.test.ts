@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   GPU_LAYERS_AUTO,
   resolveComparePlacement,
+  shouldPinDiffusionPlacement,
 } from "../src/features/chat/lib/gpu-placement.ts";
 
 // The live-store snapshot a compare run takes at Send: the settings of whatever
@@ -59,5 +60,72 @@ test("an own value wins over the snapshot for a chat GGUF too", () => {
       false,
     ),
     { gpuMemoryMode: "auto", gpuLayers: 3 },
+  );
+});
+
+// ── an unclassified GGUF must not inherit the split either ──
+//
+// The preflight only reads a header that is already on disk, so an undownloaded
+// GGUF whose repo/file name does not carry "DiffusionGemma" comes back
+// is_diffusion=false + diffusion_unknown=true. /load then downloads it, reads a
+// diffusion header, and applies whatever split the request carried.
+
+test("an unclassified GGUF pane gets the diffusion-safe placement", () => {
+  assert.equal(shouldPinDiffusionPlacement(true, false, true), true);
+  assert.deepEqual(
+    resolveComparePlacement(
+      {},
+      shared,
+      shouldPinDiffusionPlacement(true, false, true),
+    ),
+    { gpuMemoryMode: "auto", gpuLayers: GPU_LAYERS_AUTO },
+  );
+});
+
+test("an unclassified GGUF pane cannot inherit a CPU-masking zero", () => {
+  assert.deepEqual(
+    resolveComparePlacement(
+      {},
+      { gpuMemoryMode: "manual", gpuLayers: 0 },
+      shouldPinDiffusionPlacement(true, false, true),
+    ),
+    { gpuMemoryMode: "auto", gpuLayers: GPU_LAYERS_AUTO },
+  );
+});
+
+test("a CLASSIFIED ordinary GGUF still inherits the snapshot", () => {
+  // The whole point of the tri-state: a readable non-diffusion header keeps the
+  // pre-existing inheritance, so this fix costs the common path nothing.
+  assert.equal(shouldPinDiffusionPlacement(true, false, false), false);
+  assert.deepEqual(
+    resolveComparePlacement(
+      {},
+      shared,
+      shouldPinDiffusionPlacement(true, false, false),
+    ),
+    { gpuMemoryMode: "manual", gpuLayers: 12 },
+  );
+});
+
+test("a confirmed diffusion GGUF is pinned however it was classified", () => {
+  assert.equal(shouldPinDiffusionPlacement(true, true, false), true);
+  assert.equal(shouldPinDiffusionPlacement(true, true, true), true);
+});
+
+test("a non-GGUF pane keeps inheriting the snapshot", () => {
+  // It sends no placement at all, and it is definitively not a diffusion GGUF,
+  // so an unknown flag must not flip it to Auto.
+  assert.equal(shouldPinDiffusionPlacement(false, undefined, false), false);
+  assert.equal(shouldPinDiffusionPlacement(false, undefined, true), false);
+});
+
+test("an own split still wins for an unclassified GGUF", () => {
+  assert.deepEqual(
+    resolveComparePlacement(
+      { gpuMemoryMode: "manual", gpuLayers: 6 },
+      shared,
+      shouldPinDiffusionPlacement(true, false, true),
+    ),
+    { gpuMemoryMode: "manual", gpuLayers: 6 },
   );
 });

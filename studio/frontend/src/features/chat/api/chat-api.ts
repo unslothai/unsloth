@@ -221,6 +221,10 @@ export async function fetchGgufStagedMetadata(payload: {
   layerCount: number | null;
   moeLayerCount: number | null;
   isDiffusion: boolean;
+  /** The backend could not classify the GGUF either way, so `isDiffusion:
+   *  false` above is "not known to be diffusion". Callers that pick a GPU
+   *  split before the load must treat it as possibly-diffusion. */
+  diffusionUnknown: boolean;
 }> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
@@ -230,11 +234,13 @@ export async function fetchGgufStagedMetadata(payload: {
       ).nativePathLease;
     } catch {
       // Lease expired / revoked: degrade to no metadata (the load can re-mint).
+      // Nothing was read, so the diffusion answer is unknown rather than false.
       return {
         contextLength: null,
         layerCount: null,
         moeLayerCount: null,
         isDiffusion: false,
+        diffusionUnknown: true,
       };
     }
   }
@@ -255,6 +261,9 @@ export async function fetchGgufStagedMetadata(payload: {
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
     isDiffusion: res.is_diffusion ?? false,
+    // Absent on a pre-#7575 backend: an old server never reported the
+    // inconclusive case, so treat the answer as classified, exactly as before.
+    diffusionUnknown: res.diffusion_unknown ?? false,
   };
 }
 
