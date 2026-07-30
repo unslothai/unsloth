@@ -655,7 +655,7 @@ def _unsafe_schema_identifier(value):
                         if isinstance(name, str) and neutralize_control_markup(name) != name:
                             return name
                 elif key in _SCHEMA_VALUED_IDENTIFIERS:
-                    for literal in (item if isinstance(item, list) else [item]):
+                    for literal in item if isinstance(item, list) else [item]:
                         if (
                             isinstance(literal, str)
                             and neutralize_control_markup(literal) != literal
