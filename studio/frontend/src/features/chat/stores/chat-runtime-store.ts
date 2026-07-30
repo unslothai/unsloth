@@ -10,6 +10,7 @@ import {
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
@@ -568,9 +569,9 @@ export function persistGpuMemoryModeOnLoad(
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Manual-mode gpu_layers sentinel: -1 = Auto (hand layer + context sizing to
-// llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
-export const GPU_LAYERS_AUTO = -1;
+// Manual-mode gpu_layers sentinel, re-exported from its dependency-free home so
+// every existing `from "../stores/chat-runtime-store"` import keeps working.
+export { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 
 // Round real-valued shares to integers summing exactly to `total`, giving the
 // leftover units to the largest fractional parts (largest-remainder method).

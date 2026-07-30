@@ -106,8 +106,8 @@ import {
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
+import { resolveComparePlacement } from "./lib/gpu-placement";
 import {
-  GPU_LAYERS_AUTO,
   loadedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
@@ -1103,12 +1103,24 @@ export function SharedComposer({
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
-        // The diffusion runner honours the layer split (#7574); only the knobs it
-        // truly has no equivalent for (MoE offload, tensor parallel) stay forced.
-        const effectiveGpuMemoryMode =
-          ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode;
-        const effectiveGpuLayers =
-          ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
+        // The diffusion runner honours the layer split (#7574), so a pane's OWN
+        // saved split is sent instead of being forced to Auto. The shared
+        // snapshot is not: it is the live store of whichever chat GGUF was
+        // loaded at Send, and its layer count is bounded by THAT model. No
+        // diffusion UI can show or clear an inherited split (the mode row and
+        // the layer slider are hidden for diffusion, and a saved diffusion
+        // config is stripped of both), so a pane would silently run at another
+        // model's count -- and a leaked 0 masks its devices entirely. Only the
+        // knobs the runner has no equivalent for (MoE offload, tensor parallel)
+        // stay hard-forced.
+        const {
+          gpuMemoryMode: effectiveGpuMemoryMode,
+          gpuLayers: effectiveGpuLayers,
+        } = resolveComparePlacement(
+          ownConfig,
+          compareLoadKnobs,
+          resolvedIsDiffusion === true,
+        );
         const effectiveNCpuMoe =
           resolvedIsDiffusion
             ? 0
