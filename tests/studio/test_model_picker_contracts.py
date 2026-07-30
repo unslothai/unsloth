@@ -122,10 +122,7 @@ def test_first_chat_default_autoload_yields_to_an_explicit_model_load():
 
     state_refresh = "const runtimeAfterDownload = useChatRuntimeStore.getState();"
     assert state_refresh in compact
-    state_guard = (
-        "runtimeAfterDownload.params.checkpoint || "
-        "runtimeAfterDownload.modelLoading"
-    )
+    state_guard = "runtimeAfterDownload.params.checkpoint || runtimeAfterDownload.modelLoading"
     assert state_guard in compact
     assert "await waitForModelReady(abortSignal);" in before_default_load
     result_guard = "Boolean(useChatRuntimeStore.getState().params.checkpoint)"
