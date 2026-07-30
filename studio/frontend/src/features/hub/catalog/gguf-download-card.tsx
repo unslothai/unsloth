@@ -61,6 +61,7 @@ import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
 } from "../lib/gguf-filename";
+import { recommendedDownloadableGgufVariant } from "../lib/gguf-recommendation";
 import {
   ggufVariantDisplayLabel,
   ggufVariantDownloadSizeBytes,
@@ -437,6 +438,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   selected,
   loaded,
   liveActive,
+  recommended,
   showFitInfo,
   onSelect,
   onDelete,
@@ -446,6 +448,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   selected: boolean;
   loaded: boolean;
   liveActive: boolean;
+  recommended: boolean;
   showFitInfo: boolean;
   onSelect: (quant: string) => void;
   onDelete: (quant: string) => void;
@@ -512,6 +515,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
                 : "Partial download. Select it to continue."}
             </TooltipContent>
           </Tooltip>
+        )}
+        {recommended && (
+          <span className="shrink-0 text-ui-9 font-sans font-medium text-primary/70">
+            recommended
+          </span>
         )}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -640,6 +648,16 @@ export function GgufDownloadCard({
     () => createGgufVariantMenuItems(sortedVariants, { gpuGb, systemRamGb }),
     [gpuGb, sortedVariants, systemRamGb],
   );
+  const recommendedVariant = useMemo(
+    () =>
+      sortedVariants
+        ? recommendedDownloadableGgufVariant(sortedVariants)
+        : null,
+    [sortedVariants],
+  );
+  const recommendedVariantKey = recommendedVariant
+    ? normalizeGgufVariantIdentity(recommendedVariant.quant)
+    : null;
 
   const selectedQuant =
     (selectedQuantOverride
@@ -986,6 +1004,11 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
+                {selectedVariantKey === recommendedVariantKey && (
+                  <span className="shrink-0 text-ui-9 font-sans font-medium text-primary/70">
+                    recommended
+                  </span>
+                )}
                 <DotTag tone="gguf" label="GGUF" />
                 {selected &&
                   selectedDownloadSizeLabel &&
@@ -1020,6 +1043,7 @@ export function GgufDownloadCard({
                     selected={item.key === selectedVariantKey}
                     loaded={isActive && item.key === activeVariantKey}
                     liveActive={liveActive}
+                    recommended={item.key === recommendedVariantKey}
                     showFitInfo={showFitInfo}
                     onSelect={handleSelectVariant}
                     onDelete={handleDeleteVariant}
