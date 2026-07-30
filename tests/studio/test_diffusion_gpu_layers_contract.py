@@ -5,8 +5,8 @@
 Studio used to drop a manual GPU-layers setting on the diffusion path and pin every layer
 to GPU, so a GGUF larger than VRAM OOMed in cudaMalloc with no way out.
 
-The pure helpers are exercised directly; the wiring is checked at source level, since
-importing the backend pulls in the whole studio stack.
+The pure helpers run directly; the wiring is checked at source level, since importing the
+backend pulls in the whole studio stack.
 """
 
 from __future__ import annotations
@@ -116,9 +116,7 @@ def test_diffusion_server_forwards_ngl_and_gates_it_on_shim_support():
 def test_zero_layers_masks_the_child_devices(llama_cpp):
     """gpu_layers=0 must CUDA-mask the child, else _gpu_offload_active=False lies to the
     training VRAM coordinator and a GPU-resident runner survives into a training run.
-
-    Behavioural, not a source-text match: what matters is the token the child receives.
-    """
+    Behavioural, not a source-text match: what matters is the token the child gets."""
     arg = llama_cpp.LlamaCppBackend._diffusion_gpu_arg
     assert arg([3, 1], force_cpu = True) == ""
     assert arg(None, force_cpu = True) == ""
@@ -426,8 +424,8 @@ def test_every_diffusion_response_also_reports_the_requested_split():
         if not isinstance(node, ast.Call):
             continue
         kwargs = {kw.arg for kw in node.keywords}
-        # Only the responses describing a LOADED model; /validate reports on a
-        # model that has no runner yet, so it has no applied-vs-asked split.
+        # Only responses describing a LOADED model; /validate has no runner yet, so no
+        # applied-vs-asked split.
         if "is_diffusion" not in kwargs or "is_gguf" not in kwargs:
             continue
         if not any(

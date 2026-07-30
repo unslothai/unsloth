@@ -6,10 +6,10 @@
 `_classify_diffusion_gguf` is a tri-state: True (diffusion), False (header read,
 ordinary), None (nothing to read, and no family in the name).
 
-The response used to collapse None into `is_diffusion = False`, so a caller could
-not tell "ordinary GGUF" from "unknown". The staged-metadata preflight picks a
-GPU-layer split from that answer, and /load may then apply it to a diffusion
-runner: an inherited 0 CPU-masks it, another count repartitions or OOMs it.
+The response used to collapse None into `is_diffusion = False`, so a caller could not
+tell "ordinary GGUF" from "unknown". The staged-metadata preflight picks a GPU-layer
+split from that answer, and /load may then apply it to a diffusion runner: an inherited
+0 CPU-masks it, another count repartitions or OOMs it.
 """
 
 import asyncio

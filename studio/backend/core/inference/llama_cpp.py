@@ -1705,7 +1705,7 @@ def _diffusion_manual_ngl(gpu_memory_mode: str, gpu_layers: int) -> Optional[int
     """The --ngl the diffusion runner would launch with, or None for its default.
 
     Only an explicit manual count reaches the child; Auto (-1) and Unsloth mode defer.
-    Shared with both dedup guards, so an inert standing manual preference cannot loop.
+    Shared with both dedup guards, so an inert manual preference cannot loop.
     """
     return int(gpu_layers) if (gpu_memory_mode == "manual" and int(gpu_layers) >= 0) else None
 
@@ -1713,8 +1713,8 @@ def _diffusion_manual_ngl(gpu_memory_mode: str, gpu_layers: int) -> Optional[int
 def _scale_diffusion_required_gb(required_gb: float, ngl: int, n_layers: Optional[int]) -> float:
     """GPU share of a partially offloaded diffusion GGUF, for the training guard.
 
-    Only the ``ngl`` GPU-resident layers compete for VRAM; sizing the whole file 409s
-    a split that fits. An unknown layer count keeps the full estimate."""
+    Only the ``ngl`` resident layers compete for VRAM; sizing the whole file 409s a
+    split that fits. An unknown layer count keeps the full estimate."""
     if not n_layers or n_layers <= 0 or ngl >= n_layers:
         return required_gb
     return required_gb * (ngl / n_layers)
@@ -1723,9 +1723,8 @@ def _scale_diffusion_required_gb(required_gb: float, ngl: int, n_layers: Optiona
 def _source_declares_option(source: str, option: str) -> bool:
     """True iff ``source`` really registers ``option`` on an argparse parser.
 
-    Parsed, not grepped: a substring test also matches the flag inside a comment or
-    docstring, and misses it when quoted differently. Falls back to a substring scan
-    only when the file will not parse (a shim needing a newer Python).
+    Parsed, not grepped: a substring test matches the flag in a comment and misses it
+    when quoted differently. Falls back to a substring scan when the file will not parse.
     """
     try:
         tree = ast.parse(source)
@@ -1746,14 +1745,14 @@ def _source_declares_option(source: str, option: str) -> bool:
 def _shim_supports_ngl(shim_cmd: List[str]) -> bool:
     """Whether the resolved diffusion shim accepts --ngl.
 
-    The package floor still allows an unsloth_zoo without the flag, and argparse exits
+    The package floor still allows an unsloth_zoo without the flag and argparse exits
     on an unknown option, so emitting it blindly breaks the launch. Read the source
     rather than spawning a probe: the launch path is already slow.
     """
-    # _find_diffusion_assets emits either a file override ([python, <path>]) or the
-    # installed package ([python, -m, <module>]). Key on the shape, not the suffix: an
-    # UNSLOTH_DG_SHIM override may be extensionless, .pyw or SHIM.PY. Probe that exact
-    # file -- a sibling shim.py answers for a different shim than argparse will run.
+    # _find_diffusion_assets emits a file override ([python, <path>]) or the installed
+    # package ([python, -m, <module>]). Key on the shape, not the suffix (an override may
+    # be extensionless, .pyw or SHIM.PY), and probe that exact file: a sibling shim.py
+    # answers for a different shim than argparse will run.
     if len(shim_cmd) >= 2 and "-m" not in shim_cmd:
         candidates = [Path(shim_cmd[-1])]
     else:
@@ -2866,8 +2865,7 @@ class LlamaCppBackend:
         """The diffusion split the live runner was ASKED for, or None for the default.
 
         Differs from ``gpu_layers`` only when the shim could not take the split: that
-        reports what is running, this keeps the ask so a repeat still dedupes.
-        """
+        reports what is running, this keeps the ask so a repeat still dedupes."""
         return getattr(self, "_diffusion_requested_ngl", None)
 
     @property
@@ -5563,9 +5561,9 @@ class LlamaCppBackend:
     def diffusion_split_supported(self) -> bool:
         """Whether a diffusion launch right now would honour --ngl.
 
-        Mirrors the launch gate, for the training guard: a split the launcher will drop
-        must be guarded as GPU-resident. False when no shim resolves or the probe
-        fails, matching the launcher's own fallback."""
+        Mirrors the launch gate for the training guard: a split the launcher will drop
+        must be guarded as GPU-resident. False when no shim resolves or the probe fails,
+        matching the launcher's own fallback."""
         try:
             assets = self._find_diffusion_assets()
         except Exception:
@@ -5589,11 +5587,10 @@ class LlamaCppBackend:
         parent's mask rather than turning a parent-relative ordinal into a new
         physical selection.
         """
-        # force_cpu is the only thing that outranks the picker: zero GPU layers means
-        # nothing to place, and a real device would let the child hold a context while
-        # _gpu_offload_active reports False, making the training VRAM coordinator
-        # (training_vram.py:63, :408) skip the unload. cpu_only stays *below* the
-        # picker: an explicit pick still wins on a host whose GPU torch cannot see.
+        # force_cpu alone outranks the picker: zero GPU layers place nothing, and a real
+        # device would let the child hold a context while _gpu_offload_active reports
+        # False, making the training VRAM coordinator skip the unload. cpu_only stays
+        # *below* the picker: an explicit pick wins on a host whose GPU torch cannot see.
         if force_cpu:
             return ""
         if gpu_ids:
@@ -5628,8 +5625,7 @@ class LlamaCppBackend:
         interface as llama-server, so the rest of Unsloth is unchanged.
 
         Manual mode forwards gpu_layers as --ngl so a GGUF larger than VRAM can be
-        split across GPU and RAM; auto leaves the runner's all-layers default.
-        """
+        split across GPU and RAM; auto leaves the runner's all-layers default."""
         assets = self._find_diffusion_assets()
         if assets is None:
             raise RuntimeError(
@@ -5646,9 +5642,6 @@ class LlamaCppBackend:
         # Auto-size (0): the visual server probes the largest context that fits this GPU's VRAM
         # (capped at the training context). An explicit in-range n_ctx overrides it.
         maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
-        # No visible CUDA GPU: a genuine CPU host, or a GPU host masked with
-        # CUDA_VISIBLE_DEVICES="" to force CPU serving. Keep the visual-server child
-        # CPU-masked (empty --gpu) so the shim does not re-expose GPU 0 via its default.
         # Manual mode: honour the picked split. Without it the runner pins every layer
         # to GPU and a GGUF larger than VRAM dies in cudaMalloc even at 0 layers
         # (#7574). An older shim has no --ngl, so drop it rather than die in argparse.
@@ -5660,14 +5653,15 @@ class LlamaCppBackend:
                 manual_ngl,
             )
             manual_ngl = None
-        # Zero layers is a CPU-only request, so mask the child's devices like a genuine
-        # CPU host: a real --gpu token would let it hold a CUDA context while
-        # _gpu_offload_active reports False, which the coordinator trusts (P2).
+        # No visible CUDA GPU: a genuine CPU host, or a GPU host masked with
+        # CUDA_VISIBLE_DEVICES="" to force CPU serving. Keep the visual-server child
+        # CPU-masked (empty --gpu) so the shim does not re-expose GPU 0 via its default.
         cpu_only = self._effective_gpu_count() == 0
-        # A stronger claim than cpu_only and deliberately not derived from it:
-        # _effective_gpu_count is torch.cuda only, so it reads 0 on Metal, Vulkan,
-        # Windows-HIP or Intel XPU hosts the visual server will happily use. Only an
-        # explicit zero-layer split keeps the weights off every backend.
+        # Stronger than cpu_only and deliberately not derived from it: _effective_gpu_count
+        # is torch.cuda only, so it reads 0 on Metal, Vulkan, Windows-HIP or Intel XPU hosts
+        # the visual server will happily use. Only an explicit zero-layer split keeps the
+        # weights off every backend, and a real --gpu token there would let the child hold a
+        # CUDA context while _gpu_offload_active reports False, which the coordinator trusts.
         holds_no_gpu = manual_ngl == 0
         # Honor the GPU picker first: the diffusion runner takes a single device,
         # so use the lowest selected GPU (matches the sorted set recorded below, so
@@ -5689,9 +5683,9 @@ class LlamaCppBackend:
         ]
         if manual_ngl is not None:
             cmd += ["--ngl", str(manual_ngl)]
-            # Block diffusion is compute-bound, so CPU-side layers cost far more than
-            # on an autoregressive model (~6 tok/s vs ~31 for non-diffusion Gemma).
-            # Make the tradeoff visible instead of swapping an OOM for a slow model.
+            # Block diffusion is compute-bound, so CPU-side layers cost far more than on an
+            # autoregressive model (~6 tok/s vs ~31 for non-diffusion Gemma). Make the
+            # tradeoff visible instead of swapping an OOM for a slow model.
             logger.warning(
                 "DiffusionGemma: %d GPU layers requested. Layers left on CPU are much "
                 "slower for block diffusion than for a regular model; prefer a smaller "
@@ -5769,17 +5763,17 @@ class LlamaCppBackend:
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
-        # False here means "confirmed to hold no VRAM" and makes the training
-        # coordinator skip the unload, so it is claimed only for a zero-layer split.
+        # False means "confirmed to hold no VRAM" and makes the training coordinator skip
+        # the unload, so it is claimed only for a zero-layer split.
         self._gpu_offload_active = not holds_no_gpu
-        # Diffusion uses only the layer split of the llama.cpp GPU-memory knobs: record
-        # what was applied (so /load, /status and reload dedup agree with the child)
-        # and reset the rest so a previous GGUF's manual settings are not reported.
+        # Diffusion uses only the layer split of the llama.cpp GPU-memory knobs: record what
+        # was applied (so /load, /status and reload dedup agree with the child) and reset the
+        # rest so a previous GGUF's manual settings are not reported.
         self._gpu_memory_mode = gpu_memory_mode if manual_ngl is not None else "auto"
         self._gpu_layers = manual_ngl if manual_ngl is not None else -1
-        # What was ASKED for, not always what was applied (no --ngl downgrades it
-        # above). /status reports reality via _gpu_layers, but the dedup guards must
-        # compare like with like or the same request reloads on every /load.
+        # What was ASKED for, not always what was applied (no --ngl downgrades it above).
+        # /status reports reality via _gpu_layers, but the dedup guards must compare like
+        # with like or the same request reloads on every /load.
         self._diffusion_requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         self._n_cpu_moe = 0
         self._tensor_split = None
@@ -9906,18 +9900,18 @@ class LlamaCppBackend:
         ):
             return False
 
-        # The diffusion runner takes the layer split but ignores the MoE/split
-        # knobs, so only the GPU pick and the effective --ngl matter here.
+        # The diffusion runner takes the layer split but ignores the MoE/split knobs, so
+        # only the GPU pick and the effective --ngl matter here.
         if self._is_diffusion:
-            # Compare the EFFECTIVE split, not the raw mode: a standing manual
-            # preference would reload forever, while raw gpu_layers would miss that
-            # Auto(-1) and Unsloth mode both mean "runner default".
+            # Compare the EFFECTIVE split, not the raw mode: a standing manual preference
+            # would reload forever, while raw gpu_layers would miss that Auto(-1) and
+            # Unsloth mode both mean "runner default".
             requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
             if requested_ngl != self.diffusion_requested_ngl:
                 return False
-            # An identical ask whose split was DROPPED at launch (old shim) still
-            # dedupes, unless the shim has gained --ngl since (zoo upgraded
-            # mid-session), in which case the reload finally applies it.
+            # An identical ask whose split was DROPPED at launch (old shim) still dedupes,
+            # unless the shim has gained --ngl since (zoo upgraded mid-session), in which
+            # case the reload finally applies it.
             if (
                 requested_ngl is not None
                 and self._gpu_layers != requested_ngl
@@ -10209,8 +10203,8 @@ class LlamaCppBackend:
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()
         self._reset_effective_parallel_slots()
-        # Cleared before the early return, not in the finally below, so a stale split
-        # never outlives its runner even when there was no process to kill.
+        # Cleared before the early return, not in the finally below, so a stale split never
+        # outlives its runner even when there was no process to kill.
         self._diffusion_requested_ngl = None
         if self._process is None:
             return

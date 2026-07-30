@@ -64,7 +64,6 @@ test("an own value wins over the snapshot for a chat GGUF too", () => {
 });
 
 // ── an unclassified GGUF must not inherit the split either ──
-//
 // An undownloaded GGUF with no "DiffusionGemma" in its name comes back
 // is_diffusion=false + diffusion_unknown=true; /load may then read a diffusion
 // header and apply whatever split the request carried.
@@ -128,11 +127,9 @@ test("an own split still wins for an unclassified GGUF", () => {
 });
 
 // -- the config-picker path must hand on "unknown", not a definite false --
-//
-// model-config-page probes the GGUF, then onRun passes the answer into the
-// selection, which becomes sel.isDiffusion in the compare flow. A definite
-// false there skips the pane's re-probe entirely, so the unknown state has to
-// survive this hop or the split leaks again through a different door.
+// onRun passes the probe answer into the selection, which becomes
+// sel.isDiffusion in the compare flow. A definite false there skips the pane's
+// re-probe, so the unknown state has to survive this hop.
 
 test("an inconclusive staged probe stays unknown", () => {
   assert.equal(
@@ -177,8 +174,7 @@ test("a pending probe is unknown, not ordinary", () => {
 });
 
 test("the unknown verdict re-probes and reaches diffusion-safe placement", () => {
-  // End to end across the two helpers: unknown -> undefined -> the compare
-  // preflight re-probes (sel.isDiffusion === undefined) and learns unknown:true.
+  // End to end: unknown -> undefined -> the compare preflight re-probes.
   const handedOn = resolveStagedDiffusionClassification(undefined, {
     isDiffusion: false,
     diffusionUnknown: true,
@@ -191,11 +187,10 @@ test("the unknown verdict re-probes and reaches diffusion-safe placement", () =>
 });
 
 // -- a dropped split must survive a browser refresh --
-//
 // A shim without --ngl runs Auto and the backend keeps the ask in
-// diffusion_requested_ngl. In-memory state carries it across a reload, but a
-// refresh starts the store at Auto, so the response has to carry it back or the
-// next Apply sends manual/-1 and the post-upgrade retry has nothing to apply.
+// diffusion_requested_ngl. A refresh starts the store at Auto, so the response
+// has to carry it back or the next Apply sends manual/-1 and the post-upgrade
+// retry has nothing to apply.
 
 test("an auto diffusion response recovers the standing ask", () => {
   assert.equal(recoverDroppedDiffusionSplit(true, "auto", 20), 20);
@@ -221,6 +216,6 @@ test("a non-diffusion response never recovers a split", () => {
 });
 
 test("an older backend without the field leaves the response unchanged", () => {
-  // Absent field -> undefined -> nothing recovered, i.e. today's behaviour.
+  // Absent field -> undefined -> nothing recovered.
   assert.equal(recoverDroppedDiffusionSplit(true, "auto", undefined), null);
 });

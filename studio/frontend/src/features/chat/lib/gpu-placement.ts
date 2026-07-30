@@ -10,13 +10,13 @@ export const GPU_LAYERS_AUTO = -1;
 
 /** GPU placement a compare pane loads with.
  *
- * `own` is the pane's per-model config; `shared` is the live-store snapshot taken
- * at Send, so a sequential load's response echo cannot rewrite it mid-run.
+ * `own` is the pane's per-model config; `shared` is the live-store snapshot taken at
+ * Send, so a sequential load's response echo cannot rewrite it mid-run.
  *
- * A pane's OWN split is sent rather than forced to Auto, since the diffusion
- * runner honours it (#7574). The shared snapshot is NOT inherited by a diffusion
- * pane: its layer count is bounded by another GGUF, no diffusion UI can show or
- * clear it, and a leaked 0 masks the devices entirely.
+ * A pane's OWN split is sent rather than forced to Auto, since the diffusion runner
+ * honours it (#7574). The shared snapshot is NOT inherited by a diffusion pane: its
+ * layer count is bounded by another GGUF, no diffusion UI can show or clear it, and
+ * a leaked 0 masks the devices entirely.
  */
 export function resolveComparePlacement(
   own: { gpuMemoryMode?: "auto" | "manual"; gpuLayers?: number },
@@ -33,13 +33,10 @@ export function resolveComparePlacement(
 
 /** Whether a pane must get the diffusion-safe placement above.
  *
- * An UNCLASSIFIED GGUF counts: the preflight only reads a header already on disk,
- * so an undownloaded GGUF with no family in its name comes back
- * `diffusion_unknown`, and `/load` may then read a diffusion header and apply the
- * inherited count anyway.
- *
- * Non-GGUF panes are excluded: definitively not diffusion, and they send no
- * placement at all.
+ * An UNCLASSIFIED GGUF counts: the preflight only reads a header already on disk, so
+ * an undownloaded GGUF with no family in its name comes back `diffusion_unknown`, and
+ * `/load` may then read a diffusion header and apply the inherited count anyway.
+ * Non-GGUF panes are excluded: definitively not diffusion, and they send no placement.
  */
 export function shouldPinDiffusionPlacement(
   targetIsGguf: boolean,
@@ -52,16 +49,15 @@ export function shouldPinDiffusionPlacement(
 
 /** The split an older shim DROPPED, recovered from a load/status response.
  *
- * A shim without `--ngl` cannot apply a manual split, so the runner reports Auto
- * while the backend keeps the ask in `diffusion_requested_ngl`. In-memory state
- * carries that across a reload, but not across a browser refresh, where the store
- * starts at Auto and the response alone would look like a genuine Auto run. The
- * ask has to be restored or the next Apply sends `manual/-1`, which the retry
- * after an unsloth_zoo upgrade can never turn back into the original count.
+ * A shim without `--ngl` cannot apply a manual split, so the runner reports Auto while
+ * the backend keeps the ask in `diffusion_requested_ngl`. In-memory state carries that
+ * across a reload but not a refresh, where the store starts at Auto and the response
+ * alone looks like a genuine Auto run; the ask has to be restored or the next Apply
+ * sends `manual/-1`, which the post-upgrade retry can never turn back into the count.
  *
- * Returns null when there is nothing to recover: not diffusion, a split that was
- * actually applied (mode "manual", so `gpu_layers` is authoritative), or no
- * standing ask. Zero is a real ask (CPU-only) and is preserved.
+ * Null when there is nothing to recover: not diffusion, a split that was actually
+ * applied (mode "manual", so `gpu_layers` is authoritative), or no standing ask. Zero
+ * is a real ask (CPU-only) and is preserved.
  */
 export function recoverDroppedDiffusionSplit(
   isDiffusion: boolean | undefined,
@@ -74,10 +70,10 @@ export function recoverDroppedDiffusionSplit(
 
 /** Tri-state diffusion classification for a staged (pre-load) GGUF selection.
  *
- * `undefined` means "not known" and must NOT be collapsed to false by a caller
- * that hands the answer on: a definite false tells the compare flow this is an
- * ordinary GGUF, which skips the re-probe above and lets an unconfigured pane
- * inherit another model's layer split (#7574).
+ * `undefined` means "not known" and must NOT be collapsed to false by a caller that
+ * hands the answer on: a definite false tells the compare flow this is an ordinary
+ * GGUF, skipping the re-probe above and letting an unconfigured pane inherit another
+ * model's layer split (#7574).
  */
 export function resolveStagedDiffusionClassification(
   knownDiffusion: boolean | undefined,

@@ -848,8 +848,7 @@ export function ModelConfigPage({
     (config.gpuMemoryMode === "manual" || config.selectedGpuIds != null);
   // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands
   // "unknown" to the selection. Collapsing it to false would tell a compare pane
-  // this is an ordinary GGUF, skipping its re-probe and letting it inherit
-  // another model's layer split (#7574).
+  // this is an ordinary GGUF, letting it inherit another model's split (#7574).
   const classifiedIsDiffusion = resolveStagedDiffusionClassification(
     isDiffusion,
     stagedDims,

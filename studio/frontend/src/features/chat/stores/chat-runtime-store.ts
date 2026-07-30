@@ -572,8 +572,7 @@ export function persistGpuMemoryModeOnLoad(
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Manual-mode gpu_layers sentinel, re-exported from its dependency-free home so
-// every existing `from "../stores/chat-runtime-store"` import keeps working.
+// Re-exported from its dependency-free home so existing imports keep working.
 export { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 
 // Round real-valued shares to integers summing exactly to `total`, giving the
@@ -726,8 +725,8 @@ export function loadedGpuMemoryFields(resp: {
   // once the shared system cache warms.
   const gpuIds =
     reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
-  // A shim without --ngl reports Auto while the backend still holds the ask, so
-  // recover it: in-memory state survives a reload but not a refresh.
+  // A shim without --ngl reports Auto while the backend still holds the ask, so recover
+  // it: in-memory state survives a reload but not a refresh.
   const droppedSplit = recoverDroppedDiffusionSplit(
     resp.is_diffusion,
     mode,
@@ -756,10 +755,10 @@ export function loadedGpuMemoryFields(resp: {
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
           // Diffusion excepted: an "auto" diffusion response may be an older shim
-          // DROPPING a manual split. Restore the ask when the response carries it
-          // (a refresh has no in-memory value left to preserve), else keep what is
-          // standing. Resetting the slider would turn the ask into manual/-1,
-          // unapplyable even after the unsloth_zoo upgrade that adds --ngl.
+          // DROPPING a manual split. Restore the ask when the response carries it (a
+          // refresh has none left in memory), else keep what is standing. Resetting the
+          // slider would turn the ask into manual/-1, unapplyable even after the
+          // unsloth_zoo upgrade that adds --ngl.
           ...(resp.is_diffusion
             ? droppedSplit != null
               ? { gpuLayers: droppedSplit }
@@ -769,10 +768,9 @@ export function loadedGpuMemoryFields(resp: {
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert
-    // standing manual preference must survive it. But "manual" means a split was
-    // actually applied (#7574): adopt it, or a refresh hydrates back to "auto"
-    // while the runner serves a manual split.
+    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
+    // manual preference must survive it. But "manual" means a split was actually applied
+    // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
     ...(resp.is_diffusion && mode !== "manual"
       ? droppedSplit != null
         ? { gpuMemoryMode: "manual" as const }

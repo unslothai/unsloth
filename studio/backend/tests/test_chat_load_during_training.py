@@ -629,8 +629,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
 
     def test_zero_layer_diffusion_split_bypasses_the_training_guard(self):
-        """A confirmed DiffusionGemma at ngl 0 places no layers, so it must not be
-        refused."""
+        """A confirmed DiffusionGemma at ngl 0 places no layers, so it is not refused."""
         captured = []
         self._guard_zero_layer(diffusion_kind = True, captured = captured)
         self.assertEqual(captured, [])
@@ -648,11 +647,9 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         """Reaching the guard is not enough: it must not be handed a CPU-only token.
 
         can_load_chat_during_training short-circuits an EMPTY single_device_gpu to
-        "cpu_only" and returns True unconditionally (routes/training_vram.py), so an
-        unclassified GGUF passed through with force_cpu would be allowed during
-        training on an assumption that only holds for a confirmed diffusion model.
-        The sibling test above cannot see this: it stubs can_load, so the empty-token
-        branch never executes.
+        "cpu_only" and always returns True, so an unclassified GGUF passed through with
+        force_cpu would be allowed during training on an assumption that only holds for
+        confirmed diffusion. The sibling test above stubs can_load, so it cannot see this.
         """
         captured = []
         with self.assertRaises(HTTPException):

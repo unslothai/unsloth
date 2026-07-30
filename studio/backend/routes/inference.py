@@ -3384,14 +3384,13 @@ def _request_matches_loaded_settings(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
-    # The diffusion runner takes the layer split but ignores the MoE/split knobs,
-    # so only the GPU pick and the effective --ngl matter for it.
+    # The diffusion runner takes the layer split but ignores the MoE/split knobs, so only
+    # the GPU pick and the effective --ngl matter for it.
     if llama_backend.is_diffusion:
-        # Compare the EFFECTIVE split, not the raw mode: a standing manual preference
-        # would reload forever, while raw gpu_layers would miss that Auto(-1) and
-        # Unsloth mode both mean "runner default". And compare against what the runner
-        # was ASKED for, not what it applied: without --ngl the two differ, and the
-        # same request would mismatch forever.
+        # Compare the EFFECTIVE split, not the raw mode: a standing manual preference would
+        # reload forever, while raw gpu_layers would miss that Auto(-1) and Unsloth mode both
+        # mean "runner default". And compare against what the runner was ASKED for, not what
+        # it applied: without --ngl the two differ and the same request mismatches forever.
         from core.inference.llama_cpp import _diffusion_manual_ngl
 
         loaded_ngl = llama_backend.diffusion_requested_ngl
@@ -4841,7 +4840,7 @@ def _guard_chat_load_against_training(
     placement is an explicit override: Auto layers delegate fitting to
     llama.cpp's ``--fit`` and pinned layers are owned by the user, so neither is
     estimated here. Diffusion is still guarded because its runner uses one GPU, except
-    for an explicit zero-layer split, which places no layers at all. An unclassified
+    for an explicit zero-layer split, which places no layers at all; an unclassified
     GGUF is guarded as potentially diffusion until its local header proves otherwise.
     Other loads raise HTTP 409 when they would not fit beside training.
     """
@@ -4862,23 +4861,23 @@ def _guard_chat_load_against_training(
         diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
-    # A zero-layer diffusion split places no model layers on any device, so it cannot
-    # compete with training for VRAM. Mirrors the loader, which folds the same
-    # condition into its cpu_only (core/inference/llama_cpp.py).
+    # A zero-layer diffusion split places no model layers on any device, so it cannot compete
+    # with training for VRAM. Mirrors the loader, which folds the same condition into its
+    # cpu_only (core/inference/llama_cpp.py).
     diffusion_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers) if is_gguf else None
     if diffusion_ngl is not None and diffusion_kind is not False:
-        # The loader drops the split when the shim has no --ngl and launches
-        # GPU-resident. Guard what will run, not what was asked, or a zero-layer
-        # request skips the VRAM check while the child takes a whole GPU.
+        # The loader drops the split when the shim has no --ngl and launches GPU-resident.
+        # Guard what will run, not what was asked, or a zero-layer request skips the VRAM
+        # check while the child takes a whole GPU.
         try:
             if not get_llama_cpp_backend().diffusion_split_supported():
                 diffusion_ngl = None
         except Exception as e:
             logger.warning("Could not probe diffusion shim for chat-load guard: %s", e)
             diffusion_ngl = None
-    # `is True`, not `is not False`: only a CONFIRMED diffusion GGUF places nothing at
-    # ngl 0. On a possibly-ordinary GGUF a device pin, tensor mode, mmproj or a GPU
-    # drafter keeps it resident (see LlamaCppBackend._zero_offload_keeps_gpu_visible).
+    # `is True`, not `is not False`: only a CONFIRMED diffusion GGUF places nothing at ngl 0.
+    # On a possibly-ordinary GGUF a device pin, tensor mode, mmproj or a GPU drafter keeps it
+    # resident (see LlamaCppBackend._zero_offload_keeps_gpu_visible).
     if is_gguf and diffusion_kind is True and diffusion_ngl == 0:
         return
 
@@ -4888,12 +4887,11 @@ def _guard_chat_load_against_training(
         # followed by DG_GPU, the first parent-visible token, then GPU 0. Suppressed
         # for a Vulkan-ordinal pin so single-device CUDA budgeting can't override the
         # Vulkan-ordinal path (single_device_gpu wins in can_load_chat_during_training).
-        # No force_cpu here, deliberately. A CONFIRMED zero-layer diffusion split
-        # already returned above, so the only way to reach this with ngl 0 is an
-        # UNCLASSIFIED GGUF -- and an empty token makes can_load_chat_during_training
-        # short-circuit to "cpu_only" and always allow the load, on an assumption that
-        # only holds for real diffusion. Let the picker choose a device so an ordinary
-        # GGUF keeping VRAM at --gpu-layers 0 stays conservatively sized.
+        # No force_cpu, deliberately: a CONFIRMED zero-layer split already returned above, so
+        # ngl 0 here means an UNCLASSIFIED GGUF -- and an empty token makes
+        # can_load_chat_during_training short-circuit to "cpu_only" and always allow the
+        # load, on an assumption that only holds for real diffusion. Let the picker choose a
+        # device so an ordinary GGUF keeping VRAM at --gpu-layers 0 stays conservatively sized.
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
             requested_gpu_ids,
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
@@ -4941,9 +4939,9 @@ def _guard_chat_load_against_training(
         if is_gguf
         else None
     )
-    # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on
-    # the GPU (a split the loader would drop was nulled above). Unknown classification
-    # keeps the full estimate: its header was unreadable, so the layer count is too.
+    # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
+    # split the loader would drop was nulled above). Unknown classification keeps the full
+    # estimate: its header was unreadable, so the layer count is too.
     if (
         required_override_gb is not None
         and diffusion_kind is True

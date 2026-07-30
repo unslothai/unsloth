@@ -1062,8 +1062,8 @@ export function SharedComposer({
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
         let resolvedIsDiffusion = sel.isDiffusion;
-        // Set when the preflight could not classify the GGUF either way, so
-        // resolvedIsDiffusion === false below must not be read as "ordinary".
+        // Set when the preflight could not classify the GGUF, so a false
+        // resolvedIsDiffusion below must not be read as "ordinary".
         let diffusionUnknown = false;
         if (targetIsGguf && resolvedIsDiffusion === undefined) {
           const preparedToken = await prepareHfTokenForUse(
@@ -1110,11 +1110,10 @@ export function SharedComposer({
           await ensureGpuDeviceCache();
         }
         // A pane's OWN saved split is sent instead of being forced to Auto
-        // (#7574); the shared Send-time snapshot is not, since its layer count is
-        // bounded by another GGUF and no diffusion UI can show or clear it. Only
-        // knobs the runner has no equivalent for (MoE offload, tensor parallel)
-        // stay hard-forced. An UNCLASSIFIED GGUF is pinned too: /load may still
-        // read a diffusion header after downloading. See lib/gpu-placement.ts.
+        // (#7574); the shared Send-time snapshot is not, since its layer count
+        // is bounded by another GGUF. Knobs the runner has no equivalent for
+        // (MoE offload, tensor parallel) stay hard-forced. An UNCLASSIFIED GGUF
+        // is pinned too: see lib/gpu-placement.ts.
         const {
           gpuMemoryMode: effectiveGpuMemoryMode,
           gpuLayers: effectiveGpuLayers,
@@ -1180,8 +1179,8 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
-                // Sized like the load below: a manual DiffusionGemma split must
-                // not be validated as a full-GGUF occupant during training.
+                // Sized like the load below: a manual DiffusionGemma split
+                // must not be validated as a full-GGUF occupant.
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
