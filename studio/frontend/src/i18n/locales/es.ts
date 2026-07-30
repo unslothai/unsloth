@@ -5,6 +5,31 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const es = {
+  picker: {
+    onDevice: "En el dispositivo",
+    huggingFace: "Hugging Face",
+    retry: "Reintentar",
+    offlineTitle: "Estás sin conexión",
+    offlineBody:
+      "Cambia a Dispositivo para usar {noun} locales o en caché.",
+    offlineSwitchDevice: "Dispositivo",
+    searchAriaLabel: "Buscar {noun}",
+    multipleMatches:
+      "Hay varios {noun} coincidentes. Elige uno de la lista.",
+    rateLimitedTitle: "Se alcanzó el límite de solicitudes de Hugging Face",
+    rateLimitedBody:
+      "Espera un momento y vuelve a intentar la búsqueda de {noun}.",
+    hfToken: {
+      label: "Token de HF",
+      saved: "Guardado",
+      add: "Añadir",
+      savedAriaLabel: "Token de Hugging Face guardado",
+      addAriaLabel: "Configurar token de Hugging Face",
+      savedHint: "Token guardado. El acceso se comprueba cuando lo usas.",
+      addHint:
+        "Configura un token para acceder a repositorios privados y restringidos.",
+    },
+  },
   common: {
     cancel: "Cancelar",
     close: "Cerrar",
@@ -572,6 +597,143 @@ export const es = {
   studio: {
     routeTitle: "Entrenar",
     title: "Studio de fine-tuning",
+    wizard: {
+      modelTitle: "Modelo",
+      modelDescription: "Selecciona el modelo y el método de entrenamiento",
+      datasetTitle: "Conjunto de datos",
+      datasetDescription: "Selecciona o sube datos de entrenamiento",
+      paramsTitle: "Parámetros",
+      paramsDescription: "Configura los parámetros de entrenamiento",
+      configTitle: "Configuración",
+      configDescription: "Guarda y carga configuraciones",
+      modelLabel: "Modelo",
+      methodLabel: "Método",
+      hfTokenLabel: "Token de Hugging Face",
+      hfDatasetLabel: "Conjunto de datos",
+      uploadLocalLabel: "O sube un archivo local",
+      sourceBrowse: "Explorar",
+      releaseToUpload: "Suelta para subir",
+      loadYaml: "Cargar YAML",
+      saveYaml: "Guardar YAML",
+      resetDefaults: "Restablecer valores predeterminados",
+      cachedModelGoneTitle: "El modelo en caché ya no está disponible",
+      cachedModelGoneDescription:
+        "Los archivos del modelo ya no están en este dispositivo, por lo que el entrenamiento volverá a descargarlos.",
+      cachedDatasetGoneTitle:
+        "El conjunto de datos en caché ya no está disponible",
+      cachedDatasetGoneDescription:
+        "Los archivos del conjunto de datos ya no están en este dispositivo, por lo que el entrenamiento volverá a descargarlos.",
+    },
+    preview: {
+      title: "Vista previa de la ejecución",
+      ready: "Listo",
+      notReady: "No está listo",
+      modelPending: "Modelo pendiente",
+      datasetPending: "Conjunto de datos pendiente",
+      method: "Método",
+      length: "Duración",
+      steps: "{count} pasos",
+      epoch: "{count} época",
+      epochs: "{count} épocas",
+      batch: "Lote",
+      context: "Contexto",
+      lr: "LR",
+      hardware: "Hardware",
+      noGpu: "No se detectó ninguna GPU",
+      hfToken: "Token de HF",
+      saved: "Guardado",
+      notSet: "Sin configurar",
+      files: "Archivos",
+      model: "Modelo",
+      dataset: "Conjunto de datos",
+      downloadsOnStart: "Se descarga al iniciar",
+      continuesOnStart: "Continúa al iniciar",
+      noticeModelDownload:
+        "Este modelo aún no está en el dispositivo. Se descargará automáticamente al iniciar el entrenamiento.",
+      noticeModelPartial:
+        "El entrenamiento completará la descarga parcial del modelo antes de cargarlo.",
+      noticeDatasetDownload:
+        "Este conjunto de datos aún no está en el dispositivo. Se descargará automáticamente al iniciar el entrenamiento.",
+      noticeDatasetPartial:
+        "El entrenamiento completará la descarga parcial del conjunto de datos antes de leerlo.",
+    },
+    datasetPicker: {
+      noun: "conjuntos de datos",
+      selectDataset: "Seleccionar conjunto de datos",
+      hubPlaceholder: "Buscar conjuntos de datos en Hugging Face...",
+      devicePlaceholder: "Buscar conjuntos de datos locales...",
+      useAsHubDataset: "Usar como conjunto de datos de Hugging Face",
+      useAsLocalPath: "Usar como ruta local",
+      hfCacheLabel: "Caché de HF",
+      scanningLocal: "Buscando conjuntos de datos en este dispositivo…",
+      couldntScan: "No se pudieron buscar conjuntos de datos locales",
+      someLocationsUnscanned:
+        "No se pudieron explorar algunas ubicaciones de conjuntos de datos.",
+      noLocalDatasets:
+        "Todavía no hay nada en este dispositivo. Descarga un conjunto de datos del Hub, crea uno en Recetas o sube un archivo.",
+      searchingHub: "Buscando en Hugging Face…",
+      noDatasetsFound: "No se encontraron conjuntos de datos.",
+      tokenRejectedTitle: "Hugging Face rechazó el token",
+      tokenRejectedBody:
+        "Actualiza el token en Configuración → General y vuelve a intentarlo.",
+      hubUnreachable: "No se pudo acceder a Hugging Face",
+    },
+    modelPicker: {
+      noun: "modelos",
+      selectModel: "Seleccionar modelo",
+      hubPlaceholder: "Busca o pega un ID de Hugging Face...",
+      devicePlaceholder: "Busca modelos locales o pega una ruta de carpeta...",
+      useAsHubModel: "Usar como modelo de Hugging Face",
+      useAsLocalPath: "Usar como ruta local",
+      hfCacheLabel: "Caché de HF",
+      scanningLocal: "Buscando modelos locales…",
+      couldntScan: "No se pudieron buscar modelos locales",
+      someLocationsUnscanned:
+        "No se pudieron explorar algunas ubicaciones locales.",
+      noLocalModels: "No se encontraron modelos locales.",
+      noLocalModelsHint:
+        "Pega una ruta de carpeta arriba o cambia a Hugging Face.",
+      searchingHub: "Buscando en Hugging Face…",
+      noModelsFound: "No se encontraron modelos.",
+      tokenRejectedTitle: "Hugging Face rechazó el token",
+      tokenRejectedBody:
+        "Actualiza el token en Configuración → General y vuelve a intentarlo.",
+      hubUnreachable: "No se pudo acceder a Hugging Face",
+      cantUseModel: "No se puede usar el modelo para entrenar",
+      reasonEmptyId: "Introduce un ID de modelo o una ruta de modelo local.",
+      reasonGguf: "Los modelos GGUF no se pueden usar para entrenar.",
+      reasonAdapter:
+        "Las salidas de adaptadores no se pueden usar como modelos base de entrenamiento.",
+      reasonNotTrainable:
+        "Este modelo del dispositivo no se puede usar para entrenar.",
+      reasonUnsupportedFormat:
+        "Este formato de modelo no es compatible con el entrenamiento.",
+      vramNeeds: "Necesita ~{est} GB de VRAM (GPU: {total} GB)",
+      vramTight: "~{est} GB de VRAM (ajustado para {total} GB)",
+      vramApprox: "~{est} GB de VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "Cuantización de 4 bits. Menor uso de VRAM y arranque más rápido.",
+        note: "4 bits",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "Adaptadores de 16 bits. Equilibrio entre calidad y memoria.",
+        note: "16 bits",
+      },
+      full: {
+        label: "Fine-tuning completo",
+        hint: "Entrena todos los pesos. Máxima calidad y mayor uso de VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Preentrenamiento continuo",
+        hint: "Preentrenamiento continuo para nuevos dominios o idiomas.",
+        note: "continuo",
+      },
+    },
     subtitles: {
       configure: "Configura e inicia el entrenamiento",
       trainingInProgress: "Entrenamiento en curso",
@@ -648,6 +810,7 @@ export const es = {
       title: "Conjunto de datos",
       description: "Selecciona o sube datos de entrenamiento",
       source: "Origen del conjunto de datos",
+      sourceAriaLabel: "Origen del conjunto de datos",
       chooseDataset: "Elegir conjunto de datos",
       chooseDatasetTooltip:
         "Usa las pestañas emergentes para alternar entre Hugging Face y las salidas de recetas locales.",
@@ -663,7 +826,7 @@ export const es = {
       noLocalDatasetsYet: "Aún no hay conjuntos de datos locales.",
       noLocalDatasetsMatchSearch:
         "Ningún conjunto de datos local coincide con la búsqueda.",
-      openDataRecipes: "Abrir Data Recipes",
+      openDataRecipes: "Abrir recetas de datos",
       browsingSource:
         "Explorando {browsing}. La selección actual sigue siendo {current}.",
       localDatasets: "Conjuntos de datos locales",
@@ -686,6 +849,51 @@ export const es = {
       targetFormat: "Formato de destino",
       targetFormatTooltip:
         "Formato de tus datos de entrenamiento. La detección automática funciona para la mayoría de los conjuntos de datos.",
+      streamingInfoAriaLabel:
+        "Información sobre el streaming del conjunto de datos",
+      streaming: {
+        label: "Activar streaming",
+        description:
+          "Transmite conjuntos de datos de texto de Hugging Face en lugar de descargarlos.",
+        unavailable: "Streaming no disponible. Para activarlo:",
+        completionsUnavailable:
+          "No disponible mientras el streaming del conjunto de datos esté activado.",
+        blockers: {
+          source:
+            "Usa un conjunto de datos de Hugging Face (no una subida local ni un origen de S3).",
+          maxSteps:
+            "Establece Pasos máximos > 0; los conjuntos de datos en streaming no tienen una longitud conocida.",
+          trainOnCompletions:
+            'Desactiva "Solo respuestas del asistente".',
+          evalSplit:
+            "Elige una partición de evaluación aparte: la evaluación está activada, pero no hay una partición distinta configurada.",
+          visionModel: "Los modelos de visión no admiten streaming.",
+          audioModel: "Los modelos de audio no admiten streaming.",
+          embeddingModel:
+            "Los modelos de embeddings no admiten streaming (el entrenamiento necesita el conjunto de datos completo).",
+          imageDataset:
+            "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
+          audioDataset:
+            "Este conjunto de datos parece contener audio, que no se puede transmitir.",
+          appleSilicon:
+            "El streaming todavía no es compatible con Apple Silicon (MLX).",
+        },
+        options: {
+          trainOnCompletions: "solo respuestas del asistente",
+          evaluation:
+            "evaluación (necesita una partición de evaluación aparte)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "Streaming desactivado: se necesita un valor fijo de Pasos máximos > 0.",
+          adjusted:
+            "Ajustado para streaming. Opciones incompatibles desactivadas: {options}.",
+          needsMaxSteps:
+            "El streaming necesita un valor fijo de Pasos máximos (los conjuntos de datos en streaming no tienen una longitud conocida). Establece primero Pasos máximos > 0.",
+          enabledAdjusted:
+            "Streaming activado. Opciones incompatibles desactivadas: {options}.",
+        },
+      },
       auto: "Automático",
       rawText: "Texto sin procesar",
       trainSplitStart: "Inicio de la partición de entrenamiento",
@@ -742,6 +950,11 @@ export const es = {
     params: {
       title: "Parámetros",
       description: "Configura los hiperparámetros de entrenamiento",
+      mode: {
+        simple: "Simple",
+        advanced: "Avanzado",
+        ariaLabel: "Modo de parámetros",
+      },
       projectName: "Nombre del proyecto",
       optional: "Opcional",
       projectNameDescription:
@@ -853,6 +1066,13 @@ export const es = {
       starting: "Iniciando...",
       loadingModel: "Cargando modelo...",
       checkingDataset: "Comprobando conjunto de datos...",
+      chooseModel: "Elige un modelo",
+      chooseDataset: "Elige un conjunto de datos",
+      chooseModelAndDataset: "Elige un modelo y un conjunto de datos",
+      modelUnverified:
+        "No se pudo verificar la configuración de este modelo. Comprueba la conexión o el token de Hugging Face y vuelve a intentarlo.",
+      datasetUnverified:
+        "No se pudo verificar si el conjunto de datos es compatible con este modelo. Comprueba la conexión o el token de Hugging Face; al iniciar el entrenamiento se volverá a intentar la comprobación.",
       configLabel: "Configuración de entrenamiento",
       upload: "Subir",
       uploadConfigTooltip: "Carga una configuración YAML guardada",
@@ -864,6 +1084,7 @@ export const es = {
       failedToLoadConfig: "No se pudo cargar la configuración",
       invalidYamlFile: "Archivo YAML no válido",
       failedToReadFile: "No se pudo leer el archivo",
+      failedToSaveConfig: "No se pudo guardar la configuración",
       parametersReset:
         "Parámetros restablecidos a los valores predeterminados del modelo",
       audioIncompatible:
@@ -890,6 +1111,19 @@ export const es = {
     },
     history: {
       title: "Historial",
+      filesDeleted: "Archivos eliminados",
+      deleteArtifactsLabel:
+        "Eliminar también los archivos del adaptador del disco",
+      deleteArtifactsDescription:
+        "Elimina la carpeta de salida de la ejecución, incluidos los adaptadores y checkpoints guardados.",
+      deleteArtifactsSharedNote:
+        "Otra ejecución comparte esta carpeta de salida. Los archivos se conservarán hasta que se elimine la última ejecución que los usa.",
+      artifactsKeptShared:
+        "Se eliminó la ejecución. Los archivos del adaptador se conservaron porque otra ejecución usa la misma carpeta.",
+      deleteArtifactsActiveError:
+        "La ejecución de entrenamiento en curso está usando estos archivos. Detén el entrenamiento antes de eliminarlos.",
+      deleteArtifactsFailed:
+        "Se eliminó la ejecución, pero no se pudieron borrar sus archivos.",
       emptyTitle: "Aún no hay ejecuciones de entrenamiento",
       emptyDescription:
         "Aún no hay ejecuciones de entrenamiento. Inicia tu primera ejecución en la pestaña Configurar.",

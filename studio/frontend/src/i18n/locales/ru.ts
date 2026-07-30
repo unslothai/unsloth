@@ -5,6 +5,31 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ru = {
+  picker: {
+    onDevice: "На устройстве",
+    huggingFace: "Hugging Face",
+    retry: "Повторить",
+    offlineTitle: "Нет подключения к сети",
+    offlineBody:
+      "Переключитесь на «Устройство», чтобы использовать локальные или кэшированные {noun}.",
+    offlineSwitchDevice: "Устройство",
+    searchAriaLabel: "Поиск: {noun}",
+    multipleMatches:
+      "В категории «{noun}» найдено несколько совпадений. Выберите одно из списка.",
+    rateLimitedTitle: "Достигнут лимит запросов Hugging Face",
+    rateLimitedBody:
+      "Подождите немного, затем повторите поиск в категории «{noun}».",
+    hfToken: {
+      label: "Токен HF",
+      saved: "Сохранён",
+      add: "Добавить",
+      savedAriaLabel: "Токен Hugging Face сохранён",
+      addAriaLabel: "Задать токен Hugging Face",
+      savedHint: "Токен сохранён. Доступ проверяется при его использовании.",
+      addHint:
+        "Задайте токен для доступа к закрытым и защищённым репозиториям.",
+    },
+  },
   common: {
     cancel: "Отмена",
     close: "Закрыть",
@@ -554,6 +579,143 @@ export const ru = {
   studio: {
     routeTitle: "Обучение",
     title: "Студия дообучения",
+    wizard: {
+      modelTitle: "Модель",
+      modelDescription: "Выберите модель и метод обучения",
+      datasetTitle: "Датасет",
+      datasetDescription: "Выберите или загрузите данные для обучения",
+      paramsTitle: "Параметры",
+      paramsDescription: "Настройте параметры обучения",
+      configTitle: "Конфигурация",
+      configDescription: "Сохраняйте и загружайте конфигурации",
+      modelLabel: "Модель",
+      methodLabel: "Метод",
+      hfTokenLabel: "Токен Hugging Face",
+      hfDatasetLabel: "Датасет",
+      uploadLocalLabel: "Или загрузите локальный файл",
+      sourceBrowse: "Обзор",
+      releaseToUpload: "Отпустите для загрузки",
+      loadYaml: "Загрузить YAML",
+      saveYaml: "Сохранить YAML",
+      resetDefaults: "Сбросить по умолчанию",
+      cachedModelGoneTitle: "Кэшированная модель больше недоступна",
+      cachedModelGoneDescription:
+        "Файлов модели больше нет на этом устройстве, поэтому при запуске обучения они будут загружены снова.",
+      cachedDatasetGoneTitle: "Кэшированный датасет больше недоступен",
+      cachedDatasetGoneDescription:
+        "Файлов датасета больше нет на этом устройстве, поэтому при запуске обучения они будут загружены снова.",
+    },
+    preview: {
+      title: "Предпросмотр запуска",
+      ready: "Готово",
+      notReady: "Не готово",
+      modelPending: "Ожидание модели",
+      datasetPending: "Ожидание датасета",
+      method: "Метод",
+      length: "Длительность",
+      steps: "{count} шагов",
+      epoch: "Эпох: {count}",
+      epochs: "Эпох: {count}",
+      batch: "Батч",
+      context: "Контекст",
+      lr: "LR",
+      hardware: "Оборудование",
+      noGpu: "GPU не обнаружен",
+      hfToken: "Токен HF",
+      saved: "Сохранён",
+      notSet: "Не задан",
+      files: "Файлы",
+      model: "Модель",
+      dataset: "Датасет",
+      downloadsOnStart: "Будет загружено при запуске",
+      continuesOnStart: "Будет продолжено при запуске",
+      noticeModelDownload:
+        "Этой модели пока нет на устройстве. При запуске обучения она будет загружена автоматически.",
+      noticeModelPartial:
+        "Перед загрузкой модели обучение завершит скачивание недостающих файлов.",
+      noticeDatasetDownload:
+        "Этого датасета пока нет на устройстве. При запуске обучения он будет загружен автоматически.",
+      noticeDatasetPartial:
+        "Перед чтением датасета обучение завершит скачивание недостающих файлов.",
+    },
+    datasetPicker: {
+      noun: "датасеты",
+      selectDataset: "Выберите датасет",
+      hubPlaceholder: "Поиск датасетов Hugging Face...",
+      devicePlaceholder: "Поиск локальных датасетов...",
+      useAsHubDataset: "Использовать как датасет Hugging Face",
+      useAsLocalPath: "Использовать как локальный путь",
+      hfCacheLabel: "Кэш HF",
+      scanningLocal: "Сканирование датасетов на этом устройстве…",
+      couldntScan: "Не удалось просканировать локальные датасеты",
+      someLocationsUnscanned:
+        "Не удалось просканировать некоторые расположения датасетов.",
+      noLocalDatasets:
+        "На этом устройстве пока ничего нет. Скачайте датасет с Hugging Face, создайте его в разделе «Рецепты» или загрузите файл.",
+      searchingHub: "Поиск в Hugging Face…",
+      noDatasetsFound: "Датасеты не найдены.",
+      tokenRejectedTitle: "Токен Hugging Face отклонён",
+      tokenRejectedBody:
+        "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
+      hubUnreachable: "Не удалось подключиться к Hugging Face",
+    },
+    modelPicker: {
+      noun: "модели",
+      selectModel: "Выберите модель",
+      hubPlaceholder: "Найдите или вставьте ID Hugging Face...",
+      devicePlaceholder:
+        "Найдите локальную модель или вставьте путь к папке...",
+      useAsHubModel: "Использовать как модель Hugging Face",
+      useAsLocalPath: "Использовать как локальный путь",
+      hfCacheLabel: "Кэш HF",
+      scanningLocal: "Сканирование локальных моделей…",
+      couldntScan: "Не удалось просканировать локальные модели",
+      someLocationsUnscanned:
+        "Не удалось просканировать некоторые локальные расположения.",
+      noLocalModels: "Локальные модели не найдены.",
+      noLocalModelsHint:
+        "Вставьте путь к папке выше или переключитесь на Hugging Face.",
+      searchingHub: "Поиск в Hugging Face…",
+      noModelsFound: "Модели не найдены.",
+      tokenRejectedTitle: "Токен Hugging Face отклонён",
+      tokenRejectedBody:
+        "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
+      hubUnreachable: "Не удалось подключиться к Hugging Face",
+      cantUseModel: "Модель нельзя использовать для обучения",
+      reasonEmptyId: "Введите ID модели или путь к локальной модели.",
+      reasonGguf: "Модели GGUF нельзя использовать для обучения.",
+      reasonAdapter:
+        "Выходные файлы адаптера нельзя использовать как базовые модели для обучения.",
+      reasonNotTrainable: "Эта модель на устройстве не поддерживает обучение.",
+      reasonUnsupportedFormat:
+        "Этот формат модели не поддерживается для обучения.",
+      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГБ)",
+      vramTight: "~{est} ГБ VRAM (впритык для {total} ГБ)",
+      vramApprox: "~{est} ГБ VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-битная квантизация. Минимум VRAM и самый быстрый запуск.",
+        note: "4 бита",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-битные адаптеры. Баланс качества и памяти.",
+        note: "16 бит",
+      },
+      full: {
+        label: "Полное дообучение",
+        hint: "Обучает все веса. Максимальное качество и расход VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Продолженное предобучение",
+        hint:
+          "Продолженное предобучение для новых предметных областей или языков.",
+        note: "продолженное",
+      },
+    },
     subtitles: {
       configure: "Настройте и запустите обучение",
       trainingInProgress: "Обучение выполняется",
@@ -636,10 +798,11 @@ export const ru = {
       searching: "Поиск...",
       noDatasetsFound: "Датасеты не найдены",
       loadingLocalDatasets: "Загрузка локальных датасетов...",
+      sourceAriaLabel: "Источник датасета",
       failedToLoadLocalDatasets: "Не удалось загрузить локальные датасеты.",
       noLocalDatasetsYet: "Пока нет локальных датасетов.",
       noLocalDatasetsMatchSearch: "Нет локальных датасетов по запросу.",
-      openDataRecipes: "Открыть Data Recipes",
+      openDataRecipes: "Открыть рецепты данных",
       browsingSource: "Просмотр {browsing}. Текущий выбор остаётся {current}.",
       localDatasets: "Локальные датасеты",
       localDataset: "Локальный датасет",
@@ -661,6 +824,51 @@ export const ru = {
       targetFormat: "Целевой формат",
       targetFormatTooltip:
         "Формат ваших обучающих данных. Автоопределение работает для большинства датасетов.",
+      streamingInfoAriaLabel: "Информация о потоковой передаче датасета",
+      streaming: {
+        label: "Включить потоковую передачу",
+        description:
+          "Передавать текстовые датасеты Hugging Face потоком вместо их скачивания.",
+        unavailable: "Потоковая передача недоступна. Чтобы включить её:",
+        completionsUnavailable:
+          "Недоступно, пока включена потоковая передача датасета.",
+        blockers: {
+          source:
+            "Используйте датасет Hugging Face, а не локальный файл или источник S3.",
+          maxSteps:
+            "Задайте «Макс. шагов» > 0 — длина потоковых датасетов неизвестна.",
+          trainOnCompletions:
+            "Отключите «Только ответы ассистента».",
+          evalSplit:
+            "Выберите отдельную выборку для оценки — оценка включена, но отдельная выборка не задана.",
+          visionModel:
+            "Модели зрения не поддерживают потоковую передачу.",
+          audioModel:
+            "Аудиомодели не поддерживают потоковую передачу.",
+          embeddingModel:
+            "Модели эмбеддингов не поддерживают потоковую передачу: для обучения нужен весь датасет.",
+          imageDataset:
+            "Похоже, этот датасет содержит изображения, поэтому его нельзя передавать потоком.",
+          audioDataset:
+            "Похоже, этот датасет содержит аудио, поэтому его нельзя передавать потоком.",
+          appleSilicon:
+            "Потоковая передача на Apple Silicon (MLX) пока не поддерживается.",
+        },
+        options: {
+          trainOnCompletions: "только ответы ассистента",
+          evaluation: "оценка (нужна отдельная выборка)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "Потоковая передача отключена: для неё требуется фиксированное значение «Макс. шагов» > 0.",
+          adjusted:
+            "Настройки скорректированы для потоковой передачи. Отключены несовместимые параметры: {options}.",
+          needsMaxSteps:
+            "Для потоковой передачи требуется фиксированное значение «Макс. шагов»: длина потоковых датасетов неизвестна. Сначала задайте «Макс. шагов» > 0.",
+          enabledAdjusted:
+            "Потоковая передача включена. Отключены несовместимые параметры: {options}.",
+        },
+      },
       auto: "Авто",
       rawText: "Сырой текст",
       trainSplitStart: "Начало обучающей выборки",
@@ -716,6 +924,11 @@ export const ru = {
     params: {
       title: "Параметры",
       description: "Настройте гиперпараметры обучения",
+      mode: {
+        simple: "Простой",
+        advanced: "Расширенный",
+        ariaLabel: "Режим параметров",
+      },
       projectName: "Название проекта",
       optional: "Необязательно",
       projectNameDescription:
@@ -820,6 +1033,13 @@ export const ru = {
       starting: "Запуск...",
       loadingModel: "Загрузка модели...",
       checkingDataset: "Проверка датасета...",
+      chooseModel: "Выберите модель",
+      chooseDataset: "Выберите датасет",
+      chooseModelAndDataset: "Выберите модель и датасет",
+      modelUnverified:
+        "Не удалось проверить настройки этой модели. Проверьте подключение или токен Hugging Face, затем повторите попытку.",
+      datasetUnverified:
+        "Не удалось проверить совместимость датасета с этой моделью. Проверьте подключение или токен Hugging Face — проверка повторится при запуске обучения.",
       configLabel: "Конфигурация обучения",
       upload: "Загрузить",
       uploadConfigTooltip: "Загрузить сохранённую конфигурацию YAML",
@@ -831,6 +1051,7 @@ export const ru = {
       failedToLoadConfig: "Не удалось загрузить конфигурацию",
       invalidYamlFile: "Недопустимый файл YAML",
       failedToReadFile: "Не удалось прочитать файл",
+      failedToSaveConfig: "Не удалось сохранить конфигурацию",
       parametersReset: "Параметры сброшены к значениям модели по умолчанию",
       audioIncompatible:
         "Эта модель не поддерживает аудио. Переключитесь на модель с поддержкой аудио или выберите не-аудио датасет.",
@@ -854,6 +1075,18 @@ export const ru = {
     },
     history: {
       title: "История",
+      filesDeleted: "Файлы удалены",
+      deleteArtifactsLabel: "Также удалить файлы адаптера с диска",
+      deleteArtifactsDescription:
+        "Удаляет папку результатов запуска, включая адаптеры и сохранённые чекпоинты.",
+      deleteArtifactsSharedNote:
+        "Эту папку результатов использует другой запуск. Файлы сохранятся, пока не будет удалён последний использующий их запуск.",
+      artifactsKeptShared:
+        "Запуск удалён. Файлы адаптера сохранены, поскольку эту папку использует другой запуск.",
+      deleteArtifactsActiveError:
+        "Эти файлы используются текущим обучением. Остановите обучение перед их удалением.",
+      deleteArtifactsFailed:
+        "Запуск удалён, но удалить его файлы не удалось.",
       emptyTitle: "Пока нет запусков обучения",
       emptyDescription:
         "Пока нет запусков обучения. Запустите первое обучение на вкладке «Настройка».",

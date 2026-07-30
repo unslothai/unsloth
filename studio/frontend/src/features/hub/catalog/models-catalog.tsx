@@ -53,7 +53,6 @@ export interface ModelsCatalogState {
   scannedCount: number;
   loadingIntentCount: number;
   hasMore: boolean;
-  manualFetchAvailable: boolean;
   hasActiveFilters: boolean;
   typeFilterActive: boolean;
 }

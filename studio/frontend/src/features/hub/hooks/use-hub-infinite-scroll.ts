@@ -2,17 +2,22 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type InfiniteScrollResetKey,
+  resolveAutomaticFetchAction,
+  resolveInfiniteScrollProgress,
+} from "./hub-infinite-scroll-policy";
 
 /**
  * IntersectionObserver sentinel for infinite scroll, plus a ResizeObserver
- * fallback that auto-fetches while the scroll container doesn't yet overflow.
- * Fallback firings are coalesced to one `scrollHeight` read (forced layout) per
- * frame; concurrency is gated at the data-source layer.
+ * fallback that rechecks a sentinel which remains inside the prefetch range.
+ * Fallback firings are coalesced to one frame; concurrency is gated at the
+ * data-source layer.
  *
- * `signal` (typically `results.length`) is a dep so the fit check re-runs after
- * a fetch even when the page filter rejected every new row and the DOM didn't
- * change. `DEFAULT_MAX_AUTO_FILL_FETCHES` caps a runaway sweep of the full
- * listing; callers with a manual continuation UI can lower it.
+ * `signal` is a progress marker so the fit check re-runs after a fetch even
+ * when the page filter rejected every new row and the DOM didn't change.
+ * `DEFAULT_MAX_AUTO_FILL_FETCHES` caps consecutive automatic pages which add
+ * no visible results; callers with a manual continuation UI can lower it.
  */
 const DEFAULT_MAX_AUTO_FILL_FETCHES = 40;
 const PREFETCH_MARGIN_PX = 200;
@@ -21,10 +26,15 @@ export interface InfiniteScrollOptions {
   enabled?: boolean;
   onFetchIntent?: () => void;
   resultCount?: number;
-  resetKey?: string | number | boolean | null;
+  resetKey?: InfiniteScrollResetKey;
   maxAutoFillFetches?: number;
   manualFetchAfterAutoFill?: boolean;
   isFetching?: boolean;
+}
+
+interface AutomaticPageGeometry {
+  hasScrollableOverflow: boolean;
+  sentinelWithinPrefetchRange: boolean;
 }
 
 function hasScrollableOverflow(root: HTMLElement): boolean {
@@ -91,22 +101,9 @@ export function useHubInfiniteScroll(
   const resetKeyRef = useRef(resetKey);
   const wasEnabledRef = useRef(false);
   const manualFetchAvailableRef = useRef(false);
-  const manualStateTimerRef = useRef<ReturnType<
-    typeof globalThis.setTimeout
-  > | null>(null);
-  const [manualFetchAvailable, setManualFetchAvailableState] = useState(false);
 
   const setManualFetchAvailable = useCallback((next: boolean) => {
     manualFetchAvailableRef.current = next;
-    if (manualStateTimerRef.current !== null) {
-      globalThis.clearTimeout(manualStateTimerRef.current);
-    }
-    manualStateTimerRef.current = globalThis.setTimeout(() => {
-      manualStateTimerRef.current = null;
-      setManualFetchAvailableState((current) =>
-        current === next ? current : next,
-      );
-    }, 0);
   }, []);
 
   const requestFetchMore = useCallback(() => {
@@ -118,23 +115,38 @@ export function useHubInfiniteScroll(
     return accepted;
   }, []);
 
-  const requestAutomaticPage = useCallback(() => {
-    if (manualFetchAvailableRef.current || isFetchingRef.current) {
-      return;
-    }
-    if (autoFireCountRef.current >= maxAutoFillFetches) {
-      setManualFetchAvailable(manualFetchAfterAutoFill);
-      return;
-    }
-    if (requestFetchMore()) {
-      autoFireCountRef.current += 1;
-    }
-  }, [
-    manualFetchAfterAutoFill,
-    maxAutoFillFetches,
-    requestFetchMore,
-    setManualFetchAvailable,
-  ]);
+  const requestAutomaticPage = useCallback(
+    ({
+      hasScrollableOverflow,
+      sentinelWithinPrefetchRange,
+    }: AutomaticPageGeometry) => {
+      const action = resolveAutomaticFetchAction({
+        enabled: enabledRef.current,
+        isFetching: isFetchingRef.current,
+        manualFetchAvailable: manualFetchAvailableRef.current,
+        signal: signalRef.current,
+        lastRequestedSignal: lastRequestedSignalRef.current,
+        autoFireCount: autoFireCountRef.current,
+        maxAutoFillFetches,
+        manualFetchAfterAutoFill,
+        hasScrollableOverflow,
+        sentinelWithinPrefetchRange,
+      });
+      if (action === "offer-manual") {
+        setManualFetchAvailable(true);
+        return;
+      }
+      if (action === "request" && requestFetchMore()) {
+        autoFireCountRef.current += 1;
+      }
+    },
+    [
+      manualFetchAfterAutoFill,
+      maxAutoFillFetches,
+      requestFetchMore,
+      setManualFetchAvailable,
+    ],
+  );
 
   const fetchMoreManually = useCallback(() => {
     if (!enabledRef.current || isFetchingRef.current) {
@@ -144,15 +156,6 @@ export function useHubInfiniteScroll(
       setManualFetchAvailable(false);
     }
   }, [requestFetchMore, setManualFetchAvailable]);
-
-  useEffect(
-    () => () => {
-      if (manualStateTimerRef.current !== null) {
-        globalThis.clearTimeout(manualStateTimerRef.current);
-      }
-    },
-    [],
-  );
 
   // Fires when the stable sentinel scrolls into view. Omits `signal` on purpose:
   // rebuilding per batch could drop an intersection. Refills fall to the auto-fire effect.
@@ -173,10 +176,11 @@ export function useHubInfiniteScroll(
         if (!root) {
           return;
         }
-        if (!hasScrollableOverflow(root)) {
-          return;
-        }
-        requestAutomaticPage();
+        const overflow = hasScrollableOverflow(root);
+        requestAutomaticPage({
+          hasScrollableOverflow: overflow,
+          sentinelWithinPrefetchRange: true,
+        });
       },
       {
         threshold: 0,
@@ -188,28 +192,28 @@ export function useHubInfiniteScroll(
     return () => observer.disconnect();
   }, [enabled, requestAutomaticPage, sentinelNode]);
 
-  // Auto-fire fallback: keep requesting batches while the container doesn't yet
-  // overflow (initial empty state or aggressive filters). Driven only off
-  // `enabled`/`signal` and a ResizeObserver on the scroll root, so it wakes on
-  // listing-shape changes rather than thrashing the main thread every frame
-  // (the prior childList/subtree observer was the dominant Hub lag source).
+  // Recheck after progress, filter resets, and scroll-root resizes so a sentinel
+  // that stays intersecting can continue paging without rebuilding its observer.
   useEffect(() => {
     if (!enabled) {
       wasEnabledRef.current = false;
       setManualFetchAvailable(false);
       return;
     }
-    // Fresh enable or a shrinking list clears the backstop so loading can refill the viewport.
-    if (
-      !wasEnabledRef.current ||
-      signal < prevSignalRef.current ||
-      resultCount < prevResultCountRef.current ||
-      resetKey !== resetKeyRef.current
-    ) {
+    const progress = resolveInfiniteScrollProgress({
+      wasEnabled: wasEnabledRef.current,
+      signal,
+      previousSignal: prevSignalRef.current,
+      resultCount,
+      previousResultCount: prevResultCountRef.current,
+      resetKey,
+      previousResetKey: resetKeyRef.current,
+    });
+    if (progress === "reset") {
       autoFireCountRef.current = 0;
       lastRequestedSignalRef.current = null;
       setManualFetchAvailable(false);
-    } else if (resultCount > prevResultCountRef.current) {
+    } else if (progress === "visible-results") {
       autoFireCountRef.current = 0;
       setManualFetchAvailable(false);
     }
@@ -227,19 +231,15 @@ export function useHubInfiniteScroll(
     }
 
     const tryFire = () => {
-      if (!sentinelNode.isConnected || manualFetchAvailableRef.current) {
+      if (!sentinelNode.isConnected) {
         return;
       }
-      if (
-        hasScrollableOverflow(root) &&
-        (!isSentinelWithinPrefetchRange(root, sentinelNode) ||
-          (lastRequestedSignalRef.current !== null &&
-            signal <= lastRequestedSignalRef.current))
-      ) {
-        setManualFetchAvailable(false);
-        return;
-      }
-      requestAutomaticPage();
+      const overflow = hasScrollableOverflow(root);
+      requestAutomaticPage({
+        hasScrollableOverflow: overflow,
+        sentinelWithinPrefetchRange:
+          !overflow || isSentinelWithinPrefetchRange(root, sentinelNode),
+      });
     };
 
     let frame: number | null = null;
@@ -280,7 +280,6 @@ export function useHubInfiniteScroll(
   return {
     scrollRef,
     sentinelRef,
-    manualFetchAvailable,
     fetchMoreManually,
   };
 }

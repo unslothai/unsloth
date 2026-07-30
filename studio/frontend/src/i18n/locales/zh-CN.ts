@@ -5,6 +5,27 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const zhCN = {
+  picker: {
+    onDevice: "本机",
+    huggingFace: "Hugging Face",
+    retry: "重试",
+    offlineTitle: "你当前处于离线状态",
+    offlineBody: "切换到“设备”以使用缓存或本地{noun}。",
+    offlineSwitchDevice: "设备",
+    searchAriaLabel: "搜索{noun}",
+    multipleMatches: "找到多个匹配的{noun}。请从列表中选择一个。",
+    rateLimitedTitle: "已达到 Hugging Face 速率限制",
+    rateLimitedBody: "请稍候，然后重试搜索{noun}。",
+    hfToken: {
+      label: "HF token",
+      saved: "已保存",
+      add: "添加",
+      savedAriaLabel: "Hugging Face token 已保存",
+      addAriaLabel: "设置 Hugging Face token",
+      savedHint: "Token 已保存。使用时会检查访问权限。",
+      addHint: "设置 token 以访问私有和受限仓库。",
+    },
+  },
   common: {
     cancel: "取消",
     close: "关闭",
@@ -642,6 +663,133 @@ export const zhCN = {
   studio: {
     routeTitle: "训练",
     title: "微调工作台",
+    wizard: {
+      modelTitle: "模型",
+      modelDescription: "选择模型和训练方法",
+      datasetTitle: "数据集",
+      datasetDescription: "选择或上传训练数据",
+      paramsTitle: "参数",
+      paramsDescription: "配置训练参数",
+      configTitle: "配置",
+      configDescription: "保存和加载配置",
+      modelLabel: "模型",
+      methodLabel: "方法",
+      hfTokenLabel: "Hugging Face token",
+      hfDatasetLabel: "数据集",
+      uploadLocalLabel: "或上传本地文件",
+      sourceBrowse: "浏览",
+      releaseToUpload: "松开以上传",
+      loadYaml: "加载 YAML",
+      saveYaml: "保存 YAML",
+      resetDefaults: "重置为默认值",
+      cachedModelGoneTitle: "缓存的模型已不可用",
+      cachedModelGoneDescription:
+        "模型文件已不在此设备上，训练时会重新下载。",
+      cachedDatasetGoneTitle: "缓存的数据集已不可用",
+      cachedDatasetGoneDescription:
+        "数据集文件已不在此设备上，训练时会重新下载。",
+    },
+    preview: {
+      title: "运行预览",
+      ready: "已就绪",
+      notReady: "未就绪",
+      modelPending: "模型待定",
+      datasetPending: "数据集待定",
+      method: "方法",
+      length: "长度",
+      steps: "{count} 步",
+      epoch: "{count} 轮",
+      epochs: "{count} 轮",
+      batch: "批大小",
+      context: "上下文",
+      lr: "LR",
+      hardware: "硬件",
+      noGpu: "未检测到 GPU",
+      hfToken: "HF token",
+      saved: "已保存",
+      notSet: "未设置",
+      files: "文件",
+      model: "模型",
+      dataset: "数据集",
+      downloadsOnStart: "开始时下载",
+      continuesOnStart: "开始时继续下载",
+      noticeModelDownload:
+        "此模型尚未存储在本设备上。训练时会自动下载。",
+      noticeModelPartial: "训练会先继续并完成模型下载，然后再加载模型。",
+      noticeDatasetDownload:
+        "此数据集尚未存储在本设备上。训练时会自动下载。",
+      noticeDatasetPartial:
+        "训练会先继续并完成数据集下载，然后再读取数据集。",
+    },
+    datasetPicker: {
+      noun: "数据集",
+      selectDataset: "选择数据集",
+      hubPlaceholder: "搜索 Hugging Face 数据集...",
+      devicePlaceholder: "搜索本地数据集...",
+      useAsHubDataset: "作为 Hugging Face 数据集使用",
+      useAsLocalPath: "作为本地路径使用",
+      hfCacheLabel: "HF 缓存",
+      scanningLocal: "正在扫描此设备上的数据集…",
+      couldntScan: "无法扫描本地数据集",
+      someLocationsUnscanned: "无法扫描部分数据集位置。",
+      noLocalDatasets:
+        "此设备上还没有数据集。请从模型中心下载数据集、在数据配方中创建数据集，或上传文件。",
+      searchingHub: "正在搜索 Hugging Face…",
+      noDatasetsFound: "未找到数据集。",
+      tokenRejectedTitle: "Hugging Face token 被拒绝",
+      tokenRejectedBody: "请在“设置”→“常规”中更新 token，然后重试。",
+      hubUnreachable: "无法连接 Hugging Face",
+    },
+    modelPicker: {
+      noun: "模型",
+      selectModel: "选择模型",
+      hubPlaceholder: "搜索或粘贴 Hugging Face ID...",
+      devicePlaceholder: "搜索本地模型或粘贴文件夹路径...",
+      useAsHubModel: "作为 Hugging Face 模型使用",
+      useAsLocalPath: "作为本地路径使用",
+      hfCacheLabel: "HF 缓存",
+      scanningLocal: "正在扫描本地模型…",
+      couldntScan: "无法扫描本地模型",
+      someLocationsUnscanned: "无法扫描部分本地位置。",
+      noLocalModels: "未找到本地模型。",
+      noLocalModelsHint: "请在上方粘贴文件夹路径，或切换到 Hugging Face。",
+      searchingHub: "正在搜索 Hugging Face…",
+      noModelsFound: "未找到模型。",
+      tokenRejectedTitle: "Hugging Face token 被拒绝",
+      tokenRejectedBody: "请在“设置”→“常规”中更新 token，然后重试。",
+      hubUnreachable: "无法连接 Hugging Face",
+      cantUseModel: "无法使用此模型进行训练",
+      reasonEmptyId: "请输入模型 ID 或本地模型路径。",
+      reasonGguf: "GGUF 模型不能用于训练。",
+      reasonAdapter: "适配器输出不能作为基础训练模型。",
+      reasonNotTrainable: "此设备上的模型无法用于训练。",
+      reasonUnsupportedFormat: "训练不支持此模型格式。",
+      vramNeeds: "约需 {est}GB VRAM（GPU：{total}GB）",
+      vramTight: "约 {est}GB VRAM（在 {total}GB 上偏紧）",
+      vramApprox: "约 {est}GB VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4 位量化。VRAM 占用最低，启动最快。",
+        note: "4 位",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16 位适配器。在质量和内存之间取得平衡。",
+        note: "16 位",
+      },
+      full: {
+        label: "全量微调",
+        hint: "训练所有权重。质量最高，需要的 VRAM 也最多。",
+        note: "fp16",
+      },
+      cpt: {
+        label: "持续预训练",
+        hint: "针对新领域或新语言继续进行预训练。",
+        note: "持续",
+      },
+    },
     subtitles: {
       configure: "配置并开始训练",
       trainingInProgress: "训练进行中",
@@ -722,6 +870,7 @@ export const zhCN = {
       searching: "搜索中...",
       noDatasetsFound: "未找到数据集",
       loadingLocalDatasets: "正在加载本地数据集...",
+      sourceAriaLabel: "数据集来源",
       failedToLoadLocalDatasets: "加载本地数据集失败。",
       noLocalDatasetsYet: "还没有本地数据集。",
       noLocalDatasetsMatchSearch: "没有本地数据集匹配搜索。",
@@ -746,6 +895,44 @@ export const zhCN = {
       advanced: "高级",
       targetFormat: "目标格式",
       targetFormatTooltip: "训练数据的格式。自动检测对大多数数据集都有效。",
+      streamingInfoAriaLabel: "数据集流式传输信息",
+      streaming: {
+        label: "启用流式传输",
+        description:
+          "以流式方式读取 Hugging Face 文本数据集，而不是先将其下载。",
+        unavailable: "无法使用流式传输。若要启用：",
+        completionsUnavailable: "启用数据集流式传输时不可用。",
+        blockers: {
+          source:
+            "请使用 Hugging Face 数据集（不能是本地上传或 S3 来源）。",
+          maxSteps: "将最大步数设为大于 0——流式数据集的长度未知。",
+          trainOnCompletions: "关闭“仅助手回复”。",
+          evalSplit:
+            "请选择单独的评估切分——评估已开启，但未设置不同的评估切分。",
+          visionModel: "视觉模型不支持流式传输。",
+          audioModel: "音频模型不支持流式传输。",
+          embeddingModel:
+            "Embedding 模型不支持流式传输（训练需要完整数据集）。",
+          imageDataset: "此数据集似乎包含图像，无法进行流式传输。",
+          audioDataset: "此数据集似乎包含音频，无法进行流式传输。",
+          appleSilicon:
+            "Apple Silicon（MLX）暂不支持流式传输。",
+        },
+        options: {
+          trainOnCompletions: "仅助手回复",
+          evaluation: "评估（需要单独的评估切分）",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "已关闭流式传输：流式传输要求将最大步数固定为大于 0。",
+          adjusted:
+            "已调整流式传输设置。已禁用不兼容选项：{options}。",
+          needsMaxSteps:
+            "流式传输需要固定的最大步数（流式数据集的长度未知）。请先将最大步数设为大于 0。",
+          enabledAdjusted:
+            "已启用流式传输。已禁用不兼容选项：{options}。",
+        },
+      },
       auto: "自动",
       rawText: "原始文本",
       trainSplitStart: "训练切分起始",
@@ -797,6 +984,11 @@ export const zhCN = {
     params: {
       title: "参数",
       description: "配置训练超参数",
+      mode: {
+        simple: "简易",
+        advanced: "高级",
+        ariaLabel: "参数模式",
+      },
       projectName: "项目名称",
       optional: "可选",
       projectNameDescription: "用于训练输出文件夹名称、导出默认值和历史记录。",
@@ -893,6 +1085,13 @@ export const zhCN = {
       starting: "启动中...",
       loadingModel: "正在加载模型...",
       checkingDataset: "正在检查数据集...",
+      chooseModel: "选择模型",
+      chooseDataset: "选择数据集",
+      chooseModelAndDataset: "选择模型和数据集",
+      modelUnverified:
+        "无法验证此模型的设置。请检查网络连接或 Hugging Face token，然后重试。",
+      datasetUnverified:
+        "无法验证数据集与此模型是否兼容。请检查网络连接或 Hugging Face token；开始训练时会重试检查。",
       configLabel: "训练配置",
       upload: "上传",
       uploadConfigTooltip: "加载已保存的 YAML 配置",
@@ -904,6 +1103,7 @@ export const zhCN = {
       failedToLoadConfig: "加载配置失败",
       invalidYamlFile: "无效的 YAML 文件",
       failedToReadFile: "读取文件失败",
+      failedToSaveConfig: "保存配置失败",
       parametersReset: "参数已重置为模型默认值",
       audioIncompatible:
         "该模型不支持音频。请切换到支持音频的模型，或选择非音频数据集。",
@@ -927,6 +1127,17 @@ export const zhCN = {
     },
     history: {
       title: "历史",
+      filesDeleted: "文件已删除",
+      deleteArtifactsLabel: "同时删除磁盘上的适配器文件",
+      deleteArtifactsDescription:
+        "删除此次运行的输出文件夹，包括已保存的适配器和检查点。",
+      deleteArtifactsSharedNote:
+        "另一次运行共用此输出文件夹。在使用该文件夹的最后一次运行被删除前，文件会予以保留。",
+      artifactsKeptShared:
+        "运行已删除。由于另一次运行使用同一文件夹，适配器文件已保留。",
+      deleteArtifactsActiveError:
+        "正在进行的训练运行正在使用这些文件。请先停止训练，再删除文件。",
+      deleteArtifactsFailed: "运行已删除，但无法移除其文件。",
       emptyTitle: "还没有训练运行",
       emptyDescription: "还没有训练运行。请在配置标签页开始第一次训练。",
       loadError: "加载训练运行失败",

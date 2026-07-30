@@ -58,6 +58,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 type StudioT = ReturnType<typeof useT>;
 type HyperparameterTab = "optimization" | "schedule" | "memory";
@@ -187,7 +188,73 @@ export function ParamsSection({
   mode?: "simple" | "advanced";
 }): ReactElement {
   const t = useT();
-  const store = useTrainingConfigStore();
+  const store = useTrainingConfigStore(
+    useShallow((state) => ({
+      selectedModel: state.selectedModel,
+      projectName: state.projectName,
+      trainingMethod: state.trainingMethod,
+      datasetFormat: state.datasetFormat,
+      datasetStreaming: state.datasetStreaming,
+      epochs: state.epochs,
+      contextLength: state.contextLength,
+      learningRate: state.learningRate,
+      embeddingLearningRate: state.embeddingLearningRate,
+      optimizerType: state.optimizerType,
+      lrSchedulerType: state.lrSchedulerType,
+      loraRank: state.loraRank,
+      loraAlpha: state.loraAlpha,
+      loraDropout: state.loraDropout,
+      loraVariant: state.loraVariant,
+      batchSize: state.batchSize,
+      gradientAccumulation: state.gradientAccumulation,
+      weightDecay: state.weightDecay,
+      warmupSteps: state.warmupSteps,
+      maxSteps: state.maxSteps,
+      saveSteps: state.saveSteps,
+      evalSteps: state.evalSteps,
+      packing: state.packing,
+      trainOnCompletions: state.trainOnCompletions,
+      gradientCheckpointing: state.gradientCheckpointing,
+      randomSeed: state.randomSeed,
+      isVisionModel: state.isVisionModel,
+      isEmbeddingModel: state.isEmbeddingModel,
+      isDatasetImage: state.isDatasetImage,
+      finetuneVisionLayers: state.finetuneVisionLayers,
+      finetuneLanguageLayers: state.finetuneLanguageLayers,
+      finetuneAttentionModules: state.finetuneAttentionModules,
+      finetuneMLPModules: state.finetuneMLPModules,
+      targetModules: state.targetModules,
+      visionImageSize: state.visionImageSize,
+      setProjectName: state.setProjectName,
+      setEpochs: state.setEpochs,
+      setContextLength: state.setContextLength,
+      setVisionImageSize: state.setVisionImageSize,
+      setLearningRate: state.setLearningRate,
+      setEmbeddingLearningRate: state.setEmbeddingLearningRate,
+      setOptimizerType: state.setOptimizerType,
+      setLrSchedulerType: state.setLrSchedulerType,
+      setLoraRank: state.setLoraRank,
+      setLoraAlpha: state.setLoraAlpha,
+      setLoraDropout: state.setLoraDropout,
+      setLoraVariant: state.setLoraVariant,
+      setBatchSize: state.setBatchSize,
+      setGradientAccumulation: state.setGradientAccumulation,
+      setWeightDecay: state.setWeightDecay,
+      setWarmupSteps: state.setWarmupSteps,
+      setMaxSteps: state.setMaxSteps,
+      setSaveSteps: state.setSaveSteps,
+      setEvalSteps: state.setEvalSteps,
+      setPacking: state.setPacking,
+      setTrainOnCompletions: state.setTrainOnCompletions,
+      setGradientCheckpointing: state.setGradientCheckpointing,
+      setRandomSeed: state.setRandomSeed,
+      setFinetuneVisionLayers: state.setFinetuneVisionLayers,
+      setFinetuneLanguageLayers: state.setFinetuneLanguageLayers,
+      setFinetuneAttentionModules: state.setFinetuneAttentionModules,
+      setFinetuneMLPModules: state.setFinetuneMLPModules,
+      setTargetModules: state.setTargetModules,
+    })),
+  );
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const isLora = isAdapterMethod(store.trainingMethod);
   const isCpt = store.trainingMethod === "cpt";
@@ -1210,7 +1277,9 @@ export function ParamsSection({
                         aria-disabled={store.datasetStreaming || undefined}
                         title={
                           store.datasetStreaming
-                            ? "Not available while dataset streaming is enabled."
+                            ? t(
+                                "studio.dataset.streaming.completionsUnavailable",
+                              )
                             : undefined
                         }
                         className={`text-xs text-muted-foreground ${

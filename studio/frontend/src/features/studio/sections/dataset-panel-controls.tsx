@@ -21,14 +21,33 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useT } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import type { DatasetFormat, DatasetSource } from "@/types/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
-import { normalizeSliceInput } from "./dataset-panel-helpers";
+import {
+  type DatasetStreamingBlocker,
+  normalizeSliceInput,
+} from "./dataset-panel-helpers";
+
+const DATASET_STREAMING_BLOCKER_KEYS: Record<
+  DatasetStreamingBlocker,
+  TranslationKey
+> = {
+  source: "studio.dataset.streaming.blockers.source",
+  maxSteps: "studio.dataset.streaming.blockers.maxSteps",
+  trainOnCompletions: "studio.dataset.streaming.blockers.trainOnCompletions",
+  evalSplit: "studio.dataset.streaming.blockers.evalSplit",
+  visionModel: "studio.dataset.streaming.blockers.visionModel",
+  audioModel: "studio.dataset.streaming.blockers.audioModel",
+  embeddingModel: "studio.dataset.streaming.blockers.embeddingModel",
+  imageDataset: "studio.dataset.streaming.blockers.imageDataset",
+  audioDataset: "studio.dataset.streaming.blockers.audioDataset",
+  appleSilicon: "studio.dataset.streaming.blockers.appleSilicon",
+};
 
 export function DatasetSourceToggle({
   datasetSource,
@@ -126,7 +145,7 @@ export function DatasetAdvancedSettings({
   setDatasetSliceEnd: (value: string | null) => void;
   setDatasetSliceStart: (value: string | null) => void;
   setDatasetStreaming: (value: boolean) => void;
-  streamingBlockers: readonly string[];
+  streamingBlockers: readonly DatasetStreamingBlocker[];
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -214,7 +233,7 @@ export function DatasetAdvancedSettings({
                   : "cursor-not-allowed opacity-60"
               }`}
             >
-              Enable streaming
+              {t("studio.dataset.streaming.label")}
             </label>
             <Tooltip>
               <TooltipTrigger asChild={true}>
@@ -234,18 +253,17 @@ export function DatasetAdvancedSettings({
               </TooltipTrigger>
               <TooltipContent>
                 {isStreamingSupported ? (
-                  <span>
-                    Stream Hugging Face text datasets instead of downloading
-                    them.
-                  </span>
+                  <span>{t("studio.dataset.streaming.description")}</span>
                 ) : (
                   <div className="max-w-xs">
                     <p className="font-medium">
-                      Streaming unavailable. To enable:
+                      {t("studio.dataset.streaming.unavailable")}
                     </p>
                     <ul className="mt-1 list-disc space-y-0.5 pl-4">
                       {streamingBlockers.map((reason) => (
-                        <li key={reason}>{reason}</li>
+                        <li key={reason}>
+                          {t(DATASET_STREAMING_BLOCKER_KEYS[reason])}
+                        </li>
                       ))}
                     </ul>
                   </div>

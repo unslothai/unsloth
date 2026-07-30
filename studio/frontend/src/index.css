@@ -2926,9 +2926,7 @@ html[data-chat-font] .aui-root {
   }
 
   .page-title-halo {
-    text-shadow: 0 0 24px color-mix(in srgb, var(--foreground) 13%, transparent),
-      0 0 56px color-mix(in srgb, var(--foreground) 10%, transparent), 0 0 96px
-      color-mix(in srgb, var(--foreground) 8%, transparent);
+    text-shadow: 0 0 24px #e4e3df, 0 0 56px #ebeae6, 0 0 96px #efeeea;
   }
 
   .dark .page-title-halo {

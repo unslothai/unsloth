@@ -5,6 +5,9 @@
 Training API routes
 """
 
+import json
+import os
+import re
 import sys
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,7 +16,6 @@ from typing import Dict, Optional, Any
 import structlog
 from loggers import get_logger
 import asyncio
-import threading
 from datetime import datetime
 import uuid as _uuid
 
@@ -78,8 +80,6 @@ logger = get_logger(__name__)
 
 _LOCAL_MODEL_PROBE_LIMIT = 2000
 _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS = 5.0
-# Serialize route lifecycle backend calls without blocking the event loop.
-_TRAINING_ROUTE_LIFECYCLE_LOCK = threading.Lock()
 
 
 class _LocalModelProbeIncomplete(RuntimeError):
@@ -91,13 +91,10 @@ class _LocalModelProbeIncomplete(RuntimeError):
 _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 
 
-def _run_training_lifecycle_call(callback, *args, **kwargs):
-    with _TRAINING_ROUTE_LIFECYCLE_LOCK:
-        return callback(*args, **kwargs)
-
-
 def _stop_training_if_active(backend, *, save: bool, expected_job_id: Optional[str]):
-    with _TRAINING_ROUTE_LIFECYCLE_LOCK:
+    from core.training.lifecycle import training_lifecycle_guard
+
+    with training_lifecycle_guard():
         is_active = backend.is_training_active()
         stopped = (
             backend.stop_training(
@@ -131,41 +128,107 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
     return validated
 
 
-def _is_trainable_weight_name(name: str) -> bool:
+def _is_indexed_model_weight_name(name: str, expected_suffix: str) -> bool:
     lower = name.lower()
-    if lower.endswith(".safetensors") and not lower.startswith(
+    return lower.endswith(expected_suffix) and not lower.startswith(
         ("adapter_model", "optimizer", "scheduler", "rng_state", "scaler")
+    )
+
+
+_MODEL_WEIGHT_CANDIDATES = (
+    ("model.safetensors", None),
+    ("model.safetensors.index.json", ".safetensors"),
+    ("pytorch_model.bin", None),
+    ("pytorch_model.bin.index.json", ".bin"),
+)
+_SHARDED_WEIGHT_NAME_PATTERN = re.compile(
+    r"^(?P<family>.+)-(?P<part>\d+)-of-(?P<total>\d+)"
+    r"(?P<suffix>(?:\.[^.]+)+)$",
+    re.IGNORECASE,
+)
+
+
+def _is_nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except (OSError, ValueError):
+        return False
+
+
+def _has_complete_indexed_weights(
+    path: Path,
+    index_name: str,
+    expected_suffix: str,
+) -> bool:
+    snapshot = os.path.abspath(os.path.normpath(str(path)))
+    snapshot_key = os.path.normcase(snapshot)
+    try:
+        index_text = (path / index_name).read_text(encoding = "utf-8-sig")
+        payload = json.loads(index_text)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+    if not isinstance(weight_map, dict):
+        return False
+    shards = list(weight_map.values())
+    if not shards or not all(
+        isinstance(shard, str) and shard for shard in shards
     ):
-        return True
-    if lower.endswith((".pt", ".pth", ".ckpt")) and lower.startswith(
-        ("model", "pytorch_model", "consolidated", "lit_model")
-    ):
-        return True
-    if lower.endswith(".h5") and lower.startswith(("model", "tf_model")):
-        return True
-    if lower.endswith(".msgpack") and lower.startswith(("model", "flax_model")):
-        return True
-    if lower.endswith(".npz") and lower.startswith("model"):
-        return True
-    if lower.endswith(".bin") and lower.startswith(
-        ("pytorch_model", "model", "consolidated")
-    ):
-        return True
-    return False
+        return False
+    families: dict[tuple[str, str, str, int], set[int]] = {}
+    for shard in set(shards):
+        joined = os.path.normpath(os.path.join(snapshot, shard))
+        joined_key = os.path.normcase(joined)
+        contained = (
+            joined_key == snapshot_key
+            or joined_key.startswith(snapshot_key + os.sep)
+        )
+        shard_path = Path(joined)
+        if (
+            not contained
+            or not _is_indexed_model_weight_name(
+                shard_path.name,
+                expected_suffix,
+            )
+            or not _is_nonempty_file(shard_path)
+        ):
+            return False
+        match = _SHARDED_WEIGHT_NAME_PATTERN.fullmatch(shard_path.name)
+        if match is not None:
+            part = int(match.group("part"))
+            total = int(match.group("total"))
+            if total < 1 or part < 1 or part > total:
+                return False
+            family = (
+                os.path.normcase(str(shard_path.parent)),
+                match.group("family").casefold(),
+                match.group("suffix").casefold(),
+                total,
+            )
+            families.setdefault(family, set()).add(part)
+    return all(
+        len(parts) == family[3]
+        for family, parts in families.items()
+    )
 
 
 def _has_trainable_local_weights(path: Path) -> bool:
     try:
         if not path.is_dir():
             return False
-        if not (path / "config.json").is_file():
+        config_text = (path / "config.json").read_text(encoding = "utf-8-sig")
+        config = json.loads(config_text)
+        if not isinstance(config, dict):
             return False
-        return any(
-            _is_trainable_weight_name(entry.name)
-            for entry in path.iterdir()
-            if entry.is_file()
-        )
-    except OSError:
+        for name, index_suffix in _MODEL_WEIGHT_CANDIDATES:
+            candidate = path / name
+            if not candidate.is_file():
+                continue
+            if index_suffix is None:
+                return _is_nonempty_file(candidate)
+            return _has_complete_indexed_weights(path, name, index_suffix)
+        return False
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
 
 
@@ -196,12 +259,17 @@ def _remote_model_is_adapter(
 
         status_code = hf_error_status(error)
         if status_code is not None:
-            raise HTTPException(
-                status_code = status_code,
-                detail = (
+            detail = (
+                "Hugging Face model verification is rate-limited. Retry shortly."
+                if status_code == 429
+                else (
                     "The Hugging Face model could not be verified. "
                     "Check the repository ID and your access token."
-                ),
+                )
+            )
+            raise HTTPException(
+                status_code = status_code,
+                detail = detail,
             ) from error
         raise HTTPException(
             status_code = 503,
@@ -263,7 +331,7 @@ def _reject_untrainable_model_request(
             detail = "Adapter models are inference-only and cannot be trained as base models.",
         )
     path: Optional[Path] = None
-    outage_model_pin: Optional[tuple[str, str]] = None
+    cached_model_pin: Optional[tuple[str, str]] = None
     if is_local_path(request.model_name):
         try:
             path = Path(request.model_name).expanduser().resolve(strict = True)
@@ -297,7 +365,7 @@ def _reject_untrainable_model_request(
         if snapshot:
             path = Path(snapshot)
             if offline_mode and not request.resume_from_checkpoint:
-                outage_model_pin = (
+                cached_model_pin = (
                     canonical_model_repo_id(request.model_name),
                     snapshot,
                 )
@@ -309,8 +377,6 @@ def _reject_untrainable_model_request(
                 request.hf_token or None,
             )
         except HTTPException as error:
-            if error.status_code != 503:
-                raise
             metadata_error = error
             from core.training.training import _resolve_model_snapshot
 
@@ -321,7 +387,7 @@ def _reject_untrainable_model_request(
             if snapshot is None:
                 raise
             path = Path(snapshot)
-            outage_model_pin = (
+            cached_model_pin = (
                 canonical_model_repo_id(request.model_name),
                 snapshot,
             )
@@ -336,7 +402,7 @@ def _reject_untrainable_model_request(
             )
     has_trainable_weights = _has_trainable_local_weights(path)
     if has_trainable_weights:
-        return outage_model_pin
+        return cached_model_pin
     if _has_adapter_metadata(path):
         raise HTTPException(
             status_code = 400,
@@ -474,7 +540,7 @@ def _prepare_resume_resource_provenance(
         raise HTTPException(
             status_code = 409,
             detail = "The selected dataset does not match the dataset used by the source run.",
-    )
+        )
 
     request.model_name = stored_model
     for field, default in _RESUME_DATASET_DEFAULTS.items():
@@ -737,16 +803,16 @@ async def start_training(
                     ),
                 )
 
-        outage_model_pin = await asyncio.to_thread(
+        cached_model_pin = await asyncio.to_thread(
             _reject_untrainable_model_request,
             request,
             resume_actual_model_repo_id,
         )
         training_actual_model_repo_id = resume_actual_model_repo_id
         training_model_snapshot_path = request.model_snapshot_path
-        if outage_model_pin is not None:
+        if cached_model_pin is not None:
             training_actual_model_repo_id, training_model_snapshot_path = (
-                outage_model_pin
+                cached_model_pin
             )
 
         # Convert request to backend kwargs.
@@ -826,7 +892,7 @@ async def start_training(
             "require_exact_resume_resources": resume_requires_exact_resources,
             "require_exact_model_resource": resume_requires_exact_model,
             "require_exact_dataset_resource": resume_requires_exact_dataset,
-            "require_validated_model_snapshot": outage_model_pin is not None,
+            "require_validated_model_snapshot": cached_model_pin is not None,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
@@ -942,7 +1008,6 @@ async def start_training(
 
         try:
             success = await asyncio.to_thread(
-                _run_training_lifecycle_call,
                 backend.start_training,
                 job_id = job_id,
                 before_spawn = _free_vram_for_training,
@@ -1040,7 +1105,6 @@ async def reset_training(
     try:
         backend = get_training_backend()
         result = await asyncio.to_thread(
-            _run_training_lifecycle_call,
             backend.reset_training_state,
             expected_job_id = body.expected_job_id,
         )

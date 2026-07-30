@@ -1270,6 +1270,45 @@ export const en = {
       targetFormatTooltip:
         "Format of your training data. Auto-detect works for most datasets.",
       streamingInfoAriaLabel: "Dataset streaming information",
+      streaming: {
+        label: "Enable streaming",
+        description:
+          "Stream Hugging Face text datasets instead of downloading them.",
+        unavailable: "Streaming unavailable. To enable:",
+        completionsUnavailable:
+          "Not available while dataset streaming is enabled.",
+        blockers: {
+          source:
+            "Use a Hugging Face dataset (not a local upload or S3 source).",
+          maxSteps:
+            "Set Max Steps > 0 — streaming datasets have no known length.",
+          trainOnCompletions: 'Turn off "Assistant completions only".',
+          evalSplit:
+            "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
+          visionModel: "Vision models don't support streaming.",
+          audioModel: "Audio models don't support streaming.",
+          embeddingModel:
+            "Embedding models don't support streaming (training needs the full dataset).",
+          imageDataset: "This dataset looks like images, which can't stream.",
+          audioDataset: "This dataset looks like audio, which can't stream.",
+          appleSilicon:
+            "Streaming isn't supported on Apple Silicon (MLX) yet.",
+        },
+        options: {
+          trainOnCompletions: "assistant completions only",
+          evaluation: "evaluation (needs a separate eval split)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "Streaming turned off: streaming needs a fixed Max Steps > 0.",
+          adjusted:
+            "Adjusted for streaming. Disabled incompatible options: {options}.",
+          needsMaxSteps:
+            "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
+          enabledAdjusted:
+            "Streaming enabled. Disabled incompatible options: {options}.",
+        },
+      },
       auto: "Auto",
       rawText: "Raw Text",
       trainSplitStart: "Train Split Start",

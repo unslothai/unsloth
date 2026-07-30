@@ -1870,32 +1870,19 @@ def test_filtered_hub_pages_keep_the_pagination_sentinel_mounted():
         )
 
 
-def test_infinite_scroll_retries_an_intersecting_filtered_page():
-    source = _read("features/hub/hooks/use-hub-infinite-scroll.ts")
-    assert "const PREFETCH_MARGIN_PX = 200;" in source
-    assert "function isSentinelWithinPrefetchRange(" in source
-    assert "root.getBoundingClientRect()" in source
-    assert "sentinel.getBoundingClientRect()" in source
-    assert (
-        "lastRequestedSignalRef.current !== null &&\n"
-        "            signal <= lastRequestedSignalRef.current"
-        in source
-    )
-    assert "lastRequestedSignalRef.current = signalRef.current;" in source
-    assert "lastRequestedSignalRef.current = null;" in source
-    assert "isFetching," in source
-    assert "signal," in source
-
-
 def test_infinite_scroll_observes_a_late_mounted_sentinel():
     source = _read("features/hub/hooks/use-hub-infinite-scroll.ts")
-    assert "const [sentinelNode, setSentinelNode]" in source
-    assert "const sentinelRef = useCallback(" in source
-    assert "observer.observe(sentinelNode);" in source
-    assert "if (!root) {" in source
-    assert "if (!sentinelNode) {" in source
-    assert "}, [enabled, requestAutomaticPage, sentinelNode]);" in source
-    assert "sentinelNode,\n    setManualFetchAvailable," in source
+    assert re.search(
+        r"const\s+\[sentinelNode,\s*setSentinelNode\]\s*=\s*useState",
+        source,
+    )
+    assert re.search(
+        r"const\s+sentinelRef\s*=\s*useCallback\("
+        r".*?setSentinelNode\(",
+        source,
+        re.S,
+    )
+    assert re.search(r"observer\.observe\(\s*sentinelNode\s*\)", source)
 
 
 def test_train_hub_selections_preserve_canonical_identity():

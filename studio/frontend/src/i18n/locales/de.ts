@@ -5,6 +5,32 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const de = {
+  picker: {
+    onDevice: "Auf dem Gerät",
+    huggingFace: "Hugging Face",
+    retry: "Erneut versuchen",
+    offlineTitle: "Sie sind offline",
+    offlineBody:
+      "Wechseln Sie zu „Gerät“, um zwischengespeicherte oder lokale {noun} zu verwenden.",
+    offlineSwitchDevice: "Gerät",
+    searchAriaLabel: "Suche: {noun}",
+    multipleMatches:
+      "Mehrere passende {noun} gefunden. Wählen Sie einen Eintrag aus der Liste aus.",
+    rateLimitedTitle: "Hugging Face-Ratenlimit erreicht",
+    rateLimitedBody:
+      "Warten Sie einen Moment und wiederholen Sie dann die Suche ({noun}).",
+    hfToken: {
+      label: "HF-Token",
+      saved: "Gespeichert",
+      add: "Hinzufügen",
+      savedAriaLabel: "Hugging Face-Token gespeichert",
+      addAriaLabel: "Hugging Face-Token festlegen",
+      savedHint:
+        "Token gespeichert. Der Zugriff wird bei der Verwendung geprüft.",
+      addHint:
+        "Legen Sie ein Token fest, um auf private und zugriffsbeschränkte Repositories zuzugreifen.",
+    },
+  },
   common: {
     cancel: "Abbrechen",
     close: "Schließen",
@@ -586,6 +612,144 @@ export const de = {
   studio: {
     routeTitle: "Trainieren",
     title: "Fine-Tuning-Studio",
+    wizard: {
+      modelTitle: "Modell",
+      modelDescription: "Modell und Trainingsmethode auswählen",
+      datasetTitle: "Datensatz",
+      datasetDescription: "Trainingsdaten auswählen oder hochladen",
+      paramsTitle: "Parameter",
+      paramsDescription: "Trainingsparameter konfigurieren",
+      configTitle: "Konfiguration",
+      configDescription: "Konfigurationen speichern und laden",
+      modelLabel: "Modell",
+      methodLabel: "Methode",
+      hfTokenLabel: "Hugging Face-Token",
+      hfDatasetLabel: "Datensatz",
+      uploadLocalLabel: "Oder eine lokale Datei hochladen",
+      sourceBrowse: "Durchsuchen",
+      releaseToUpload: "Zum Hochladen loslassen",
+      loadYaml: "YAML laden",
+      saveYaml: "YAML speichern",
+      resetDefaults: "Auf Standardwerte zurücksetzen",
+      cachedModelGoneTitle:
+        "Zwischengespeichertes Modell nicht mehr verfügbar",
+      cachedModelGoneDescription:
+        "Die Modelldateien befinden sich nicht mehr auf diesem Gerät. Beim Training werden sie erneut heruntergeladen.",
+      cachedDatasetGoneTitle:
+        "Zwischengespeicherter Datensatz nicht mehr verfügbar",
+      cachedDatasetGoneDescription:
+        "Die Datensatzdateien befinden sich nicht mehr auf diesem Gerät. Beim Training werden sie erneut heruntergeladen.",
+    },
+    preview: {
+      title: "Laufvorschau",
+      ready: "Bereit",
+      notReady: "Nicht bereit",
+      modelPending: "Modell ausstehend",
+      datasetPending: "Datensatz ausstehend",
+      method: "Methode",
+      length: "Länge",
+      steps: "{count} Schritte",
+      epoch: "{count} Epoche",
+      epochs: "{count} Epochen",
+      batch: "Batch",
+      context: "Kontext",
+      lr: "LR",
+      hardware: "Hardware",
+      noGpu: "Keine GPU erkannt",
+      hfToken: "HF-Token",
+      saved: "Gespeichert",
+      notSet: "Nicht festgelegt",
+      files: "Dateien",
+      model: "Modell",
+      dataset: "Datensatz",
+      downloadsOnStart: "Wird beim Start heruntergeladen",
+      continuesOnStart: "Wird beim Start fortgesetzt",
+      noticeModelDownload:
+        "Dieses Modell befindet sich noch nicht auf dem Gerät. Beim Start des Trainings wird es automatisch heruntergeladen.",
+      noticeModelPartial:
+        "Vor dem Laden wird der unvollständige Modell-Download abgeschlossen.",
+      noticeDatasetDownload:
+        "Dieser Datensatz befindet sich noch nicht auf dem Gerät. Beim Start des Trainings wird er automatisch heruntergeladen.",
+      noticeDatasetPartial:
+        "Vor dem Einlesen wird der unvollständige Datensatz-Download abgeschlossen.",
+    },
+    datasetPicker: {
+      noun: "Datensätze",
+      selectDataset: "Datensatz auswählen",
+      hubPlaceholder: "Hugging Face-Datensätze durchsuchen...",
+      devicePlaceholder: "Lokale Datensätze durchsuchen...",
+      useAsHubDataset: "Als Hugging Face-Datensatz verwenden",
+      useAsLocalPath: "Als lokalen Pfad verwenden",
+      hfCacheLabel: "HF-Cache",
+      scanningLocal: "Datensätze auf diesem Gerät werden durchsucht…",
+      couldntScan: "Lokale Datensätze konnten nicht durchsucht werden",
+      someLocationsUnscanned:
+        "Einige Datensatzspeicherorte konnten nicht durchsucht werden.",
+      noLocalDatasets:
+        "Noch nichts auf diesem Gerät. Laden Sie einen Datensatz aus dem Hub herunter, erstellen Sie einen unter „Rezepte“ oder laden Sie eine Datei hoch.",
+      searchingHub: "Hugging Face wird durchsucht…",
+      noDatasetsFound: "Keine Datensätze gefunden.",
+      tokenRejectedTitle: "Hugging Face-Token abgelehnt",
+      tokenRejectedBody:
+        "Aktualisieren Sie Ihr Token unter Einstellungen → Allgemein und versuchen Sie es erneut.",
+      hubUnreachable: "Hugging Face ist nicht erreichbar",
+    },
+    modelPicker: {
+      noun: "Modelle",
+      selectModel: "Modell auswählen",
+      hubPlaceholder: "Hugging Face-ID suchen oder einfügen...",
+      devicePlaceholder: "Lokale Modelle suchen oder einen Ordnerpfad einfügen...",
+      useAsHubModel: "Als Hugging Face-Modell verwenden",
+      useAsLocalPath: "Als lokalen Pfad verwenden",
+      hfCacheLabel: "HF-Cache",
+      scanningLocal: "Lokale Modelle werden durchsucht…",
+      couldntScan: "Lokale Modelle konnten nicht durchsucht werden",
+      someLocationsUnscanned:
+        "Einige lokale Speicherorte konnten nicht durchsucht werden.",
+      noLocalModels: "Keine lokalen Modelle gefunden.",
+      noLocalModelsHint:
+        "Fügen Sie oben einen Ordnerpfad ein oder wechseln Sie zu Hugging Face.",
+      searchingHub: "Hugging Face wird durchsucht…",
+      noModelsFound: "Keine Modelle gefunden.",
+      tokenRejectedTitle: "Hugging Face-Token abgelehnt",
+      tokenRejectedBody:
+        "Aktualisieren Sie Ihr Token unter Einstellungen → Allgemein und versuchen Sie es erneut.",
+      hubUnreachable: "Hugging Face ist nicht erreichbar",
+      cantUseModel: "Modell kann nicht für das Training verwendet werden",
+      reasonEmptyId: "Geben Sie eine Modell-ID oder einen lokalen Modellpfad ein.",
+      reasonGguf: "GGUF-Modelle können nicht trainiert werden.",
+      reasonAdapter:
+        "Adapterausgaben können nicht als Basismodelle für das Training verwendet werden.",
+      reasonNotTrainable:
+        "Dieses Modell auf dem Gerät kann nicht trainiert werden.",
+      reasonUnsupportedFormat:
+        "Dieses Modellformat wird für das Training nicht unterstützt.",
+      vramNeeds: "Benötigt ~{est} GB VRAM (GPU: {total} GB)",
+      vramTight: "~{est} GB VRAM (knapp bei {total} GB)",
+      vramApprox: "~{est} GB VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-Bit-Quantisierung. Niedrigster VRAM-Bedarf, schnellster Start.",
+        note: "4-Bit",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-Bit-Adapter. Ausgewogenes Verhältnis von Qualität und Speicherbedarf.",
+        note: "16-Bit",
+      },
+      full: {
+        label: "Vollständiges Fine-Tuning",
+        hint: "Trainiert alle Gewichte. Höchste Qualität, benötigt am meisten VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Continued Pretraining",
+        hint: "Fortgesetztes Vortraining für neue Domänen oder Sprachen.",
+        note: "fortgesetzt",
+      },
+    },
     subtitles: {
       configure: "Training konfigurieren und starten",
       trainingInProgress: "Training läuft",
@@ -662,6 +826,7 @@ export const de = {
       title: "Datensatz",
       description: "Trainingsdaten auswählen oder hochladen",
       source: "Datensatzquelle",
+      sourceAriaLabel: "Datensatzquelle",
       chooseDataset: "Datensatz auswählen",
       chooseDatasetTooltip:
         "Wechseln Sie über die Popup-Tabs zwischen Hugging Face und lokalen Recipe-Ausgaben.",
@@ -676,7 +841,7 @@ export const de = {
       noLocalDatasetsYet: "Noch keine lokalen Datensätze.",
       noLocalDatasetsMatchSearch:
         "Keine lokalen Datensätze entsprechen der Suche.",
-      openDataRecipes: "Data Recipes öffnen",
+      openDataRecipes: "Rezepte öffnen",
       browsingSource:
         "Sie durchsuchen {browsing}. Die aktuelle Auswahl bleibt {current}.",
       localDatasets: "Lokale Datensätze",
@@ -699,6 +864,49 @@ export const de = {
       targetFormat: "Zielformat",
       targetFormatTooltip:
         "Format Ihrer Trainingsdaten. Die automatische Erkennung funktioniert bei den meisten Datensätzen.",
+      streamingInfoAriaLabel: "Informationen zum Datensatz-Streaming",
+      streaming: {
+        label: "Streaming aktivieren",
+        description:
+          "Hugging-Face-Textdatensätze streamen, statt sie herunterzuladen.",
+        unavailable: "Streaming nicht verfügbar. So aktivieren Sie es:",
+        completionsUnavailable:
+          "Nicht verfügbar, solange Datensatz-Streaming aktiviert ist.",
+        blockers: {
+          source:
+            "Verwenden Sie einen Hugging-Face-Datensatz (keinen lokalen Upload und keine S3-Quelle).",
+          maxSteps:
+            "Setzen Sie Max. Schritte > 0 – Streaming-Datensätze haben keine bekannte Länge.",
+          trainOnCompletions:
+            "Deaktivieren Sie „Nur Assistenten-Antworten“.",
+          evalSplit:
+            "Wählen Sie einen separaten Eval-Split – die Evaluation ist aktiviert, aber es ist kein eigener Eval-Split festgelegt.",
+          visionModel: "Vision-Modelle unterstützen kein Streaming.",
+          audioModel: "Audio-Modelle unterstützen kein Streaming.",
+          embeddingModel:
+            "Embedding-Modelle unterstützen kein Streaming (das Training benötigt den vollständigen Datensatz).",
+          imageDataset:
+            "Dieser Datensatz scheint Bilder zu enthalten, die nicht gestreamt werden können.",
+          audioDataset:
+            "Dieser Datensatz scheint Audio zu enthalten, das nicht gestreamt werden kann.",
+          appleSilicon:
+            "Streaming wird auf Apple Silicon (MLX) noch nicht unterstützt.",
+        },
+        options: {
+          trainOnCompletions: "nur Assistenten-Antworten",
+          evaluation: "Evaluation (benötigt einen separaten Eval-Split)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "Streaming deaktiviert: Für Streaming muss „Max. Schritte“ auf einen festen Wert > 0 gesetzt sein.",
+          adjusted:
+            "Für Streaming angepasst. Inkompatible Optionen deaktiviert: {options}.",
+          needsMaxSteps:
+            "Streaming benötigt einen festen Wert für Max. Schritte (Streaming-Datensätze haben keine bekannte Länge). Setzen Sie zuerst Max. Schritte > 0.",
+          enabledAdjusted:
+            "Streaming aktiviert. Inkompatible Optionen deaktiviert: {options}.",
+        },
+      },
       auto: "Automatisch",
       rawText: "Rohtext",
       trainSplitStart: "Trainings-Split-Start",
@@ -755,6 +963,11 @@ export const de = {
     params: {
       title: "Parameter",
       description: "Trainings-Hyperparameter konfigurieren",
+      mode: {
+        simple: "Einfach",
+        advanced: "Erweitert",
+        ariaLabel: "Parametermodus",
+      },
       projectName: "Projektname",
       optional: "Optional",
       projectNameDescription:
@@ -867,6 +1080,13 @@ export const de = {
       starting: "Wird gestartet...",
       loadingModel: "Modell wird geladen...",
       checkingDataset: "Datensatz wird geprüft...",
+      chooseModel: "Modell auswählen",
+      chooseDataset: "Datensatz auswählen",
+      chooseModelAndDataset: "Modell und Datensatz auswählen",
+      modelUnverified:
+        "Die Modelleinstellungen konnten nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token und versuchen Sie es erneut.",
+      datasetUnverified:
+        "Die Kompatibilität des Datensatzes mit diesem Modell konnte nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token. Beim Start des Trainings wird die Prüfung erneut versucht.",
       configLabel: "Trainingskonfiguration",
       upload: "Hochladen",
       uploadConfigTooltip: "Eine gespeicherte YAML-Konfiguration laden",
@@ -878,6 +1098,7 @@ export const de = {
       failedToLoadConfig: "Konfiguration konnte nicht geladen werden",
       invalidYamlFile: "Ungültige YAML-Datei",
       failedToReadFile: "Datei konnte nicht gelesen werden",
+      failedToSaveConfig: "Konfiguration konnte nicht gespeichert werden",
       parametersReset: "Parameter auf Modellstandardwerte zurückgesetzt",
       audioIncompatible:
         "Dieses Modell unterstützt kein Audio. Wechseln Sie zu einem audiofähigen Modell oder wählen Sie einen Nicht-Audio-Datensatz.",
@@ -903,6 +1124,18 @@ export const de = {
     },
     history: {
       title: "Verlauf",
+      filesDeleted: "Dateien gelöscht",
+      deleteArtifactsLabel: "Adapterdateien auf dem Datenträger ebenfalls löschen",
+      deleteArtifactsDescription:
+        "Entfernt den Ausgabeordner des Laufs einschließlich gespeicherter Adapter und Checkpoints.",
+      deleteArtifactsSharedNote:
+        "Ein anderer Lauf verwendet denselben Ausgabeordner. Die Dateien bleiben erhalten, bis der letzte Lauf gelöscht wird, der sie verwendet.",
+      artifactsKeptShared:
+        "Lauf gelöscht. Die Adapterdateien wurden beibehalten, da ein anderer Lauf denselben Ordner verwendet.",
+      deleteArtifactsActiveError:
+        "Diese Dateien werden vom laufenden Trainingslauf verwendet. Stoppen Sie das Training, bevor Sie sie löschen.",
+      deleteArtifactsFailed:
+        "Der Lauf wurde gelöscht, seine Dateien konnten jedoch nicht entfernt werden.",
       emptyTitle: "Noch keine Trainingsläufe",
       emptyDescription:
         "Noch keine Trainingsläufe. Starten Sie Ihren ersten Trainingslauf im Tab \"Konfigurieren\".",

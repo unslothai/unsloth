@@ -6,6 +6,30 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ja = {
+  picker: {
+    onDevice: "デバイス上",
+    huggingFace: "Hugging Face",
+    retry: "再試行",
+    offlineTitle: "オフラインです",
+    offlineBody:
+      "キャッシュ済みまたはローカルの{noun}を使用するには、「デバイス」に切り替えてください。",
+    offlineSwitchDevice: "デバイス",
+    searchAriaLabel: "{noun}を検索",
+    multipleMatches:
+      "一致する{noun}が複数あります。リストから1つ選択してください。",
+    rateLimitedTitle: "Hugging Face のレート制限に達しました",
+    rateLimitedBody: "しばらく待ってから、{noun}の検索を再試行してください。",
+    hfToken: {
+      label: "HF トークン",
+      saved: "保存済み",
+      add: "追加",
+      savedAriaLabel: "Hugging Face トークンは保存済みです",
+      addAriaLabel: "Hugging Face トークンを設定",
+      savedHint: "トークンは保存済みです。使用時にアクセス権を確認します。",
+      addHint:
+        "プライベートまたはアクセス制限付きリポジトリを利用するには、トークンを設定してください。",
+    },
+  },
   common: {
     cancel: "キャンセル",
     close: "閉じる",
@@ -607,6 +631,143 @@ export const ja = {
   studio: {
     routeTitle: "トレーニング",
     title: "Fine-tuning Studio",
+    wizard: {
+      modelTitle: "モデル",
+      modelDescription: "モデルとトレーニング方法を選択",
+      datasetTitle: "データセット",
+      datasetDescription: "トレーニングデータを選択またはアップロード",
+      paramsTitle: "パラメーター",
+      paramsDescription: "トレーニングパラメーターを設定",
+      configTitle: "構成",
+      configDescription: "構成を保存または読み込み",
+      modelLabel: "モデル",
+      methodLabel: "手法",
+      hfTokenLabel: "Hugging Face トークン",
+      hfDatasetLabel: "データセット",
+      uploadLocalLabel: "またはローカルファイルをアップロード",
+      sourceBrowse: "参照",
+      releaseToUpload: "ドロップしてアップロード",
+      loadYaml: "YAML を読み込む",
+      saveYaml: "YAML を保存",
+      resetDefaults: "デフォルトに戻す",
+      cachedModelGoneTitle: "キャッシュ済みモデルを利用できません",
+      cachedModelGoneDescription:
+        "モデルファイルがこのデバイス上に存在しないため、トレーニング時に再度ダウンロードします。",
+      cachedDatasetGoneTitle: "キャッシュ済みデータセットを利用できません",
+      cachedDatasetGoneDescription:
+        "データセットファイルがこのデバイス上に存在しないため、トレーニング時に再度ダウンロードします。",
+    },
+    preview: {
+      title: "実行プレビュー",
+      ready: "準備完了",
+      notReady: "準備未完了",
+      modelPending: "モデル未選択",
+      datasetPending: "データセット未選択",
+      method: "手法",
+      length: "長さ",
+      steps: "{count} ステップ",
+      epoch: "{count} エポック",
+      epochs: "{count} エポック",
+      batch: "バッチ",
+      context: "コンテキスト",
+      lr: "LR",
+      hardware: "ハードウェア",
+      noGpu: "GPU が検出されませんでした",
+      hfToken: "HF トークン",
+      saved: "保存済み",
+      notSet: "未設定",
+      files: "ファイル",
+      model: "モデル",
+      dataset: "データセット",
+      downloadsOnStart: "開始時にダウンロード",
+      continuesOnStart: "開始時にダウンロードを再開",
+      noticeModelDownload:
+        "このモデルはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
+      noticeModelPartial:
+        "トレーニングでは、モデルを読み込む前に未完了のダウンロードを完了します。",
+      noticeDatasetDownload:
+        "このデータセットはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
+      noticeDatasetPartial:
+        "トレーニングでは、データセットを読み込む前に未完了のダウンロードを完了します。",
+    },
+    datasetPicker: {
+      noun: "データセット",
+      selectDataset: "データセットを選択",
+      hubPlaceholder: "Hugging Face データセットを検索...",
+      devicePlaceholder: "ローカルデータセットを検索...",
+      useAsHubDataset: "Hugging Face データセットとして使用",
+      useAsLocalPath: "ローカルパスとして使用",
+      hfCacheLabel: "HF キャッシュ",
+      scanningLocal: "このデバイス上のデータセットをスキャン中…",
+      couldntScan: "ローカルデータセットをスキャンできませんでした",
+      someLocationsUnscanned:
+        "一部のデータセット保存場所をスキャンできませんでした。",
+      noLocalDatasets:
+        "このデバイスにはまだデータセットがありません。Hub からダウンロードするか、レシピで作成するか、ファイルをアップロードしてください。",
+      searchingHub: "Hugging Face を検索中…",
+      noDatasetsFound: "データセットが見つかりません。",
+      tokenRejectedTitle: "Hugging Face トークンが拒否されました",
+      tokenRejectedBody:
+        "「設定」→「一般」でトークンを更新してから、再試行してください。",
+      hubUnreachable: "Hugging Face に接続できませんでした",
+    },
+    modelPicker: {
+      noun: "モデル",
+      selectModel: "モデルを選択",
+      hubPlaceholder: "Hugging Face ID を検索または貼り付け...",
+      devicePlaceholder: "ローカルモデルを検索するか、フォルダパスを貼り付け...",
+      useAsHubModel: "Hugging Face モデルとして使用",
+      useAsLocalPath: "ローカルパスとして使用",
+      hfCacheLabel: "HF キャッシュ",
+      scanningLocal: "ローカルモデルをスキャン中…",
+      couldntScan: "ローカルモデルをスキャンできませんでした",
+      someLocationsUnscanned:
+        "一部のローカル保存場所をスキャンできませんでした。",
+      noLocalModels: "ローカルモデルが見つかりません。",
+      noLocalModelsHint:
+        "上にフォルダパスを貼り付けるか、Hugging Face に切り替えてください。",
+      searchingHub: "Hugging Face を検索中…",
+      noModelsFound: "モデルが見つかりません。",
+      tokenRejectedTitle: "Hugging Face トークンが拒否されました",
+      tokenRejectedBody:
+        "「設定」→「一般」でトークンを更新してから、再試行してください。",
+      hubUnreachable: "Hugging Face に接続できませんでした",
+      cantUseModel: "このモデルはトレーニングに使用できません",
+      reasonEmptyId: "モデル ID またはローカルモデルのパスを入力してください。",
+      reasonGguf: "GGUF モデルはトレーニングに使用できません。",
+      reasonAdapter:
+        "アダプターの出力はベーストレーニングモデルとして使用できません。",
+      reasonNotTrainable:
+        "このデバイス上のモデルはトレーニングできません。",
+      reasonUnsupportedFormat:
+        "このモデル形式はトレーニングでサポートされていません。",
+      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GB)",
+      vramTight: "約 {est}GB VRAM (GPU {total}GB ではギリギリです)",
+      vramApprox: "約 {est}GB VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-bit 量子化。VRAM 使用量が最も少なく、起動も最速です。",
+        note: "4-bit",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-bit アダプター。品質とメモリ使用量のバランスを取ります。",
+        note: "16-bit",
+      },
+      full: {
+        label: "フルファインチューニング",
+        hint:
+          "すべての重みをトレーニングします。最高品質ですが、最も多くの VRAM が必要です。",
+        note: "fp16",
+      },
+      cpt: {
+        label: "継続事前学習",
+        hint: "新しいドメインや言語向けに事前学習を継続します。",
+        note: "継続",
+      },
+    },
     subtitles: {
       configure: "設定とトレーニングの開始",
       trainingInProgress: "トレーニング進行中",
@@ -685,6 +846,7 @@ export const ja = {
       searching: "検索中...",
       noDatasetsFound: "データセットが見つかりません",
       loadingLocalDatasets: "ローカルデータセットを読み込み中...",
+      sourceAriaLabel: "データセットのソース",
       failedToLoadLocalDatasets: "ローカルデータセットの読み込みに失敗しました。",
       noLocalDatasetsYet: "ローカルデータセットがまだありません。",
       noLocalDatasetsMatchSearch: "検索に一致するローカルデータセットがありません。",
@@ -708,6 +870,49 @@ export const ja = {
       advanced: "高度な設定",
       targetFormat: "ターゲットフォーマット",
       targetFormatTooltip: "トレーニングデータのフォーマット。ほとんどのデータセットで自動検出が機能します。",
+      streamingInfoAriaLabel: "データセットストリーミングの情報",
+      streaming: {
+        label: "ストリーミングを有効化",
+        description:
+          "Hugging Face のテキストデータセットをダウンロードせずにストリーミングします。",
+        unavailable: "ストリーミングを利用できません。有効にするには:",
+        completionsUnavailable:
+          "データセットのストリーミングが有効な間は利用できません。",
+        blockers: {
+          source:
+            "Hugging Face データセットを使用してください（ローカルアップロードや S3 ソースは使用できません）。",
+          maxSteps:
+            "最大ステップ数を 0 より大きく設定してください。ストリーミングデータセットの長さは事前に分かりません。",
+          trainOnCompletions:
+            "「アシスタントの応答のみ学習」をオフにしてください。",
+          evalSplit:
+            "個別の評価用分割を選択してください。評価は有効ですが、トレーニング用とは別の評価用分割が設定されていません。",
+          visionModel: "ビジョンモデルはストリーミングをサポートしていません。",
+          audioModel: "オーディオモデルはストリーミングをサポートしていません。",
+          embeddingModel:
+            "埋め込みモデルはストリーミングをサポートしていません（トレーニングにはデータセット全体が必要です）。",
+          imageDataset:
+            "このデータセットには画像が含まれているように見えるため、ストリーミングできません。",
+          audioDataset:
+            "このデータセットには音声が含まれているように見えるため、ストリーミングできません。",
+          appleSilicon:
+            "Apple Silicon (MLX) ではストリーミングをまだサポートしていません。",
+        },
+        options: {
+          trainOnCompletions: "アシスタントの応答のみ学習",
+          evaluation: "評価（個別の評価用分割が必要）",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "ストリーミングをオフにしました。ストリーミングには 0 より大きい固定の最大ステップ数が必要です。",
+          adjusted:
+            "ストリーミング向けに設定を調整しました。互換性のないオプションを無効にしました: {options}。",
+          needsMaxSteps:
+            "ストリーミングには固定の最大ステップ数が必要です（ストリーミングデータセットの長さは事前に分かりません）。先に最大ステップ数を 0 より大きく設定してください。",
+          enabledAdjusted:
+            "ストリーミングを有効にしました。互換性のないオプションを無効にしました: {options}。",
+        },
+      },
       auto: "自動",
       rawText: "生テキスト",
       trainSplitStart: "トレーニング分割の開始行",
@@ -757,6 +962,11 @@ export const ja = {
     params: {
       title: "パラメーター",
       description: "トレーニングのハイパーパラメーターを設定します",
+      mode: {
+        simple: "シンプル",
+        advanced: "詳細",
+        ariaLabel: "パラメーターモード",
+      },
       projectName: "プロジェクト名",
       optional: "オプション",
       projectNameDescription: "トレーニング出力フォルダ名、エクスポートのデフォルト値、および履歴で使用されます。",
@@ -847,6 +1057,13 @@ export const ja = {
       starting: "開始中...",
       loadingModel: "モデルを読み込み中...",
       checkingDataset: "データセットを確認中...",
+      chooseModel: "モデルを選択",
+      chooseDataset: "データセットを選択",
+      chooseModelAndDataset: "モデルとデータセットを選択",
+      modelUnverified:
+        "このモデルの設定を確認できませんでした。接続または Hugging Face トークンを確認してから、再試行してください。",
+      datasetUnverified:
+        "データセットがこのモデルと互換性があるか確認できませんでした。接続または Hugging Face トークンを確認してください。トレーニング開始時にもう一度確認します。",
       configLabel: "トレーニング構成",
       upload: "アップロード",
       uploadConfigTooltip: "保存された YAML 構成を読み込みます",
@@ -858,6 +1075,7 @@ export const ja = {
       failedToLoadConfig: "構成の読み込みに失敗しました",
       invalidYamlFile: "無効な YAML ファイルです",
       failedToReadFile: "ファイルの読み込みに失敗しました",
+      failedToSaveConfig: "構成の保存に失敗しました",
       parametersReset: "パラメーターをモデルのデフォルト値にリセットしました",
       audioIncompatible: "このモデルはオーディオをサポートしていません。オーディオ対応のモデルに切り替えるか、オーディオ以外のデータセットを選択してください。",
       visionIncompatible: "テキストモデルはマルチモーダルデータセットと互換性がありません。ビジョンモデルに切り替えるか、テキストのみのデータセットを選択してください。",
@@ -878,6 +1096,18 @@ export const ja = {
     },
     history: {
       title: "履歴",
+      filesDeleted: "ファイルを削除しました",
+      deleteArtifactsLabel: "ディスク上のアダプターファイルも削除",
+      deleteArtifactsDescription:
+        "保存済みのアダプターやチェックポイントを含む、この実行の出力フォルダを削除します。",
+      deleteArtifactsSharedNote:
+        "別の実行がこの出力フォルダを共有しています。このフォルダを使用する最後の実行が削除されるまで、ファイルは保持されます。",
+      artifactsKeptShared:
+        "実行を削除しました。別の実行が同じフォルダを使用しているため、アダプターファイルは保持されました。",
+      deleteArtifactsActiveError:
+        "進行中のトレーニングがこれらのファイルを使用しています。ファイルを削除する前にトレーニングを停止してください。",
+      deleteArtifactsFailed:
+        "実行は削除されましたが、関連ファイルを削除できませんでした。",
       emptyTitle: "トレーニング実行がまだありません",
       emptyDescription: "トレーニング実行がまだありません。「設定」タブで最初のトレーニングを開始してください。",
       loadError: "トレーニング実行の読み込みに失敗しました",

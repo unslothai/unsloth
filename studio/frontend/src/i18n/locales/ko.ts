@@ -5,6 +5,29 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ko = {
+  picker: {
+    onDevice: "기기",
+    huggingFace: "Hugging Face",
+    retry: "다시 시도",
+    offlineTitle: "오프라인 상태입니다",
+    offlineBody: "캐시된 또는 로컬 {noun}을 사용하려면 '기기'로 전환하세요.",
+    offlineSwitchDevice: "기기",
+    searchAriaLabel: "{noun} 검색",
+    multipleMatches:
+      "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
+    rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
+    rateLimitedBody: "잠시 기다린 후 {noun} 검색을 다시 시도하세요.",
+    hfToken: {
+      label: "HF 토큰",
+      saved: "저장됨",
+      add: "추가",
+      savedAriaLabel: "Hugging Face 토큰이 저장되었습니다",
+      addAriaLabel: "Hugging Face 토큰 설정",
+      savedHint: "토큰이 저장되었습니다. 사용할 때 접근 권한을 확인합니다.",
+      addHint:
+        "비공개 및 접근 제한 리포지토리를 이용하려면 토큰을 설정하세요.",
+    },
+  },
   common: {
     cancel: "취소",
     close: "닫기",
@@ -555,6 +578,141 @@ export const ko = {
   studio: {
     routeTitle: "학습",
     title: "파인튜닝 스튜디오",
+    wizard: {
+      modelTitle: "모델",
+      modelDescription: "모델과 학습 방법 선택",
+      datasetTitle: "데이터셋",
+      datasetDescription: "학습 데이터 선택 또는 업로드",
+      paramsTitle: "매개변수",
+      paramsDescription: "학습 매개변수 구성",
+      configTitle: "구성",
+      configDescription: "구성 저장 및 불러오기",
+      modelLabel: "모델",
+      methodLabel: "방법",
+      hfTokenLabel: "Hugging Face 토큰",
+      hfDatasetLabel: "데이터셋",
+      uploadLocalLabel: "또는 로컬 파일 업로드",
+      sourceBrowse: "찾아보기",
+      releaseToUpload: "놓으면 업로드됩니다",
+      loadYaml: "YAML 불러오기",
+      saveYaml: "YAML 저장",
+      resetDefaults: "기본값으로 재설정",
+      cachedModelGoneTitle: "캐시된 모델을 더 이상 사용할 수 없습니다",
+      cachedModelGoneDescription:
+        "모델 파일이 더 이상 이 기기에 없어 학습 시 다시 다운로드합니다.",
+      cachedDatasetGoneTitle: "캐시된 데이터셋을 더 이상 사용할 수 없습니다",
+      cachedDatasetGoneDescription:
+        "데이터셋 파일이 더 이상 이 기기에 없어 학습 시 다시 다운로드합니다.",
+    },
+    preview: {
+      title: "실행 미리보기",
+      ready: "준비됨",
+      notReady: "준비 안 됨",
+      modelPending: "모델 선택 대기",
+      datasetPending: "데이터셋 선택 대기",
+      method: "방법",
+      length: "길이",
+      steps: "{count}스텝",
+      epoch: "{count}에포크",
+      epochs: "{count}에포크",
+      batch: "배치",
+      context: "컨텍스트",
+      lr: "LR",
+      hardware: "하드웨어",
+      noGpu: "GPU가 감지되지 않았습니다",
+      hfToken: "HF 토큰",
+      saved: "저장됨",
+      notSet: "설정 안 됨",
+      files: "파일",
+      model: "모델",
+      dataset: "데이터셋",
+      downloadsOnStart: "시작 시 다운로드",
+      continuesOnStart: "시작 시 이어서 다운로드",
+      noticeModelDownload:
+        "이 모델은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
+      noticeModelPartial:
+        "모델을 불러오기 전에 완료되지 않은 다운로드를 마칩니다.",
+      noticeDatasetDownload:
+        "이 데이터셋은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
+      noticeDatasetPartial:
+        "데이터셋을 읽기 전에 완료되지 않은 다운로드를 마칩니다.",
+    },
+    datasetPicker: {
+      noun: "데이터셋",
+      selectDataset: "데이터셋 선택",
+      hubPlaceholder: "Hugging Face 데이터셋 검색...",
+      devicePlaceholder: "로컬 데이터셋 검색...",
+      useAsHubDataset: "Hugging Face 데이터셋으로 사용",
+      useAsLocalPath: "로컬 경로로 사용",
+      hfCacheLabel: "HF 캐시",
+      scanningLocal: "이 기기의 데이터셋을 스캔하는 중…",
+      couldntScan: "로컬 데이터셋을 스캔하지 못했습니다",
+      someLocationsUnscanned:
+        "일부 데이터셋 위치를 스캔하지 못했습니다.",
+      noLocalDatasets:
+        "아직 이 기기에 데이터셋이 없습니다. 허브에서 다운로드하거나, 레시피에서 만들거나, 파일을 업로드하세요.",
+      searchingHub: "Hugging Face 검색 중…",
+      noDatasetsFound: "데이터셋을 찾을 수 없습니다.",
+      tokenRejectedTitle: "Hugging Face 토큰이 거부되었습니다",
+      tokenRejectedBody:
+        "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
+      hubUnreachable: "Hugging Face에 연결하지 못했습니다",
+    },
+    modelPicker: {
+      noun: "모델",
+      selectModel: "모델 선택",
+      hubPlaceholder: "Hugging Face ID 검색 또는 붙여넣기...",
+      devicePlaceholder: "로컬 모델 검색 또는 폴더 경로 붙여넣기...",
+      useAsHubModel: "Hugging Face 모델로 사용",
+      useAsLocalPath: "로컬 경로로 사용",
+      hfCacheLabel: "HF 캐시",
+      scanningLocal: "로컬 모델을 스캔하는 중…",
+      couldntScan: "로컬 모델을 스캔하지 못했습니다",
+      someLocationsUnscanned: "일부 로컬 위치를 스캔하지 못했습니다.",
+      noLocalModels: "로컬 모델을 찾을 수 없습니다.",
+      noLocalModelsHint:
+        "위에 폴더 경로를 붙여넣거나 Hugging Face로 전환하세요.",
+      searchingHub: "Hugging Face 검색 중…",
+      noModelsFound: "모델을 찾을 수 없습니다.",
+      tokenRejectedTitle: "Hugging Face 토큰이 거부되었습니다",
+      tokenRejectedBody:
+        "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
+      hubUnreachable: "Hugging Face에 연결하지 못했습니다",
+      cantUseModel: "이 모델은 학습에 사용할 수 없습니다",
+      reasonEmptyId: "모델 ID 또는 로컬 모델 경로를 입력하세요.",
+      reasonGguf: "GGUF 모델은 학습에 사용할 수 없습니다.",
+      reasonAdapter:
+        "어댑터 출력은 기본 학습 모델로 사용할 수 없습니다.",
+      reasonNotTrainable: "기기에 있는 이 모델은 학습할 수 없습니다.",
+      reasonUnsupportedFormat:
+        "이 모델 형식은 학습에서 지원되지 않습니다.",
+      vramNeeds: "약 {est}GB VRAM 필요 (GPU: {total}GB)",
+      vramTight: "약 {est}GB VRAM ({total}GB에서 빠듯함)",
+      vramApprox: "약 {est}GB VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4비트 양자화. VRAM을 가장 적게 사용하며 가장 빠르게 시작합니다.",
+        note: "4비트",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16비트 어댑터. 품질과 메모리 사용량의 균형을 맞춥니다.",
+        note: "16비트",
+      },
+      full: {
+        label: "전체 파인튜닝",
+        hint:
+          "모든 가중치를 학습합니다. 품질이 가장 높지만 VRAM이 가장 많이 필요합니다.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "지속 사전학습",
+        hint: "새로운 도메인이나 언어를 위해 사전학습을 이어갑니다.",
+        note: "지속",
+      },
+    },
     subtitles: {
       configure: "구성하고 학습 시작",
       trainingInProgress: "학습 진행 중",
@@ -638,10 +796,11 @@ export const ko = {
       searching: "검색 중...",
       noDatasetsFound: "데이터셋을 찾을 수 없습니다",
       loadingLocalDatasets: "로컬 데이터셋을 로딩하는 중...",
+      sourceAriaLabel: "데이터셋 소스",
       failedToLoadLocalDatasets: "로컬 데이터셋을 불러오지 못했습니다.",
       noLocalDatasetsYet: "아직 로컬 데이터셋이 없습니다.",
       noLocalDatasetsMatchSearch: "검색과 일치하는 로컬 데이터셋이 없습니다.",
-      openDataRecipes: "Data Recipes 열기",
+      openDataRecipes: "데이터 레시피 열기",
       browsingSource: "{browsing} 탐색 중. 현재 선택은 {current}로 유지됩니다.",
       localDatasets: "로컬 데이터셋",
       localDataset: "로컬 데이터셋",
@@ -663,6 +822,48 @@ export const ko = {
       targetFormat: "대상 형식",
       targetFormatTooltip:
         "학습 데이터의 형식입니다. 자동 감지는 대부분의 데이터셋에서 작동합니다.",
+      streamingInfoAriaLabel: "데이터셋 스트리밍 정보",
+      streaming: {
+        label: "스트리밍 활성화",
+        description:
+          "Hugging Face 텍스트 데이터셋을 다운로드하지 않고 스트리밍합니다.",
+        unavailable: "스트리밍을 사용할 수 없습니다. 활성화하려면:",
+        completionsUnavailable:
+          "데이터셋 스트리밍이 활성화된 동안에는 사용할 수 없습니다.",
+        blockers: {
+          source:
+            "Hugging Face 데이터셋을 사용하세요(로컬 업로드 또는 S3 소스는 사용할 수 없음).",
+          maxSteps:
+            "최대 스텝을 0보다 크게 설정하세요. 스트리밍 데이터셋은 길이를 미리 알 수 없습니다.",
+          trainOnCompletions: '"어시스턴트 응답만"을 끄세요.',
+          evalSplit:
+            "별도의 평가 분할을 선택하세요. 평가가 켜져 있지만 학습 분할과 다른 평가 분할이 설정되지 않았습니다.",
+          visionModel: "비전 모델은 스트리밍을 지원하지 않습니다.",
+          audioModel: "오디오 모델은 스트리밍을 지원하지 않습니다.",
+          embeddingModel:
+            "임베딩 모델은 스트리밍을 지원하지 않습니다(학습에 전체 데이터셋이 필요함).",
+          imageDataset:
+            "이 데이터셋에는 이미지가 포함된 것으로 보여 스트리밍할 수 없습니다.",
+          audioDataset:
+            "이 데이터셋에는 오디오가 포함된 것으로 보여 스트리밍할 수 없습니다.",
+          appleSilicon:
+            "Apple Silicon(MLX)에서는 아직 스트리밍을 지원하지 않습니다.",
+        },
+        options: {
+          trainOnCompletions: "어시스턴트 응답만",
+          evaluation: "평가(별도의 평가 분할 필요)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "스트리밍을 껐습니다. 스트리밍에는 0보다 큰 고정 최대 스텝이 필요합니다.",
+          adjusted:
+            "스트리밍에 맞게 조정했습니다. 호환되지 않는 옵션을 비활성화했습니다: {options}.",
+          needsMaxSteps:
+            "스트리밍에는 고정 최대 스텝이 필요합니다(스트리밍 데이터셋은 길이를 미리 알 수 없음). 먼저 최대 스텝을 0보다 크게 설정하세요.",
+          enabledAdjusted:
+            "스트리밍을 활성화했습니다. 호환되지 않는 옵션을 비활성화했습니다: {options}.",
+        },
+      },
       auto: "자동",
       rawText: "원시 텍스트",
       trainSplitStart: "학습 분할 시작",
@@ -718,6 +919,11 @@ export const ko = {
     params: {
       title: "매개변수",
       description: "학습 하이퍼파라미터를 구성하세요",
+      mode: {
+        simple: "간단",
+        advanced: "고급",
+        ariaLabel: "매개변수 모드",
+      },
       projectName: "프로젝트 이름",
       optional: "선택 사항",
       projectNameDescription:
@@ -823,6 +1029,13 @@ export const ko = {
       starting: "시작 중...",
       loadingModel: "모델을 로딩하는 중...",
       checkingDataset: "데이터셋을 확인하는 중...",
+      chooseModel: "모델 선택",
+      chooseDataset: "데이터셋 선택",
+      chooseModelAndDataset: "모델과 데이터셋 선택",
+      modelUnverified:
+        "이 모델의 설정을 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인한 후 다시 시도하세요.",
+      datasetUnverified:
+        "데이터셋이 이 모델과 호환되는지 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인하세요. 학습을 시작하면 다시 확인합니다.",
       configLabel: "학습 구성",
       upload: "업로드",
       uploadConfigTooltip: "저장된 YAML 구성 불러오기",
@@ -834,6 +1047,7 @@ export const ko = {
       failedToLoadConfig: "구성을 불러오지 못했습니다",
       invalidYamlFile: "잘못된 YAML 파일입니다",
       failedToReadFile: "파일을 읽지 못했습니다",
+      failedToSaveConfig: "구성을 저장하지 못했습니다",
       parametersReset: "매개변수가 모델 기본값으로 재설정되었습니다",
       audioIncompatible:
         "이 모델은 오디오를 지원하지 않습니다. 오디오를 지원하는 모델로 전환하거나 오디오가 아닌 데이터셋을 선택하세요.",
@@ -857,6 +1071,18 @@ export const ko = {
     },
     history: {
       title: "기록",
+      filesDeleted: "파일이 삭제되었습니다",
+      deleteArtifactsLabel: "디스크의 어댑터 파일도 삭제",
+      deleteArtifactsDescription:
+        "저장된 어댑터와 체크포인트를 포함한 이 실행의 출력 폴더를 삭제합니다.",
+      deleteArtifactsSharedNote:
+        "다른 실행이 이 출력 폴더를 공유합니다. 이 폴더를 사용하는 마지막 실행이 삭제될 때까지 파일이 유지됩니다.",
+      artifactsKeptShared:
+        "실행이 삭제되었습니다. 다른 실행이 같은 폴더를 사용하므로 어댑터 파일은 유지되었습니다.",
+      deleteArtifactsActiveError:
+        "진행 중인 학습 실행에서 이 파일을 사용하고 있습니다. 파일을 삭제하기 전에 학습을 중지하세요.",
+      deleteArtifactsFailed:
+        "실행은 삭제되었지만 관련 파일을 제거하지 못했습니다.",
       emptyTitle: "아직 학습 실행이 없습니다",
       emptyDescription:
         "아직 학습 실행이 없습니다. 구성 탭에서 첫 학습 실행을 시작하세요.",

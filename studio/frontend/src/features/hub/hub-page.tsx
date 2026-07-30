@@ -988,7 +988,6 @@ export function ModelsPage() {
   const {
     scrollRef,
     sentinelRef,
-    manualFetchAvailable: discoverManualFetchAvailable,
     fetchMoreManually: fetchMoreDiscoverManually,
   } = useHubInfiniteScroll(
     fetchMore,
@@ -1326,7 +1325,6 @@ export function ModelsPage() {
         scannedCount,
         loadingIntentCount: discoverFetchIntent,
         hasMore,
-        manualFetchAvailable: discoverManualFetchAvailable,
         hasActiveFilters:
           !isFeedMode &&
           (deferredFormatFilter !== "all" ||
@@ -1356,7 +1354,6 @@ export function ModelsPage() {
       scannedCount,
       discoverFetchIntent,
       hasMore,
-      discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilter,
       inventoryTypeFilter,

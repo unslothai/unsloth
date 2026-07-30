@@ -245,6 +245,182 @@ def test_unavailable_probe_uses_cached_shorthand_model(tmp_path):
     assert pin == ("unsloth/test", str(snapshot.resolve()))
 
 
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 429])
+def test_client_error_probe_uses_unadvertised_cached_model(tmp_path, status_code):
+    route = _load_route_module(f"training_route_client_error_cache_{status_code}")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"x")
+    metadata_error = HTTPException(
+        status_code = status_code,
+        detail = f"hub metadata error {status_code}",
+    )
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = metadata_error,
+    ):
+        pin = route._reject_untrainable_model_request(_request())
+
+    assert pin == ("unsloth/test", str(snapshot.resolve()))
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 429])
+def test_client_error_probe_without_cache_preserves_error(status_code):
+    route = _load_route_module(f"training_route_client_error_no_cache_{status_code}")
+    metadata_error = HTTPException(
+        status_code = status_code,
+        detail = f"hub metadata error {status_code}",
+    )
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = metadata_error,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(_request())
+
+    assert exc_info.value is metadata_error
+
+
+def test_client_error_probe_with_incomplete_cache_preserves_error(tmp_path):
+    route = _load_route_module("training_route_client_error_incomplete_cache")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    metadata_error = HTTPException(
+        status_code = 403,
+        detail = "hub metadata error 403",
+    )
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = metadata_error,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(_request())
+
+    assert exc_info.value is metadata_error
+
+
+@pytest.mark.parametrize(
+    "index_mode",
+    ["absent", "references-missing-shard", "omits-missing-shard"],
+)
+def test_client_error_probe_with_partial_shards_preserves_error(
+    tmp_path,
+    index_mode,
+):
+    route = _load_route_module(
+        f"training_route_client_error_partial_shards_{index_mode}"
+    )
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    first_shard = "model-00001-of-00002.safetensors"
+    second_shard = "model-00002-of-00002.safetensors"
+    (snapshot / first_shard).write_bytes(b"x")
+    if index_mode != "absent":
+        indexed_shards = (
+            [first_shard, second_shard]
+            if index_mode == "references-missing-shard"
+            else [first_shard]
+        )
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "weight_map": {
+                        f"layer.{index}": shard
+                        for index, shard in enumerate(indexed_shards)
+                    },
+                },
+            )
+        )
+    metadata_error = HTTPException(
+        status_code = 403,
+        detail = "hub metadata error 403",
+    )
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = metadata_error,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(_request())
+
+    assert exc_info.value is metadata_error
+
+
+def test_client_error_probe_uses_complete_sharded_cache(tmp_path):
+    route = _load_route_module("training_route_client_error_complete_shards")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    first_shard = "model-00001-of-00002.safetensors"
+    second_shard = "model-00002-of-00002.safetensors"
+    (snapshot / first_shard).write_bytes(b"x")
+    (snapshot / second_shard).write_bytes(b"x")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "layer.0": first_shard,
+                    "layer.1": second_shard,
+                },
+            },
+        )
+    )
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = HTTPException(status_code = 403, detail = "unavailable"),
+    ):
+        pin = route._reject_untrainable_model_request(_request())
+
+    assert pin == ("unsloth/test", str(snapshot.resolve()))
+
+
+def test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights(tmp_path):
+    route = _load_route_module("training_route_incomplete_safe_index_with_pytorch")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    first_shard = "model-00001-of-00002.safetensors"
+    second_shard = "model-00002-of-00002.safetensors"
+    (snapshot / first_shard).write_bytes(b"x")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "layer.0": first_shard,
+                    "layer.1": second_shard,
+                },
+            },
+        )
+    )
+    (snapshot / "pytorch_model.bin").write_bytes(b"x")
+    metadata_error = HTTPException(
+        status_code = 403,
+        detail = "hub metadata error 403",
+    )
+
+    with patch.object(
+        route,
+        "_remote_model_is_adapter",
+        side_effect = metadata_error,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(_request())
+
+    assert exc_info.value is metadata_error
+
+
 @pytest.mark.parametrize("offline", [False, True])
 def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     from core.training import worker
@@ -339,6 +515,20 @@ def test_remote_adapter_probe_uses_token_and_shorthand():
         token = "hf-token",
         timeout = route._REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
     )
+
+
+def test_remote_adapter_probe_reports_rate_limit_without_token_guidance():
+    route = _load_route_module("training_route_remote_adapter_rate_limit")
+    rate_limit_error = RuntimeError("rate limited")
+    rate_limit_error.response = SimpleNamespace(status_code = 429)
+
+    with patch("huggingface_hub.model_info", side_effect = rate_limit_error):
+        with pytest.raises(HTTPException) as exc_info:
+            route._remote_model_is_adapter("test", "hf-token")
+
+    assert exc_info.value.status_code == 429
+    assert "rate-limited" in exc_info.value.detail.lower()
+    assert "access token" not in exc_info.value.detail.lower()
 
 
 def test_optimizer_checkpoint_does_not_make_adapter_trainable(tmp_path):

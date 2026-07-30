@@ -12,7 +12,7 @@ import {
 } from "@/config/training";
 import { authFetch } from "@/features/auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
-import { translate } from "@/i18n";
+import { getLocale, translate } from "@/i18n";
 import { isAdapterMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
@@ -259,21 +259,47 @@ function streamingCompatiblePatch(
   return patch;
 }
 
+function formatStreamingDisabledOptions(
+  trainOnCompletions: boolean,
+  evaluation: boolean,
+): string {
+  const options: string[] = [];
+  if (trainOnCompletions) {
+    options.push(
+      translate("studio.dataset.streaming.options.trainOnCompletions"),
+    );
+  }
+  if (evaluation) {
+    options.push(translate("studio.dataset.streaming.options.evaluation"));
+  }
+  if (typeof Intl.ListFormat !== "function") {
+    return options.join(", ");
+  }
+  return new Intl.ListFormat(getLocale(), {
+    style: "long",
+    type: "conjunction",
+  }).format(options);
+}
+
 // streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
 // toast when it does, so the indirect setters (split / eval-split / max-steps /
 // eval-steps) match setDatasetStreaming's "tell the user what changed" behavior.
 function notifyStreamingCompat(patch: Partial<TrainingConfigState>): void {
   if (patch.datasetStreaming === false) {
-    toast.info("Streaming turned off: streaming needs a fixed Max Steps > 0.");
+    toast.info(
+      translate("studio.dataset.streaming.notifications.turnedOffMaxSteps"),
+    );
     return;
   }
-  const disabled = [
-    patch.trainOnCompletions === false && "assistant-completions-only",
-    patch.evalSteps === 0 && "evaluation (needs a separate eval split)",
-  ].filter(Boolean);
-  if (disabled.length > 0) {
+  const options = formatStreamingDisabledOptions(
+    patch.trainOnCompletions === false,
+    patch.evalSteps === 0,
+  );
+  if (options) {
     toast.info(
-      `Adjusted for streaming. Disabled incompatible options: ${disabled.join(", ")}.`,
+      translate("studio.dataset.streaming.notifications.adjusted", {
+        options,
+      }),
     );
   }
 }
@@ -1093,7 +1119,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.maxSteps <= 0) {
             set({ datasetStreaming: false });
             toast.warning(
-              "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
+              translate("studio.dataset.streaming.notifications.needsMaxSteps"),
             );
             return;
           }
@@ -1108,12 +1134,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
 
           if (dropsTrainOnCompletions || dropsEval) {
-            const disabled = [
-              dropsTrainOnCompletions && "assistant-completions-only",
-              dropsEval && "evaluation (needs a separate eval split)",
-            ].filter(Boolean);
+            const options = formatStreamingDisabledOptions(
+              dropsTrainOnCompletions,
+              dropsEval,
+            );
             toast.info(
-              `Streaming enabled. Disabled incompatible options: ${disabled.join(", ")}.`,
+              translate(
+                "studio.dataset.streaming.notifications.enabledAdjusted",
+                { options },
+              ),
             );
           }
         },
@@ -1363,12 +1392,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       },
       partialize: partializePersistedState,
       onRehydrateStorage: () => (state) => {
-        // datasetStreaming is persisted, but constraint-coupled fields like
-        // trainOnCompletions / maxSteps / evalSteps are NON_PERSISTED and
-        // rehydrate to defaults. That can resurrect an invalid combo (e.g.
-        // streaming=true with a default trainOnCompletions) that the backend
-        // rejects with 422. Reconcile immediately on load instead of relying
-        // on a post-mount effect.
+        // datasetStreaming, maxSteps, and evalSteps persist, while
+        // trainOnCompletions rehydrates to its default. That can resurrect an
+        // invalid combination that the backend rejects with 422. Reconcile
+        // immediately on load instead of relying on a post-mount effect.
         if (!state) return;
         const patch = streamingCompatiblePatch(state);
         if (Object.keys(patch).length > 0) {

@@ -10,6 +10,18 @@ const LOCAL_DATASET_REFERENCE_PATTERN = /\.(jsonl|json|csv|parquet|arrow)$/i;
 const LOCAL_DATASET_UUID_PREFIX_PATTERN = /^[a-f0-9]{32}_(.+)$/;
 const POSITIVE_INTEGER_PATTERN = /^\d+$/;
 
+export type DatasetStreamingBlocker =
+  | "source"
+  | "maxSteps"
+  | "trainOnCompletions"
+  | "evalSplit"
+  | "visionModel"
+  | "audioModel"
+  | "embeddingModel"
+  | "imageDataset"
+  | "audioDataset"
+  | "appleSilicon";
+
 export function getFileExtension(fileName: string): string {
   const extensionStart = fileName.lastIndexOf(".");
   return extensionStart >= 0
@@ -80,20 +92,16 @@ export function getDatasetStreamingBlockers({
   isVisionModel: boolean;
   maxSteps: number;
   trainOnCompletions: boolean;
-}): string[] {
-  const blockers: string[] = [];
+}): DatasetStreamingBlocker[] {
+  const blockers: DatasetStreamingBlocker[] = [];
   if (datasetSource !== "huggingface") {
-    blockers.push(
-      "Use a Hugging Face dataset (not a local upload or S3 source).",
-    );
+    blockers.push("source");
   }
   if (maxSteps <= 0) {
-    blockers.push(
-      "Set Max Steps > 0 — streaming datasets have no known length.",
-    );
+    blockers.push("maxSteps");
   }
   if (trainOnCompletions) {
-    blockers.push('Turn off "Assistant completions only".');
+    blockers.push("trainOnCompletions");
   }
   if (
     !hasSeparateStreamingEvalSplit({
@@ -102,29 +110,25 @@ export function getDatasetStreamingBlockers({
       datasetEvalSplit,
     })
   ) {
-    blockers.push(
-      "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
-    );
+    blockers.push("evalSplit");
   }
   if (isVisionModel) {
-    blockers.push("Vision models don't support streaming.");
+    blockers.push("visionModel");
   }
   if (isAudioModel) {
-    blockers.push("Audio models don't support streaming.");
+    blockers.push("audioModel");
   }
   if (isEmbeddingModel) {
-    blockers.push(
-      "Embedding models don't support streaming (training needs the full dataset).",
-    );
+    blockers.push("embeddingModel");
   }
   if (isDatasetImage) {
-    blockers.push("This dataset looks like images, which can't stream.");
+    blockers.push("imageDataset");
   }
   if (isDatasetAudio) {
-    blockers.push("This dataset looks like audio, which can't stream.");
+    blockers.push("audioDataset");
   }
   if (isAppleSilicon) {
-    blockers.push("Streaming isn't supported on Apple Silicon (MLX) yet.");
+    blockers.push("appleSilicon");
   }
   return blockers;
 }

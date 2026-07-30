@@ -5,6 +5,32 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const fr = {
+  picker: {
+    onDevice: "Sur l'appareil",
+    huggingFace: "Hugging Face",
+    retry: "Réessayer",
+    offlineTitle: "Vous êtes hors ligne",
+    offlineBody:
+      "Passez à « Appareil » pour utiliser des {noun} en cache ou locaux.",
+    offlineSwitchDevice: "Appareil",
+    searchAriaLabel: "Rechercher des {noun}",
+    multipleMatches:
+      "Plusieurs {noun} correspondent. Choisissez-en un dans la liste.",
+    rateLimitedTitle: "Limite de requêtes Hugging Face atteinte",
+    rateLimitedBody:
+      "Patientez un instant, puis relancez la recherche de {noun}.",
+    hfToken: {
+      label: "Token HF",
+      saved: "Enregistré",
+      add: "Ajouter",
+      savedAriaLabel: "Token Hugging Face enregistré",
+      addAriaLabel: "Définir le token Hugging Face",
+      savedHint:
+        "Token enregistré. L'accès est vérifié au moment de son utilisation.",
+      addHint:
+        "Définissez un token pour accéder aux dépôts privés et à accès restreint.",
+    },
+  },
   common: {
     cancel: "Annuler",
     close: "Fermer",
@@ -570,6 +596,145 @@ export const fr = {
   studio: {
     routeTitle: "Entraîner",
     title: "Studio de fine-tuning",
+    wizard: {
+      modelTitle: "Modèle",
+      modelDescription: "Sélectionner le modèle et la méthode d'entraînement",
+      datasetTitle: "Jeu de données",
+      datasetDescription:
+        "Sélectionner ou téléverser des données d'entraînement",
+      paramsTitle: "Paramètres",
+      paramsDescription: "Configurer les paramètres d'entraînement",
+      configTitle: "Configuration",
+      configDescription: "Enregistrer et charger des configurations",
+      modelLabel: "Modèle",
+      methodLabel: "Méthode",
+      hfTokenLabel: "Token Hugging Face",
+      hfDatasetLabel: "Jeu de données",
+      uploadLocalLabel: "Ou téléverser un fichier local",
+      sourceBrowse: "Parcourir",
+      releaseToUpload: "Relâchez pour téléverser",
+      loadYaml: "Charger le YAML",
+      saveYaml: "Enregistrer le YAML",
+      resetDefaults: "Rétablir les valeurs par défaut",
+      cachedModelGoneTitle: "Modèle en cache indisponible",
+      cachedModelGoneDescription:
+        "Les fichiers du modèle ne sont plus sur cet appareil. L'entraînement les téléchargera à nouveau.",
+      cachedDatasetGoneTitle: "Jeu de données en cache indisponible",
+      cachedDatasetGoneDescription:
+        "Les fichiers du jeu de données ne sont plus sur cet appareil. L'entraînement les téléchargera à nouveau.",
+    },
+    preview: {
+      title: "Aperçu de l'exécution",
+      ready: "Prêt",
+      notReady: "Pas prêt",
+      modelPending: "Modèle en attente",
+      datasetPending: "Jeu de données en attente",
+      method: "Méthode",
+      length: "Durée",
+      steps: "{count} étapes",
+      epoch: "{count} époque",
+      epochs: "{count} époques",
+      batch: "Lot",
+      context: "Contexte",
+      lr: "LR",
+      hardware: "Matériel",
+      noGpu: "Aucun GPU détecté",
+      hfToken: "Token HF",
+      saved: "Enregistré",
+      notSet: "Non défini",
+      files: "Fichiers",
+      model: "Modèle",
+      dataset: "Jeu de données",
+      downloadsOnStart: "Téléchargement au démarrage",
+      continuesOnStart: "Reprise au démarrage",
+      noticeModelDownload:
+        "Ce modèle n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
+      noticeModelPartial:
+        "L'entraînement terminera le téléchargement partiel du modèle avant de le charger.",
+      noticeDatasetDownload:
+        "Ce jeu de données n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
+      noticeDatasetPartial:
+        "L'entraînement terminera le téléchargement partiel du jeu de données avant de le lire.",
+    },
+    datasetPicker: {
+      noun: "jeux de données",
+      selectDataset: "Sélectionner un jeu de données",
+      hubPlaceholder: "Rechercher des jeux de données Hugging Face...",
+      devicePlaceholder: "Rechercher des jeux de données locaux...",
+      useAsHubDataset: "Utiliser comme jeu de données Hugging Face",
+      useAsLocalPath: "Utiliser comme chemin local",
+      hfCacheLabel: "Cache HF",
+      scanningLocal: "Recherche des jeux de données sur cet appareil…",
+      couldntScan: "Impossible d'analyser les jeux de données locaux",
+      someLocationsUnscanned:
+        "Certains emplacements de jeux de données n'ont pas pu être analysés.",
+      noLocalDatasets:
+        "Rien sur cet appareil pour le moment. Téléchargez un jeu de données depuis le Hub, créez-en un dans Recettes ou téléversez un fichier.",
+      searchingHub: "Recherche sur Hugging Face…",
+      noDatasetsFound: "Aucun jeu de données trouvé.",
+      tokenRejectedTitle: "Token Hugging Face refusé",
+      tokenRejectedBody:
+        "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
+      hubUnreachable: "Impossible de joindre Hugging Face",
+    },
+    modelPicker: {
+      noun: "modèles",
+      selectModel: "Sélectionner un modèle",
+      hubPlaceholder: "Rechercher ou coller un ID Hugging Face...",
+      devicePlaceholder:
+        "Rechercher des modèles locaux ou coller un chemin de dossier...",
+      useAsHubModel: "Utiliser comme modèle Hugging Face",
+      useAsLocalPath: "Utiliser comme chemin local",
+      hfCacheLabel: "Cache HF",
+      scanningLocal: "Recherche des modèles locaux…",
+      couldntScan: "Impossible d'analyser les modèles locaux",
+      someLocationsUnscanned:
+        "Certains emplacements locaux n'ont pas pu être analysés.",
+      noLocalModels: "Aucun modèle local trouvé.",
+      noLocalModelsHint:
+        "Collez un chemin de dossier ci-dessus ou passez à Hugging Face.",
+      searchingHub: "Recherche sur Hugging Face…",
+      noModelsFound: "Aucun modèle trouvé.",
+      tokenRejectedTitle: "Token Hugging Face refusé",
+      tokenRejectedBody:
+        "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
+      hubUnreachable: "Impossible de joindre Hugging Face",
+      cantUseModel: "Impossible d'utiliser le modèle pour l'entraînement",
+      reasonEmptyId:
+        "Saisissez un ID de modèle ou le chemin d'un modèle local.",
+      reasonGguf: "Les modèles GGUF ne peuvent pas être entraînés.",
+      reasonAdapter:
+        "Les sorties d'adaptateur ne peuvent pas servir de modèles de base pour l'entraînement.",
+      reasonNotTrainable:
+        "Ce modèle présent sur l'appareil ne peut pas être entraîné.",
+      reasonUnsupportedFormat:
+        "Ce format de modèle n'est pas pris en charge pour l'entraînement.",
+      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Go)",
+      vramTight: "Environ {est} Go de VRAM (limite sur {total} Go)",
+      vramApprox: "Environ {est} Go de VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "Quantification 4 bits. VRAM minimale et démarrage le plus rapide.",
+        note: "4 bits",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "Adaptateurs 16 bits. Équilibre entre qualité et mémoire.",
+        note: "16 bits",
+      },
+      full: {
+        label: "Fine-tuning complet",
+        hint: "Entraîne tous les poids. Qualité maximale, mais nécessite le plus de VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Pré-entraînement continu",
+        hint: "Pré-entraînement continu pour de nouveaux domaines ou de nouvelles langues.",
+        note: "continu",
+      },
+    },
     subtitles: {
       configure: "Configurer et démarrer l'entraînement",
       trainingInProgress: "Entraînement en cours",
@@ -646,6 +811,7 @@ export const fr = {
       title: "Jeu de données",
       description: "Sélectionnez ou téléversez des données d'entraînement",
       source: "Source du jeu de données",
+      sourceAriaLabel: "Source du jeu de données",
       chooseDataset: "Choisir un jeu de données",
       chooseDatasetTooltip:
         "Utilisez les onglets de la fenêtre pour basculer entre Hugging Face et les sorties de recettes locales.",
@@ -660,7 +826,7 @@ export const fr = {
       noLocalDatasetsYet: "Aucun jeu de données local pour le moment.",
       noLocalDatasetsMatchSearch:
         "Aucun jeu de données local ne correspond à la recherche.",
-      openDataRecipes: "Ouvrir Data Recipes",
+      openDataRecipes: "Ouvrir les recettes de données",
       browsingSource:
         "Navigation dans {browsing}. La sélection actuelle reste {current}.",
       localDatasets: "Jeux de données locaux",
@@ -683,6 +849,53 @@ export const fr = {
       targetFormat: "Format cible",
       targetFormatTooltip:
         "Format de vos données d'entraînement. La détection automatique fonctionne pour la plupart des jeux de données.",
+      streamingInfoAriaLabel:
+        "Informations sur le streaming du jeu de données",
+      streaming: {
+        label: "Activer le streaming",
+        description:
+          "Utilisez les jeux de données textuels de Hugging Face en streaming au lieu de les télécharger.",
+        unavailable: "Streaming indisponible. Pour l'activer :",
+        completionsUnavailable:
+          "Indisponible lorsque le streaming du jeu de données est activé.",
+        blockers: {
+          source:
+            "Utilisez un jeu de données Hugging Face (pas un téléversement local ni une source S3).",
+          maxSteps:
+            "Définissez le nombre max d'étapes > 0 : les jeux de données en streaming n'ont pas de longueur connue.",
+          trainOnCompletions:
+            'Désactivez "Réponses de l’assistant uniquement".',
+          evalSplit:
+            "Choisissez un split d'évaluation distinct : l'évaluation est activée, mais aucun split distinct n'est défini.",
+          visionModel:
+            "Les modèles de vision ne prennent pas en charge le streaming.",
+          audioModel:
+            "Les modèles audio ne prennent pas en charge le streaming.",
+          embeddingModel:
+            "Les modèles d'embeddings ne prennent pas en charge le streaming (l'entraînement nécessite le jeu de données complet).",
+          imageDataset:
+            "Ce jeu de données semble contenir des images, ce qui empêche son utilisation en streaming.",
+          audioDataset:
+            "Ce jeu de données semble contenir de l'audio, ce qui empêche son utilisation en streaming.",
+          appleSilicon:
+            "Le streaming n'est pas encore pris en charge sur Apple Silicon (MLX).",
+        },
+        options: {
+          trainOnCompletions: "réponses de l'assistant uniquement",
+          evaluation:
+            "évaluation (nécessite un split d'évaluation distinct)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "Streaming désactivé : il nécessite un nombre max d'étapes fixe > 0.",
+          adjusted:
+            "Paramètres ajustés pour le streaming. Options incompatibles désactivées : {options}.",
+          needsMaxSteps:
+            "Le streaming nécessite un nombre max d'étapes fixe (les jeux de données en streaming n'ont pas de longueur connue). Définissez d'abord le nombre max d'étapes > 0.",
+          enabledAdjusted:
+            "Streaming activé. Options incompatibles désactivées : {options}.",
+        },
+      },
       auto: "Auto",
       rawText: "Texte brut",
       trainSplitStart: "Début du split d'entraînement",
@@ -739,6 +952,11 @@ export const fr = {
     params: {
       title: "Paramètres",
       description: "Configurez les hyperparamètres d'entraînement",
+      mode: {
+        simple: "Simple",
+        advanced: "Avancé",
+        ariaLabel: "Mode des paramètres",
+      },
       projectName: "Nom du projet",
       optional: "Facultatif",
       projectNameDescription:
@@ -852,6 +1070,13 @@ export const fr = {
       starting: "Démarrage...",
       loadingModel: "Chargement du modèle...",
       checkingDataset: "Vérification du jeu de données...",
+      chooseModel: "Choisir un modèle",
+      chooseDataset: "Choisir un jeu de données",
+      chooseModelAndDataset: "Choisir un modèle et un jeu de données",
+      modelUnverified:
+        "Impossible de vérifier les paramètres de ce modèle. Vérifiez votre connexion ou votre token Hugging Face, puis réessayez.",
+      datasetUnverified:
+        "Impossible de vérifier si le jeu de données est compatible avec ce modèle. Vérifiez votre connexion ou votre token Hugging Face ; le démarrage de l'entraînement relancera la vérification.",
       configLabel: "Configuration d'entraînement",
       upload: "Téléverser",
       uploadConfigTooltip: "Charger une configuration YAML enregistrée",
@@ -863,6 +1088,7 @@ export const fr = {
       failedToLoadConfig: "Échec du chargement de la configuration",
       invalidYamlFile: "Fichier YAML invalide",
       failedToReadFile: "Échec de la lecture du fichier",
+      failedToSaveConfig: "Échec de l'enregistrement de la configuration",
       parametersReset: "Paramètres réinitialisés aux valeurs par défaut du modèle",
       audioIncompatible:
         "Ce modèle ne prend pas en charge l'audio. Passez à un modèle compatible audio ou choisissez un jeu de données sans audio.",
@@ -901,6 +1127,19 @@ export const fr = {
       deleteTitle: "Supprimer l'entraînement ?",
       deleteDescription:
         "Cette action supprimera définitivement cet entraînement et toutes ses métriques. Elle est irréversible.",
+      filesDeleted: "Fichiers supprimés",
+      deleteArtifactsLabel:
+        "Supprimer également les fichiers de l'adaptateur du disque",
+      deleteArtifactsDescription:
+        "Supprime le dossier de sortie de l'exécution, y compris les adaptateurs et les checkpoints enregistrés.",
+      deleteArtifactsSharedNote:
+        "Une autre exécution partage ce dossier de sortie. Les fichiers sont conservés jusqu'à la suppression de la dernière exécution qui les utilise.",
+      artifactsKeptShared:
+        "Exécution supprimée. Les fichiers de l'adaptateur ont été conservés, car une autre exécution utilise le même dossier.",
+      deleteArtifactsActiveError:
+        "Ces fichiers sont utilisés par l'entraînement en cours. Arrêtez l'entraînement avant de les supprimer.",
+      deleteArtifactsFailed:
+        "L'exécution a été supprimée, mais ses fichiers n'ont pas pu être effacés.",
       runCount: "{count} entraînements",
       oneRun: "1 entraînement",
       resume: "Reprendre",
