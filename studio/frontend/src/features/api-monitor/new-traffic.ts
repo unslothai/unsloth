@@ -27,6 +27,10 @@ export interface ApiMonitorWatch {
   watchStartedAt: number;
   /** This seed follows a stay on the full page rather than starting a session. */
   resumed: boolean;
+  /** The snapshot already folded in. The overlay's observer re-runs on any store change,
+   * not only on a new poll, and a second fold would spend a pending re-arm on a snapshot
+   * from before the stand down. */
+  lastFolded: WatchedResponse | null;
 }
 
 export function createWatch(nowMs: number): ApiMonitorWatch {
@@ -35,6 +39,7 @@ export function createWatch(nowMs: number): ApiMonitorWatch {
     seenIds: new Set(),
     watchStartedAt: nowMs,
     resumed: false,
+    lastFolded: null,
   };
 }
 
@@ -53,6 +58,20 @@ export function startWatching(watch: ApiMonitorWatch, nowMs: number): void {
 export function rearmWatch(watch: ApiMonitorWatch): void {
   watch.seeded = false;
   watch.resumed = true;
+}
+
+/**
+ * The poll also stands down for the auto-open opt out, and calls still land behind it.
+ * By the time the user turns automatic opening back on those are backlog, not a reason to
+ * pop the panel over the composer, so write them off exactly as a stay on the full page
+ * does. An unseeded watch has no backlog to write off: re-arming it would silence the
+ * first snapshot of a session that merely started out opted out.
+ */
+export function standDownWatch(watch: ApiMonitorWatch): void {
+  if (!watch.seeded) {
+    return;
+  }
+  rearmWatch(watch);
 }
 
 /**
@@ -91,6 +110,13 @@ export function observeResponse(
   response: WatchedResponse,
   nowMs: number,
 ): boolean {
+  // Fold each snapshot once. The observer re-runs when the store changes, with the same
+  // snapshot in hand; folding it again would seed a re-arm from before the stand down and
+  // leave the backlog that landed behind it counting as new traffic.
+  if (watch.lastFolded === response) {
+    return false;
+  }
+  watch.lastFolded = response;
   const { entries } = response;
   if (!watch.seeded) {
     watch.seeded = true;

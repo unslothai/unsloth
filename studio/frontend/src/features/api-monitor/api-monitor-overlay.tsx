@@ -30,6 +30,7 @@ import {
   createWatch,
   observeResponse,
   rearmWatch,
+  standDownWatch,
   startWatching,
 } from "./new-traffic";
 import { useApiMonitorOverlayStore } from "./overlay-store";
@@ -125,6 +126,12 @@ export function ApiMonitorOverlay(): ReactElement | null {
   useEffect(() => {
     // Opted out and closed: nothing to open or show, so polling is pure load.
     if (onFullPage || (!autoOpen && !isOpen)) {
+      // Standing down for the opt out leaves the same backlog behind it as the full page
+      // does, so write it off the same way: turning automatic opening back on waits for
+      // the next call rather than popping with the burst that ran while it was off.
+      if (!onFullPage) {
+        standDownWatch(watchRef.current);
+      }
       return;
     }
     let cancelled = false;

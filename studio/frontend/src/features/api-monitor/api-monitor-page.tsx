@@ -40,6 +40,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { unloadResident } from "./unload-resident";
 import {
   type MonitorStatusFilter,
   filterEntries,
@@ -501,24 +502,36 @@ export function ApiMonitorPage(): ReactElement {
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
   // Manual release so VRAM frees without the idle timer. /unload matches on the
-  // internal id, which the monitor does not carry, so read status.
+  // internal id, which the monitor does not carry, so read status. unloadResident owns
+  // the read/unload/recheck sequence: this page's own feature (an API auto-switch) can
+  // swap the model out from under the read, and /unload naming a replaced model is a
+  // successful no-op, so one pass would report success over the model still resident.
   const unloadActiveModel = async (): Promise<void> => {
     setUnloading(true);
     try {
-      const status = await getInferenceStatus();
-      const checkpoint = resolveInferenceCheckpointId(status);
-      if (!checkpoint) {
-        setUnloadError(null);
-        return;
-      }
-      await unloadModel({ model_path: checkpoint });
-      // As in the chat eject flow, but only when the store holds the model just unloaded: chat
+      const { unloadedAliases, stillResident } = await unloadResident({
+        readResident: async () => {
+          const status = await getInferenceStatus();
+          const checkpoint = resolveInferenceCheckpointId(status);
+          if (!checkpoint) {
+            return null;
+          }
+          // Both spellings, since status reports the load path while the store may
+          // hold the advertised repo id.
+          return {
+            checkpoint,
+            aliases: [checkpoint, status.active_model].filter(
+              (alias): alias is string => alias != null,
+            ),
+          };
+        },
+        unload: (checkpoint) => unloadModel({ model_path: checkpoint }),
+      });
+      // As in the chat eject flow, but only when the store holds a model just unloaded: chat
       // can have an external provider selected while a local model stays resident, and
-      // clearCheckpoint would delete a selection this button never touched. Both spellings,
-      // since status reports the load path while the store may hold the advertised repo id.
+      // clearCheckpoint would delete a selection this button never touched.
       const store = useChatRuntimeStore.getState();
       const selected = store.params.checkpoint;
-      const unloadedAliases = [checkpoint, status.active_model];
       if (
         selected &&
         !isExternalModelId(selected) &&
@@ -526,7 +539,11 @@ export function ApiMonitorPage(): ReactElement {
       ) {
         store.clearCheckpoint();
       }
-      setUnloadError(null);
+      setUnloadError(
+        stillResident
+          ? `The API loaded "${stillResident}" while unloading, so it is still using memory. Unload again to release it.`
+          : null,
+      );
       refresh();
     } catch (err: unknown) {
       setUnloadError(

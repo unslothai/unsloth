@@ -1669,9 +1669,17 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
 def test_monitor_unload_clears_only_the_model_it_freed():
     """Unload targets the resident local model from /status, but the store may hold either
     spelling: status reports the concrete load path while the store can hold the
-    advertised repo id."""
+    advertised repo id.
+
+    The read/unload/recheck sequence itself is pinned behaviourally by
+    studio/frontend/tests/api-monitor-unload-resident.test.ts; this only holds the page to
+    delegating it, since a single-pass unload reports success over a model an API
+    auto-switch loaded under the click."""
     page = " ".join(_read("features/api-monitor/api-monitor-page.tsx").split())
-    assert "const unloadedAliases = [checkpoint, status.active_model];" in page
+    assert (
+        "aliases: [checkpoint, status.active_model].filter( (alias): alias is string "
+        "=> alias != null, )," in page
+    )
     assert "!isExternalModelId(selected)" in page
     assert "unloadedAliases.some((alias) => modelIdsMatch(selected, alias))" in page
     assert "store.clearCheckpoint();" in page
