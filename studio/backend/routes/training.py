@@ -223,9 +223,7 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
-def _remote_untrainable_model_format(
-    model_name: str, hf_token: Optional[str]
-) -> Optional[str]:
+def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
 
     repo_id = canonical_model_repo_id(model_name)
