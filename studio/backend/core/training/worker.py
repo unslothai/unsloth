@@ -2358,6 +2358,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Offline auto-detect: skip ~25s of HF retries per call when the hub is unreachable.
     if "HF_HUB_OFFLINE" not in os.environ:
         _offline = False
+        _network_offline = False
         try:
             from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
 
@@ -2366,22 +2367,26 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # hf_dns_dead follows HF_ENDPOINT and stands down when a proxy is configured,
             # so a reachable mirror (or proxy-only egress) is never called offline.
             if not _offline:
-                _offline = hf_dns_dead()
+                _offline = _network_offline = hf_dns_dead()
             if not _offline and not hf_probe_disabled():
                 # DNS answers even without egress (WAN down, captive portal). These flags
                 # last the whole job, so only a connection failure counts: a momentary
                 # 502/503 must not block every download for the rest of the run.
                 from utils.transformers_version import hf_endpoint_unreachable
-                _offline = hf_endpoint_unreachable(
+                _offline = _network_offline = hf_endpoint_unreachable(
                     gateway_errors_offline = False,
                     proxy_timeouts_offline = False,
                 )
         except Exception:
-            _offline = False
+            _offline = _network_offline = False
         if _offline:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-            os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+            # Only when the network itself is the reason. TRANSFORMERS_OFFLINE alone asks
+            # for cached model files, not for a cache-only dataset: egress may be fine,
+            # and an uncached hf_dataset would then fail for the whole job.
+            if _network_offline:
+                os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
             # logger isn't configured yet; print to stderr instead.
             print(
                 "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 set for this worker.",

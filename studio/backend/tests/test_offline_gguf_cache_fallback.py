@@ -2195,19 +2195,49 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
             "must isolate timeout to the probe thread"
         )
 
-    def test_returns_dead_when_resolver_wedges(self, monkeypatch):
+    def test_wedged_resolver_is_inconclusive_not_dead(self, monkeypatch):
+        """A missed deadline must not take the offline shortcut.
+
+        Slow-but-working DNS resolves past 2s, and this shortcut skips the fail-open
+        reachability probe, so calling it dead strands a working machine offline for a
+        whole job. A genuinely wedged resolver is still caught downstream, by the HEAD
+        probe hanging on the same lookup.
+        """
         import socket as _socket
         from core.inference.llama_cpp import _probe_dns_dead
 
-        # Simulate a wedged resolver: thread blocks forever. Patch getaddrinfo, which
-        # is what the probe calls; patching gethostbyname made this pass vacuously off
-        # the real NXDOMAIN for .invalid, leaving the deadline itself untested.
+        # Patch getaddrinfo, which is what the probe calls; patching gethostbyname made
+        # this pass vacuously off the real NXDOMAIN for .invalid.
         def wedged(*a, **k):
             import threading
             threading.Event().wait()
 
         monkeypatch.setattr(_socket, "getaddrinfo", wedged)
-        assert _probe_dns_dead("example.invalid", timeout = 0.1) is True
+        assert _probe_dns_dead("example.invalid", timeout = 0.1) is False
+
+    def test_slow_but_resolving_dns_is_not_dead(self, monkeypatch):
+        """The case the deadline used to misread: an answer that arrives after it."""
+        import socket as _socket
+        import time as _time
+        from utils.utils import dns_host_dead
+
+        def slow(*a, **k):
+            _time.sleep(0.3)
+            return [(2, 1, 6, "", ("93.184.216.34", 443))]
+
+        monkeypatch.setattr(_socket, "getaddrinfo", slow)
+        assert dns_host_dead("slow.example.test", timeout = 0.1) is False
+
+    def test_nxdomain_is_still_dead(self, monkeypatch):
+        """The reported bug's shortcut must keep working: a real resolver error."""
+        import socket as _socket
+        from utils.utils import dns_host_dead
+
+        def nxdomain(*a, **k):
+            raise _socket.gaierror("Name or service not known")
+
+        monkeypatch.setattr(_socket, "getaddrinfo", nxdomain)
+        assert dns_host_dead("no-such-host.invalid", timeout = 2.0) is True
 
 
 class TestWaitForHealthRetriesOnReadError:
@@ -2716,7 +2746,9 @@ class TestValidateGuardCoversMetadataPreflights:
         import ast
         import pathlib
 
-        src = pathlib.Path("routes/inference.py").read_text()
+        # Anchored on __file__: CI runs pytest from the repo root, not studio/backend.
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "routes" / "inference.py").read_text()
         tree = ast.parse(src)
         remote = {
             "check_upgrade_for_model",
@@ -2738,3 +2770,105 @@ class TestValidateGuardCoversMetadataPreflights:
             if name in remote:
                 bare.append((name, node.lineno))
         assert bare == [], f"unguarded remote preflight(s): {bare}"
+
+
+class TestGuardIsKeyedOnWhatIsRead:
+    """A LOCAL adapter path can resolve to a REMOTE base, and the base is what gets
+    fetched. Keying the guard on the outer request would hand back a null context while
+    the preflight reads the hub."""
+
+    def test_predicate_contract(self):
+        """_any_remote: local-only is False, anything unknown or remote is True."""
+        import ast
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "routes" / "inference.py").read_text()
+        tree = ast.parse(src)
+        fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_any_remote"
+        )
+        ns: dict = {}
+        # is_local_path is imported inside the body; give it a stub module to import from.
+        exec(compile(ast.Module([fn], []), "<any_remote>", "exec"), ns)
+        import sys
+        import types
+        stub = types.ModuleType("utils.paths")
+        stub.is_local_path = lambda p: p.startswith("/local")
+        saved = sys.modules.get("utils.paths")
+        sys.modules["utils.paths"] = stub
+        try:
+            any_remote = ns["_any_remote"]
+            assert any_remote("/local/adapter") is False
+            assert any_remote("org/model") is True
+            assert any_remote(("/local/adapter", "org/base")) is True
+            assert any_remote(("/local/a", "/local/b")) is False
+            assert any_remote(None) is False
+            assert any_remote((None,)) is True          # unknown counts as remote
+            assert any_remote(()) is False
+        finally:
+            if saved is None:
+                del sys.modules["utils.paths"]
+            else:
+                sys.modules["utils.paths"] = saved
+
+    def test_every_guarded_call_passes_what_it_reads(self):
+        """AST check: no _offline_guarded call reads config.identifier or a security
+        target while keying the guard on the bare outer identifier."""
+        import ast
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "routes" / "inference.py").read_text()
+        tree = ast.parse(src)
+        bad = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "to_thread"):
+                continue
+            names = [getattr(a, "id", None) or getattr(a, "attr", None) for a in node.args]
+            if names[:1] != ["_offline_guarded"] or len(node.args) < 3:
+                continue
+            targets, read = node.args[1], node.args[2]
+            read_name = getattr(read, "id", None) or getattr(read, "attr", None)
+            # A read of the resolved config must not be keyed on model_identifier alone.
+            if read_name in ("latest_tier_active_for", "_guard_chat_load_against_training"):
+                if isinstance(targets, ast.Name):
+                    bad.append((read_name, node.lineno))
+            if read_name == "check_upgrade_for_model":
+                if getattr(targets, "id", None) == "model_identifier":
+                    bad.append((read_name, node.lineno))
+        assert bad == [], f"guard keyed on the wrong target: {bad}"
+
+
+class TestTransformersOfflineDoesNotSilenceDatasets:
+    """TRANSFORMERS_OFFLINE=1 asks for cached MODEL files. Deriving HF_DATASETS_OFFLINE
+    from it fails an uncached hf_dataset for the whole job on a machine with egress."""
+
+    def _worker_block(self):
+        import pathlib
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "core" / "training" / "worker.py").read_text()
+        start = src.index("# Offline auto-detect:")
+        return src[start:start + 2200]
+
+    def test_datasets_offline_is_gated_on_the_network_verdict(self):
+        block = self._worker_block()
+        assert "if _network_offline:" in block
+        assert block.index("if _network_offline:") < block.index("HF_DATASETS_OFFLINE")
+
+    def test_env_requested_offline_does_not_set_network_offline(self):
+        block = self._worker_block()
+        # hf_env_offline() feeds _offline only; the two probes feed _network_offline too.
+        assert "_offline = hf_env_offline()" in block
+        assert "_offline = _network_offline = hf_dns_dead()" in block
+        assert "_offline = _network_offline = hf_endpoint_unreachable(" in block
+
+    def test_hub_and_transformers_offline_are_still_set_either_way(self):
+        block = self._worker_block()
+        hub = block.index('os.environ["HF_HUB_OFFLINE"] = "1"')
+        gate = block.index("if _network_offline:")
+        assert hub < gate, "HF_HUB_OFFLINE must not be gated on the network verdict"

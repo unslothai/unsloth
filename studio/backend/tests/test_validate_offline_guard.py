@@ -26,27 +26,29 @@ spec.loader.exec_module(route)
 
 import core.inference.llama_cpp as llama_cpp
 
-# 1. the wrapped work runs INSIDE the window, not after it closes
-opened = []
+events = []
 
 @contextlib.contextmanager
-def _tracking_guard(model_id):
-    opened.append(model_id)
-    yield
-    opened.append("closed:" + model_id)
+def _tracking_guard():
+    events.append("open")
+    try:
+        yield
+    finally:
+        events.append("close")
 
-llama_cpp._hf_offline_if_unreachable_for = _tracking_guard
+llama_cpp._hf_offline_if_unreachable = _tracking_guard
 
+# 1. the wrapped work runs INSIDE the window, not after it closes
 def _work(a, b, *, kw):
-    assert opened == ["org/model"], opened
+    assert events == ["open"], events
     return (a, b, kw)
 
 assert route._offline_guarded("org/model", _work, 1, 2, kw = 3) == (1, 2, 3)
-assert opened == ["org/model", "closed:org/model"], opened
+assert events == ["open", "close"], events
 
 # 2. a wrapped call may take its own model_identifier kwarg
 # (_guard_chat_load_against_training does), so the helper's params are positional-only
-llama_cpp._hf_offline_if_unreachable_for = lambda _m: contextlib.nullcontext()
+events.clear()
 seen = {}
 
 def _guard(config, *, model_identifier, hf_token = None):
@@ -54,23 +56,31 @@ def _guard(config, *, model_identifier, hf_token = None):
 
 route._offline_guarded("org/model", _guard, "cfg", model_identifier = "org/model")
 assert seen == {"config": "cfg", "model_identifier": "org/model"}, seen
+assert events == ["open", "close"], events
 
 # 3. an exception inside the window still closes it
-closed = []
-
-@contextlib.contextmanager
-def _closing_guard(_model_id):
-    try:
-        yield
-    finally:
-        closed.append(True)
-
-llama_cpp._hf_offline_if_unreachable_for = _closing_guard
+events.clear()
 try:
     route._offline_guarded("org/model", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
 except RuntimeError:
     pass
-assert closed == [True], closed
+assert events == ["open", "close"], events
+
+# 4. keyed on what is READ: a local-only read skips the probe, but a local adapter whose
+# base resolves remotely still opens the window
+import tempfile
+with tempfile.TemporaryDirectory() as local:
+    events.clear()
+    route._offline_guarded(local, lambda: None)
+    assert events == [], events
+
+    events.clear()
+    route._offline_guarded((local, local), lambda: None)
+    assert events == [], events
+
+    events.clear()
+    route._offline_guarded((local, "org/base"), lambda: None)
+    assert events == ["open", "close"], events
 
 print("OFFLINE_GUARDED_OK")
 """

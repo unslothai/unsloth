@@ -1009,6 +1009,7 @@ try:
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
+        _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -1058,6 +1059,7 @@ except ImportError:
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
+        _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -5678,7 +5680,7 @@ async def _load_model_impl(
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
-        with _hf_offline_if_unreachable():
+        with _hf_offline_if_unreachable_for(model_identifier):
             config = ModelConfig.from_identifier(
                 model_id = model_identifier,
                 hf_token = request.hf_token,
@@ -5744,7 +5746,7 @@ async def _load_model_impl(
             from utils.transformers_version import latest_tier_active_for
             if await asyncio.to_thread(
                 _offline_guarded,
-                model_identifier,
+                (model_identifier, config.identifier),
                 latest_tier_active_for,
                 config.identifier,
                 request.hf_token,
@@ -5760,7 +5762,7 @@ async def _load_model_impl(
         # frees the resident model. Off-loop and guarded: the guard does sync HF work.
         await asyncio.to_thread(
             _offline_guarded,
-            model_identifier,
+            (model_identifier, config.identifier),
             _guard_chat_load_against_training,
             config,
             model_identifier = model_identifier,
@@ -6291,16 +6293,37 @@ async def _load_model_impl(
         api_monitor.fail_open(_load_event, "Load did not complete")
 
 
-def _offline_guarded(model_identifier: str, fn, /, *args, **kwargs):
+def _any_remote(targets) -> bool:
+    """True unless every target is a local filesystem path. Unknown counts as remote:
+    guarding a local read costs one memoised verdict, missing a remote one costs the
+    retry backoff this exists to avoid."""
+    from utils.paths import is_local_path
+    for target in ((targets,) if isinstance(targets, str) else targets or ()):
+        try:
+            if not (isinstance(target, str) and is_local_path(target)):
+                return True
+        except Exception:
+            return True
+    return False
+
+
+def _offline_guarded(targets, fn, /, *args, **kwargs):
     """Run one blocking preflight inside the same forced-offline window as config
     resolution. Resolving the config is not the only remote read on these paths: the
     upgrade / trust-remote-code / sizing preflights each fetch raw metadata, so without
     this they burn the retry backoff the guard exists to skip. The verdict is memoised,
     so reusing it costs no extra probe. Call from a worker thread: the guard is
-    process-global and blocks for the probe on a cold verdict. Both params are
-    positional-only so a wrapped call's own model_identifier kwarg cannot collide."""
-    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
-    with _hf_offline_if_unreachable_for(model_identifier):
+    process-global and blocks for the probe on a cold verdict.
+
+    ``targets`` is what this call actually reads: a repo id, a local path, or several.
+    Keyed on the read, not on the outer request, because a LOCAL adapter path can resolve
+    to a REMOTE base and the base is what gets fetched. Both params are positional-only so
+    a wrapped call's own model_identifier kwarg cannot collide."""
+    from contextlib import nullcontext
+
+    from core.inference.llama_cpp import _hf_offline_if_unreachable
+    ctx = _hf_offline_if_unreachable() if _any_remote(targets) else nullcontext()
+    with ctx:
         return fn(*args, **kwargs)
 
 
@@ -6473,7 +6496,7 @@ async def validate_model(
             for _target in security_targets:
                 _upgrade = await asyncio.to_thread(
                     _offline_guarded,
-                    model_identifier,
+                    _target,
                     check_upgrade_for_model,
                     _target,
                     request.hf_token,
@@ -6491,7 +6514,7 @@ async def validate_model(
             # Reads raw config/tokenizer JSON, so guarded and off-loop like the rest.
             requires_trust_remote_code = await asyncio.to_thread(
                 _offline_guarded,
-                model_identifier,
+                security_targets,
                 lambda: any(
                     _requires_trust_remote_code_for_model(_t, request.hf_token)
                     for _t in security_targets
@@ -6515,7 +6538,7 @@ async def validate_model(
             )
             if _install_only_upgrade or await asyncio.to_thread(
                 _offline_guarded,
-                model_identifier,
+                (model_identifier, config.identifier),
                 latest_tier_active_for,
                 config.identifier,
                 request.hf_token,
@@ -6528,7 +6551,7 @@ async def validate_model(
             # Off-loop and guarded: the guard does sync nvidia-smi / HF work.
             await asyncio.to_thread(
                 _offline_guarded,
-                model_identifier,
+                (model_identifier, config.identifier),
                 _guard_chat_load_against_training,
                 config,
                 model_identifier = model_identifier,

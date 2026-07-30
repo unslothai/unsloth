@@ -130,11 +130,19 @@ def hf_proxy_configured() -> bool:
 
 
 def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
-    """True when host does not resolve. Runs on a daemon thread so a wedged resolver
-    cannot block past the deadline and so socket.setdefaulttimeout is left alone.
+    """True only when host definitively does not resolve. Runs on a daemon thread so a
+    wedged resolver cannot block past the deadline and so socket.setdefaulttimeout is
+    left alone.
 
     Uses getaddrinfo, not gethostbyname: the latter is IPv4-only and would call an
     AAAA-only mirror or an IPv6 literal dead.
+
+    A missed deadline is inconclusive, not dead: slow-but-working DNS (cold cache,
+    DNSSEC, a resolver reached over a fresh VPN) resolves past 2s, and this is the
+    shortcut that skips the fail-open reachability probe, so calling it dead would take
+    a working machine offline for a whole training job. A truly wedged resolver is still
+    caught: the caller's HEAD probe hangs on the same lookup and its own deadline
+    returns unreachable.
     """
     result: list = [None]
 
@@ -149,8 +157,7 @@ def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
     t = threading.Thread(target = _probe, daemon = True)
     t.start()
     t.join(timeout)
-    # Still running -> resolver wedged -> treat as dead.
-    return True if result[0] is None else result[0]
+    return False if result[0] is None else result[0]
 
 
 def hf_connect_target(endpoint: Optional[str] = None):
