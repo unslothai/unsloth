@@ -1512,22 +1512,32 @@ async function autoLoadSmallestModel(): Promise<{
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
-  // Why the last load failed, set only when /api/inference/load itself rejected,
-  // so enumeration hiccups keep falling through. Boxed because a `let` assigned
+  // Why the last load attempt failed, set only when loadModel rejected, so
+  // enumeration hiccups keep falling through. Boxed because a `let` assigned
   // only in a nested function narrows to `null`.
-  const loadFailure: { current: { label: string; detail: string } | null } = {
-    current: null,
-  };
+  const loadFailure: {
+    current: { label: string; detail: string; blamesModel: boolean } | null;
+  } = { current: null };
 
   function noteLoadFailure(label: string, error: unknown): void {
     const detail =
       error instanceof Error && error.message.trim() ? error.message.trim() : "";
+    // loadModel also rejects before /api/inference/load is ever sent: the user
+    // dismissed the HF token dialog, or fetch failed because Studio is down or
+    // the browser is offline. Those still stop the Hub download -- it would
+    // fail the same way -- but the model did not do anything wrong, so the
+    // headline must not name it.
+    const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
+    const blamesModel = !(
+      marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
+    );
     loadFailure.current = {
       label,
       // Older backends and non-Error throws carry no detail; still name the
       // model that failed.
       detail:
         detail || "The server did not report a reason. Check the Studio logs.",
+      blamesModel,
     };
   }
 
@@ -2009,11 +2019,18 @@ async function autoLoadSmallestModel(): Promise<{
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);
       if (loadFailure.current) {
-        toast.error(`Could not load ${loadFailure.current.label}`, {
-          description: loadFailure.current.detail,
-          duration: 10000,
-          closeButton: true,
-        });
+        toast.error(
+          loadFailure.current.blamesModel
+            ? `Could not load ${loadFailure.current.label}`
+            : loadFailure.current.detail,
+          {
+            description: loadFailure.current.blamesModel
+              ? loadFailure.current.detail
+              : `Stopped before loading ${loadFailure.current.label}.`,
+            duration: 10000,
+            closeButton: true,
+          },
+        );
       }
       return {
         loaded: false,

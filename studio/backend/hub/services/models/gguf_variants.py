@@ -503,6 +503,24 @@ def _mark_empty_dir_cleanables(
     return response.model_copy(update = {"variants": variants})
 
 
+def _only_complete_variants(snapshot: str, variants: list):
+    """Drop quants whose shards are not all present under *snapshot*.
+
+    The same trim ``list_gguf_variants_from_hf_cache`` applies, lifted here so
+    the ``is_local_path`` branch -- which is where an absolute snapshot load id
+    lands -- cannot advertise a torn quant as downloaded. Returns the input
+    unchanged when nothing is complete, so a resume-only folder still lists, and
+    on any error, so a scan problem never empties the picker.
+    """
+    try:
+        complete = hf_cache_scan.complete_snapshot_variants(snapshot)
+    except Exception:
+        return variants
+    # An unlabelled quant cannot be judged, so it is kept.
+    usable = [v for v in variants if not v.quant or v.quant in complete]
+    return usable or variants
+
+
 async def get_gguf_variants_response(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -580,6 +598,14 @@ async def get_gguf_variants_response(
         # Local directory path (e.g. LM Studio models) — scan filesystem
         if is_local_path(repo_id):
             variants, has_vision = list_local_gguf_variants(repo_id)
+            # _local_response marks every row downloaded, so a quant whose shards
+            # are not all here would be offered as ready and then fail in
+            # llama-server. Load ids are absolute snapshot paths and arrive on
+            # this branch, so the completed-subset trim that
+            # list_gguf_variants_from_hf_cache applies has to apply here too.
+            # Keep the untrimmed list when nothing is complete, matching that
+            # function's fallback, so a resume-only folder still lists.
+            variants = _only_complete_variants(repo_id, variants)
 
             return _local_response(repo_id, variants, has_vision)
 
@@ -596,6 +622,9 @@ async def get_gguf_variants_response(
                 return _local_response(repo_id, variants, has_vision)
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
+                # Same reason as the is_local_path branch above: _local_response
+                # marks these downloaded, so they must be resolvable here.
+                variants = _only_complete_variants(local_path, variants)
                 if variants or has_vision:
                     return _local_response(repo_id, variants, has_vision)
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)

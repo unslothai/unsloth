@@ -1579,3 +1579,178 @@ def test_only_the_shared_key_orders_snapshots_by_mtime(module, allowed):
     assert readers == set(
         allowed
     ), f"{module} reads a snapshot mtime outside snapshot_selection_key: {sorted(readers)}"
+
+
+# --- review-round regressions -------------------------------------------------
+
+def _repo_with(cache_root: Path, snapshots: dict, refs: dict, name: str = "models--Org--Model"):
+    """A cache repo with arbitrary per-snapshot contents and ref targets."""
+    repo_dir = cache_root / name
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    for commit, files in snapshots.items():
+        snapshot = repo_dir / "snapshots" / commit
+        snapshot.mkdir(parents = True, exist_ok = True)
+        for rel, payload in files.items():
+            (snapshot / rel).parent.mkdir(parents = True, exist_ok = True)
+            (snapshot / rel).write_bytes(payload)
+    for ref_name, commit in refs.items():
+        (repo_dir / "refs" / ref_name).write_text(commit, encoding = "utf-8")
+    return repo_dir
+
+
+def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):
+    """refs/main resolves while refs/stale dangles, so recovery fires but the
+    default-ref test does not. The pinned snapshot is short a shard and there is
+    no marker, manifest or .incomplete blob, so its own contents are the only
+    evidence -- the guard has to key on ANY dangling ref, not just refs/main."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert [r["repo_id"] for r in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_torn_payload_stays_partial_when_the_ref_resolves(tmp_path, monkeypatch):
+    """Excusing a non-newest snapshot from the repo-wide signals is the point of
+    the attribution, but it only holds while that snapshot can serve the row. A
+    torn one has no other evidence it is unfinished, so it must not go out
+    chattable just because an interrupted attempt targeted a different revision."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {
+            "config.json": b'{"model_type":"llama"}',
+            "model-00001-of-00002.safetensors": b"\0" * 256,
+        },
+        newer_files = {"README.md": b"probe"},
+        ref = OLDER,
+    )
+    (repo_dir / "blobs" / "deadbeef.incomplete").write_bytes(b"\0" * 8)
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_whole_payload_under_a_resolving_ref_is_still_chattable(tmp_path, monkeypatch):
+    """The negative control for the test above: the improvement this branch
+    exists for must survive. Same shape, but the pinned payload is whole."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {
+            "config.json": b'{"model_type":"llama"}',
+            "model-00001-of-00002.safetensors": b"\0" * 256,
+            "model-00002-of-00002.safetensors": b"\0" * 256,
+        },
+        newer_files = {"README.md": b"probe"},
+        ref = OLDER,
+    )
+    (repo_dir / "blobs" / "deadbeef.incomplete").write_bytes(b"\0" * 8)
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_payload_split_across_snapshots_is_not_advertised_runnable(tmp_path, monkeypatch):
+    """The payload flags are OR-ed over every revision, so config.json in one
+    snapshot and the weights in another look runnable while no single directory
+    can serve the row. With no self-contained snapshot and no refs/main to land
+    on, from_pretrained(repo_id) resolves to nothing offline."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {"model.safetensors": b"\0" * 256},
+            NEWER: {"config.json": b'{"model_type":"llama"}'},
+        },
+        refs = {"main": UPSTREAM_HEAD},
+        name = "models--Org--Split",
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert [r["repo_id"] for r in rows] == ["Org/Split"]
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_complete_quant_family_does_not_vouch_for_a_torn_sibling(tmp_path):
+    """One quant label can cover several shard families, and the lister offers
+    only the lexicographically first file under it. Grouping on the shard total
+    alone let the complete B family mark the torn A file downloadable."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    for name in (
+        "A-Q4_K_M-00001-of-00002.gguf",
+        "B-Q4_K_M-00001-of-00002.gguf",
+        "B-Q4_K_M-00002-of-00002.gguf",
+    ):
+        (snapshot / name).write_bytes(b"\0" * 64)
+    from hub.utils.gguf import list_local_gguf_variants
+
+    advertised = {v.filename for v in list_local_gguf_variants(str(snapshot))[0]}
+    assert advertised == {"A-Q4_K_M-00001-of-00002.gguf"}
+    assert inventory_scan._completed_gguf_variants(snapshot) == set()
+
+
+def test_a_big_endian_build_does_not_vouch_for_a_torn_little_endian_quant(tmp_path):
+    """The lister never offers a big-endian build, so it must not make the
+    little-endian quant of the same name look complete either."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "Model-Q8_0-BE.gguf").write_bytes(b"\0" * 64)
+    (snapshot / "Model-Q8_0-00001-of-00002.gguf").write_bytes(b"\0" * 64)
+    assert inventory_scan._completed_gguf_variants(snapshot) == set()
+
+
+def test_a_torn_quant_is_not_offered_under_a_snapshot_load_id(tmp_path, monkeypatch):
+    """The load id is an absolute snapshot path, and get_gguf_variants_response
+    short-circuits on is_local_path before the completed-subset trim that
+    list_gguf_variants_from_hf_cache applies, so the trim has to live at the
+    shared offer site."""
+    import asyncio
+
+    from hub.services.models import gguf_variants
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "Model-Q8_0.gguf").write_bytes(b"\0" * 64)
+    (snapshot / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(str(snapshot), prefer_local_cache = True)
+    )
+    assert [(v.quant, v.downloaded) for v in response.variants] == [("Q8_0", True)]
+
+
+def test_a_resume_only_folder_still_lists_when_nothing_is_complete(tmp_path):
+    """The trim keeps the untrimmed list when no quant is whole, so a folder
+    holding only a half-fetched download still shows up to resume or delete."""
+    import asyncio
+
+    from hub.services.models import gguf_variants
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(str(snapshot), prefer_local_cache = True)
+    )
+    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+
+
+def test_the_ignored_cache_entries_track_huggingface_hub(tmp_path):
+    """huggingface_hub 1.x skips Thumbs.db and desktop.ini as well as .DS_Store.
+    Hardcoding the older set meant that on a newer hub an Explorer artefact in
+    snapshots/ made upstream drop the repo for the dangling ref alone -- the case
+    this module repairs -- while the recovery read it as corruption and declined."""
+    from huggingface_hub.utils import _cache_manager
+
+    upstream = getattr(_cache_manager, "FILES_TO_IGNORE", None)
+    if not upstream:
+        pytest.skip("this huggingface_hub does not export FILES_TO_IGNORE")
+    assert set(inventory_scan._CACHE_ENTRIES_TO_IGNORE) == set(upstream)

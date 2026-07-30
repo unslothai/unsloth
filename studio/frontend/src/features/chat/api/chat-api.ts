@@ -154,7 +154,12 @@ export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  // Tagged so auto-load can tell a user cancellation from a backend
+  // rejection; no HTTP request is made in this branch.
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -172,7 +177,12 @@ export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  // Tagged so auto-load can tell a user cancellation from a backend
+  // rejection; no HTTP request is made in this branch.
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

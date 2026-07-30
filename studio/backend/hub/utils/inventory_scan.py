@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 
 from hub.utils.gguf import (
     extract_quant_label,
+    is_big_endian_gguf_path,
     is_gguf_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
@@ -127,8 +128,27 @@ def all_hf_cache_scans() -> list:
             flight.event.set()
 
 
-# Mirrors huggingface_hub's walk skips: a stray OS file is not corruption.
-_CACHE_ENTRIES_TO_IGNORE = frozenset({".DS_Store"})
+def _cache_entries_to_ignore() -> frozenset:
+    """huggingface_hub's walk skips: a stray OS file is not corruption.
+
+    Read from upstream, not hardcoded: 0.36.2 skips only ``.DS_Store`` while
+    1.25.1 also skips ``Thumbs.db`` and ``desktop.ini``. With the older set
+    frozen in, a newer hub dropped a repo for the dangling ref alone -- the case
+    this module repairs -- while the recovery read the Explorer file as
+    corruption and declined. The literal is the fallback.
+    """
+    try:
+        from huggingface_hub.utils import _cache_manager
+
+        names = getattr(_cache_manager, "FILES_TO_IGNORE", None)
+        if names:
+            return frozenset(names)
+    except Exception:
+        pass
+    return frozenset({".DS_Store"})
+
+
+_CACHE_ENTRIES_TO_IGNORE = _cache_entries_to_ignore()
 _HF_REPO_TYPES = frozenset({"model", "dataset", "space"})
 
 
@@ -552,6 +572,27 @@ def _default_ref_names_an_absent_snapshot(repo_cache_dir: Path) -> bool:
         return False
 
 
+def _repo_has_a_dangling_ref(repo_cache_dir: Path) -> bool:
+    """Whether ANY ref under ``refs/`` names a commit with no snapshot dir.
+
+    ``_default_ref_names_an_absent_snapshot`` only looks at ``refs/main``, but
+    the recovery admits a repo over a leftover ref of any name (a tag, a
+    ``refs/pr/<n>``), so the two must agree or a repo recovered over
+    ``refs/stale`` is judged as though upstream had published it.
+    """
+    refs_by_commit = _read_refs_by_commit(repo_cache_dir / "refs")
+    if refs_by_commit is None:
+        return False
+    snapshots_dir = repo_cache_dir / "snapshots"
+    for commit in refs_by_commit:
+        try:
+            if not (snapshots_dir / commit).is_dir():
+                return True
+        except (OSError, ValueError):
+            return False
+    return False
+
+
 def _repo_signal_applies_to_snapshot(
     repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
 ) -> bool:
@@ -569,9 +610,14 @@ def _repo_signal_applies_to_snapshot(
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return True
-    if _default_ref_names_an_absent_snapshot(repo_cache_dir):
+    if _repo_has_a_dangling_ref(repo_cache_dir):
         return _snapshot_cannot_serve_its_payload(snapshot_dir)
-    return _is_latest_snapshot(repo_cache_dir, snapshot_dir)
+    # Excusing a non-newest snapshot from the repo-wide signals only holds while
+    # it can actually serve the row. A pinned snapshot short a shard has no
+    # other evidence it is unfinished, so without this it goes out chattable.
+    return _is_latest_snapshot(repo_cache_dir, snapshot_dir) or (
+        _snapshot_cannot_serve_its_payload(snapshot_dir)
+    )
 
 
 def _gguf_variant_manifest_blob_hashes(
@@ -645,8 +691,13 @@ def _snapshot_legacy_partial(
 def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     if snapshot_dir is None:
         return set()
-    complete: set[str] = set()
-    split_groups: dict[str, dict[int, set[int]]] = {}
+    whole: set[str] = set()
+    # Keyed on quant, then on the shard family (directory, prefix, total). One
+    # quant label can cover several families, and the lister advertises only the
+    # lexicographically first file under the label, so grouping on total alone
+    # let a complete family vouch for the torn one that actually gets offered.
+    # Same grouping _snapshot_lacks_a_complete_weight_family already uses.
+    split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
     try:
         paths = list(snapshot_dir.rglob("*"))
     except OSError:
@@ -661,20 +712,33 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
         quant = extract_quant_label(rel)
+        # Mirror the lister exactly: a big-endian build is never offered, so it
+        # must not vouch for the little-endian quant of the same name either.
+        if is_big_endian_gguf_path(rel, quant):
+            continue
         split = _GGUF_SPLIT_RE.search(path.name)
         if split is None:
-            complete.add(quant)
+            whole.add(quant)
             continue
         index = int(split.group(1))
         total = int(split.group(2))
         if index <= 0 or total <= 0 or index > total:
             continue
-        split_groups.setdefault(quant, {}).setdefault(total, set()).add(index)
-    for quant, groups in split_groups.items():
-        for total, indices in groups.items():
-            if indices == set(range(1, total + 1)):
-                complete.add(quant)
-                break
+        family = (
+            path.parent.relative_to(snapshot_dir).as_posix(),
+            path.name[: split.start()],
+            total,
+        )
+        split_groups.setdefault(quant, {}).setdefault(family, set()).add(index)
+    complete: set[str] = set()
+    for quant in whole | set(split_groups):
+        # Every family under the label must be whole, since any of them may be
+        # the one the lister names.
+        if all(
+            indices == set(range(1, total + 1))
+            for (_dir, _prefix, total), indices in split_groups.get(quant, {}).items()
+        ):
+            complete.add(quant)
     return complete
 
 
@@ -782,7 +846,7 @@ def _recovered_snapshot_cannot_serve(
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return False
-    if not _default_ref_names_an_absent_snapshot(repo_cache_dir):
+    if not _repo_has_a_dangling_ref(repo_cache_dir):
         return False
     return _snapshot_cannot_serve_its_payload(snapshot_dir)
 

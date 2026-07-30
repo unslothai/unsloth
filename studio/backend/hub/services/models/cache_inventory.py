@@ -815,6 +815,18 @@ def _scan_cached_models() -> list[dict]:
                     repo_path,
                     snapshot_dir = load_snapshot,
                 )
+                # The payload flags are OR-ed over every revision, so a repo with
+                # config.json in one snapshot and the weights in another looks
+                # runnable while no single directory can serve it. With no
+                # self-contained snapshot AND no refs/main to land on, the row's
+                # load id resolves to nothing offline and reaches for the Hub
+                # online, which is the behaviour this branch exists to stop.
+                if (
+                    not payload.payload_snapshots
+                    and identity.load_id == repo_id
+                    and not hf_cache_scan.default_ref_resolves_on_disk(repo_path)
+                ):
+                    snapshot_partial = True
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
