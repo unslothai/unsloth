@@ -74,7 +74,10 @@ assert_fixture() {
 # hidden by command-substitution errexit behavior.
 FIXTURE_HOME=""
 make_home() {
-    FIXTURE_HOME=$(TMPDIR="$_TMP_ROOT" mktemp -d) || FIXTURE_HOME=""
+    # Explicit template, not TMPDIR: BSD mktemp with no template implies -t and
+    # resolves the directory itself, so on macOS TMPDIR= lands a sibling of
+    # _TMP_ROOT and the check below aborts the suite.
+    FIXTURE_HOME=$(mktemp -d "$_TMP_ROOT/home.XXXXXX") || FIXTURE_HOME=""
     case "$FIXTURE_HOME" in
         "$_TMP_ROOT"/*) ;;
         *) echo "FATAL: no fixture home under $_TMP_ROOT (got '$FIXTURE_HOME')" >&2; exit 1 ;;

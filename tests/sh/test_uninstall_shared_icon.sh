@@ -29,7 +29,7 @@ assert_dir()    { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1))
 assert_nodir()  { _l="$1"; [ -d "$2" ] && { echo "  FAIL: $_l (unexpected dir $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 
 # Match the function's closing brace without depending on its nesting depth.
-FUNC_FILE=$(mktemp -p "$_TMP_ROOT")
+FUNC_FILE=$(mktemp "$_TMP_ROOT/func.XXXXXX")
 sed -n '/_drop_shared_icon_if_unused() {/,/^[[:space:]]*}$/p' "$UNINSTALL_SH" > "$FUNC_FILE"
 # shellcheck disable=SC1090
 . "$FUNC_FILE"
@@ -37,7 +37,7 @@ sed -n '/_drop_shared_icon_if_unused() {/,/^[[:space:]]*}$/p' "$UNINSTALL_SH" > 
 # make_user [shortcut_relpath] : a fresh fake Windows user dir with unsloth.ico,
 # optionally placing an "Unsloth Studio*.lnk" at the given relative path.
 make_user() {
-    _u=$(mktemp -d -p "$_TMP_ROOT")
+    _u=$(mktemp -d "$_TMP_ROOT/user.XXXXXX")
     mkdir -p "$_u/AppData/Local/Unsloth Studio"
     : > "$_u/AppData/Local/Unsloth Studio/unsloth.ico"
     if [ -n "${1:-}" ]; then
@@ -85,7 +85,7 @@ assert_nofile "no shortcut -> icon removed (non-empty dir)" "$u/$ICO"
 assert_dir    "non-empty dir kept" "$u/$DIR"
 
 # 7. Missing data dir is a safe no-op (no error, exit 0).
-u=$(mktemp -d -p "$_TMP_ROOT")
+u=$(mktemp -d "$_TMP_ROOT/user.XXXXXX")
 if _drop_shared_icon_if_unused "$u"; then
     echo "  PASS: missing data dir -> no-op"; PASS=$((PASS+1))
 else
