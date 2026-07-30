@@ -5468,6 +5468,24 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    return await _tunnel_safe_json(
+        load_model_gated(request, fastapi_request, current_subject), label = "Model load"
+    )
+
+
+async def load_model_gated(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+):
+    """Everything ``POST /load`` does except the tunnel-safe padding.
+
+    In-process callers (preview) must await THIS, never the route: the route's
+    slow path returns a StreamingResponse whose body nobody in-process drains, so
+    awaiting the route would return while the load is still running and would hide
+    a late failure in a body that is never read. Awaiting this instead blocks until
+    the model is really loaded and raises the real exception.
+    """
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -5475,27 +5493,23 @@ async def load_model(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     _raise_if_sidecar_swap_in_progress()
-
-    async def _load():
-        # Hold the lifecycle gate across the load so idle auto-unload can't unload the
-        # model mid-load. Auto-switch calls _load_model_impl directly since it already
-        # holds this gate.
-        async with inference_lifecycle_gate():
-            _raise_if_sidecar_swap_in_progress()
-            # The active-generation gate runs inside _load_model_impl, once it knows this is a real
-            # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
-            return await _load_model_impl(
-                request,
-                fastapi_request,
-                current_subject,
-                on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
-                    force = request.force_cancel_active,
-                    action = "Loading a model",
-                    cancel = cancel,
-                ),
-            )
-
-    return await _tunnel_safe_json(_load(), label = "Model load")
+    # Hold the lifecycle gate across the load so idle auto-unload can't unload the
+    # model mid-load. Auto-switch calls _load_model_impl directly since it already
+    # holds this gate.
+    async with inference_lifecycle_gate():
+        _raise_if_sidecar_swap_in_progress()
+        # The active-generation gate runs inside _load_model_impl, once it knows this is a real
+        # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
+        return await _load_model_impl(
+            request,
+            fastapi_request,
+            current_subject,
+            on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                force = request.force_cancel_active,
+                action = "Loading a model",
+                cancel = cancel,
+            ),
+        )
 
 
 async def _load_model_impl(
@@ -6944,7 +6958,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     """Unload a model from memory.
 
     Padded like /load: a 600 GB GGUF teardown measures 160s, past the proxy
-    timer. See ``_tunnel_safe_json``.
+    timer. See ``_tunnel_safe_json``. Nothing calls this in-process today; a
+    future in-process caller must await ``_unload_model_impl`` (as ``/load``'s
+    must await ``load_model_gated``), because the padded path returns a
+    StreamingResponse instead of the payload.
     """
     return await _tunnel_safe_json(
         _unload_model_impl(request, current_subject), label = "Model unload"

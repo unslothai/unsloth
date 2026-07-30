@@ -34,6 +34,7 @@ from unsloth_cli._inference import (
     ensure_studio_backend_path,
     find_studio_server,
     is_loopback_url,
+    raise_for_deferred_error,
     urlopen_no_redirect,
     verify_studio_identity,
 )
@@ -658,7 +659,10 @@ def _http_json(
     try:
         # No redirects: a 3xx would leak this bearer token to an unvetted base.
         with urlopen_no_redirect(request, timeout = timeout) as response:
-            return json.loads(response.read().decode() or "{}")
+            body = json.loads(response.read().decode() or "{}")
+        # A padded /load or /unload commits its 200 before the work finishes, so a
+        # late failure arrives in-band; raise it as the HTTPError handled below.
+        return raise_for_deferred_error(url, body)
     except urllib.error.HTTPError as exc:
         if error is None:
             raise

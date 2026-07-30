@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 import types
 from pathlib import Path
@@ -435,13 +436,30 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
     assert out == ["He", "Hello"]
 
 
+class _FakeLoadResponse:
+    """A /api/inference/load reply that records whether its body was drained.
+
+    /load pads a slow body to survive a proxy, so closing at the headers both
+    resumes before the load finishes and discards a late failure; these fakes
+    therefore have to distinguish read() from close().
+    """
+
+    def __init__(self, body: bytes = b'{"status": "loaded"}') -> None:
+        self._body = body
+        self.reads = 0
+        self.closed = False
+
+    def read(self) -> bytes:
+        self.reads += 1
+        return self._body
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
     backend = HttpChatBackend("http://localhost:8888", "token")
     requests = []
-
-    class _OK:
-        def close(self):
-            pass
 
     def fake_request(
         method,
@@ -450,7 +468,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         timeout = None,
     ):
         requests.append((method, path, payload, timeout))
-        return _OK()
+        return _FakeLoadResponse()
 
     monkeypatch.setattr(backend, "_request", fake_request)
 
@@ -484,16 +502,12 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
     backend = HttpChatBackend("http://localhost:8888", "token")
     requests = []
 
-    class _OK:
-        def close(self):
-            pass
-
     monkeypatch.setattr(
         backend,
         "_request",
         lambda method, path, payload = None, timeout = None: (
             requests.append((method, path, payload, timeout)),
-            _OK(),
+            _FakeLoadResponse(),
         )[1],
     )
 
@@ -506,6 +520,93 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
     )
 
     assert requests[0][2]["tensor_parallel"] is False
+
+
+# ── A load slower than the proxy timer (see routes/inference.py _tunnel_safe_json) ──
+
+
+def test_http_backend_load_drains_the_padded_body(monkeypatch):
+    """Closing at the headers would abandon the padding and start generating
+    while the model is still loading, so the body has to be read to the end."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    # What a padded slow load looks like on the wire: spaces, then the payload.
+    response = _FakeLoadResponse(b'   {"status": "loaded"}')
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    backend.ensure_loaded(
+        "org/model-GGUF",
+        hf_token = None,
+        max_seq_length = 4096,
+        load_in_4bit = True,
+    )
+
+    assert response.reads == 1, "the padded body must be drained, not closed at the headers"
+    assert response.closed
+
+
+def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
+    """A failure found after the 200 committed rides in the body; a 200 alone is
+    not success."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeLoadResponse(
+        json.dumps(
+            {"_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"}}
+        ).encode()
+    )
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        backend.ensure_loaded(
+            "org/model-GGUF",
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
+        )
+
+    # Same exit code as an early HTTP failure: ensure_loaded's except block is reused.
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Model load failed" in err
+    assert "507" in err and "CUDA out of memory" in err
+
+
+def test_deferred_error_helper_passes_a_normal_body_through():
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    body = {"status": "loaded", "model": "org/model-GGUF"}
+    assert raise_for_deferred_error("http://x/api/inference/load", body) is body
+    # Not a dict, and a look-alike that is not the documented shape, both pass.
+    assert raise_for_deferred_error("http://x", [1, 2]) == [1, 2]
+    assert raise_for_deferred_error("http://x", {"_deferred_error": None}) == {
+        "_deferred_error": None
+    }
+
+
+def test_deferred_error_helper_reads_like_a_real_error_response():
+    """Callers recover the detail with exc.read(), exactly as for a real 5xx."""
+    import urllib.error
+
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        raise_for_deferred_error(
+            "http://x/api/inference/load",
+            {"_deferred_error": {"status_code": 500, "detail": "llama-server died"}},
+        )
+    exc = excinfo.value
+    assert exc.code == 500
+    assert json.loads(exc.read().decode()) == {"detail": "llama-server died"}
+    assert "llama-server died" in str(exc)
+
+
+def test_deferred_error_helper_defaults_a_missing_status():
+    import urllib.error
+
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        raise_for_deferred_error("http://x", {"_deferred_error": {}})
+    assert excinfo.value.code == 500
 
 
 def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):

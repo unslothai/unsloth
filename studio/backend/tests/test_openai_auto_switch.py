@@ -1598,9 +1598,11 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
 def test_load_route_holds_lifecycle_gate(monkeypatch):
     # Lock the manual /load gate against silent revert: the route must wrap the
     # load in inference_lifecycle_gate so idle-unload can't fire mid-load.
+    # Asserted on the gated coroutine: the route only wraps it in the padded
+    # response, and in-process callers await this instead (see load_model_gated).
     import inspect
 
-    src = inspect.getsource(inference_route.load_model)
+    src = inspect.getsource(inference_route.load_model_gated)
     assert "inference_lifecycle_gate" in src
     assert "_load_model_impl" in src
 

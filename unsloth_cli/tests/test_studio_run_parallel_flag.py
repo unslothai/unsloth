@@ -461,6 +461,36 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
     assert captured["request"].get_header("Authorization") == "Bearer sk-test"
 
 
+def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
+    """A load slower than the proxy timer commits its 200 before it finishes and
+    pads the body (routes/inference.py _tunnel_safe_json), so a late failure can
+    only arrive in-band. It must still surface as the RuntimeError `run` reports,
+    not as a successful load."""
+    studio_mod = _load_run_command()
+
+    def urlopen(request, timeout):
+        # Keepalive pad, then the deferred failure: what the wire really carries.
+        return BytesIO(
+            b"  "
+            + json.dumps(
+                {"_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"}}
+            ).encode()
+        )
+
+    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    with pytest.raises(RuntimeError) as excinfo:
+        studio_mod._load_model_via_http(
+            port = 8888,
+            api_key = "sk-test",
+            model = "owner/model-GGUF",
+            gguf_variant = None,
+            max_seq_length = 0,
+            load_in_4bit = True,
+        )
+    assert "HTTP 507" in str(excinfo.value)
+    assert "CUDA out of memory" in str(excinfo.value)
+
+
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
