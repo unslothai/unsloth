@@ -1757,6 +1757,7 @@ async function autoLoadSmallestModel(): Promise<{
         customContextLength: config.customContextLength,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
+        activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
     } else {
@@ -1786,6 +1787,7 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveLoadedSpeculativeSettings(loadResp),
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
+        activeModelIsLocal: loadResp.is_local_model ?? false,
       });
     }
     if (!(loadResp.is_lora ?? false)) {
@@ -2067,6 +2069,7 @@ async function autoLoadSmallestModel(): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
       recordLastLocalModelLoad({
