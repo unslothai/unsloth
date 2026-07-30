@@ -59,6 +59,7 @@ except ImportError:
 from core.inference.llama_cpp import LlamaCppBackend
 
 MIB = 1024 * 1024
+GIB = 1024 * MIB
 
 
 def _backend(
@@ -826,6 +827,52 @@ class TestPerDeviceSplitReserve:
             return sorted(idx for idx, _ in subset), capped
         return None, 0
 
+    def _drive_reduced(self, b, gpus, totals, model_mib, min_gpus = 2, enforce = True):
+        """Mirror of the reduced-to-4096 loop the native loop falls through to. Same
+        pooled admission, so it needs the same per-device gate."""
+        frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+        ctx = 4096
+
+        def usable(g):
+            return g[1] - (1.0 - frac) * totals[g[0]]
+
+        ranked = sorted(gpus, key = usable, reverse = True)
+        for n in range(min_gpus, len(ranked) + 1):
+            subset = ranked[:n]
+            pool = sum(max(0.0, usable(g)) for g in subset)
+            cc = n * b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = n > 1)
+            ms = model_mib * MIB + (n - 1) * self._OH
+            if (ms + b._estimate_kv_cache_bytes(ctx) + cc) / MIB > pool:
+                continue
+            if enforce and not LlamaCppBackend._every_gpu_holds_reserve(
+                (usable(g) for g in subset),
+                (self._OH if n > 1 else 0) + cc // n,
+            ):
+                continue
+            return sorted(idx for idx, _ in subset), ctx
+        return None, 0
+
+    def test_reduced_context_fallback_enforces_the_same_reserve(self):
+        # Card 1 sized one MiB under the reserve it replicates at 4096 ctx: the pooled
+        # budget still admits the pair, so dropping to 4096 pinned a card that OOMs.
+        b = self._fit_backend()
+        totals = {0: 49_152, 1: 24_576}
+        reserve_mib = (
+            self._OH + b._compute_buffer_ctx_bytes(4096, self._UB, "f16", layer_split = True)
+        ) / MIB
+        gpus = [(0, 40_000), (1, round(reserve_mib - 1 + 0.03 * totals[1]))]
+        assert self._drive_reduced(b, gpus, totals, 20_480, enforce = False) == ([0, 1], 4096)
+        assert self._drive_reduced(b, gpus, totals, 20_480) == (None, 0)
+
+    def test_reduced_context_fallback_keeps_a_card_that_holds_it(self):
+        b = self._fit_backend()
+        totals = {0: 49_152, 1: 24_576}
+        reserve_mib = (
+            self._OH + b._compute_buffer_ctx_bytes(4096, self._UB, "f16", layer_split = True)
+        ) / MIB
+        gpus = [(0, 40_000), (1, round(reserve_mib + 1 + 0.03 * totals[1]))]
+        assert self._drive_reduced(b, gpus, totals, 20_480) == ([0, 1], 4096)
+
     def test_pooled_budget_hides_the_small_cards_shortfall(self):
         # Pre-fix: the pair is admitted at native context even though card 1 has
         # ~1.7 GiB usable and owes 1 GiB overhead + 6 GiB of replicated KQ mask.
@@ -873,10 +920,12 @@ class TestPerDeviceSplitReserve:
         import inspect
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "ifnotself._every_gpu_holds_reserve(" in compact
+        # Native-context loop and the reduced-to-4096 fallback below it.
+        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 2
         # Gated on the chosen context, and only reachable after the pooled test.
-        assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact
+        assert compact.count("(_gpu_usable(g,pin_fraction)forginsubset),") == 2
         assert "+_cc_sub(capped)//n_gpus," in compact
+        assert "+_cc_bytes(effective_ctx,n_gpus)//n_gpus," in compact
 
 
 class TestSplitRateRecheckAfterSelection:
@@ -957,11 +1006,42 @@ class TestSplitRateRecheckAfterSelection:
         assert self._pin(20_000, 2) == ([0], False)
         assert self._pin(20_000, 2, recheck = False) == ([0], False)
 
-    def test_recheck_never_collapses_to_one_gpu(self):
-        # The 1-GPU branch already failed at the smaller figure, so one retry is exact.
+    def test_equal_cards_never_collapse_to_one_gpu(self):
+        # Every card clears the enlarged overhead, so the retry keeps min_gpus.
         for total in range(24_000, 46_000, 2_000):
             gi, use_fit = self._pin(total, 4)
             assert use_fit or (gi is not None and len(gi) >= 2)
+
+    def test_collapse_to_one_gpu_is_repriced_without_the_delta(self):
+        # Unequal cards: only the big one clears overhead + delta, so _select_gpus cuts
+        # its usable-card count to one. A lone card is not a split and pays no delta,
+        # so charging it there sent a load that fits alone to --fit on (CPU offload).
+        gpus = [(0, 16 * 1024), (1, 3 * 1024)]
+        kw = dict(usable_fraction = 1.0, per_device_overhead_bytes = int(2.5 * GIB))
+        assert LlamaCppBackend._select_gpus(int(14 * GIB), gpus, min_gpus = 2, **kw) == (
+            [0, 1],
+            False,
+        )
+        assert LlamaCppBackend._select_gpus_split_aware(
+            int(14 * GIB), gpus, min_gpus = 2, split_extra_bytes = int(4.5 * GIB), **kw
+        ) == ([0], False)
+        # Exactly the plain single-device answer, not a relaxed split.
+        assert LlamaCppBackend._select_gpus(int(14 * GIB), gpus, min_gpus = 1, **kw) == (
+            [0],
+            False,
+        )
+
+    def test_reprice_still_reports_fit_when_no_single_card_holds_it(self):
+        # 30 GiB over two 20 GiB cards: the split no longer fits and neither does one
+        # card, so the honest answer stays --fit on.
+        assert LlamaCppBackend._select_gpus_split_aware(
+            int(30 * GIB),
+            [(0, 20 * 1024), (1, 20 * 1024)],
+            usable_fraction = 1.0,
+            per_device_overhead_bytes = int(1 * GIB),
+            min_gpus = 2,
+            split_extra_bytes = int(15 * GIB),
+        ) == (None, True)
 
     def test_zero_step_reduces_to_plain_selection(self):
         # llama.cpp declining pipeline parallelism makes the step 0 (_cc_split_extra

@@ -4443,9 +4443,10 @@ class LlamaCppBackend:
         BIGGER one per card (see ``_CTX_COMPUTE_SPLIT_MULT``). ``split_extra_bytes``
         is that per-device step (0 when llama.cpp declines pipeline parallelism):
         charge it and re-select once the count is known to be > 1. One retry is
-        exact, the step being count-independent, and it cannot collapse to a single
-        GPU whose branch already failed at the smaller figure. A retry that no longer
-        fits returns (None, True) -> --fit on, i.e. CPU offload rather than a pin
+        exact, the step being count-independent. The bigger overhead can cut
+        ``_select_gpus``'s usable-card count to one, and a lone card is not a split,
+        so a retry landing below two devices is re-priced without the delta. Still
+        no fit returns (None, True) -> --fit on, i.e. CPU offload rather than a pin
         that OOMs at launch."""
         gpu_indices, use_fit = LlamaCppBackend._select_gpus(
             model_size_bytes,
@@ -4457,7 +4458,7 @@ class LlamaCppBackend:
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
-        return LlamaCppBackend._select_gpus(
+        retry_indices, retry_fit = LlamaCppBackend._select_gpus(
             model_size_bytes + split_extra_bytes,
             gpus,
             usable_fraction = usable_fraction,
@@ -4465,6 +4466,19 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
             min_gpus = min_gpus,
         )
+        if not retry_fit and retry_indices and len(retry_indices) >= 2:
+            return retry_indices, retry_fit
+        single, single_fit = LlamaCppBackend._select_gpus(
+            model_size_bytes,
+            gpus,
+            usable_fraction = usable_fraction,
+            total_by_idx = total_by_idx,
+            per_device_overhead_bytes = per_device_overhead_bytes,
+            min_gpus = 1,
+        )
+        if not single_fit and single is not None and len(single) == 1:
+            return single, False
+        return retry_indices, retry_fit
 
     @staticmethod
     def _every_gpu_holds_reserve(usable_mib: Iterable[float], reserve_bytes: int) -> bool:
@@ -8348,10 +8362,18 @@ class LlamaCppBackend:
                                             + _mtp_bytes(effective_ctx)
                                             + _cc_bytes(effective_ctx, n_gpus)
                                         ) / (1024 * 1024)
-                                        if footprint_mib <= _pool_budget_mib(subset, pin_fraction):
-                                            gpu_indices = sorted(idx for idx, _ in subset)
-                                            use_fit = False
-                                            break
+                                        if footprint_mib > _pool_budget_mib(subset, pin_fraction):
+                                            continue
+                                        # Pooling hides the per-device reserve here too.
+                                        if not self._every_gpu_holds_reserve(
+                                            (_gpu_usable(g, pin_fraction) for g in subset),
+                                            (_pipeline_overhead_bytes if n_gpus > 1 else 0)
+                                            + _cc_bytes(effective_ctx, n_gpus) // n_gpus,
+                                        ):
+                                            continue
+                                        gpu_indices = sorted(idx for idx, _ in subset)
+                                        use_fit = False
+                                        break
 
                     elif gpus:
                         # Can't estimate KV -- file-size-only check; keep the
