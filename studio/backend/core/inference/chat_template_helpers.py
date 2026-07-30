@@ -36,13 +36,27 @@ _GEMMA_TEMPLATE_OPENERS = (
 # on purpose: bare words match only in the pipe shape and brackets only in the exact
 # uppercase spelling, so "<div>", "List<String>", "[1]" and "[inst]" stay as typed.
 # [THINK] is absent because no template emits it; the output parsers consume it.
+# DeepSeek is the one family that delimits with the fullwidth bar U+FF5C rather than
+# "|", so it needs its own branch, written as \uXXXX escapes to keep this file pure
+# ASCII. Its names are ASCII plus U+2581, which keeps the branch off ordinary CJK
+# text that happens to use a fullwidth bar.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
     r"|end(?:_of_(?:turn|text))?"
-    r"|im_(?:start|end)|assistant|constrain|channel|message|eo[tm]_id"
+    # header_start / header_end / <|eot|> are Llama-4's spelling of Llama-3's
+    # start_header_id / end_header_id / eot_id, and im_sep is Phi-4's role separator.
+    r"|header_(?:start|end)|im_(?:start|end|sep)"
+    r"|assistant|constrain|channel|message|eo[tm](?:_id)?|final"
+    # Command-R / Aya spell every delimiter in caps: <|START_OF_TURN_TOKEN|> etc.
+    r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
     r"|return|system|start|think|turn|user|call|\")\|?>"
-    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|think)>"
+    r"|\uff5c[A-Za-z\u2581_]{1,40}\uff5c>"
+    # "tools" is the Qwen / Hermes tool catalog block. The template interpolates the
+    # system message INTO the same system turn that holds "<tools>...</tools>", so a
+    # "</tools>" in client text closes the real catalog and everything after it reads
+    # as a tool declaration the server never registered (#7066).
+    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think)>"
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\]|TOOL_CALLS\]|ARGS\])"
@@ -52,13 +66,17 @@ _CONTROL_MARKUP = re.compile(
 # client-controlled too, so a raw boundary in it truncates or forges a turn (#7066).
 # Everything else stays byte-identical, because the assistant's own think / channel /
 # tool markup is structure the template re-renders. Boundaries also cover the bare
-# Zephyr / Phi-3 role sentinels, Granite's <|start_of_role|> ... <|end_of_text|> and
-# the Mistral / Llama-2 [INST] / [SYSTEM_PROMPT] bracket pairs.
+# Zephyr / Phi-3 role sentinels, Granite's <|start_of_role|> ... <|end_of_text|>, the
+# Llama-4 and Command-R turn tokens, DeepSeek's fullwidth role markers and the
+# Mistral / Llama-2 [INST] / [SYSTEM_PROMPT] bracket pairs. DeepSeek's fullwidth TOOL
+# markers stay out for the same reason <|tool_call> does: they are the assistant's own.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
-    r"\|(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end)"
-    r"|end(?:_of_(?:turn|text))?|eo[tm]_id"
+    r"\|(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep)"
+    r"|end(?:_of_(?:turn|text))?|eo[tm](?:_id)?|header_(?:start|end)"
+    r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
     r"|assistant|return|system|start|turn|user|call)\|?>"
+    r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
     r"|(?:start|end)_of_turn>"
     r"|turn\|>"
     r")"
@@ -90,16 +108,27 @@ def neutralize_turn_boundary_markup(text: str) -> str:
 
 
 def _neutralize_argument_leaves(value):
-    """Break control markup in every string leaf (keys included) of *value*."""
+    """Break control markup in every string leaf (keys included) of *value*.
+
+    Rewriting keys is not injective: "a<think>" and "a< think>" both land on
+    "a< think>", so a dict holding both keeps only the last. Reaching a collision
+    takes two keys differing only in markup the rewrite touches, which no real
+    schema has, and the alternative -- keeping one key raw so both survive -- would
+    put the markup back in the prompt. So the merge stands and is logged.
+    """
     if isinstance(value, str):
         return neutralize_control_markup(value)
     if isinstance(value, dict):
-        return {
-            neutralize_control_markup(key) if isinstance(key, str) else key: (
-                _neutralize_argument_leaves(item)
-            )
-            for key, item in value.items()
-        }
+        out: dict = {}
+        for key, item in value.items():
+            new_key = neutralize_control_markup(key) if isinstance(key, str) else key
+            if new_key in out:
+                logger.warning(
+                    "Two argument keys neutralize onto %r; keeping the later value.",
+                    new_key,
+                )
+            out[new_key] = _neutralize_argument_leaves(item)
+        return out
     if isinstance(value, list):
         return [_neutralize_argument_leaves(item) for item in value]
     return value
@@ -210,7 +239,7 @@ def neutralize_tool_descriptions(tools):
     carrying markup drops the tool with a warning instead. The predicate is the rewrite
     itself, not OpenAI's name grammar, so a passthrough client's ``ns.tool`` or
     ``functions.NAME:IDX`` still ships. The rewrite is the identity on any markup-free
-    string, so a live catalog is returned unchanged and two keys cannot collide onto one.
+    string, so a live catalog is returned unchanged.
     """
     if not tools or not isinstance(tools, list):
         return tools

@@ -11943,6 +11943,9 @@ class LlamaCppBackend:
                 neutralize_tool_descriptions,
             )
 
+            # An MCP server's description and inputSchema are remote text the
+            # template renders into the system turn (#7066).
+            safe_tools = neutralize_tool_descriptions(active_tools)
             payload = {
                 # Re-run every iteration: tool results land in ``conversation`` as
                 # the loop goes, and a forged turn in one would render for real (#7066).
@@ -11955,11 +11958,12 @@ class LlamaCppBackend:
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
-                # An MCP server's description and inputSchema are remote text the
-                # template renders into the system turn (#7066).
-                "tools": neutralize_tool_descriptions(active_tools),
-                "tool_choice": "auto",
             }
+            # Same guard as the passthrough builder: if every name carried markup the
+            # catalog is now empty, and "tools": [] would still advertise tool use.
+            if safe_tools:
+                payload["tools"] = safe_tools
+                payload["tool_choice"] = "auto"
             _reasoning_kw = self._request_reasoning_kwargs(
                 enable_thinking, reasoning_effort, preserve_thinking
             )
