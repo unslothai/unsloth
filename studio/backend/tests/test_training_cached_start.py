@@ -206,7 +206,7 @@ def test_online_probe_ignores_unadvertised_stale_cache(tmp_path):
     snapshot.mkdir(parents = True)
     (snapshot / "adapter_config.json").write_text("{}")
 
-    with patch.object(route, "_remote_model_is_adapter", return_value = False):
+    with patch.object(route, "_remote_untrainable_model_format", return_value = None):
         route._reject_untrainable_model_request(_request())
 
 
@@ -218,7 +218,7 @@ def test_unavailable_probe_inspects_unadvertised_cache(tmp_path):
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = HTTPException(status_code = 503, detail = "unavailable"),
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -237,7 +237,7 @@ def test_unavailable_probe_uses_cached_shorthand_model(tmp_path):
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = HTTPException(status_code = 503, detail = "unavailable"),
     ):
         pin = route._reject_untrainable_model_request(_request(model_name = "test"))
@@ -259,7 +259,7 @@ def test_client_error_probe_uses_unadvertised_cached_model(tmp_path, status_code
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = metadata_error,
     ):
         pin = route._reject_untrainable_model_request(_request())
@@ -277,7 +277,7 @@ def test_client_error_probe_without_cache_preserves_error(status_code):
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = metadata_error,
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -298,7 +298,7 @@ def test_client_error_probe_with_incomplete_cache_preserves_error(tmp_path):
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = metadata_error,
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -341,7 +341,7 @@ def test_client_error_probe_with_partial_shards_preserves_error(tmp_path, index_
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = metadata_error,
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -372,7 +372,7 @@ def test_client_error_probe_uses_complete_sharded_cache(tmp_path):
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = HTTPException(status_code = 403, detail = "unavailable"),
     ):
         pin = route._reject_untrainable_model_request(_request())
@@ -406,7 +406,7 @@ def test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights(tmp_path)
 
     with patch.object(
         route,
-        "_remote_model_is_adapter",
+        "_remote_untrainable_model_format",
         side_effect = metadata_error,
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -444,7 +444,7 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
         patch.object(route, "get_training_backend", return_value = backend),
         patch.object(
             route,
-            "_remote_model_is_adapter",
+            "_remote_untrainable_model_format",
             side_effect = probe_error,
         ),
         patch.object(route, "load_model_defaults", return_value = {}),
@@ -487,7 +487,7 @@ def test_untrainable_gate_rejects_remote_adapter():
     route = _load_route_module("training_route_remote_adapter")
     request = _request()
 
-    with patch.object(route, "_remote_model_is_adapter", return_value = True):
+    with patch.object(route, "_remote_untrainable_model_format", return_value = "adapter"):
         with pytest.raises(HTTPException) as exc_info:
             route._reject_untrainable_model_request(request)
 
@@ -495,12 +495,24 @@ def test_untrainable_gate_rejects_remote_adapter():
     assert "Adapter models are inference-only" in exc_info.value.detail
 
 
-def test_remote_adapter_probe_uses_token_and_shorthand():
+def test_untrainable_gate_rejects_remote_gguf_only_repository():
+    route = _load_route_module("training_route_remote_gguf")
+    request = _request()
+
+    with patch.object(route, "_remote_untrainable_model_format", return_value = "gguf"):
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    assert "GGUF-only remote models are inference-only" in exc_info.value.detail
+
+
+def test_remote_format_probe_uses_token_and_shorthand():
     route = _load_route_module("training_route_remote_adapter_metadata")
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
 
     with patch("huggingface_hub.model_info", return_value = info) as model_info:
-        assert route._remote_model_is_adapter("test", "hf-token") is True
+        assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
 
     model_info.assert_called_once_with(
         "unsloth/test",
@@ -509,14 +521,40 @@ def test_remote_adapter_probe_uses_token_and_shorthand():
     )
 
 
-def test_remote_adapter_probe_reports_rate_limit_without_token_guidance():
+def test_remote_format_probe_rejects_gguf_only_repository():
+    route = _load_route_module("training_route_remote_gguf_metadata")
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "README.md"),
+            SimpleNamespace(rfilename = "weights/model-Q4_K_M.GGUF"),
+        ]
+    )
+
+    with patch("huggingface_hub.model_info", return_value = info):
+        assert route._remote_untrainable_model_format("org/model", None) == "gguf"
+
+
+def test_remote_format_probe_allows_repository_with_trainable_weights():
+    route = _load_route_module("training_route_remote_mixed_metadata")
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "model.safetensors.index.json"),
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf"),
+        ]
+    )
+
+    with patch("huggingface_hub.model_info", return_value = info):
+        assert route._remote_untrainable_model_format("org/model", None) is None
+
+
+def test_remote_format_probe_reports_rate_limit_without_token_guidance():
     route = _load_route_module("training_route_remote_adapter_rate_limit")
     rate_limit_error = RuntimeError("rate limited")
     rate_limit_error.response = SimpleNamespace(status_code = 429)
 
     with patch("huggingface_hub.model_info", side_effect = rate_limit_error):
         with pytest.raises(HTTPException) as exc_info:
-            route._remote_model_is_adapter("test", "hf-token")
+            route._remote_untrainable_model_format("test", "hf-token")
 
     assert exc_info.value.status_code == 429
     assert "rate-limited" in exc_info.value.detail.lower()
@@ -581,7 +619,7 @@ def test_route_forwards_cache_reference_fields():
 
     with (
         patch.object(route, "get_training_backend", return_value = backend),
-        patch.object(route, "_remote_model_is_adapter", return_value = False),
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
         patch.object(route, "load_model_defaults", return_value = {}),
         patch.object(route.asyncio, "to_thread", _inline_to_thread),
         patch("utils.transformers_version.latest_tier_active_for", return_value = False),

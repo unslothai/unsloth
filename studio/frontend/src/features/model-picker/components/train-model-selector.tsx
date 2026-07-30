@@ -21,6 +21,7 @@ import {
   type ModelInventoryFormat,
   classifyUnslothSupport,
   hfApiToken,
+  looksLikeLocalPath,
   matchTokens,
   normalizeModelIdentity,
   tokenizeQuery,
@@ -77,6 +78,11 @@ import {
 import { TRAIN_PICKER_TRIGGER_CLASS } from "./train-picker-trigger";
 
 const MODEL_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.modelPickerTab";
+
+function explicitLocalPath(path: string): string {
+  const trimmed = path.trim();
+  return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;
+}
 
 export function TrainModelSelector({
   triggerDataTour = "studio-model-picker",
@@ -413,7 +419,8 @@ export function TrainModelSelector({
       pickHubModel(id);
       return;
     }
-    const key = normalizeModelIdentity(id);
+    const localPath = explicitLocalPath(id);
+    const key = normalizeModelIdentity(localPath);
     const cached = cachedModelByLookup.get(key);
     const local = localModelByLookup.get(key);
     const validationCached =
@@ -422,7 +429,7 @@ export function TrainModelSelector({
       local ?? nonPartialUntrainableLocalModelByLookup.get(key);
     const validation = validateTrainingModelCandidate(
       {
-        id,
+        id: localPath,
         modelFormat:
           validationCached?.modelFormat ?? validationLocal?.modelFormat ?? null,
         capabilities:
@@ -446,9 +453,9 @@ export function TrainModelSelector({
       return;
     }
     pick(
-      id,
-      { knownCached: false, localPath: id, modelFormat: null },
-      trainingModelTypeFlagsFromMetadata({ identifiers: [id] }),
+      localPath,
+      { knownCached: false, localPath, modelFormat: null },
+      trainingModelTypeFlagsFromMetadata({ identifiers: [localPath] }),
     );
   }
 

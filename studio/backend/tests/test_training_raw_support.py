@@ -335,8 +335,8 @@ class TestTrainingRawSupport(unittest.TestCase):
             ),
             patch.object(
                 training_route,
-                "_remote_model_is_adapter",
-                return_value = False,
+                "_remote_untrainable_model_format",
+                return_value = None,
             ),
             patch.object(training_route, "load_model_defaults", return_value = {}),
             patch(

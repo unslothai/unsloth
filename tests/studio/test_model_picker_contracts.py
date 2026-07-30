@@ -1746,13 +1746,23 @@ def test_training_start_attempt_is_bound_to_checked_inputs():
     assert "getHfToken() === this.expectedHfToken" in source
     assert source.count("abortIfInputsChanged()") >= 5
     assert "this.expectedConfig = { ...this.expectedConfig, ...update };" in source
-    assert "this.expectedConfig = useTrainingConfigStore.getState();" not in source
+    assert source.count("this.expectedConfig = useTrainingConfigStore.getState();") == 1
     assert "buildTrainingStartPayload(attempt.config)" in source
     assert "buildTrainingStartPayload(useTrainingConfigStore.getState())" not in source
     assert "hasIncompatibleTrainingModalities(attempt.config)" in source
 
     readiness = _read("features/training/hooks/use-training-readiness.ts")
     assert "hasIncompatibleTrainingModalities(state)" in readiness
+
+
+def test_freeform_device_model_keeps_local_path_intent():
+    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    assert "return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;" in selector
+    freeform = selector.split("function pickFreeformModel", 1)[1]
+    freeform = freeform.split("function pickDeviceModel", 1)[0]
+    assert "const localPath = explicitLocalPath(id);" in freeform
+    assert "pick(" in freeform
+    assert "{ knownCached: false, localPath, modelFormat: null }" in freeform
 
 
 def test_dataset_hub_list_retains_the_active_hf_selection():

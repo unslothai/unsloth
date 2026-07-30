@@ -1412,8 +1412,8 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
             patch.object(
                 training_route,
-                "_remote_model_is_adapter",
-                return_value = False,
+                "_remote_untrainable_model_format",
+                return_value = None,
             ),
             patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(
@@ -1458,8 +1458,8 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
             patch.object(
                 training_route,
-                "_remote_model_is_adapter",
-                return_value = False,
+                "_remote_untrainable_model_format",
+                return_value = None,
             ),
             patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(

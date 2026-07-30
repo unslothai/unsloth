@@ -223,7 +223,9 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
-def _remote_model_is_adapter(model_name: str, hf_token: Optional[str]) -> bool:
+def _remote_untrainable_model_format(
+    model_name: str, hf_token: Optional[str]
+) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
 
     repo_id = canonical_model_repo_id(model_name)
@@ -264,14 +266,22 @@ def _remote_model_is_adapter(model_name: str, hf_token: Optional[str]) -> bool:
         ) from error
 
     root_files: set[str] = set()
+    has_gguf = False
     for sibling in getattr(info, "siblings", None) or ():
         name = getattr(sibling, "rfilename", None)
         if not isinstance(name, str):
             continue
         normalized = name.replace("\\", "/")
+        if normalized.casefold().endswith(".gguf"):
+            has_gguf = True
         if "/" not in normalized:
             root_files.add(normalized)
-    return "adapter_config.json" in root_files
+    if "adapter_config.json" in root_files:
+        return "adapter"
+    has_trainable_weights = any(name in root_files for name, _ in _MODEL_WEIGHT_CANDIDATES)
+    if has_gguf and not has_trainable_weights:
+        return "gguf"
+    return None
 
 
 def _detect_local_gguf(path: Path) -> Optional[str]:
@@ -348,7 +358,7 @@ def _reject_untrainable_model_request(
     metadata_error: Optional[HTTPException] = None
     if path is None:
         try:
-            is_adapter = _remote_model_is_adapter(
+            remote_format = _remote_untrainable_model_format(
                 request.model_name,
                 request.hf_token or None,
             )
@@ -368,8 +378,13 @@ def _reject_untrainable_model_request(
                 snapshot,
             )
         else:
-            if not is_adapter:
+            if remote_format is None:
                 return
+            if remote_format == "gguf":
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "GGUF-only remote models are inference-only and cannot be trained.",
+                )
             raise HTTPException(
                 status_code = 400,
                 detail = ("Adapter models are inference-only and cannot be trained as base models."),
