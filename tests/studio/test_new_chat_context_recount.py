@@ -761,9 +761,9 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
     )
     assert out["counts"] == 1
     assert len(out["sent"]) == 2, "the count priced the branch as it stood"
-    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
-        "a total for a branch that has since gained a turn must not reach the bar"
-    )
+    assert (out["contextUsage"] or {}).get(
+        "totalTokens"
+    ) == expected_total, "a total for a branch that has since gained a turn must not reach the bar"
     assert (out["cached"] or {}).get("totalTokens") == expected_total
 
 

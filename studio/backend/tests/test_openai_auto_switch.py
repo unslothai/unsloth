@@ -3306,12 +3306,12 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
     assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
     assert len(assistant) == 1
     content = str(assistant[0].get("content", ""))
-    assert ("<tool_call>" in content) is expect_markup, (
-        "the count must render the same replayed history the completion does"
-    )
-    assert "offline_tool[ARGS]" in content, (
-        "an inactive tool name is prose in the real prompt, so the count keeps it too"
-    )
+    assert (
+        "<tool_call>" in content
+    ) is expect_markup, "the count must render the same replayed history the completion does"
+    assert (
+        "offline_tool[ARGS]" in content
+    ), "an inactive tool name is prose in the real prompt, so the count keeps it too"
 
 
 _PASSTHROUGH_CATALOG = [
