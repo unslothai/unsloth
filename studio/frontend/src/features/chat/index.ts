@@ -81,6 +81,7 @@ export {
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
 export {
+  addQueuedChatRunSettingsThreadIds,
   consumeQueuedChatRunSettings,
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,

@@ -12,12 +12,15 @@ export type PromptQueueRunFailedEventDetail = {
 };
 
 export function requestPromptQueueStop(threadIds?: string[]) {
-  if (typeof window === "undefined") {
+  if (
+    typeof window === "undefined" ||
+    (threadIds !== undefined && threadIds.length === 0)
+  ) {
     return;
   }
   window.dispatchEvent(
     new CustomEvent<PromptQueueStopEventDetail>(PROMPT_QUEUE_STOP_EVENT, {
-      detail: threadIds && threadIds.length > 0 ? { threadIds } : undefined,
+      detail: threadIds ? { threadIds } : undefined,
     }),
   );
 }

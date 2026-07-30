@@ -2121,6 +2121,13 @@ export function createOpenAIStreamAdapter(
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
       const queuedRunSettings =
         consumeQueuedChatRunSettings(resolvedThreadId);
+      const notifyQueuedRunFailed = () => {
+        // A queued dispatch can fail validation before runningByThreadId turns
+        // on. Remove only that chat's queue; unrelated queues keep running.
+        if (queuedRunSettings) {
+          notifyPromptQueueRunFailed(resolvedThreadId ?? null);
+        }
+      };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
       }
@@ -2143,11 +2150,23 @@ export function createOpenAIStreamAdapter(
       ) {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
-          await waitForModelReady(abortSignal);
+          try {
+            await waitForModelReady(abortSignal);
+          } catch (error) {
+            notifyQueuedRunFailed();
+            throw error;
+          }
         }
         if (!useChatRuntimeStore.getState().params.checkpoint) {
-          const { loaded, blockedByTrustRemoteCode } =
-            await autoLoadSmallestModel();
+          let loaded: boolean;
+          let blockedByTrustRemoteCode: boolean;
+          try {
+            ({ loaded, blockedByTrustRemoteCode } =
+              await autoLoadSmallestModel());
+          } catch (error) {
+            notifyQueuedRunFailed();
+            throw error;
+          }
           if (!loaded) {
             toast.error(
               blockedByTrustRemoteCode
@@ -2159,6 +2178,7 @@ export function createOpenAIStreamAdapter(
                   : "Pick a model in the top bar, then retry.",
               },
             );
+            notifyQueuedRunFailed();
             throw new Error("Load a model first.");
           }
         }
@@ -2437,14 +2457,6 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
-      const notifyQueuedRunFailed = () => {
-        // A queued dispatch can fail validation before runningByThreadId turns
-        // on. Remove only that chat's queue; unrelated queues keep running.
-        if (queuedRunSettings) {
-          notifyPromptQueueRunFailed(resolvedThreadId ?? null);
-        }
-      };
-
       // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");

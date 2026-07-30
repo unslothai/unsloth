@@ -103,6 +103,7 @@ import {
   PLUS_MENU_ORDER,
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
+  addQueuedChatRunSettingsThreadIds,
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
   registerQueuedChatRunSettings,
@@ -2138,7 +2139,7 @@ const Composer: FC<{
         return getQueueThreadIds();
       },
       isRunning: () => Boolean(getThreadRuntime()?.getState().isRunning),
-      append: (prompt) => {
+      append: async (prompt) => {
         const thread = getThreadRuntime();
         if (!thread) {
           throw new Error("Prompt queue thread runtime is unavailable");
@@ -2154,7 +2155,23 @@ const Composer: FC<{
         );
         pendingSettingsIds.add(settingsId);
         try {
-          thread.append(appendTextToThread(prompt));
+          const runtime =
+            assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
+          const state = getThreadListItemState();
+          if (!runtime || !state) {
+            throw new Error("Prompt queue thread item is unavailable");
+          }
+          // A fresh chat receives its remote id during initialization. Await it
+          // before append so the adapter can match the queued settings using
+          // unstable_threadId on its first invocation.
+          const { remoteId } = await runtime.threads
+            .getItemById(state.id)
+            .initialize();
+          addQueuedChatRunSettingsThreadIds(settingsId, [
+            ...getQueueThreadIds(),
+            remoteId,
+          ]);
+          await thread.append(appendTextToThread(prompt));
         } catch (error) {
           pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);

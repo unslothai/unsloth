@@ -81,6 +81,21 @@ export function registerQueuedChatRunSettings(
   return id;
 }
 
+export function addQueuedChatRunSettingsThreadIds(
+  id: number,
+  threadIds: string[],
+): void {
+  const entry = pendingSettings.find((candidate) => candidate.id === id);
+  if (!entry) {
+    return;
+  }
+  for (const threadId of threadIds) {
+    if (threadId) {
+      entry.threadIds.add(threadId);
+    }
+  }
+}
+
 export function discardQueuedChatRunSettings(id: number): void {
   const index = pendingSettings.findIndex((entry) => entry.id === id);
   if (index >= 0) {

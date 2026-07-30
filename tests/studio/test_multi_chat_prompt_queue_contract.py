@@ -133,6 +133,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
     assert "registerQueuedChatRunSettings(" in target
+    assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
+    assert ".getItemById(state.id)\n            .initialize()" in target
     assert "consumeQueuedChatRunSettings(resolvedThreadId)" in CHAT_ADAPTER
     assert '"deepResearchEnabled"' in QUEUED_SETTINGS
     assert '"supportsReasoning"' in QUEUED_SETTINGS
@@ -160,6 +162,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "complete: discardOldestPendingSettings" in target
     assert "getActivePromptQueueItem(run)?.target.complete()" in THREAD
     assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
+    assert CHAT_ADAPTER.index("const notifyQueuedRunFailed = () =>") < CHAT_ADAPTER.index(
+        "if (\n        runtime.deepResearchEnabled"
+    )
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
     assert "getLocalPromptQueueThreadIds" in CONFIRM_MODEL_SWAP
@@ -200,6 +205,8 @@ def test_stop_delete_archive_and_clear_are_thread_scoped():
     assert "requestPromptQueueStop(toArchive.map((thread) => thread.id));" in SIDEBAR_ITEMS
     assert "requestPromptQueueStop(threadIds);" in SIDEBAR_ITEMS
     assert "requestPromptQueueStop();" in CLEAR_ALL_CHATS
+    assert "threadIds !== undefined && threadIds.length === 0" in QUEUE_BOUNDARY
+    assert "detail: threadIds ? { threadIds } : undefined" in QUEUE_BOUNDARY
 
 
 def test_sidebar_exposes_queue_activity_for_each_thread():
