@@ -2960,6 +2960,12 @@ def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
     return impl(repo_cache_dir)
 
 
+def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
+    """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant."""
+    from hub.utils.inventory_scan import default_ref_offers_no_whole_quant as impl
+    return impl(repo_cache_dir)
+
+
 def _cached_repo_file_name(file_obj) -> str:
     """Snapshot-relative name for a cached file: huggingface_hub records the bare ``file_name``,
     which cannot tell an ``MTP/`` drafter from a quant."""
@@ -3088,8 +3094,10 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         return None
     try:
         # A recovered repo's refs/main names nothing, so its id resolves nowhere and needs a pin.
-        if repo_path.parent.resolve(strict = False) == active_root and not _repo_id_will_not_resolve(
-            repo_path
+        if (
+            repo_path.parent.resolve(strict = False) == active_root
+            and not _repo_id_will_not_resolve(repo_path)
+            and not _default_ref_offers_no_whole_quant(repo_path)
         ):
             return None
     except (OSError, RuntimeError, ValueError):

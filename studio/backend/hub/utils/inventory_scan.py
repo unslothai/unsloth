@@ -565,6 +565,22 @@ def repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
     return _default_ref_names_an_absent_snapshot(repo_cache_dir)
 
 
+def default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
+    """Whether ``refs/main`` resolves to a snapshot whose every quant is short a shard.
+
+    Loading by repo id follows that ref, so a row whose default lands on a half split needs a
+    snapshot pinned even though the id resolves. False when the ref names no snapshot, which
+    ``repo_id_will_not_resolve`` owns, and when the snapshot offers no quant to judge.
+    """
+    snapshot = default_ref_snapshot(repo_cache_dir)
+    if snapshot is None:
+        return False
+    offered = _offered_gguf_quants(snapshot)
+    if not offered:
+        return False
+    return not (offered & _completed_gguf_variants(snapshot))
+
+
 def _repo_has_a_dangling_ref(repo_cache_dir: Path) -> bool:
     """Whether ANY ref under ``refs/`` names a commit with no snapshot dir.
 

@@ -441,6 +441,62 @@ def test_the_local_default_variant_is_one_that_can_load(
     assert {v.quant for v in response.variants if v.downloaded} == expected_ready
 
 
+def test_list_cached_gguf_pins_a_snapshot_when_the_default_ref_quant_is_torn(monkeypatch, tmp_path):
+    """The repo id resolving is not enough: refs/main can land on a revision holding half a split
+    while an older one is whole. The compat schema carries no partial flag, so a client loading the
+    id follows the torn ref and fails with a complete copy one directory away."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Quant"
+    older, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    for shard in ("00001", "00002"):
+        (older / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
+    (newer / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 256)
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+
+    repo = _repo(
+        "Org/Quant",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M-00001-of-00002.gguf", 256)], snapshot_path = newer
+            ),
+            SimpleNamespace(
+                files = [
+                    _file("Model-Q4_K_M-00001-of-00002.gguf", 256),
+                    _file("Model-Q4_K_M-00002-of-00002.gguf", 256),
+                ],
+                snapshot_path = older,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }
+    assert rows["Org/Quant"]["load_id"] == str(older)
+
+    # Control: point the ref at the whole copy and the repo id is what loads again.
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    rows = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }
+    assert "load_id" not in rows["Org/Quant"]
+
+
 def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch, tmp_path):
     """The lister and the load take the whole copy, so mtime order alone would read metadata out of
     a newer half download nothing loads."""
