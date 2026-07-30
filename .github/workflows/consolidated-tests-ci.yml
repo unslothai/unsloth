@@ -276,6 +276,7 @@ jobs:
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/utils/test_attention_masks.py \
+            tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
           python -m pytest --collect-only -q "$RUNNER_TEMP/unsloth-zoo/tests/"
@@ -368,6 +369,7 @@ jobs:
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/utils/test_attention_masks.py \
+            tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
             tests/test_bad_mappings_redirect.py \
