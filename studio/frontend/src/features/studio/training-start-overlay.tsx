@@ -31,6 +31,11 @@ import {
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import {
+  EMPTY_TRAINING_DOWNLOAD_STATE,
+  toTrainingDownloadState,
+  type TrainingDownloadState,
+} from "./training-download-progress";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactElement } from "react";
@@ -57,50 +62,23 @@ function formatCachePath(path: string): string {
     .replace(/^[A-Za-z]:[/\\]Users[/\\][^/\\]+/, "~");
 }
 
-type DownloadState = {
-  downloadedBytes: number;
-  totalBytes: number;
-  percent: number;
-  cachePath: string | null;
-};
-
-const EMPTY_DOWNLOAD_STATE: DownloadState = {
-  downloadedBytes: 0,
-  totalBytes: 0,
-  percent: 0,
-  cachePath: null,
-};
-
-function coerceCachedStateReady(state: DownloadState): DownloadState {
-  if (!state.cachePath) return state;
-  if (state.downloadedBytes > 0 && state.percent < 100) return state;
-  const totalBytes =
-    state.totalBytes > 0 ? state.totalBytes : state.downloadedBytes;
-  if (totalBytes <= 0) {
-    return { ...state, percent: 100 };
-  }
-  return {
-    ...state,
-    downloadedBytes: totalBytes,
-    totalBytes,
-    percent: 100,
-  };
-}
-
 type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
 
 /**
  * Polls a HF repo's download progress on a 1.5s tick. Serves both model weights
- * and dataset blobs by swapping the fetcher. Stops once `progress >= 1.0`; the
- * bar freezes at the final value rather than disappearing, matching chat flow.
+ * and dataset blobs by swapping the fetcher. Stops only after the backend's
+ * manifest-backed disk check verifies completion; byte totals and cache paths
+ * can look complete while a resolved model revision is still downloading.
  */
 function useHfDownloadProgress(
   repoId: string | null,
   fetcher: Fetcher,
-): DownloadState {
+): TrainingDownloadState {
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
-  const [state, setState] = useState<DownloadState>(EMPTY_DOWNLOAD_STATE);
+  const [state, setState] = useState<TrainingDownloadState>(
+    EMPTY_TRAINING_DOWNLOAD_STATE,
+  );
 
   const shouldPoll =
     isStarting ||
@@ -113,7 +91,7 @@ function useHfDownloadProgress(
 
   useEffect(() => {
     if (!repoId || !HF_REPO_REGEX.test(repoId) || !shouldPoll) {
-      setState(EMPTY_DOWNLOAD_STATE);
+      setState(EMPTY_TRAINING_DOWNLOAD_STATE);
       return;
     }
 
@@ -126,18 +104,9 @@ function useHfDownloadProgress(
       try {
         const prog = await fetcher(repoId);
         if (cancelled) return;
-        const downloaded = prog.downloaded_bytes ?? 0;
-        const total = prog.expected_bytes ?? 0;
-        const ratio = prog.progress ?? 0;
-        const pct =
-          total > 0 ? Math.min(100, Math.round(ratio * 100)) : 0;
-        setState({
-          downloadedBytes: downloaded,
-          totalBytes: total,
-          percent: pct,
-          cachePath: prog.cache_path ?? null,
-        });
-        if (ratio >= 1.0) {
+        const nextState = toTrainingDownloadState(prog);
+        setState(nextState);
+        if (prog.complete_on_disk === true) {
           finished = true;
           if (interval) {
             clearInterval(interval);
@@ -161,17 +130,21 @@ function useHfDownloadProgress(
   return state;
 }
 
-function useModelDownloadProgress(modelName: string | null): DownloadState {
+function useModelDownloadProgress(
+  modelName: string | null,
+): TrainingDownloadState {
   return useHfDownloadProgress(modelName, getDownloadProgress);
 }
 
-function useDatasetDownloadProgress(datasetName: string | null): DownloadState {
+function useDatasetDownloadProgress(
+  datasetName: string | null,
+): TrainingDownloadState {
   return useHfDownloadProgress(datasetName, getDatasetDownloadProgress);
 }
 
 type DownloadRowProps = {
   label: string;
-  state: DownloadState;
+  state: TrainingDownloadState;
 };
 
 function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
@@ -181,13 +154,13 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
-  const isComplete = state.totalBytes > 0 && state.percent >= 100;
+  const isComplete = state.completeOnDisk;
   const statusLabel = isComplete
     ? t("studio.trainingStart.ready")
-    : state.totalBytes > 0
-      ? t("studio.trainingStart.downloading")
-      : state.downloadedBytes === 0
-        ? t("studio.trainingStart.preparing")
+    : state.downloadedBytes === 0
+      ? t("studio.trainingStart.preparing")
+      : state.totalBytes > 0
+        ? t("studio.trainingStart.downloading")
         : null;
   const showRate = stats.stable && !isComplete;
   const rateSuffix = showRate ? ` • ${formatRate(stats.rateBytesPerSecond)}` : "";
@@ -258,6 +231,9 @@ export function TrainingStartOverlay({
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
+  const modelDownloadRepoId = useTrainingRuntimeStore(
+    (s) => s.modelDownloadRepoId,
+  );
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
   const configuredModel = useTrainingConfigStore((s) => s.selectedModel);
@@ -274,11 +250,13 @@ export function TrainingStartOverlay({
   const useConfiguredResources = !isStarting && !hasStartResources;
   const isDownloadPhase =
     phase === "downloading_model" || phase === "downloading_dataset";
-  const modelName = hasStartResources
-    ? startModelName
-    : useConfiguredResources
-      ? configuredModel
-      : null;
+  const modelName =
+    modelDownloadRepoId ??
+    (hasStartResources
+      ? startModelName
+      : useConfiguredResources
+        ? configuredModel
+        : null);
   const datasetName = hasStartResources
     ? startDatasetName
     : useConfiguredResources
@@ -288,14 +266,8 @@ export function TrainingStartOverlay({
     startFromResume && !isDownloadPhase && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
       : message || t("studio.trainingStart.startingTraining");
-  const rawModelDownload = useModelDownloadProgress(modelName);
-  const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
-  const modelDownload = isDownloadPhase
-    ? rawModelDownload
-    : coerceCachedStateReady(rawModelDownload);
-  const datasetDownload = isDownloadPhase
-    ? rawDatasetDownload
-    : coerceCachedStateReady(rawDatasetDownload);
+  const modelDownload = useModelDownloadProgress(modelName);
+  const datasetDownload = useDatasetDownloadProgress(datasetName);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
 

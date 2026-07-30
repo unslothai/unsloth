@@ -23,6 +23,7 @@ const initialState: TrainingRuntimeState = {
   isStarting: false,
   startError: null,
   startModelName: null,
+  modelDownloadRepoId: null,
   startDatasetName: null,
   startProjectName: null,
   startFromResume: false,
@@ -153,6 +154,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       message,
       error: null,
       startError: null,
+      modelDownloadRepoId: null,
       phase: "configuring",
       isStarting: false,
       sseConnected: false,
@@ -227,6 +229,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           payload.details?.output_dir !== undefined
             ? payload.details.output_dir
             : state.outputDir,
+        modelDownloadRepoId:
+          payload.details?.model_download_repo_id ?? null,
         lossHistory: metricHistory.lossHistory ?? state.lossHistory,
         lrHistory: metricHistory.lrHistory ?? state.lrHistory,
         gradNormHistory: metricHistory.gradNormHistory ?? state.gradNormHistory,

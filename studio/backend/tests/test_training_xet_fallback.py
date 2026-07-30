@@ -43,6 +43,7 @@ _mpl.pyplot = _plt
 _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
+_hw.get_device = lambda: "cpu"
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
@@ -187,8 +188,10 @@ def test_second_stall_surfaces_error_without_respawn():
 
 def test_model_load_completed_disarms_recovery():
     b, _ = _backend_mid_load()
+    b._model_download_repo_id = "unsloth/model-unsloth-bnb-4bit"
     b._handle_event({"type": "model_load_completed"})
     assert b._in_model_load is False
+    assert b._model_download_repo_id is None
     # A stall after the load finished is not a transport stall to recover from.
     b._handle_event({"type": "stall", "message": "post-load"})
     assert b._needs_xet_respawn is False
@@ -197,8 +200,23 @@ def test_model_load_completed_disarms_recovery():
 def test_model_load_started_arms_recovery_window():
     b = TrainingBackend()
     assert b._in_model_load is False
-    b._handle_event({"type": "model_load_started"})
+    b._handle_event(
+        {
+            "type": "model_load_started",
+            "repo_id": "unsloth/model-unsloth-bnb-4bit",
+        }
+    )
     assert b._in_model_load is True
+    assert b._model_download_repo_id == "unsloth/model-unsloth-bnb-4bit"
+
+
+def test_worker_reports_and_watches_the_resolved_download_repo():
+    worker_source = (
+        Path(__file__).resolve().parent.parent / "core" / "training" / "worker.py"
+    ).read_text(encoding = "utf-8")
+
+    assert '"repo_id": model_download_repo_id' in worker_source
+    assert "repo_ids = [model_download_repo_id]" in worker_source
 
 
 def test_child_should_disable_xet_truth_table():
