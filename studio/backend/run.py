@@ -2055,6 +2055,11 @@ def run_server(
     # The headless `run --api-only` path opts out so it does not leak this line.
     if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
+        # If the desktop app dies without running its cleanup (crash, force
+        # quit, killed dev session), exit instead of orphaning on the port.
+        from utils.parent_watchdog import start_parent_watchdog
+
+        start_parent_watchdog(_trigger_shutdown)
 
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
