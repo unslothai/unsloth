@@ -315,7 +315,7 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
 def list_gguf_variants_from_hf_cache(
     repo_id: str, root: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
-    # Imported here, not at module scope: inventory_scan imports this module.
+    # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
 
     snapshots = (
@@ -323,18 +323,16 @@ def list_gguf_variants_from_hf_cache(
         if root is not None
         else iter_hf_cache_snapshots(repo_id)
     )
-    # A local load reads only the load-id directory, so this walk must land on
-    # the same one: the newest snapshot holding a whole quant wins, exactly as
-    # _repo_gguf_payload_snapshots picks it, and only its completed subset is
-    # offered. The vision flag travels with that snapshot and is never OR-ed
-    # across the walk, since the loader looks for companions no higher than the
-    # pinned one. When nothing holds a whole quant, the first with anything wins.
+    # A local load reads one snapshot dir, so pick the same one the inventory
+    # row does: newest snapshot holding a whole quant, offering only its
+    # completed subset. has_vision travels with that snapshot (never OR-ed
+    # across the walk). If no snapshot is complete, the first non-empty wins.
     fallback: Optional[tuple[list[GgufVariantInfo], bool]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         if variants:
             complete = complete_snapshot_variants(str(snapshot))
-            # An unlabelled quant cannot be judged, so it is kept.
+            # Unlabelled quants cannot be judged, so keep them.
             usable = [v for v in variants if not v.quant or v.quant in complete]
             if usable:
                 return usable, has_vision

@@ -127,15 +127,14 @@ def all_hf_cache_scans() -> list:
             flight.event.set()
 
 
-# Mirrors huggingface_hub's walk skips, so a stray OS helper file is not
-# mistaken for cache corruption.
+# Mirrors huggingface_hub's walk skips: a stray OS file is not corruption.
 _CACHE_ENTRIES_TO_IGNORE = frozenset({".DS_Store"})
 _HF_REPO_TYPES = frozenset({"model", "dataset", "space"})
 
 
-# Mirror huggingface_hub's CachedFileInfo / CachedRevisionInfo / CachedRepoInfo
-# field-for-field instead of importing them, so an upstream field change cannot
-# break construction; test_hf_cache_dangling_refs is the drift tripwire. Frozen:
+# Mirror huggingface_hub's Cached{File,Revision,Repo}Info field-for-field rather
+# than importing them, so an upstream field change cannot break construction;
+# test_hf_cache_dangling_refs is the drift tripwire. Frozen because
 # HFCacheInfo.delete_revisions() keys a dict by repo and set-diffs ``revisions``.
 @dataclass(frozen = True)
 class _RecoveredFileInfo:
@@ -211,16 +210,12 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
     """Rebuild the scan entry for a repo dropped *solely* over leftover refs.
 
     ``scan_cache_dir`` omits an intact repo when a ``refs/<branch>`` names a
-    commit with no ``snapshots/<commit>/`` dir. Studio creates that state itself:
-    ``snapshot_download`` writes ``refs/main`` at the live upstream sha *before*
-    fetching the first file, never creates ``snapshots/<sha>/``, and no Studio
-    caller pins ``revision`` -- no race needed, a patterns-match-nothing download
-    returns having written only the ref. The repo then vanishes from every
-    inventory endpoint while the model picker's directory walk still lists it.
+    commit with no ``snapshots/<commit>/`` dir, which ``snapshot_download``
+    creates by writing ``refs/main`` before fetching the first file. The repo
+    then vanishes from every inventory endpoint while the picker still lists it.
 
-    Read-only: the offending ref is left exactly as it is (pruning it cannot be
-    race-free, see test_hf_cache_dangling_refs). Returns None whenever anything
-    *other* than leftover refs would have failed the upstream scan.
+    Read-only: the ref is left alone (pruning it cannot be race-free). Returns
+    None whenever anything other than leftover refs failed the upstream scan.
     """
     identity = _hf_repo_identity(repo_dir.name)
     if identity is None:
@@ -287,7 +282,7 @@ def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_Recovered
                 last_modified = last_modified,
             )
         )
-    # Nothing fetched yet: the repo is not on disk, so do not report it.
+    # Nothing fetched yet, so the repo is not on disk.
     if not revisions:
         return None
     # Every ref resolved, so upstream dropped this repo for some other reason.
@@ -365,7 +360,7 @@ def _compute_all_hf_cache_scans() -> list:
         try:
             scan = scan_cache_dir(cache_dir = str(cache_root))
             # Only a warned-about scan can hide a repo, so a healthy cache is
-            # never walked twice; getattr tolerates a scan without .warnings.
+            # never walked twice.
             if getattr(scan, "warnings", None):
                 scan = _with_repos_hidden_by_dangling_refs(scan, cache_root)
             scans.append(scan)
@@ -377,8 +372,8 @@ def _compute_all_hf_cache_scans() -> list:
 def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
     """Snapshot dir that ``refs/main`` names in *repo_dir*, or ``None``.
 
-    Where ``from_pretrained(repo_id)`` lands: naming the repo id as the load id
-    is only safe when it matches the snapshot the row advertises.
+    Where ``from_pretrained(repo_id)`` lands, so handing out the repo id as the
+    load id is only safe when this matches the snapshot the row advertises.
     """
     ref_path = repo_dir / "refs" / "main"
     try:
@@ -400,9 +395,8 @@ def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
 def default_ref_resolves_on_disk(repo_dir: Path) -> bool:
     """Whether ``refs/main`` names a snapshot that exists in *repo_dir*.
 
-    When it does not, ``from_pretrained(repo_id)`` fails offline and silently
-    fetches upstream HEAD online, so callers hand out the snapshot path as the
-    load identity instead of the repo id.
+    When it does not, ``from_pretrained(repo_id)`` fails offline and fetches
+    upstream HEAD online, so callers hand out the snapshot path instead.
     """
     return default_ref_snapshot(repo_dir) is not None
 
@@ -542,9 +536,8 @@ def _is_latest_snapshot(repo_cache_dir: Path, snapshot_dir: Path) -> bool:
 def _default_ref_names_an_absent_snapshot(repo_cache_dir: Path) -> bool:
     """Whether ``refs/main`` is present and names a commit with no snapshot dir.
 
-    The window between ``snapshot_download`` rewriting the ref and the first
-    file landing. A missing ``refs/main`` is not the same: a repo fetched by
-    commit hash never gets one.
+    The window between ``snapshot_download`` rewriting the ref and the first file
+    landing. A *missing* ref is different: a commit-pinned fetch never writes one.
     """
     ref_path = repo_cache_dir / "refs" / "main"
     try:
@@ -566,14 +559,13 @@ def _repo_signal_applies_to_snapshot(
 
     Cancel markers, ``.incomplete`` blobs and the repo-wide manifest carry no
     revision and are rewritten by each attempt, so they belong to the newest
-    snapshot; a row advertising an older, already complete one must not inherit
-    them and lose ``can_chat``. With nothing to attribute against, keep them.
+    snapshot; a row advertising an older, complete one must not inherit them and
+    lose ``can_chat``. With nothing to attribute against, keep them.
 
     A ``refs/main`` naming a commit with no directory pins that attempt to a
-    revision absent from disk, so no snapshot inherits it -- leaving it on the
-    newest one charged an interrupted update to the previous complete payload.
-    It still excuses only a snapshot that can serve the row, since a pinned
-    snapshot holding half a payload has no other evidence it is unfinished.
+    revision absent from disk, so no snapshot inherits it -- otherwise an
+    interrupted update is charged to the previous complete payload. That excuses
+    only a snapshot that can serve the row.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return True
@@ -696,11 +688,10 @@ def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
 
 
 def _weight_family_kind(name: str) -> Optional[str]:
-    """``"base"`` weights, an ``"adapter"``, or ``None`` for a training artefact
-    such as ``optimizer.bin`` that no row loads. Applied to sharded and unsharded
-    names alike, so an auxiliary set is never counted as a runnable family.
-    """
-    # hub.services imports hub.utils, so this import stays inside the call.
+    """``"base"``, ``"adapter"``, or ``None`` for a training artefact such as
+    ``optimizer.bin`` that no row loads, so an auxiliary set is never counted as
+    a runnable family."""
+    # Local import: hub.services imports hub.utils.
     from hub.services.models.common import (
         _is_adapter_weight_name,
         _is_transformers_bin_weight_name,
@@ -719,10 +710,10 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
 
     ``from_pretrained`` loads one family, so a whole safetensors set beside an
     interrupted ``.bin`` one still serves the row. Base weights are judged first
-    and alone (no adapter or training artefact stands in for missing base
-    shards); only an adapter-only snapshot is judged on its adapter. Shard groups
-    key on directory, prefix and total since a snapshot may ship several sets,
-    and a weight file naming no total is a whole family by itself.
+    and alone (nothing stands in for missing base shards); only an adapter-only
+    snapshot is judged on its adapter. Shard groups key on (dir, prefix, total)
+    since a snapshot may ship several sets; a file naming no total is a whole
+    family by itself.
     """
     groups: dict[str, dict[tuple[str, str, int], set[int]]] = {"base": {}, "adapter": {}}
     whole: set[str] = set()
@@ -765,11 +756,10 @@ def _snapshot_cannot_serve_its_payload(snapshot_dir: Optional[Path]) -> bool:
     """Whether *snapshot_dir*'s own contents prove it cannot serve a row.
 
     Judged on the pinned snapshot alone, since the dangling ref is exactly what
-    stops being evidence. A snapshot offering quants is judged on those, one
-    offering none on its safetensors/checkpoint families, under one rule
+    stopped being evidence. A snapshot offering quants is judged on those, one
+    offering none on its safetensors/checkpoint families, under the rule
     ``is_gguf_repo_partial`` also keeps: one complete quant or family is enough.
-    Only a file naming its own total counts as proof, so a snapshot holding none
-    is still excused.
+    Only a file naming its own total counts as proof.
     """
     if snapshot_dir is None:
         return False
@@ -784,11 +774,11 @@ def _recovered_snapshot_cannot_serve(
 ) -> bool:
     """Partial signal for a snapshot the dangling-ref recovery put back on a row.
 
-    The interrupted attempt that wrote the ref may have left nothing else
-    behind, so marker, manifest and ``.incomplete``/broken-symlink signals all
-    read false and a snapshot short a shard set was advertised runnable. Its own
-    contents are the only evidence left. Scoped to the dangling case: where the
-    ref resolves, the row is one upstream already publishes.
+    The interrupted attempt that wrote the ref may have left nothing else behind,
+    so marker, manifest and ``.incomplete``/broken-symlink all read false and a
+    snapshot short a shard set looks runnable; its contents are the only evidence
+    left. Scoped to the dangling case: where the ref resolves, the row is one
+    upstream already publishes.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return False
@@ -801,8 +791,7 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
     """True when every quant the lister would advertise from *snapshot* is on disk.
 
     One complete quant is not enough: the picker enumerates the whole directory,
-    so a half-downloaded split quant beside a good one still gets offered and the
-    generated command asks llama-server for absent shards.
+    so a half-downloaded split quant beside a good one still gets offered.
     """
     from hub.utils.gguf import list_local_gguf_variants
     try:
@@ -820,8 +809,8 @@ def snapshot_has_complete_variants(snapshot: str) -> bool:
 
     Weaker than ``snapshot_variants_all_complete`` on purpose: a snapshot mixing
     a whole quant with an interrupted split one still loads the whole one, and
-    the lister trims the offer to that subset. Every caller that pins a load id
-    uses this predicate, so selection and offered variants name one directory.
+    the lister trims the offer to that subset. Every load-id pin uses this, so
+    selection and offered variants name one directory.
     """
     from hub.utils.gguf import list_local_gguf_variants
     try:
@@ -838,8 +827,7 @@ def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
     """Whether *snapshot* itself holds a GGUF vision projector.
 
     Same walk the variant lister reports ``has_vision`` from, so row capability
-    and picker flag cannot name different revisions. The loader's companion
-    search never leaves the snapshot it resolved the quant in.
+    and picker flag cannot name different revisions.
     """
     if snapshot is None:
         return False
@@ -952,9 +940,9 @@ def is_snapshot_partial(
     far enough to record expectations but did not leave a usable snapshot.
 
     *snapshot_dir* pins the legacy and manifest walks to the snapshot the row
-    hands out as its load identity; without it a weightless metadata-only
-    revision beside a complete download flags the row partial and ``can_chat``
-    goes false for a model that loads fine. Repo-wide signals are attributed by
+    hands out as its load identity; without it a metadata-only revision beside a
+    complete download flags the row partial and ``can_chat`` goes false for a
+    model that loads fine. Repo-wide signals are attributed by
     ``_repo_signal_applies_to_snapshot``."""
     from hub.utils import download_manifest
 
@@ -998,11 +986,11 @@ def is_variant_partial(
     caller is checking many variants of the same repo (see
     is_gguf_repo_partial for that usage).
 
-    ``repo_signal_applies`` is the attribution
-    ``_repo_signal_applies_to_snapshot`` makes: a caller pinning *snapshot_dir*
-    to an older revision passes False rather than judge that quant by another
-    revision's marker or manifest. Defaults True so the per-variant endpoint
-    still reports a cancelled or unfinished quant as broken."""
+    ``repo_signal_applies`` is what ``_repo_signal_applies_to_snapshot``
+    decided: a caller pinning *snapshot_dir* to an older revision passes False
+    rather than judge that quant by another revision's marker or manifest.
+    Defaults True so the per-variant endpoint still reports a cancelled or
+    unfinished quant as broken."""
     from hub.utils import download_manifest
     return _compose_partial(
         lambda: repo_signal_applies

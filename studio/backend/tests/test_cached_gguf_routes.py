@@ -205,10 +205,10 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
     """Equal snapshot mtimes must not leave the load id to iteration order.
 
     ``repo_info.revisions`` is a ``frozenset``, so on a coarse-timestamp
-    filesystem or a restored cache this route published whichever snapshot the
-    hash seed reached first while ``/api/models/gguf-variants`` kept naming the
-    one ``snapshot_selection_key`` picks. Both revision orders are driven here
-    because that is what the seed varies.
+    filesystem this route published whichever snapshot the hash seed reached
+    first while ``/api/models/gguf-variants`` named the one
+    ``snapshot_selection_key`` picks. Both revision orders are driven because
+    that is what the seed varies.
     """
     import os
 

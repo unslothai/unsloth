@@ -142,12 +142,9 @@ def _windows_allocated_size(path: Path) -> Optional[int]:
 def snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
     """The one ordering every snapshot selector uses: mtime, then resolved path.
 
-    mtime alone is not a total order: coarse-timestamp filesystems and restored
-    caches hand out ties, and each selector then kept whatever its own iteration
-    reached first -- a ``frozenset`` on the inventory side, ``iterdir()`` on the
-    variant side -- so the row pinned one directory while the picker offered
-    quants from another, and which won moved with ``PYTHONHASHSEED``. The
-    resolved path breaks the tie identically everywhere.
+    mtime alone is not a total order, and each selector broke ties by its own
+    iteration order (frozenset vs iterdir), so the inventory row and the variant
+    picker could name different snapshots. The path breaks ties identically.
     """
     try:
         mtime = snapshot.stat().st_mtime
@@ -162,9 +159,8 @@ def snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
 def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
     """Newest immediate child of ``repo_dir/snapshots``, or None.
 
-    mtime is the signal huggingface_hub's from_pretrained resolves to, so this
-    points at whatever snapshot most recently landed on disk; ties fall to
-    ``snapshot_selection_key`` so every caller names the same directory.
+    mtime is the signal huggingface_hub's from_pretrained resolves to; ties fall
+    to ``snapshot_selection_key`` so every caller names the same directory.
     """
     snapshots_dir = repo_dir / "snapshots"
     try:

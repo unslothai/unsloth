@@ -8,8 +8,8 @@ commit with no ``snapshots/<commit>/`` directory and omits it from ``.repos``,
 so the model stays visible in the model picker (a plain directory walk) while
 disappearing from every Hub inventory endpoint that feeds chat auto-load.
 
-The repair is read-only: the ref file is left exactly as it is, because
-``_cache_commit_hash_for_specific_revision`` writes refs with an unlocked
+The repair is read-only: refs are left alone, because
+``_cache_commit_hash_for_specific_revision`` writes them with an unlocked
 in-place ``write_text``, so no external process can delete one race-free.
 """
 
@@ -39,8 +39,8 @@ def _build_repo(
 ) -> Path:
     """A cache repo shaped like HF's, using regular files rather than symlinks.
 
-    ``_scan_cached_repo`` resolves each snapshot entry to its blob and a
-    regular file resolves to itself, so this exercises the real scanner while
+    ``_scan_cached_repo`` resolves each snapshot entry to its blob and a regular
+    file resolves to itself, so this exercises the real scanner while still
     running on Windows without the symlink privilege.
     """
     repo_dir = cache_root / name
@@ -82,8 +82,6 @@ def _empty_cache_info(cls):
 
     Fields are read off the dataclass rather than named, so a release adding or
     dropping one cannot fail this test on a signature it never exercises.
-    Shipping code rebuilds a scan with ``dataclasses.replace``, which carries
-    such fields over untouched.
     """
     known = {"size_on_disk": 0, "repos": frozenset(), "warnings": []}
     return cls(**{f.name: known.get(f.name, frozenset()) for f in dataclasses.fields(cls)})
@@ -176,11 +174,9 @@ def test_a_healthy_cache_is_returned_untouched(tmp_path, monkeypatch):
 
 
 def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monkeypatch):
-    """snapshot_download writes refs/<revision> before fetching the first file.
-
-    There is no snapshot to recover yet, so nothing may be reported as
-    downloaded.
-    """
+    """snapshot_download writes refs/<revision> before fetching the first file,
+    so there is no snapshot to recover yet and nothing may be reported as
+    downloaded."""
     repo_dir = tmp_path / "models--Org--Model"
     (repo_dir / "snapshots").mkdir(parents = True)
     (repo_dir / "refs").mkdir(parents = True)
@@ -214,8 +210,8 @@ def test_an_unrelated_repo_is_never_disturbed(tmp_path, monkeypatch):
 def test_an_unreadable_repo_does_not_abort_the_recovery(tmp_path):
     """One unreadable repo must not stop the others being recovered.
 
-    Scoped to the recovery pass because scan_cache_dir itself raises on an
-    unreadable repo dir, which is upstream of this code and unchanged here.
+    Scoped to the recovery pass: scan_cache_dir itself raises on an unreadable
+    repo dir, which is upstream of this code and unchanged here.
     """
     from huggingface_hub import HFCacheInfo
 
@@ -263,8 +259,7 @@ def test_a_scan_object_without_warnings_still_reaches_the_caller(tmp_path, monke
 
 def test_recovered_entries_match_the_huggingface_hub_field_surface():
     """The recovered entries are duck-typed rather than built with hub's own
-    constructors, so nothing breaks when a field is added or removed upstream.
-    This is the tripwire that says the surfaces have drifted."""
+    constructors; this is the tripwire for upstream field drift."""
     from huggingface_hub import CachedFileInfo, CachedRepoInfo, CachedRevisionInfo
 
     pairs = (
@@ -383,8 +378,8 @@ def _two_snapshot_repo(
 
     Realistic because a metadata probe (config.json only) against a commit that
     has moved on materialises a newer, weightless snapshot beside the download.
-    ``ref = None`` leaves no ``refs/main``, which is what a commit-pinned fetch
-    leaves: ``snapshot_download`` only writes a ref for a branch or tag.
+    ``ref = None`` is what a commit-pinned fetch leaves: ``snapshot_download``
+    only writes a ref for a branch or tag.
     """
     repo_dir = cache_root / "models--Org--Model"
     (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
@@ -526,10 +521,10 @@ def _local_gguf_variants_for_autoload(row: dict, cache_root: Path) -> list[str]:
 
 
 def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_path, monkeypatch):
-    """The newest snapshot can hold shard 1 of an interrupted split download,
-    while a complete quant sits in an older one. Both ends are asserted because
-    they are only correct together: the load id and the quants offered under it
-    must name one directory."""
+    """The newest snapshot can hold shard 1 of an interrupted split download while
+    a complete quant sits in an older one. Both ends are asserted because they
+    are only correct together: the load id and the quants offered under it must
+    name one directory."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -605,9 +600,8 @@ def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_
     split one while an older snapshot holds only a whole larger quant.
 
     Auto-load takes the smallest quant offered, so skipping that newest snapshot
-    spends the attempt on the larger one and can leave chat with no model. The
-    snapshot counts as usable and only its completed subset is offered, so both
-    ends still name one directory."""
+    spends the attempt on the larger one. The snapshot counts as usable and only
+    its completed subset is offered, so both ends still name one directory."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -643,9 +637,8 @@ def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_
 def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkeypatch):
     """The repo-level format may rest on transformer-named weights alone, but a
     pinned load id names one directory and from_pretrained needs ``config.json``
-    inside it. Pinning a weight-only snapshot advertised the row as loadable
-    while the load could only fail; keep the repo id, which can still fill the
-    config in from the hub."""
+    inside it. Keep the repo id, which can still fill the config in from the
+    hub, rather than pin a weight-only snapshot the load must fail on."""
     _two_snapshot_repo(
         tmp_path,
         older_files = {"model.safetensors": b"\0" * 11},
@@ -667,9 +660,9 @@ def test_load_id_is_not_pinned_to_a_snapshot_that_has_no_config(tmp_path, monkey
 def test_no_snapshot_holds_the_payload_so_a_dangling_ref_pins_nothing(tmp_path, monkeypatch):
     """Same repo, but with the dangling ``refs/main`` this branch exists for.
 
-    The dangling-ref arm must not overrule it and pin the fallback newest
-    snapshot, already known not to hold the payload: a directory the load cannot
-    use is worse than the repo id, which can still complete the config."""
+    The dangling-ref arm must not pin the fallback newest snapshot, already known
+    not to hold the payload: a directory the load cannot use is worse than the
+    repo id, which can still complete the config."""
     _two_snapshot_repo(
         tmp_path,
         older_files = {"model.safetensors": b"\0" * 11},
@@ -763,10 +756,10 @@ def test_metadata_describes_the_snapshot_the_row_hands_out(
 
 
 def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
-    """The ``MTP/`` drafters unsloth ships are recognisable only from the
-    snapshot-relative path (``huggingface_hub`` sets ``file_name`` to the bare
-    name for nested files). Matching bare names let a drafter-only snapshot win
-    the load id, where the variant lister offers nothing."""
+    """``MTP/`` drafters are recognisable only from the snapshot-relative path
+    (``huggingface_hub`` sets ``file_name`` to the bare name for nested files).
+    Matching bare names let a drafter-only snapshot win the load id, where the
+    variant lister offers nothing."""
     from hub.utils.gguf import list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -831,8 +824,7 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
     # The quant on disk stays offered either way; only the flag may move.
     assert [v.quant for v in variants] == ["Q4_K_M"]
     assert reported_vision is has_vision
-    # The picker prefers the row's own copy of the flag over the one above, so
-    # a repo-wide answer here could not be corrected downstream.
+    # The picker prefers the row's own copy of the flag over the one above.
     assert rows[0]["capabilities"].get("supports_vision") is has_vision
     # The loader's companion search stops at the pinned snapshot.
     assert (load_dir / "mmproj-F16.gguf").is_file() is has_vision
@@ -1008,10 +1000,9 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
     older_files, partial, tmp_path, monkeypatch
 ):
     """A legacy interrupted GGUF download predates the manifest, so its only
-    trace is an ``.incomplete`` blob. A later update that rewrote ``refs/main``
-    and fetched no file made that ref dangle, and suppressing every repo-wide
-    signal on sight then reported the recovered row as chattable and offered its
-    half-fetched shard as downloaded."""
+    trace is an ``.incomplete`` blob. A later update rewrote ``refs/main`` and
+    fetched no file, making the ref dangle; suppressing every repo-wide signal on
+    sight then reported the row chattable and its half-fetched shard downloaded."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
         older_files = older_files,
@@ -1124,9 +1115,9 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
 def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapshot(
     older_files, partial, tmp_path, monkeypatch
 ):
-    """The same repo with the same bytes on disk went partial while ``refs/main``
-    resolved and chattable once a later attempt rewrote the ref and materialised
-    no directory, so the row offered shards that were never fetched."""
+    """The same bytes on disk went partial while ``refs/main`` resolved, then
+    chattable once a later attempt rewrote the ref and materialised no directory,
+    so the row offered shards that were never fetched."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
         older_files = older_files,
@@ -1197,9 +1188,9 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
 def test_a_recovered_snapshot_short_a_shard_is_partial_with_no_other_signal(
     older_files, partial, tmp_path, monkeypatch
 ):
-    """The recovery is what puts this row on screen at all -- ``scan_cache_dir``
-    drops the repo -- so a snapshot it restores must be judged on its own
-    contents when the interrupted attempt left nothing else behind, or the row
+    """The recovery is what puts this row on screen at all (``scan_cache_dir``
+    drops the repo), so a snapshot it restores must be judged on its own contents
+    when the interrupted attempt left nothing else behind. Otherwise the row
     advertises ``can_chat`` for a payload provably missing a shard."""
     repo_dir = _two_snapshot_repo(
         tmp_path,
@@ -1246,9 +1237,9 @@ def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
 ):
     """The recovered row's own scenario, and why it must not arrive partial.
     ``snapshot_download`` rewrites ``refs/main`` before fetching a byte and the
-    manifest is written earlier still, so an update interrupted before the first
-    file leaves the previous complete snapshot as the only payload, under a ref
-    that resolves nowhere -- the state this branch recovers rows from."""
+    manifest earlier still, so an update interrupted before the first file leaves
+    the previous complete snapshot as the only payload under a ref that resolves
+    nowhere -- the state this branch recovers rows from."""
     repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
     snapshot = repo_dir / "snapshots" / SNAPSHOT
     (snapshot / "config.json").write_text("{}", encoding = "utf-8")
@@ -1318,8 +1309,7 @@ def test_a_gguf_variant_marker_from_a_newer_attempt_does_not_disable_the_pinned_
 ):
     """The GGUF twin of the repo-wide marker rule. A cancel marker is keyed by
     (repo, variant) with no revision, so cancelling a re-download of a quant the
-    row already holds marked the complete copy in the advertised snapshot
-    broken."""
+    row already holds marked the complete copy broken."""
     from hub.utils import download_manifest
     from hub.utils.gguf import list_local_gguf_variants
 
@@ -1413,9 +1403,9 @@ def test_equal_mtime_snapshots_order_the_same_way_whatever_the_iteration_order(t
 
 def test_the_row_and_the_picker_agree_on_equal_mtime_snapshots(tmp_path, monkeypatch):
     """End to end at the tie: whichever snapshot wins, the quants offered as
-    downloaded must resolve under the load id the row hands out. A coarse
-    timestamp filesystem or a restored cache produces the tie, and the row then
-    pinned one snapshot while the picker offered the other one's quant."""
+    downloaded must resolve under the load id the row hands out. On a coarse
+    timestamp filesystem the row pinned one snapshot while the picker offered the
+    other one's quant."""
     from hub.utils.gguf import iter_hf_cache_snapshots, list_local_gguf_variants
 
     repo_dir = _two_snapshot_repo(
@@ -1485,8 +1475,8 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
 _BACKEND = Path(__file__).resolve().parents[1]
 # Every helper the per-repo scan may hand the whole repo to. Each aggregates
 # across revisions on purpose (bytes, mtimes, the payload snapshot set), so a new
-# name here is a new repo-wide signal advertised on a row that loads out of one
-# directory, and has to be argued for.
+# name here is a new repo-wide signal on a row that loads out of one directory,
+# and has to be argued for.
 _REPO_WIDE_HELPERS = frozenset(
     {
         "_cache_inventory_fields",
@@ -1508,8 +1498,8 @@ _MTIME_READERS = {
     "hub/utils/inventory_scan.py": frozenset({"_recover_repo_hidden_by_dangling_refs"}),
     # The compatibility routes, listed so the two snapshot selectors here cannot
     # reintroduce their own mtime reads. The names left rank plain directories
-    # (./models, LM Studio, Ollama), read a repo dir's mtime for an "updated at"
-    # column, or read a blob's; none picks a snapshot.
+    # (./models, LM Studio, Ollama) or read a repo dir's or blob's mtime; none
+    # picks a snapshot.
     "routes/models.py": frozenset(
         {
             "_blob_mtime",

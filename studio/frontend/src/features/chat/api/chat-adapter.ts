@@ -1449,10 +1449,10 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 
 /** Whether a cache row is a model the user can actually chat with.
 *
-*  The cache endpoints also return resume/delete-only rows (an interrupted or
-*  cancelled download) carrying partial: true with can_chat: false; since a
-*  rejection suppresses the default download, attempting one leaves chat with no
-*  model. Both fields are optional so an older backend keeps trying the row. */
+*  The cache endpoints also return resume/delete-only rows (interrupted or
+*  cancelled downloads) with partial: true and can_chat: false; loading one
+*  wastes an attempt and suppresses the default download. Both fields are
+*  optional so an older backend keeps trying the row. */
 function isChattableCachedRepo(repo: {
   partial?: boolean;
   capabilities?: { can_chat?: boolean } | null;
@@ -1463,9 +1463,8 @@ function isChattableCachedRepo(repo: {
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
-  /** A specific load failure was already reported, so callers must not replace
-   *  it with generic "no model loaded" advice. Optional so every other return
-   *  keeps its shape. */
+  /** A specific load failure was already toasted, so callers must not replace
+   *  it with generic "no model loaded" advice. */
   loadFailureReported?: boolean;
 }> {
   if (await tryAdoptServerActiveModel()) {
@@ -1513,9 +1512,9 @@ async function autoLoadSmallestModel(): Promise<{
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
-  // Why the last load failed, set only when /api/inference/load itself
-  // rejected, so enumeration hiccups keep falling through. Boxed because a
-  // `let` assigned only in a nested function narrows to `null`.
+  // Why the last load failed, set only when /api/inference/load itself rejected,
+  // so enumeration hiccups keep falling through. Boxed because a `let` assigned
+  // only in a nested function narrows to `null`.
   const loadFailure: { current: { label: string; detail: string } | null } = {
     current: null,
   };
@@ -1526,7 +1525,7 @@ async function autoLoadSmallestModel(): Promise<{
     loadFailure.current = {
       label,
       // Older backends and non-Error throws carry no detail; still name the
-      // model that failed rather than silently fetching a different one.
+      // model that failed.
       detail:
         detail || "The server did not report a reason. Check the Studio logs.",
     };
@@ -1713,8 +1712,8 @@ async function autoLoadSmallestModel(): Promise<{
         : {}),
     }).catch((error: unknown) => {
       // The sweep's parameterless catches discard this error, so a genuine load
-      // failure fell through to the Hub download. Rethrowing keeps their control
-      // flow.
+      // failure used to fall through to the Hub download. Rethrow to keep their
+      // control flow.
       noteLoadFailure(failureLabel, error);
       throw error;
     });
@@ -1850,7 +1849,7 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedModels().catch(() => []),
     ]);
     // Filtered once, so the last-used lookup below sees the same set as the
-    // sweeps and neither spends a load attempt on a resume-only row.
+    // sweeps and neither spends an attempt on a resume-only row.
     const ggufRepos = allGgufRepos.filter(isChattableCachedRepo);
     const modelRepos = allModelRepos.filter(isChattableCachedRepo);
 
@@ -2005,7 +2004,7 @@ async function autoLoadSmallestModel(): Promise<{
     // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
     // A cached model tried and failed stops here too: the reason is the useful
-    // answer, not an unrelated Hub default. Nothing cached never sets
+    // answer, not an unrelated Hub default. An empty cache never sets
     // loadFailure and still falls through.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);

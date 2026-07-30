@@ -53,9 +53,8 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # structlog is a hard studio.txt requirement imported only lazily, so a bare
 # setdefault here parks an empty placeholder that shadows the real package for
 # the session and breaks any studio module calling get_logger at import time.
-# Stub only a genuinely absent package; whatever is already in sys.modules stays
-# (find_spec() raises ValueError on another module's bare stub) but gets
-# get_logger backfilled, since an unrepaired stub is what breaks those callers.
+# Stub only a genuinely absent package (check sys.modules first: find_spec()
+# raises ValueError on another module's bare stub), then backfill get_logger.
 _structlog = sys.modules.get("structlog")
 if _structlog is None and importlib.util.find_spec("structlog") is None:
     _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))

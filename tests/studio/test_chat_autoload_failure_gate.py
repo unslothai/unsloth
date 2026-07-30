@@ -4,7 +4,7 @@
 """A failed auto-load of a cached model must not become a Hub download.
 
 Runs the real ``autoLoadSmallestModel`` from chat-adapter.ts under node with the
-module boundary stubbed, so these assert behaviour rather than source text: the
+module boundary stubbed, so these assert behaviour rather than source text. The
 sweep's catches are parameterless, so a cached repo whose load rejected fell
 through to fetching an unrelated default model and reported success for it.
 """
@@ -283,9 +283,9 @@ def _toasts(out: dict, kind: str) -> list[dict]:
 
 
 def test_failed_cached_load_does_not_download_the_default_model():
-    """The reported case: the only cached repo enumerates fine but its load OOMs
-    and the default GGUF would load. Auto-load must stop at the failure instead
-    of fetching a model the user never asked for."""
+    """The reported case: the only cached repo enumerates fine but its load OOMs.
+    Auto-load must stop at the failure, not fetch a model the user never asked
+    for."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " load: (p) => p.model_path === GEMMA.repo_id ? new Error(OOM) : LOADED(p) })"
@@ -313,7 +313,7 @@ def test_failed_cached_load_surfaces_the_backend_reason():
 
 def test_load_rejection_without_a_message_still_names_the_model():
     """Old backends and non-Error throws carry no detail; the model that failed
-    must still be named rather than swapped for the default."""
+    must still be named, not swapped for the default."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " load: () => new Error('') })"
@@ -409,9 +409,9 @@ def test_empty_device_does_not_flag_a_reported_failure():
 
 
 def test_a_resume_only_cached_row_is_skipped_so_the_default_still_downloads():
-    """An interrupted download leaves a row the backend marks partial/can_chat
-    =false for the resume and delete affordances. Sweeping it anyway means that
-    rejection suppresses the default download."""
+    """An interrupted download leaves a row marked partial / can_chat=false for
+    the resume and delete affordances. Sweeping it anyway would let its rejection
+    suppress the default download."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/half', load_id: 'org/half',"
         " size_bytes: 1, partial: true, capabilities: { can_chat: false } }],"
@@ -438,9 +438,8 @@ def test_a_can_chat_false_cached_row_is_skipped_on_its_own():
 
 
 def test_the_last_used_model_is_skipped_when_its_row_went_partial():
-    """The last-used shortcut reads the same rows, so an update that was
-    cancelled over the model the user last chatted with must not spend the
-    attempt either."""
+    """The last-used shortcut reads the same rows, so an update cancelled over
+    the model the user last chatted with must not spend the attempt either."""
     out = _run(
         "scenario({ ggufRepos: [{ ...GEMMA, partial: true }],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
