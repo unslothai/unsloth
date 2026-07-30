@@ -442,12 +442,12 @@ def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
 
 def test_registered_mtp_root_keeps_main_and_excludes_companions(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
-    nested = root / "MTP"
+    nested = root / "BF16"
     nested.mkdir(parents = True)
-    main = root / "Qwen3.6-27B-MTP-UD-Q6_K_XL.gguf"
+    main = root / "Qwen3.6-27B-MTP-001-of-002.gguf"
     terminal = root / "gemma-4-12b-it-Q8_0-MTP.gguf"
     prefixed = root / "mtp-gemma-4-12b-it-Q8_0.gguf"
-    nested_copy = nested / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    nested_copy = nested / "gemma-4-12b-it-Q8_0-MTP-001-of-002.gguf"
     for file, size in ((main, 1), (terminal, 20), (prefixed, 30), (nested_copy, 40)):
         file.write_bytes(b"x" * size)
     monkeypatch.setattr(
@@ -460,12 +460,13 @@ def test_registered_mtp_root_keeps_main_and_excludes_companions(tmp_path, monkey
     assert detect_gguf_model(str(terminal)) is None
     assert detect_gguf_model(str(prefixed)) is None
     assert detect_gguf_model(str(nested_copy)) is None
-    expected = [("UD-Q6_K_XL", main.name)]
-    assert [(v.quant, v.filename) for v in list_local_gguf_variants(str(root))[0]] == expected
-    assert [(v.quant, v.filename) for v in list_hub_local_gguf_variants(str(root))[0]] == expected
-    config = ModelConfig.from_identifier(str(main))
-    assert config is not None and config.is_gguf
-    assert config.gguf_file == str(main.resolve())
+    assert [(v.quant, v.filename) for v in list_local_gguf_variants(str(root))[0]] == [
+        ("MTP", main.name)
+    ]
+    hub_variant = list_hub_local_gguf_variants(str(root))[0][0]
+    assert (hub_variant.quant, hub_variant.filename) == ("Qwen3.6-27B-MTP", main.name)
+    config = ModelConfig.from_identifier(str(root), gguf_variant = hub_variant.quant)
+    assert config and config.is_gguf and config.gguf_file == str(main.resolve())
 
 
 # ── Root drafter wins over new-scheme MTP/ copies ────────────────────

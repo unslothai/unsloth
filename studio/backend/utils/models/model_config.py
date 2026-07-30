@@ -1698,7 +1698,7 @@ def _local_mtp_context(path: Path, model_root: Optional[Path], fallback: str) ->
 
 
 def _is_terminal_gemma_mtp(name: str) -> bool:
-    stem = re.sub(r"-\d{5}-of-\d{5}$", "", Path(name).stem.lower())
+    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", Path(name).stem.lower())
     return stem.endswith("-mtp") and bool(re.search(r"(?:^|[-_])gemma[-_]?4(?:[-_]|$)", stem))
 
 
@@ -1709,7 +1709,6 @@ def _is_local_mtp_drafter(path: Path, model_root: Optional[Path], fallback: str)
     return (
         model_root is not None
         and model_root.name.lower() == "mtp"
-        and "/" not in context
         and _is_terminal_gemma_mtp(path.name)
     )
 
@@ -2216,7 +2215,8 @@ def _find_local_gguf_by_variant(
         if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
-        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+        fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
+        if variant not in (quant, fallback_variant) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
     matches.sort()

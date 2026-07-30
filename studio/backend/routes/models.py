@@ -812,7 +812,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
-    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model
     from utils.paths import (
         hf_default_cache_dir,
         legacy_hf_cache_dir,
@@ -879,11 +879,13 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                     continue
                 path = Path(model.path)
                 if path.is_dir():
-                    variants, _ = list_local_gguf_variants(
-                        model.path,
-                        model_root = str(folder_path),
-                    )
-                    if variants:
+                    patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
+                    if any(
+                        detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                        for pattern in patterns
+                        for file in path.glob(pattern)
+                        if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
+                    ):
                         custom_models.append(model)
                 elif (
                     detect_gguf_model(

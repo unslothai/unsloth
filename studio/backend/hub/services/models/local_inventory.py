@@ -569,7 +569,6 @@ async def _collect_models_from_default_sources(
 
 
 def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
-    from hub.utils.gguf import list_local_gguf_variants
     from utils.models.model_config import detect_gguf_model
 
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
@@ -598,11 +597,11 @@ def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
             continue
         path = Path(model.path)
         if path.is_dir():
-            variants, _ = list_local_gguf_variants(
-                model.path,
-                model_root = str(folder_path),
-            )
-            if variants:
+            if any(
+                detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                for file in path.glob("*")
+                if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
+            ):
                 selectable.append(model)
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
