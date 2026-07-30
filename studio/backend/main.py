@@ -503,45 +503,61 @@ def _warm_rag_embedder() -> None:
 
 
 _post_warm_thread: Optional[threading.Thread] = None
-# Set by lifespan shutdown. The post-warm thread spends most of its life blocked
-# in join_background_warm(), so a shutdown that lands before the warm finishes
-# cannot stop it by any other means: it wakes up later and, without this, goes on
-# to load the embedder (or drop to a llama-server subprocess) for an application
-# that is no longer running.
-_post_warm_stand_down = threading.Event()
+_post_warm_lock = threading.Lock()
+# Bumped by every start and every stop. A worker captures the value it started
+# with and does nothing once it no longer matches, which is what makes a stale
+# worker harmless without anyone having to wait for one: the thread spends nearly
+# all its life blocked in join_background_warm(), so a shutdown landing before the
+# warm finishes cannot reach it any other way, and it would otherwise wake up and
+# load the embedder -- or fall back to spawning a llama-server -- for an
+# application that is no longer running.
+_post_warm_generation = 0
+
+
+def _post_warm_current_generation() -> int:
+    with _post_warm_lock:
+        return _post_warm_generation
 
 
 def _start_post_warm_thread() -> bool:
-    """Put up the post-warm thread once per running lifespan. True iff started.
+    """Put up a post-warm worker for this lifespan. True iff one was started.
 
-    Tracked rather than fire-and-forget: with the warm restartable, a second
-    lifespan in one process would otherwise stack a second post-warm thread on
-    top of a first that is still waiting.
+    Starts one even while a previous worker is still parked in the warm join.
+    Declining in that case meant a restart got no worker at all: the old one was
+    alive, so this returned early, and then the old one read the shutdown and
+    exited -- leaving the new lifespan with neither MLX autorepair nor the RAG
+    warm, so a Mac with a broken MLX stack stayed chat-only for the whole embedded
+    restart. Generations make the overlap safe rather than forbidden: the stale
+    worker drops out by itself, and a parked thread costs nothing.
     """
-    global _post_warm_thread
-    if _post_warm_thread is not None and _post_warm_thread.is_alive():
-        return False
-    _post_warm_stand_down.clear()
-    _post_warm_thread = threading.Thread(
-        target = _post_warm_background_work,
-        daemon = True,
-        name = "post-warm",
-    )
-    _post_warm_thread.start()
+    global _post_warm_thread, _post_warm_generation
+    with _post_warm_lock:
+        _post_warm_generation += 1
+        mine = _post_warm_generation
+        thread = threading.Thread(
+            target = _post_warm_background_work,
+            args = (mine,),
+            daemon = True,
+            name = f"post-warm-{mine}",
+        )
+        _post_warm_thread = thread
+    thread.start()
     return True
 
 
 def _stop_post_warm_thread() -> None:
-    """Tell the post-warm thread to stand down; never wait for it.
+    """Retire whatever worker is current; never wait for it.
 
     Joining would hold shutdown for the rest of the ML stack import, which is the
-    stall this whole path exists to avoid. Signalling is enough: the thread
-    re-checks after its join and returns without touching the stack.
+    stall this whole path exists to avoid. Bumping the generation is enough: the
+    worker re-reads it after its join and returns without touching the stack.
     """
-    _post_warm_stand_down.set()
+    global _post_warm_generation
+    with _post_warm_lock:
+        _post_warm_generation += 1
 
 
-def _post_warm_background_work() -> None:
+def _post_warm_background_work(generation: Optional[int] = None) -> None:
     """Stack-dependent startup work, run after the coordinated warm.
 
     Both of these import the ML stack, and both used to do it their own way
@@ -562,11 +578,15 @@ def _post_warm_background_work() -> None:
     # shutdown routinely happens while we are parked in it. Everything below
     # imports or loads something, and the RAG warm can go as far as spawning a
     # llama-server; none of that may start for an application that has stopped.
-    if _post_warm_stand_down.is_set():
+    # generation is None only for a direct call (tests); a worker started by a
+    # lifespan always carries one.
+    if generation is not None and _post_warm_current_generation() != generation:
         import structlog as _structlog
+
         _structlog.get_logger(__name__).info(
-            "post-warm work stood down: the lifespan shut down while the ML stack "
-            "was still loading"
+            "post-warm work %s stood down: its lifespan ended while the ML stack "
+            "was still loading",
+            generation,
         )
         return
 
@@ -1225,16 +1245,58 @@ async def _await_hardware_detection(budget: float) -> bool:
     # replace -- the XPU branch sets DEVICE and CHAT_ONLY=False before
     # torch.xpu.get_device_name(0), so a raise there would have been reported as
     # training-enabled on a host that ends up CPU/chat-only.
-    if _hw_module.DETECTION_COMPLETE.is_set():
+    # DEVICE too, not the event alone. Shutdown clears DEVICE and then the event,
+    # and a detector racing that pair can set the event back afterwards -- or
+    # shutdown can land between a branch assigning its candidate and the probe
+    # returning. Either way the process ends up event-set-with-DEVICE-None, and on
+    # the event alone this returns True, so nothing kicks a new detection and the
+    # next lifespan serves a verdict that was torn down. The conjunction sends
+    # that state down the start_background_detection() path instead, which runs
+    # precisely because DEVICE is None.
+    if _hw_module.DETECTION_COMPLETE.is_set() and _hw_module.DEVICE is not None:
         return True
     start_background_detection()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + budget
-    while not _hw_module.DETECTION_COMPLETE.is_set():
+    while not (_hw_module.DETECTION_COMPLETE.is_set() and _hw_module.DEVICE is not None):
         if loop.time() >= deadline:
             return False
         await asyncio.sleep(0.02)
     return True
+
+
+def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
+    """``(chat_only, chat_only_reason)`` if detection is settled, else ``None``.
+
+    A seqlock read rather than ``_DETECT_LOCK``: taking that lock here would park
+    the endpoint for the whole torch import, which is the stall this startup path
+    exists to remove. A forced re-detect (the MLX autorepair) clears the event on
+    the way in and bumps the generation before setting it again on the way out, so
+    a read bracketed by both lands wholly before or wholly after one pass -- never
+    in the middle, where CHAT_ONLY has been reset to True and CHAT_ONLY_REASON to
+    None.
+
+    That middle is what a caller must not publish. `frontend/src/config/env.ts`
+    caches the first reply carrying `device_type` as authoritative, and the
+    sidebar's recovery poll only continues while it reads
+    `chat_only_reason == "mlx_unavailable"`, so one chat-only reply with a null
+    reason hides Train for the rest of the SPA session -- on a host whose MLX
+    repair may be seconds from finishing.
+    """
+    for _ in range(3):
+        if not _hw_module.DETECTION_COMPLETE.is_set():
+            return None
+        generation = _hw_module.DETECTION_GENERATION
+        device = _hw_module.DEVICE
+        chat_only = bool(_hw_module.CHAT_ONLY)
+        reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+        if (
+            device is not None
+            and _hw_module.DETECTION_COMPLETE.is_set()
+            and _hw_module.DETECTION_GENERATION == generation
+        ):
+            return chat_only, reason
+    return None
 
 
 @app.get("/api/liveness")
@@ -1269,11 +1331,14 @@ async def health_check(request: Request):
     # budget, because this endpoint has a hard deadline (see
     # _HEALTH_DETECT_BUDGET_S).
     detected = await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
+    # Snapshot, not a bare global read: `detected` was decided above and a forced
+    # re-detect can start at any moment after it.
+    snapshot = _hardware_snapshot()
     base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
-        "chat_only": _hw_module.CHAT_ONLY,
+        "chat_only": snapshot[0] if snapshot is not None else _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
         # Lockstep: see the note in /api/liveness above.
         "desktop_manageability_version": 2,
@@ -1284,7 +1349,7 @@ async def health_check(request: Request):
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
-    if not detected:
+    if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement. It is
         # the conservative direction (Train/Export hidden, never wrongly
         # offered), but a client that caches it should re-read instead. Additive
@@ -1309,6 +1374,12 @@ async def health_check(request: Request):
     if not subject:
         return base
 
+    # Re-read after the awaits above. The bearer check is an await, so the MLX
+    # autorepair's forced re-detect can begin between the snapshot taken for
+    # `base` and the authoritative fields published below; the earlier answer was
+    # never revalidated, which is exactly how a transient null reason got cached.
+    snapshot = _hardware_snapshot()
+
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
     authed = {
@@ -1320,9 +1391,12 @@ async def health_check(request: Request):
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
     }
-    if detected:
+    if snapshot is not None:
         # Why chat_only is set. This fingerprints the host, so keep it authed.
-        authed["chat_only_reason"] = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+        # All three come from the one snapshot, so the reason cannot disagree with
+        # the chat_only it explains.
+        authed["chat_only"] = snapshot[0]
+        authed["chat_only_reason"] = snapshot[1]
         authed["device_type"] = device_type
     # Otherwise leave both out. device_type does not come from detection, but the
     # frontend uses its presence as "this response is authoritative"

@@ -404,7 +404,7 @@ def test_threading_import_is_present_for_the_lazy_fetch():
 def test_shutdown_stands_the_post_warm_thread_down(monkeypatch):
     """Work must not start for an application that has already stopped.
 
-    The thread spends its life parked in join_background_warm(), so a shutdown
+    The worker spends its life parked in join_background_warm(), so a shutdown
     landing before the warm finishes cannot reach it any other way: it wakes up
     later and goes on to load the embedder, which can fall back to spawning a
     llama-server.
@@ -417,17 +417,16 @@ def test_shutdown_stands_the_post_warm_thread_down(monkeypatch):
     monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
     monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
     import utils.mlx_repair as mlx_mod
-
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
 
-    main_mod._post_warm_stand_down.clear()
     assert main_mod._start_post_warm_thread() is True
+    worker = main_mod._post_warm_thread
     try:
-        # Shutdown while the thread is still inside the join.
+        # Shutdown while the worker is still inside the join.
         main_mod._stop_post_warm_thread()
     finally:
         released.set()
-        main_mod._post_warm_thread.join(30)
+        worker.join(30)
 
     assert ran == [], (
         f"post-warm work ran after shutdown: {ran}. The RAG warm can load an "
@@ -445,47 +444,85 @@ def test_the_post_warm_thread_still_works_without_a_shutdown(monkeypatch):
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
     monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
 
-    main_mod._post_warm_stand_down.clear()
     assert main_mod._start_post_warm_thread() is True
     main_mod._post_warm_thread.join(30)
     assert ran == ["mlx", "rag"]
 
 
-def test_a_second_lifespan_does_not_stack_post_warm_threads(monkeypatch):
-    """One waiting thread is enough; a restart must not add another."""
-    import main as main_mod
+def test_a_restart_gets_its_own_worker_while_the_old_one_is_parked(monkeypatch):
+    """The handoff case: the replacement must do the work, not inherit a refusal.
 
-    released = threading.Event()
-    monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
-    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: None)
+    Refusing to start while the previous worker was alive meant a restart got
+    nothing at all -- the old worker was parked in the join, so the start declined,
+    and then the old worker read the shutdown and exited. A Mac with a broken MLX
+    stack stayed chat-only for the whole restart.
+    """
+    import main as main_mod
     import utils.mlx_repair as mlx_mod
 
-    monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: None)
+    ran: list[str] = []
+    release_old = threading.Event()
+    release_new = threading.Event()
+    joins: list[int] = []
 
-    main_mod._post_warm_stand_down.clear()
+    def _join(*_a, **_k):
+        joins.append(1)
+        (release_old if len(joins) == 1 else release_new).wait(30)
+
+    monkeypatch.setattr(main_mod, "join_background_warm", _join)
+    monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
+    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+
+    # Lifespan 1 starts a worker, then shuts down while it is still parked.
     assert main_mod._start_post_warm_thread() is True
+    old = main_mod._post_warm_thread
+    main_mod._stop_post_warm_thread()
+
+    # Lifespan 2 starts immediately, with the old worker still alive.
+    assert main_mod._start_post_warm_thread() is True, (
+        "the restart was refused a worker because the retired one was still parked"
+    )
+    new = main_mod._post_warm_thread
+    assert new is not old
+
+    release_old.set()
+    old.join(30)
+    release_new.set()
+    new.join(30)
+
+    assert ran == ["mlx", "rag"], (
+        f"the restarted lifespan did not get its deferred work: {ran}"
+    )
+
+
+def test_only_the_current_generation_does_the_work(monkeypatch):
+    """Two parked workers, one retired: exactly one must proceed."""
+    import main as main_mod
+    import utils.mlx_repair as mlx_mod
+
+    ran: list[str] = []
+    gate = threading.Event()
+    monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: gate.wait(30))
+    monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
+    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+
+    main_mod._start_post_warm_thread()
     first = main_mod._post_warm_thread
-    try:
-        assert main_mod._start_post_warm_thread() is False, (
-            "a second lifespan stacked another post-warm thread on a first that "
-            "was still waiting for the warm"
-        )
-        assert main_mod._post_warm_thread is first
-    finally:
-        released.set()
-        first.join(30)
+    main_mod._start_post_warm_thread()
+    second = main_mod._post_warm_thread
 
-    # Once it has finished, a later lifespan may put up a fresh one.
-    main_mod._post_warm_stand_down.clear()
-    released.clear()
-    assert main_mod._start_post_warm_thread() is True
-    released.set()
-    main_mod._post_warm_thread.join(30)
+    gate.set()
+    first.join(30)
+    second.join(30)
+
+    assert ran == ["mlx", "rag"], (
+        f"expected one worker to do the work once, got {ran}"
+    )
 
 
 def test_shutdown_does_not_wait_for_the_post_warm_thread():
-    """Stopping must be a signal, not a join: a join would hold shutdown for the
-    rest of the ML stack import, which is the stall this path exists to avoid."""
+    """Retiring must not join: a join would hold shutdown for the rest of the ML
+    stack import, which is the stall this path exists to avoid."""
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
         node
@@ -515,3 +552,95 @@ def test_the_lifespan_stops_the_post_warm_thread_on_shutdown():
     }
     assert "_stop_post_warm_thread" in called
     assert "_start_post_warm_thread" in called
+
+
+# ------------------------------------------------- authoritative health verdict
+
+
+def test_health_will_not_publish_a_verdict_mid_redetect(monkeypatch):
+    """A forced re-detect must not be reported as a settled answer.
+
+    frontend/src/config/env.ts caches the first reply carrying device_type as
+    authoritative, and the sidebar recovery poll only continues while it reads
+    chat_only_reason == "mlx_unavailable". One chat-only reply with a null reason,
+    taken mid-pass, therefore hides Train for the rest of the SPA session.
+    """
+    import main as main_mod
+
+    hw_mod = main_mod._hw_module
+    monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.CPU, raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY", True, raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", None, raising = False)
+    hw_mod.DETECTION_COMPLETE.clear()
+    try:
+        assert main_mod._hardware_snapshot() is None, (
+            "a cleared completion event still produced a publishable verdict"
+        )
+    finally:
+        hw_mod.DETECTION_COMPLETE.set()
+
+
+def test_health_snapshot_rejects_a_torn_read(monkeypatch):
+    """Event set but DEVICE gone is the shutdown/detector race, not an answer."""
+    import main as main_mod
+
+    hw_mod = main_mod._hw_module
+    monkeypatch.setattr(hw_mod, "DEVICE", None, raising = False)
+    hw_mod.DETECTION_COMPLETE.set()
+    assert main_mod._hardware_snapshot() is None
+
+
+def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
+    """Negative control: a settled verdict must still be publishable."""
+    import main as main_mod
+
+    hw_mod = main_mod._hw_module
+    monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.CPU, raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY", True, raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "mlx_unavailable", raising = False)
+    hw_mod.DETECTION_COMPLETE.set()
+    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable")
+
+
+def test_health_rereads_the_verdict_after_authentication():
+    """The bearer check is an await, so the pre-auth answer must be revalidated."""
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
+    )
+    snapshots = [
+        sub.lineno for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call) and getattr(sub.func, "id", None) == "_hardware_snapshot"
+    ]
+    assert len(snapshots) >= 2, (
+        f"health_check takes {len(snapshots)} hardware snapshot(s); the verdict "
+        f"published to an authed caller must be re-read after the auth await"
+    )
+    awaits = [sub.lineno for sub in ast.walk(fn) if isinstance(sub, ast.Await)]
+    assert any(
+        any(a > snapshots[0] and a < s for a in awaits) for s in snapshots[1:]
+    ), "the second snapshot does not come after an await, so it revalidates nothing"
+
+
+def test_detection_wait_requires_a_device_not_just_the_event():
+    """Event-set-with-DEVICE-None must send the caller to a fresh detection."""
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_await_hardware_detection"
+    )
+    # The docstring names DEVICE, so match the executable form: a comparison of
+    # the DEVICE attribute against None. A dumped-text search passes on prose.
+    device_tests = [
+        sub for sub in ast.walk(fn)
+        if isinstance(sub, ast.Compare)
+        and isinstance(sub.left, ast.Attribute)
+        and sub.left.attr == "DEVICE"
+        and any(isinstance(op, (ast.IsNot, ast.Is)) for op in sub.ops)
+    ]
+    assert len(device_tests) >= 2, (
+        f"found {len(device_tests)} DEVICE comparison(s); both the fast path and "
+        f"the poll loop must require a device, or a torn event-set/DEVICE-None "
+        f"state is reported as detected and nothing re-detects"
+    )
