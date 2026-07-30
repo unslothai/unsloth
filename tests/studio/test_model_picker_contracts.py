@@ -993,9 +993,7 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
 
     fresh_default = adapter.split("const downloadResult = await downloadModelWithManager", 1)[
         1
-    ].split(
-        'showAutoLoadSuccess("Loaded Qwen', 1
-    )[0]
+    ].split('showAutoLoadSuccess("Loaded Qwen', 1)[0]
     # The fresh-default download omits the slots, so its success state clears both,
     # or the control reads as an unapplied edit against the seeded baseline.
     assert "n_parallel" not in fresh_default.split("saveSpeculativeType", 1)[0]
