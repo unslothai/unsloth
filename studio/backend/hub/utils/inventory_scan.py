@@ -589,10 +589,15 @@ def _repo_signal_applies_to_snapshot(
     keep them. A ``refs/main`` naming a commit with no directory pins that attempt to a revision
     absent from disk, so no snapshot inherits it, else an interrupted update is charged to the
     previous complete payload. That excuses only a snapshot that can serve the row.
+
+    Keyed on ``refs/main`` alone, unlike the recovery guard, which admits a repo over a leftover ref
+    of any name. Where ``refs/main`` resolves, the row loads by id and the manifest still describes
+    what that load reads, so a stale tag elsewhere must not suppress it: a truncated unsharded
+    payload has no other tell, and the contents check cannot see a short file.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return True
-    if _repo_has_a_dangling_ref(repo_cache_dir):
+    if _default_ref_names_an_absent_snapshot(repo_cache_dir):
         return _snapshot_cannot_serve_its_payload(snapshot_dir)
     # Excusing a non-newest snapshot only holds while it can serve the row: one short a shard has no
     # other evidence it is unfinished, so without this it goes out chattable.

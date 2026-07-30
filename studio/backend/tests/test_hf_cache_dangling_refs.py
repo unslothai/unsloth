@@ -2270,3 +2270,50 @@ def test_a_recovery_whose_default_ref_resolves_is_still_listed(tmp_path, monkeyp
         refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
     )
     assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]
+
+
+@pytest.mark.parametrize(
+    "refs, on_disk, partial",
+    [
+        # The case this fixes: refs/main resolves, so the row loads by id and the
+        # manifest describes exactly what that load reads. An unrelated stale ref
+        # must not suppress it, and a truncated unsharded file has no other tell.
+        ({"main": SNAPSHOT, "stale": UPSTREAM_HEAD}, 13, True),
+        ({"main": SNAPSHOT}, 13, True),
+        # refs/main itself dangling is the exemption: that attempt is pinned to a
+        # revision absent from disk, so this snapshot did not produce the manifest.
+        ({"main": UPSTREAM_HEAD}, 13, False),
+        # Negative control: a stale ref must not flag a snapshot that matches.
+        ({"main": SNAPSHOT, "stale": UPSTREAM_HEAD}, 999, False),
+    ],
+    ids = ["stale-ref-beside-a-resolving-main", "no-stale-ref", "main-dangles", "matches-manifest"],
+)
+def test_a_stale_ref_does_not_suppress_the_manifest_on_the_loaded_snapshot(
+    refs, on_disk, partial, tmp_path
+):
+    """Repo-wide signals are excused only when the load target itself is absent.
+    Keying that on any dangling ref let a leftover tag hide a manifest mismatch on
+    the very snapshot refs/main resolves to, so a size-truncated download went out
+    ready. The recovery guard still keys on any ref; only attribution narrowed."""
+    from hub.utils import download_manifest
+
+    repo = _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * on_disk}},
+        refs = refs,
+    )
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        None,
+        [download_manifest.ExpectedFile("model.safetensors", 999)],
+        "http",
+        hub_cache = tmp_path,
+    )
+    snapshot = repo / "snapshots" / SNAPSHOT
+    assert (
+        inventory_scan.is_snapshot_partial(
+            "model", "Org/Model", repo, snapshot_dir = snapshot
+        )
+        is partial
+    )

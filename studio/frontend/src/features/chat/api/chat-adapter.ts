@@ -1573,6 +1573,33 @@ async function autoLoadSmallestModel(): Promise<{
     return true;
   }
 
+  async function canAutoLoadRecordingTerminalFailures(
+    label: string,
+    payload: Parameters<typeof canAutoLoad>[0],
+  ): Promise<boolean> {
+    try {
+      return await canAutoLoad(payload);
+    } catch (error) {
+      // validateModel prepares the token too, so a dismissed dialog or a dead
+      // backend surfaces here, before the loadModel catch below ever runs. The
+      // sweep's parameterless catches would drop it and go on to the Hub
+      // download, reopening the same dialog. Only the two terminal markers are
+      // recorded; anything else stays this candidate's problem and the sweep
+      // moves to the next one.
+      const marker = error as {
+        unslothTransportFailure?: boolean;
+        unslothUserCancelled?: boolean;
+      };
+      if (
+        marker?.unslothTransportFailure === true ||
+        marker?.unslothUserCancelled === true
+      ) {
+        noteLoadFailure(label, error);
+      }
+      throw error;
+    }
+  }
+
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
@@ -1671,7 +1698,7 @@ async function autoLoadSmallestModel(): Promise<{
       ? config.chatTemplateOverride
       : null;
     if (
-      !(await canAutoLoad({
+      !(await canAutoLoadRecordingTerminalFailures(failureLabel, {
         model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,

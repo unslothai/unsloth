@@ -1203,3 +1203,23 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
     )
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
+
+
+def test_chat_autoload_records_a_terminal_validation_failure():
+    """canAutoLoad runs validateModel, which prepares the token too, so a dismissed
+    dialog or a dead backend throws there rather than from loadModel. The sweep's
+    parameterless catches would drop it and still reach the Hub download, reopening
+    the same prompt, so the preflight boundary records the two terminal markers.
+    An ordinary validation failure stays per-candidate and the sweep continues."""
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    preflight = adapter.split("async function canAutoLoadRecordingTerminalFailures", 1)[1]
+    preflight = preflight.split("async function loadAutoLoadCandidate", 1)[0]
+    assert "unslothTransportFailure === true" in preflight
+    assert "unslothUserCancelled === true" in preflight
+    assert "noteLoadFailure(label, error)" in preflight
+    # Rethrown, so the candidate still fails and the caller's control flow is unchanged.
+    assert "throw error;" in preflight
+    # The candidate preflight goes through it rather than calling canAutoLoad raw.
+    autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    assert "canAutoLoadRecordingTerminalFailures(failureLabel, {" in autoload
