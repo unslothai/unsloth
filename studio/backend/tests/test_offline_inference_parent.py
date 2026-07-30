@@ -25,10 +25,18 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
+# Prefer the real modules, as with httpx below: these stubs go into sys.modules for the
+# whole session, so an empty one breaks any module imported later that actually uses them.
+try:
+    import loggers  # noqa: F401
+except ImportError:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules.setdefault("loggers", _loggers_stub)
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 # Prefer real httpx if installed (CI installs it). Stub only as fallback.
 try:
     import httpx  # noqa: F401
@@ -536,26 +544,50 @@ class TestFullCheckpointBaseKeepsTheProbe:
             sys.path.insert(0, backend_root)
         from utils.transformers_version import _resolve_base_model, recorded_local_base
 
+        # dir name -> (adapter_config.json, config.json, drop adapter weights in)
         shapes = {
-            "adapter": ({"base_model_name_or_path": "org/a"}, None),
-            "config": (None, {"model_name": "org/c"}),
-            "name_or_path": (None, {"_name_or_path": "org/n"}),
-            "both": ({"base_model_name_or_path": "org/a"}, {"model_name": "org/c"}),
-            "bare": (None, None),
+            "adapter": ({"base_model_name_or_path": "org/a"}, None, False),
+            "config": (None, {"model_name": "org/c"}, False),
+            "name_or_path": (None, {"_name_or_path": "org/n"}, False),
+            "both": ({"base_model_name_or_path": "org/a"}, {"model_name": "org/c"}, False),
+            "bare": (None, None, False),
+            # Adapter-only LoRAs: no JSON at all, so the resolver falls back to the
+            # unsloth_<model>_<timestamp> dir-name convention.
+            "unsloth_llama-3_1700000000": (None, None, True),
+            "unsloth_a_b_1700000000": (None, None, True),
+            "plain_adapter_dir": (None, None, True),
+            "unsloth_nostamp": (None, None, True),
         }
-        for name, (adapter, config) in shapes.items():
+        for name, (adapter, config, weights) in shapes.items():
             d = tmp_path / name
             d.mkdir()
             if adapter is not None:
                 (d / "adapter_config.json").write_text(json.dumps(adapter), encoding = "utf-8")
             if config is not None:
                 (d / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+            if weights:
+                (d / "adapter_model.safetensors").write_bytes(b"")
 
             base, needs_hub = recorded_local_base(str(d))
             resolved = _resolve_base_model(str(d))
             # The resolver returns the input unchanged when it finds no base.
             assert needs_hub is False, name
             assert (base or str(d)) == resolved, name
+
+    def test_an_adapter_only_lora_keeps_the_probe(self, tmp_path):
+        """No JSON on disk, but the dir name resolves to a remote unsloth/... base that
+        tier activation reads Hub metadata for."""
+        d = tmp_path / "unsloth_llama-3_1700000000"
+        d.mkdir()
+        (d / "adapter_model.safetensors").write_bytes(b"")
+
+        inf = self._module("core/inference/worker.py", "inference_worker_adapteronly_gate")
+        trn = self._module("core/training/worker.py", "training_worker_adapteronly_gate")
+
+        base, needs_hub = inf._recorded_local_base(str(d))
+        assert (base, needs_hub) == ("unsloth/llama-3", False)
+        assert inf._hub_targets_are_local(str(d), base) is False
+        assert trn._training_job_is_local({"model_name": str(d)}) is False
 
 
 class TestLoadRouteResolvesConfigOffTheLoop:

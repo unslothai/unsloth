@@ -552,11 +552,12 @@ def _is_same_path(value: str, local_path: Path) -> bool:
 def recorded_local_base(model_name) -> "tuple[str | None, bool]":
     """``(base, needs_hub)`` for what a local checkpoint records on disk.
 
-    Mirrors the two disk reads below, so a caller can tell whether a load is
+    Mirrors every offline branch below, so a caller can tell whether a load is
     filesystem-only before paying a network probe: an adapter's
     ``base_model_name_or_path``, else a full checkpoint's ``model_name``/``_name_or_path``
-    (a self-reference is not a base). ``needs_hub`` is True when only the
-    ``get_base_model_from_lora`` branch could answer, or the read failed.
+    (a self-reference is not a base), else the ``unsloth_<model>_<timestamp>`` dir-name
+    convention for an adapter carrying weights but no JSON. ``needs_hub`` is True when
+    only the ``get_base_model_from_lora`` branch could answer, or the read failed.
     """
     root = Path(model_name)
     try:
@@ -573,6 +574,12 @@ def recorded_local_base(model_name) -> "tuple[str | None, bool]":
                 base = cfg.get(_key)
                 if isinstance(base, str) and base and not _is_same_path(base, root):
                     return base, False
+        # Only reachable without a Hub call when there is no adapter_config.json; with one,
+        # the resolver tries get_base_model_from_lora first, which needs_hub already covers.
+        if not adapter_cfg and root.name.startswith("unsloth_") and _has_adapter_weights(root):
+            parts = root.name.split("_")
+            if len(parts) >= 2:
+                return "unsloth/" + "_".join(parts[1:-1]), False
         return None, adapter_cfg
     except Exception:
         return None, True

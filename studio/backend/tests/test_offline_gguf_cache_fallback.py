@@ -31,13 +31,20 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 # Stub heavy/unavailable external deps before importing the modules under
-# test (same pattern as other studio backend tests).
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# test (same pattern as other studio backend tests). Prefer the real module where
+# there is one: these go into sys.modules for the whole session, so an empty stub
+# breaks any module imported later that actually uses it.
+try:
+    import loggers  # noqa: F401
+except ImportError:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules.setdefault("loggers", _loggers_stub)
 
-_structlog_stub = _types.ModuleType("structlog")
-sys.modules.setdefault("structlog", _structlog_stub)
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 
 # Prefer real httpx if installed (CI installs it). Stub only as fallback.
 try:
