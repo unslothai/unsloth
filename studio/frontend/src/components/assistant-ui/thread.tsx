@@ -2070,7 +2070,7 @@ const Composer: FC<{
   const [indexingActive, setIndexingActive] = useState(false);
   const indexingActiveRef = useRef(false);
   const promptQueueTargetMountedRef = useRef(true);
-  const promptQueueStartPendingRef = useRef(false);
+  const promptQueueStartPendingRef = useRef(new Set<string>());
   useEffect(() => {
     promptQueueTargetMountedRef.current = true;
     return () => {
@@ -2281,10 +2281,15 @@ const Composer: FC<{
       waitForCurrentRun = false,
       onStarted?: () => void,
     ) => {
-      if (promptQueueStartPendingRef.current) {
+      const reservationKey = JSON.stringify([
+        referenceThreadId,
+        items,
+        waitForCurrentRun,
+      ]);
+      if (promptQueueStartPendingRef.current.has(reservationKey)) {
         return false;
       }
-      promptQueueStartPendingRef.current = true;
+      promptQueueStartPendingRef.current.add(reservationKey);
       void createPromptQueueTarget()
         .then((target) => {
           if (target) {
@@ -2299,11 +2304,11 @@ const Composer: FC<{
           });
         })
         .finally(() => {
-          promptQueueStartPendingRef.current = false;
+          promptQueueStartPendingRef.current.delete(reservationKey);
         });
       return true;
     },
-    [createPromptQueueTarget],
+    [createPromptQueueTarget, referenceThreadId],
   );
 
   const dismissWaitToast = useCallback(() => {

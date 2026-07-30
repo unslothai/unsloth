@@ -141,7 +141,9 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "startHydratedPromptQueue(" in submit
     assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
     assert "promptQueueStartPendingRef.current" in THREAD
-    assert "promptQueueStartPendingRef.current = true" in THREAD
+    assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
+    assert "promptQueueStartPendingRef.current.add(reservationKey)" in THREAD
+    assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert ".finally(() =>" in THREAD
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
@@ -230,6 +232,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "...visibleExternalSettings" in CHAT_ADAPTER
     assert "visibleState.activeThreadEpoch" in CHAT_ADAPTER
     assert "activeThreadEpoch ===" in CHAT_ADAPTER
+    assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
+    assert "window.location.href === visibleRoute" in CHAT_ADAPTER
+    assert ".setCheckpoint(visibleExternalSettings.params.checkpoint)" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel()") >= 2
     assert CHAT_ADAPTER.count("modelId: params.checkpoint") >= 2
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
@@ -308,6 +313,8 @@ def test_stop_delete_archive_and_clear_are_thread_scoped():
     assert "requestPromptQueueStop(toArchive.map((thread) => thread.id));" in SIDEBAR_ITEMS
     assert "requestPromptQueueStop(threadIds);" in SIDEBAR_ITEMS
     assert "requestPromptQueueStop();" in CLEAR_ALL_CHATS
+    assert "serverCancelByThreadId" in CLEAR_ALL_CHATS
+    assert "stopChatThread(threadId)" in CLEAR_ALL_CHATS
     assert "threadIds !== undefined && threadIds.length === 0" in QUEUE_BOUNDARY
     assert "detail: threadIds ? { threadIds } : undefined" in QUEUE_BOUNDARY
     assert "const aliasesByQueuedRun = new Map<string, string[]>()" in CONFIRM_MODEL_SWAP

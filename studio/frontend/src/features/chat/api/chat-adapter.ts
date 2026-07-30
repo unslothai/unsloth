@@ -2175,6 +2175,7 @@ async function resolveQueuedEmptyLocalModel(): Promise<{
     const visibleExternalSettings =
       snapshotQueuedChatRunSettings(visibleState);
     const visibleThreadEpoch = visibleState.activeThreadEpoch;
+    const visibleRoute = window.location.href;
     let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
     let modelRuntime: QueuedResolvedModelRuntime | null = null;
     try {
@@ -2189,8 +2190,12 @@ async function resolveQueuedEmptyLocalModel(): Promise<{
     } finally {
       if (
         useChatRuntimeStore.getState().activeThreadEpoch ===
-        visibleThreadEpoch
+          visibleThreadEpoch &&
+        window.location.href === visibleRoute
       ) {
+        useChatRuntimeStore
+          .getState()
+          .setCheckpoint(visibleExternalSettings.params.checkpoint);
         useChatRuntimeStore.setState({
           ...visibleExternalSettings,
           params: { ...visibleExternalSettings.params },
