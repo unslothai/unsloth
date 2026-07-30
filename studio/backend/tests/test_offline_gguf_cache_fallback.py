@@ -1507,6 +1507,78 @@ class TestSpawnEnvironmentDoesNotInheritScopedOffline:
         assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
 
 
+class TestSpawnWindowKeepsTheParentOffline:
+    """Restoring the user's env for a spawn must not un-offline the guarded parent."""
+
+    def test_env_offline_still_true_inside_the_spawn_window(
+        self, monkeypatch, clean_offline_env
+    ):
+        from utils.hf_cache_settings import child_environment_for_spawn
+        from utils.transformers_version import _env_offline
+        from utils.utils import force_hf_offline, hf_env_offline
+
+        with force_hf_offline():
+            assert _env_offline() is True and hf_env_offline() is True
+            with child_environment_for_spawn({}):
+                # The child must inherit the user's own (online) intent ...
+                assert "HF_HUB_OFFLINE" not in os.environ
+                # ... while the parent's own gates stay closed.
+                assert _env_offline() is True
+                assert hf_env_offline() is True
+            assert _env_offline() is True
+
+    def test_guarded_metadata_fetch_stays_local_during_a_concurrent_spawn(
+        self, monkeypatch, clean_offline_env
+    ):
+        """Guard on one thread, spawn window on a second, raw metadata read on a third.
+        No request may leave the process."""
+        import threading
+
+        from utils.hf_cache_settings import child_environment_for_spawn
+        from utils.utils import force_hf_offline
+
+        from utils import transformers_version as tv
+
+        calls: list = []
+        monkeypatch.setattr(tv, "_adapter_base_from_hf_cache", lambda name: "cached/base")
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(AssertionError("network")),
+        )
+
+        guard_open = threading.Event()
+        release_guard = threading.Event()
+        in_window = threading.Event()
+        release_window = threading.Event()
+
+        def _guard():
+            with force_hf_offline():
+                guard_open.set()
+                release_guard.wait(30)
+
+        def _spawn():
+            guard_open.wait(30)
+            with child_environment_for_spawn({}):
+                in_window.set()
+                release_window.wait(30)
+
+        threads = [
+            threading.Thread(target = _guard, daemon = True),
+            threading.Thread(target = _spawn, daemon = True),
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            assert in_window.wait(30)
+            assert tv._remote_lora_base("some-org/some-lora") == "cached/base"
+            assert calls == []
+        finally:
+            release_window.set()
+            release_guard.set()
+            for thread in threads:
+                thread.join(30)
+
+
 class TestProxyTimeoutIsNotExcused:
     """A live proxy proves the proxy is up, not that it can reach the hub."""
 
@@ -2419,3 +2491,152 @@ class TestHttpsProxyDefaultPort:
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal")
         from utils.utils import hf_connect_target
         assert list(hf_connect_target("https://huggingface.co")) == ["proxy.internal", 80]
+
+
+class TestMetadataReadsUseTheHubProxy:
+    """The reachability probe and the metadata reads must agree about egress.
+
+    urllib's default opener ignores ALL_PROXY: ``getproxies`` reports it under an ``all``
+    key, but ``ProxyHandler`` only ever dispatches ``<scheme>_open``. huggingface_hub 0.36
+    is built on requests, which does honour it. So on a proxy-only machine the probe
+    reported "online" through the proxy while every raw config.json / tokenizer_config.json
+    / adapter_config.json read went direct and silently failed, dropping the sidecar tier
+    decision back to name matching. Served by a real loopback proxy, not a mock.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_proxy(self, clean_proxy_env, clean_offline_env):
+        pass
+
+    @pytest.fixture
+    def stub_proxy(self, monkeypatch, tmp_path):
+        """A real HTTP proxy on loopback; yields (seen_requests, payload)."""
+        import json as _json
+        import threading as _threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        seen: list[tuple[str, str]] = []
+        payload = {"architectures": ["MinistralForCausalLM"], "model_type": "ministral"}
+
+        class _Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def do_GET(self):  # noqa: N802
+                seen.append((self.command, self.path))
+                body = _json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        _threading.Thread(target = srv.serve_forever, daemon = True).start()
+        # Proxy-only egress: the hub name never resolves locally (.invalid, RFC 2606).
+        monkeypatch.setenv("HF_ENDPOINT", "http://hub.invalid")
+        monkeypatch.setenv("ALL_PROXY", f"http://127.0.0.1:{srv.server_address[1]}")
+        monkeypatch.setenv("HF_HOME", str(tmp_path))
+        try:
+            yield seen, payload
+        finally:
+            srv.shutdown()
+
+    def _clear_caches(self, monkeypatch):
+        import urllib.request
+
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_config_json_cache", {})
+        monkeypatch.setattr(tv, "_tokenizer_class_cache", {})
+        # urlopen builds its default opener once per process and caches it in _opener, so
+        # an earlier test's proxy env would otherwise decide this one's routing.
+        monkeypatch.setattr(urllib.request, "_opener", None)
+
+    def test_all_proxy_is_ignored_by_the_default_opener(self, monkeypatch):
+        """Guards the premise: urllib alone would never use this proxy."""
+        import urllib.request
+
+        monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:3128")
+        assert urllib.request.getproxies().get("all") == "http://127.0.0.1:3128"
+        handler = urllib.request.ProxyHandler(urllib.request.getproxies())
+        assert not hasattr(handler, "https_open")
+        assert not hasattr(handler, "http_open")
+
+    def test_config_json_read_goes_through_the_proxy(self, stub_proxy, monkeypatch):
+        seen, payload = stub_proxy
+        self._clear_caches(monkeypatch)
+        from utils.transformers_version import _load_config_json
+
+        assert _load_config_json("acme/ministral-3b") == payload
+        assert seen == [
+            ("GET", "http://hub.invalid/acme/ministral-3b/raw/main/config.json"),
+        ]
+
+    def test_tokenizer_config_read_goes_through_the_proxy(self, stub_proxy, monkeypatch):
+        seen, _ = stub_proxy
+        self._clear_caches(monkeypatch)
+        from utils.transformers_version import _check_tokenizer_config_needs_v5
+
+        _check_tokenizer_config_needs_v5("acme/ministral-3b")
+        assert seen == [
+            ("GET", "http://hub.invalid/acme/ministral-3b/raw/main/tokenizer_config.json"),
+        ]
+
+    def test_adapter_config_read_goes_through_the_proxy(self, stub_proxy, monkeypatch):
+        seen, _ = stub_proxy
+        self._clear_caches(monkeypatch)
+        from utils.transformers_version import _remote_lora_base
+
+        _remote_lora_base("acme/ministral-3b")
+        assert seen == [
+            ("GET", "http://hub.invalid/acme/ministral-3b/raw/main/adapter_config.json"),
+        ]
+
+    def test_no_proxy_bypass_keeps_the_metadata_read_direct(self, monkeypatch, tmp_path):
+        """A CIDR NO_PROXY entry requests honours and urllib does not must not be
+        re-routed through the proxy by the metadata reads either."""
+        import json as _json
+        import threading as _threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        proxy_seen: list = []
+        hub_seen: list = []
+        payload = {"model_type": "ministral"}
+
+        def _make(log, body_bytes):
+            class _H(BaseHTTPRequestHandler):
+                protocol_version = "HTTP/1.0"
+
+                def do_GET(self):  # noqa: N802
+                    log.append((self.command, self.path))
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body_bytes)))
+                    self.end_headers()
+                    self.wfile.write(body_bytes)
+
+                def log_message(self, *args):
+                    pass
+            return _H
+
+        body = _json.dumps(payload).encode()
+        proxy = ThreadingHTTPServer(("127.0.0.1", 0), _make(proxy_seen, body))
+        hub = ThreadingHTTPServer(("127.0.0.1", 0), _make(hub_seen, body))
+        for srv in (proxy, hub):
+            _threading.Thread(target = srv.serve_forever, daemon = True).start()
+        try:
+            monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{hub.server_address[1]}")
+            monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.server_address[1]}")
+            monkeypatch.setenv("NO_PROXY", "127.0.0.0/8")
+            monkeypatch.setenv("HF_HOME", str(tmp_path))
+            self._clear_caches(monkeypatch)
+            from utils.transformers_version import _load_config_json
+
+            assert _load_config_json("acme/ministral-3b") == payload
+            assert proxy_seen == []
+            assert hub_seen == [("GET", "/acme/ministral-3b/raw/main/config.json")]
+        finally:
+            proxy.shutdown()
+            hub.shutdown()

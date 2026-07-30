@@ -2632,6 +2632,61 @@ class TestHfEndpointUnreachable:
         monkeypatch.setattr("urllib.request.urlopen", _refused)
         assert hf_endpoint_unreachable(timeout = 2) is False
 
+    def test_connection_reset_is_reachable(self, monkeypatch):
+        """A reset proves the path answered, exactly like the refusal above.
+
+        urllib wraps an OSError raised while sending, so this is the URLError form.
+        """
+        import urllib.error
+
+        def _reset(*a, **k):
+            raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _reset)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_remote_disconnect_is_reachable(self, monkeypatch):
+        """getresponse() is not inside urllib's OSError->URLError wrapper, so a server
+        that accepts the HEAD then closes raises http.client.RemoteDisconnected raw --
+        and it subclasses ConnectionResetError -> OSError."""
+        import http.client
+
+        def _disconnect(*a, **k):
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+        monkeypatch.setattr("urllib.request.urlopen", _disconnect)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_real_server_that_accepts_then_closes_is_reachable(self, monkeypatch):
+        """End-to-end over a real socket: no mocking of the exception type at all."""
+        import socket
+        import threading
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+
+        def _accept_then_close():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(4096)
+            except OSError:
+                pass
+            conn.close()
+
+        thread = threading.Thread(target = _accept_then_close, daemon = True)
+        thread.start()
+        monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{srv.getsockname()[1]}")
+        try:
+            assert hf_endpoint_unreachable(timeout = 2) is False
+        finally:
+            srv.close()
+            thread.join(5)
+
     def test_dns_failure_is_unreachable(self, monkeypatch):
         import socket
         import urllib.error

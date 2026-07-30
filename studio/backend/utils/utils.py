@@ -30,7 +30,13 @@ def hf_env_offline() -> bool:
 
     Also honors TRANSFORMERS_OFFLINE (hub honors only HF_HUB_OFFLINE) since users set it
     to keep transformers loads local.
+
+    An open force_hf_offline window counts even when the env momentarily disagrees:
+    hf_environment_restored_for_spawn puts the user's values back while multiprocessing
+    snapshots os.environ, and an env-only check on another thread would read "online".
     """
+    if force_hf_offline_active():
+        return True
     for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         if os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES:
             return True
@@ -298,9 +304,13 @@ def force_hf_offline_active() -> bool:
     Lets a concurrent caller tell our own forced offline apart from one the user set, so
     it can hold its own reference instead of no-opping and losing offline when the first
     window exits.
+
+    Read without the lock: hf_environment_restored_for_spawn holds it across
+    Process.start(), and an offline check that blocked for that window would stall the
+    operation the guard protects. The int read is atomic and the depth is only raised
+    after env and constants are already offline.
     """
-    with _force_offline_lock:
-        return _force_offline_depth > 0
+    return _force_offline_depth > 0
 
 
 def force_hf_offline_state() -> tuple[bool, bool]:

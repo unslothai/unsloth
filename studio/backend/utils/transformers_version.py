@@ -56,7 +56,19 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if an HF offline env var is truthy (canonical strip+lower parse); gates the urllib fetches below."""
+    """True if an HF offline env var is truthy (canonical strip+lower parse); gates the urllib fetches below.
+
+    An open force_hf_offline window counts too. During a spawn the guard briefly restores
+    the user's own offline values into os.environ so the child inherits their intent, and
+    these fetches read os.environ, so an env-only check would send the very request the
+    guard is holding back.
+    """
+    try:
+        from utils.utils import force_hf_offline_active
+        if force_hf_offline_active():
+            return True
+    except Exception:
+        pass
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
@@ -67,6 +79,47 @@ def _hf_raw_url(model_name: str, filename: str) -> str:
     """Raw model metadata URL for the configured Hub endpoint."""
     from utils.utils import hf_endpoint_url
     return f"{hf_endpoint_url().rstrip('/')}/{model_name}/raw/main/{filename}"
+
+
+def _hf_proxy_opener(url: str):
+    """Opener pinned to the Hub client's proxy choice for *url*, or None to use the default.
+
+    The default opener ignores ALL_PROXY (``getproxies`` reports an ``all`` key, but
+    ``ProxyHandler`` only ever dispatches ``<scheme>_open``) and applies urllib's own
+    NO_PROXY rules, which do not understand the CIDR / host:port entries requests honours.
+    Without this, the reachability probe and the metadata reads below disagree about
+    whether egress goes through the proxy. Returns None for a socks proxy: urllib cannot
+    speak it, so there is nothing better to offer than the default opener.
+    """
+    import urllib.parse
+    import urllib.request
+
+    try:
+        from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+
+        proxy = hf_proxy_for_endpoint(url)
+        scheme = urllib.parse.urlparse(url).scheme or "https"
+        if proxy:
+            if not hf_proxy_usable_by_urllib(proxy):
+                return None
+            return urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
+        if any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
+            # The Hub client bypasses the proxy for this host; force a direct opener so
+            # urllib's coarser NO_PROXY parsing cannot send the request through it anyway.
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    except Exception:
+        pass
+    return None
+
+
+def _hf_urlopen(req, timeout: int):
+    """``urlopen`` through the same proxy huggingface_hub would use for this request."""
+    import urllib.request
+
+    opener = _hf_proxy_opener(req.full_url)
+    if opener is not None:
+        return opener.open(req, timeout = timeout)
+    return urllib.request.urlopen(req, timeout = timeout)
 
 
 def hf_endpoint_unreachable(
@@ -86,7 +139,6 @@ def hf_endpoint_unreachable(
     import ssl
     import threading
     import urllib.error
-    import urllib.parse
     import urllib.request
 
     # Shared normaliser, so an empty or whitespace HF_ENDPOINT falls back to the default
@@ -101,21 +153,16 @@ def hf_endpoint_unreachable(
 
     # Pin the Hub client's proxy choice. The default urllib opener ignores all_proxy and
     # can also override a requests-compatible NO_PROXY decision.
-    opener = None
     try:
         from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
 
         proxy = hf_proxy_for_endpoint(endpoint)
-        scheme = urllib.parse.urlparse(endpoint).scheme or "https"
         # urllib cannot speak socks5, so its instant failure is not proof of no egress.
         if proxy and not hf_proxy_usable_by_urllib(proxy):
             return False
-        if proxy:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
-        elif any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     except Exception:
-        opener = None
+        pass
+    opener = _hf_proxy_opener(endpoint)
     _open = opener.open if opener is not None else urllib.request.urlopen
 
     result = {"online": False, "timed_out": False}
@@ -136,7 +183,9 @@ def hf_endpoint_unreachable(
         except urllib.error.URLError as exc:
             # A TLS/cert failure means we DID reach the server; treat as reachable so the real
             # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
-            if isinstance(exc.reason, (ssl.SSLError, ConnectionRefusedError)):
+            # ConnectionError is the whole "the wire answered" family (refused, reset,
+            # aborted). A blackhole raises gaierror / ENETUNREACH instead, which are not.
+            if isinstance(exc.reason, (ssl.SSLError, ConnectionError)):
                 result["online"] = True
             elif isinstance(exc.reason, TimeoutError):
                 # Resolved below, off-thread, so the extra probe cannot outrun the join.
@@ -150,6 +199,12 @@ def hf_endpoint_unreachable(
             result["online"] = True
         except TimeoutError:
             result["timed_out"] = True
+        except ConnectionError:
+            # urllib only wraps OSErrors raised while sending; one from getresponse()
+            # arrives raw. Accept-then-close surfaces as RemoteDisconnected, a
+            # ConnectionResetError subclass, and a momentary reset must not read as no
+            # egress and strand a whole job offline, same reasoning as the 502/503 case.
+            result["online"] = True
         except OSError:
             result["online"] = False
         except Exception:
@@ -657,7 +712,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hf_urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
         base = cfg.get("base_model_name_or_path")
         if base:
@@ -725,7 +780,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hf_urlopen(req, timeout = 10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -837,7 +892,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hf_urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
         _config_json_cache[cache_key] = cfg
         return cfg
