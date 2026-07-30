@@ -2,15 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the
- * request out, which commits the 200 before the work finishes (see
- * `_tunnel_safe_json` in studio/backend/routes/inference.py). A proxy that then
- * gives up mid-pad leaves the client a 200 with an empty or truncated body, so a
- * client that accepts it reports an unfinished load or unload as done. These are
- * the only two routes that can do that, so they are the only ones that require a
- * payload; every other endpoint writes its body in one shot and some send none.
- *
- * Mirrored by `require_completed_padded_body` in unsloth_cli/_inference.py.
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request
+ * out, committing the 200 before the work finishes (`_tunnel_safe_json` in
+ * studio/backend/routes/inference.py). A proxy giving up mid-pad leaves a 200 with an
+ * empty or truncated body; accepting that reports an unfinished load as done. Only
+ * these two routes commit that early, so only they require a payload; elsewhere an
+ * empty body is by design. Mirrored by `require_completed_padded_body` in
+ * unsloth_cli/_inference.py.
  */
 export function assertCompletedPaddedBody(body: unknown, label: string): void {
   const complete =

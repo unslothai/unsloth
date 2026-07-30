@@ -3229,10 +3229,9 @@ def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
 
 # ── A load slower than the proxy timer (routes/inference.py _tunnel_safe_json) ──
 #
-# /api/inference/load pads its body so a proxy cannot time a slow load out, which
-# commits the 200 before the load finishes. A failure found after that can only
-# travel in the body, as `_deferred_error`, so `_http_json` has to raise on it --
-# otherwise a late OOM reads as a successful load.
+# /api/inference/load pads its body so a proxy cannot time a slow load out, committing
+# the 200 before the load finishes. A failure after that travels only in the body, as
+# `_deferred_error`, so `_http_json` must raise on it or a late OOM reads as success.
 
 _DEFERRED_OOM = {
     "_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"},
@@ -3264,8 +3263,8 @@ def test_http_json_raises_a_deferred_error_as_an_http_error(monkeypatch):
 
 
 def test_http_json_deferred_error_fails_like_an_http_failure(monkeypatch, capsys):
-    """With `error` set, a late failure exits 1 with the server's detail -- exactly
-    what an early 507 does, via the same _fail path."""
+    """With `error` set, a late failure exits 1 with the server's detail, as an early 507
+    does, via the same _fail path."""
     monkeypatch.setattr(
         start, "urlopen_no_redirect", lambda request, timeout: _padded(_DEFERRED_OOM)
     )
@@ -3314,10 +3313,9 @@ def test_load_model_with_progress_fails_on_a_deferred_error(monkeypatch):
 def test_load_model_with_progress_rejects_a_truncated_padded_body(monkeypatch, body, what):
     """A proxy that gives up mid-pad leaves a 200 the load never finished under.
 
-    The measured shape (test_tunnel_safe_long_post.py): one byte at t=90s, silence,
-    killed ~125s later, client sees a 200 with an EMPTY body. `_http_json` decodes a
-    blank body as `{}`, so without the check this returned a successful-looking result
-    and the agent connected to whatever model was still resident.
+    Measured: one byte at t=90s, silence, killed ~125s later, a 200 with an EMPTY body.
+    `_http_json` decodes a blank body as `{}`, so without the check this returned a
+    successful-looking result and the agent connected to whatever was still resident.
     """
 
     def urlopen(request, timeout):

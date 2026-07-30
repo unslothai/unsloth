@@ -5476,11 +5476,10 @@ async def load_model(
 async def load_model_gated(request: LoadRequest, fastapi_request: Request, current_subject: str):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
-    In-process callers (preview) must await THIS, never the route: the route's
-    slow path returns a StreamingResponse whose body nobody in-process drains, so
-    awaiting the route would return while the load is still running and would hide
-    a late failure in a body that is never read. Awaiting this instead blocks until
-    the model is really loaded and raises the real exception.
+    In-process callers (preview) must await THIS, not the route: the route's slow
+    path returns a StreamingResponse nobody in-process drains, so awaiting it would
+    return mid-load and hide a late failure in an unread body. This blocks until the
+    model is resident and raises the real exception.
     """
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
@@ -6177,8 +6176,8 @@ async def _load_model_impl(
                 current_request_counted = current_request_counted,
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
-        # Unload any active GGUF model first. Off the event loop: a 600 GB teardown
-        # measures 160s, and on-loop it would block _tunnel_safe_json's own padding.
+        # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
+        # 160s and on-loop would block _tunnel_safe_json's own padding.
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             await asyncio.to_thread(llama_backend.unload_model)
@@ -6954,11 +6953,10 @@ async def install_latest_transformers_route(
 async def unload_model(request: UnloadRequest, current_subject: str = Depends(get_current_subject)):
     """Unload a model from memory.
 
-    Padded like /load: a 600 GB GGUF teardown measures 160s, past the proxy
-    timer. See ``_tunnel_safe_json``. Nothing calls this in-process today; a
-    future in-process caller must await ``_unload_model_impl`` (as ``/load``'s
-    must await ``load_model_gated``), because the padded path returns a
-    StreamingResponse instead of the payload.
+    Padded like /load: a 600 GB GGUF teardown measures 160s, past the proxy timer.
+    See ``_tunnel_safe_json``. No in-process caller today; a future one must await
+    ``_unload_model_impl`` (as preview awaits ``load_model_gated``), since the padded
+    path returns a StreamingResponse, not the payload.
     """
     return await _tunnel_safe_json(
         _unload_model_impl(request, current_subject), label = "Model unload"
@@ -7065,8 +7063,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
-                # Off the event loop like the in-flight branch above: a 600 GB teardown
-                # measures 160s, and on-loop it would block this route's own padding.
+                # Off-loop like the in-flight branch above: a 160s teardown on the
+                # loop would block this route's own padding.
                 await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
                 api_monitor.record_lifecycle(

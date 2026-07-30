@@ -52,21 +52,19 @@ def urlopen_no_redirect(request, timeout):
     return _no_redirect_opener.open(request, timeout = timeout)
 
 
-# /api/inference/load and /unload pad their response body so a proxy cannot time a
-# slow load out, which commits the 200 before the work finishes. A failure found
-# after that can only travel in-band, under this key (_DEFERRED_ERROR_KEY in
-# studio/backend/routes/inference.py), so a client that treats any 200 as success
-# reports a failed load as a successful one.
+# /api/inference/load and /unload pad their body so a proxy cannot time a slow load
+# out, committing the 200 before the work finishes. A failure found after that travels
+# only in-band under this key (studio/backend/routes/inference.py), so a client that
+# treats any 200 as success reports a failed load as a successful one.
 _DEFERRED_ERROR_KEY = "_deferred_error"
 
 
 def raise_for_deferred_error(url: str, body):
     """Raise the late failure a padded 200 body carries; else return ``body``.
 
-    Raised as ``urllib.error.HTTPError`` -- the class every CLI caller already
-    handles for a plain HTTP failure -- carrying the deferred status and message,
-    so existing ``except`` blocks, messages and exit codes keep working. ``.read()``
-    yields the same ``{"detail": ...}`` shape a real error response would.
+    ``urllib.error.HTTPError`` specifically: it is the class every CLI caller already
+    handles for a plain HTTP failure, so existing ``except`` blocks, messages and exit
+    codes keep working, and ``.read()`` yields the same ``{"detail": ...}`` shape.
     """
     if not isinstance(body, dict):
         return body
@@ -95,12 +93,10 @@ def require_completed_padded_body(url: str, body):
     """Return ``body``, or raise if it is not the payload a padded route promised.
 
     A proxy that gives up mid-pad leaves a 200 with an empty or truncated body, so
-    accepting it reports an unfinished load or unload as a completed one. Only the
-    two padded routes commit their status that early, so only they require a
-    payload (an empty dict counts: it is what a blank body decodes to here).
-
-    Mirrored by ``assertCompletedPaddedBody`` in
-    studio/frontend/src/features/chat/api/padded-response.ts.
+    accepting it reports an unfinished load or unload as completed. Only the two padded
+    routes commit their status that early, so only they require a payload; ``{}`` is
+    rejected too, since that is what a blank body decodes to here. Mirrored by
+    ``assertCompletedPaddedBody`` in studio/frontend/src/features/chat/api/padded-response.ts.
     """
     if isinstance(body, dict) and body:
         return body
@@ -113,10 +109,9 @@ def require_completed_padded_body(url: str, body):
 def read_json_checking_deferred_error(url: str, response):
     """Drain ``response``, then raise any deferred error its body carries.
 
-    Draining matters on its own: stopping at the headers of a padded /load leaves
-    the load still running, so the caller resumes too early. A body that is not a
-    complete JSON payload is a truncated padded reply, not a success, so it raises
-    (see ``require_completed_padded_body``).
+    Draining matters on its own: stopping at the headers of a padded /load leaves the
+    load running, so the caller resumes too early. An incomplete JSON payload is a
+    truncated padded reply, not a success (see ``require_completed_padded_body``).
     """
     try:
         raw = response.read()
@@ -761,10 +756,9 @@ class HttpChatBackend:
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
         try:
-            # Read the body, don't close at the headers: a load slower than the
-            # tunnel timer commits its 200 early and pads until it is done, so
-            # closing here would start generating mid-load and would throw away
-            # the only report of a late failure.
+            # Read the body, don't close at the headers: a slow load commits its 200
+            # early and pads until done, so closing here would generate mid-load and
+            # discard the only report of a late failure.
             read_json_checking_deferred_error(
                 self._base + "/api/inference/load",
                 self._request("POST", "/api/inference/load", payload),

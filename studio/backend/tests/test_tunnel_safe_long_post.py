@@ -17,10 +17,9 @@ quick tunnel:
 So the padding must be continuous, and a failure found after the status commits
 can only travel in the body.
 
-Two consequences the tests below pin down. The padded reply is a StreamingResponse,
-so anything that does not drain a body must not go through the route: in-process
-callers await ``load_model_gated`` instead. And a client that reads the body but
-treats any 200 as success still has to be taught the in-band failure key.
+Two consequences below: the padded reply is a StreamingResponse, so an in-process
+caller that drains no body awaits ``load_model_gated`` instead; and a client that
+treats any 200 as success has to learn the in-band failure key.
 """
 
 from __future__ import annotations
@@ -156,8 +155,7 @@ def test_the_work_survives_a_client_disconnect(route):
 
 @pytest.fixture
 def slow_load(route, monkeypatch):
-    """/load whose work outruns the keepalive timer. Returns the recorder of
-    model paths the load actually finished for."""
+    """/load whose work outruns the keepalive timer; records the finished model paths."""
     finished = []
 
     async def _slow_impl(request, fastapi_request, current_subject, **kwargs):
@@ -177,10 +175,8 @@ def _load_request(model_path = "unsloth/Kimi-K3-GGUF"):
 
 
 def test_an_in_process_caller_gets_the_real_result(route, slow_load):
-    """preview awaits load_model_gated, so a slow load blocks it until the model
-    is really resident. Awaiting the route instead would hand back a
-    StreamingResponse that nothing in-process drains, and the preview chat would
-    run against the previous model."""
+    """preview awaits load_model_gated, so a slow load blocks until the model is
+    resident; awaiting the route would hand back an undrained StreamingResponse."""
     result = asyncio.run(route.load_model_gated(_load_request(), None, "admin"))
 
     assert not isinstance(result, StreamingResponse)
@@ -190,8 +186,7 @@ def test_an_in_process_caller_gets_the_real_result(route, slow_load):
 
 
 def test_an_in_process_caller_sees_a_late_failure(route, monkeypatch):
-    """The same load failing late raises for a direct caller, instead of becoming
-    a 200 whose body carries `_deferred_error`."""
+    """A late failure raises for a direct caller, not a 200 carrying `_deferred_error`."""
 
     async def _slow_boom(request, fastapi_request, current_subject, **kwargs):
         await asyncio.sleep(0.2)
@@ -220,8 +215,7 @@ def test_the_route_still_pads_the_same_slow_load(route, slow_load):
 
 
 def test_only_the_route_pads(route):
-    """``_tunnel_safe_json`` belongs to the route, not to the gated coroutine: a
-    future in-process caller of the latter must not inherit a StreamingResponse."""
+    """Padding belongs to the route: a gated-coroutine caller must not inherit a stream."""
     import inspect
 
     assert "_tunnel_safe_json" in inspect.getsource(route.load_model)
@@ -242,8 +236,7 @@ def test_preview_awaits_the_gated_load(route):
 
 
 def test_preview_chat_waits_for_a_slow_checkpoint_load(route, slow_load, monkeypatch, tmp_path):
-    """End to end through the real in-process caller: /p must not start generating
-    while the checkpoint is still loading."""
+    """End to end: /p must not start generating while the checkpoint is still loading."""
     import routes.preview as preview
     from models.inference import ChatCompletionRequest
 
@@ -268,8 +261,7 @@ def test_preview_chat_waits_for_a_slow_checkpoint_load(route, slow_load, monkeyp
         )
 
     assert asyncio.run(run()) == {"ok": True}
-    # The load had finished before the chat ran; pre-fix this list was empty
-    # because the padded StreamingResponse returned at the keepalive threshold.
+    # Pre-fix this was empty: the padded StreamingResponse returned at the threshold.
     assert loaded_when_chat_started == [[str(checkpoint)]]
     assert not preview._preview_lock.locked()
 
@@ -277,16 +269,14 @@ def test_preview_chat_waits_for_a_slow_checkpoint_load(route, slow_load, monkeyp
 # ── The slow teardown must not sit on the event loop ──────────────────────────
 #
 # ``LlamaCppBackend.unload_model`` is a plain ``def`` and a 600 GB teardown measures
-# ~160s. Called bare, it blocks the loop that runs _tunnel_safe_json's own timer and
-# its pad generator, so zero bytes leave and the proxy 524s the padded response
-# anyway: the padding is dead code on exactly the two slowest paths.
+# ~160s. Called bare it blocks _tunnel_safe_json's own timer and pad generator, so
+# zero bytes leave and the proxy 524s anyway: padding dead on the two slowest paths.
 
 
 class _SlowSyncTeardown:
-    """A synchronous GGUF teardown that finishes only once the padding has flowed.
+    """A synchronous GGUF teardown that returns only once the padding has flowed.
 
-    Left on the event loop it can never see a pad byte, so it falls out on ``cap_s``
-    having recorded none -- which is precisely the bug.
+    On the event loop it never sees a pad byte and falls out on ``cap_s`` with none.
     """
 
     def __init__(
@@ -330,8 +320,7 @@ def _no_active_generation_checks(route, monkeypatch):
 
 
 def _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, *, teardown):
-    """POST /load for a non-GGUF model while a GGUF is resident: the branch that
-    tears the llama-server down before handing the GPUs to Unsloth."""
+    """POST /load over a resident GGUF: the branch that tears llama-server down first."""
     import core.export
 
     from core.inference import llama_keepwarm as kw
@@ -430,8 +419,7 @@ def test_a_slow_gguf_teardown_before_an_unsloth_load_still_pads(route, monkeypat
         return response
 
     response = asyncio.run(run())
-    # Pre-fix the teardown ran inside the task's first step, so the loop never got
-    # to time out and this was a plain LoadResponse: not one pad byte on the wire.
+    # Pre-fix the teardown ran in the task's first step: a plain LoadResponse, no pads.
     assert isinstance(
         response, StreamingResponse
     ), "a load whose teardown blocks the loop can never be padded"
@@ -470,8 +458,7 @@ def _stub_gguf_unload(route, monkeypatch, *, teardown):
 
 
 def test_a_slow_gguf_unload_still_pads(route, monkeypatch):
-    """POST /unload of a resident GGUF -- the path whose 160s measurement is the
-    reason /unload is padded at all."""
+    """POST /unload of a resident GGUF: the 160s path /unload is padded for."""
     from models.inference import UnloadRequest
 
     chunks: list[bytes] = []
@@ -494,8 +481,7 @@ def test_a_slow_gguf_unload_still_pads(route, monkeypatch):
 
 
 def test_every_gguf_teardown_on_a_padded_route_is_off_loop():
-    """A regression fence for the two call sites above: a new bare
-    ``unload_model()`` anywhere in /load or /unload silently un-pads that path."""
+    """Fence: a new bare ``unload_model()`` in /load or /unload silently un-pads it."""
     import ast
 
     src = (_backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
@@ -525,9 +511,8 @@ def test_every_gguf_teardown_on_a_padded_route_is_off_loop():
 
 
 def test_a_python_client_can_recognise_the_late_failure(route):
-    """The browser learned `_deferred_error` (chat-api.ts); the CLI is not a
-    browser and treats any 200 as success, so it has to know the same key and
-    fields or a late OOM is reported as a successful load."""
+    """The CLI is not a browser: it treats any 200 as success, so it must know the same
+    `_deferred_error` key and fields or a late OOM reads as a successful load."""
 
     async def slow_boom():
         await asyncio.sleep(0.2)
@@ -539,8 +524,7 @@ def test_a_python_client_can_recognise_the_late_failure(route):
     payload = json.loads(asyncio.run(run()))[route._DEFERRED_ERROR_KEY]
     assert payload == {"status_code": 507, "detail": "CUDA out of memory"}
 
-    # The shared CLI helper every unsloth_cli load path funnels through. Read as
-    # text, not imported: the backend test env need not import the CLI.
+    # Read as text, not imported: the backend test env need not import the CLI.
     cli = (_repo_root / "unsloth_cli" / "_inference.py").read_text(encoding = "utf-8")
     assert f'_DEFERRED_ERROR_KEY = "{route._DEFERRED_ERROR_KEY}"' in cli
     assert 'deferred.get("status_code")' in cli
@@ -550,13 +534,11 @@ def test_a_python_client_can_recognise_the_late_failure(route):
 
 
 def test_both_clients_reject_a_truncated_padded_body():
-    """The proxy can also kill a padded response after the 200 committed: measured
-    above as a 200 with an EMPTY body. Both clients must call that a failure -- if
-    one accepts it, the same reply means "loaded" to one and "failed" to the other.
-
-    Behaviour lives in the clients' own suites (unsloth_cli/tests/test_inference_chat.py
-    and studio/frontend/tests/padded-response.test.ts); this only pins that neither
-    side can quietly drop the check.
+    """A proxy killing a padded response after the 200 committed leaves the measured
+    200 with an EMPTY body. Both clients must call that a failure, else the same reply
+    means "loaded" to one and "failed" to the other. Behaviour is tested in their own
+    suites (test_inference_chat.py, padded-response.test.ts); this only pins that
+    neither side can drop the check.
     """
     cli = (_repo_root / "unsloth_cli" / "_inference.py").read_text(encoding = "utf-8")
     assert "def require_completed_padded_body(" in cli
@@ -573,8 +555,8 @@ def test_both_clients_reject_a_truncated_padded_body():
         / "padded-response.ts"
     ).read_text(encoding = "utf-8")
     assert "export function assertCompletedPaddedBody(" in web
-    # Scoped to /load and /unload: the shared parseJsonOrThrow serves ~30 endpoints,
-    # some of which legitimately answer with no body.
+    # Scoped to /load and /unload: shared parseJsonOrThrow serves ~30 endpoints,
+    # some legitimately with no body.
     chat_api = (
         _repo_root / "studio" / "frontend" / "src" / "features" / "chat" / "api" / "chat-api.ts"
     ).read_text(encoding = "utf-8")

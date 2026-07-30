@@ -661,8 +661,8 @@ def _http_json(
         # No redirects: a 3xx would leak this bearer token to an unvetted base.
         with urlopen_no_redirect(request, timeout = timeout) as response:
             body = json.loads(response.read().decode() or "{}")
-        # A padded /load or /unload commits its 200 before the work finishes, so a
-        # late failure arrives in-band; raise it as the HTTPError handled below.
+        # A padded /load or /unload commits its 200 early, so a late failure arrives
+        # in-band; raise it as the HTTPError handled below.
         return raise_for_deferred_error(url, body)
     except urllib.error.HTTPError as exc:
         if error is None:
@@ -936,8 +936,7 @@ def _load_model_with_progress(
                 require_completed_padded_body(load_url, None)
             raise value
         progress.complete()
-        # `_http_json` decodes a blank body as `{}`, which a truncated padded reply
-        # would otherwise make look like a completed load.
+        # `_http_json` decodes a blank body as `{}`, which would look like a completed load.
         return require_completed_padded_body(load_url, value)
     finally:
         progress.close()

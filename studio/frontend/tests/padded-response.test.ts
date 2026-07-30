@@ -4,14 +4,12 @@
 /**
  * A truncated padded reply is not a successful load.
  *
- * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the
- * request out, which commits the 200 before the work finishes. The tunnel probe in
- * studio/backend/tests/test_tunnel_safe_long_post.py measured the failure mode: one
- * byte at t=90s then silence is killed ~125s later and the client sees a 200 with an
- * EMPTY body. `response.json()` throws on that, so a `catch(() => null)` turns it
- * into a 200 with a null body -- reported as success unless the padded callers say
- * otherwise. `unloadModel` would then clear the checkpoint and a recipe load would
- * proceed against a model that may not be ready.
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request
+ * out, which commits the 200 before the work finishes. The tunnel probe measured the
+ * failure mode (studio/backend/tests/test_tunnel_safe_long_post.py): one byte at t=90s
+ * then silence is killed ~125s later and the client sees a 200 with an EMPTY body.
+ * `response.json()` throws on that and `catch(() => null)` makes it a 200 with a null
+ * body, read as success unless the padded callers say otherwise.
  */
 
 import assert from "node:assert/strict";
@@ -31,8 +29,7 @@ test("a real payload passes through", () => {
 });
 
 test("a body the proxy truncated is rejected, not accepted as success", () => {
-  // What `await response.json().catch(() => null)` yields for an empty body, a
-  // pad-only body ("   ") and a payload cut mid-object: all three are null.
+  // An empty body, a pad-only body ("   ") and a half payload all decode to null.
   for (const body of [null, undefined, {}, [], "", "loaded", 0]) {
     assert.throws(
       () => assertCompletedPaddedBody(body, "Model load"),
@@ -56,8 +53,7 @@ test("the message names the operation and points at the model's status", () => {
 });
 
 test("only the two padded routes require a payload", () => {
-  // Deliberately scoped: parseJsonOrThrow is shared with ~30 endpoints and some
-  // legitimately answer with no body, so a null body must stay OK for them.
+  // Scoped: parseJsonOrThrow serves ~30 endpoints, some legitimately with no body.
   const labelled = [
     ...chatApi.matchAll(/parseJsonOrThrow<[^>]*>\(\s*response,\s*"([^"]+)"/g),
   ].map((match) => match[1]);
@@ -66,8 +62,7 @@ test("only the two padded routes require a payload", () => {
 });
 
 test("the Python client agrees", () => {
-  // unsloth_cli is the non-browser client; if only one side rejects a truncated
-  // reply, the same server response means success to one and failure to the other.
+  // If only one client rejects a truncated reply, one reads success where the other fails.
   const cli = readFileSync(
     new URL("../../../unsloth_cli/_inference.py", import.meta.url),
     "utf8",

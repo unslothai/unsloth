@@ -439,9 +439,8 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
 class _FakeLoadResponse:
     """A /api/inference/load reply that records whether its body was drained.
 
-    /load pads a slow body to survive a proxy, so closing at the headers both
-    resumes before the load finishes and discards a late failure; these fakes
-    therefore have to distinguish read() from close().
+    Closing a padded body at the headers resumes before the load finishes and discards
+    a late failure, so the fake must distinguish read() from close().
     """
 
     def __init__(self, body: bytes = b'{"status": "loaded"}') -> None:
@@ -526,8 +525,7 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
 
 
 def test_http_backend_load_drains_the_padded_body(monkeypatch):
-    """Closing at the headers would abandon the padding and start generating
-    while the model is still loading, so the body has to be read to the end."""
+    """Closing at the headers would start generating while the model is still loading."""
     backend = HttpChatBackend("http://localhost:8888", "token")
     # What a padded slow load looks like on the wire: spaces, then the payload.
     response = _FakeLoadResponse(b'   {"status": "loaded"}')
@@ -545,8 +543,7 @@ def test_http_backend_load_drains_the_padded_body(monkeypatch):
 
 
 def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
-    """A failure found after the 200 committed rides in the body; a 200 alone is
-    not success."""
+    """A failure found after the 200 committed rides in the body; a 200 is not success."""
     backend = HttpChatBackend("http://localhost:8888", "token")
     response = _FakeLoadResponse(
         json.dumps(
@@ -583,9 +580,8 @@ def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
 def test_http_backend_load_rejects_a_truncated_padded_body(monkeypatch, capsys, body, what):
     """A proxy that gives up mid-pad leaves a 200 the padded route never finished.
 
-    The tunnel probe measured it: one byte at t=90s then silence is killed ~125s
-    later and the client sees a 200 with an EMPTY body. Accepting that would report
-    an unfinished load as done and start generating against the previous model.
+    Measured: one byte at t=90s then silence is killed ~125s later and the client sees
+    a 200 with an EMPTY body. Accepting it reports an unfinished load as done.
     """
     backend = HttpChatBackend("http://localhost:8888", "token")
     response = _FakeLoadResponse(body)

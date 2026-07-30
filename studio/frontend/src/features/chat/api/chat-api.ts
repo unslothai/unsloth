@@ -108,9 +108,8 @@ function deferredError(body: unknown): { status: number; message: string } | nul
 }
 
 /**
- * `paddedLabel` opts a caller into `assertCompletedPaddedBody`, and only the two
- * padded routes may: a truncated body is an unfinished operation there, while
- * elsewhere an empty one is legitimate.
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded
+ * routes may, since a truncated body means unfinished there but is legitimate elsewhere.
  */
 async function parseJsonOrThrow<T>(
   response: Response,

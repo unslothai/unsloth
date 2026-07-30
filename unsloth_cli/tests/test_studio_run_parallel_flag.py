@@ -462,10 +462,9 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
 
 
 def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
-    """A load slower than the proxy timer commits its 200 before it finishes and
-    pads the body (routes/inference.py _tunnel_safe_json), so a late failure can
-    only arrive in-band. It must still surface as the RuntimeError `run` reports,
-    not as a successful load."""
+    """A slow load commits its 200 and pads the body (routes/inference.py
+    _tunnel_safe_json), so a late failure arrives in-band; it must still surface as the
+    RuntimeError `run` reports, not as a successful load."""
     studio_mod = _load_run_command()
 
     def urlopen(request, timeout):
@@ -493,8 +492,7 @@ def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
 
 @pytest.mark.parametrize("body", [b"", b"   ", b'  {"status": "loa', b"{}"])
 def test_load_model_http_rejects_a_truncated_padded_body(monkeypatch, body):
-    """A proxy that gives up mid-pad leaves a 200 the load never finished under, so
-    it must fail like any other load failure rather than read as completion."""
+    """A 200 the load never finished under must fail like any other load failure."""
     studio_mod = _load_run_command()
 
     monkeypatch.setattr(

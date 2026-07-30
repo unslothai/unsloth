@@ -1256,10 +1256,9 @@ def _load_model_via_http(
                 body = json.loads(resp.read())
             except ValueError:
                 body = None  # truncated padded reply; rejected below
-        # A load slower than the tunnel timer commits its 200 before it finishes and
-        # pads the body, so a late failure arrives in-band; raise it as the HTTPError
-        # this function already turns into the RuntimeError the caller reports. A body
-        # the proxy truncated instead is no completion report at all.
+        # A slow load commits its 200 before it finishes and pads the body, so a late
+        # failure arrives in-band; raise it as the HTTPError this function already turns
+        # into the RuntimeError the caller reports. A truncated body is no report at all.
         return require_completed_padded_body(url, raise_for_deferred_error(url, body))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors = "replace")

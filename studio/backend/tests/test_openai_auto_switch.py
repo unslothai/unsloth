@@ -1598,8 +1598,7 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
 def test_load_route_holds_lifecycle_gate(monkeypatch):
     # Lock the manual /load gate against silent revert: the route must wrap the
     # load in inference_lifecycle_gate so idle-unload can't fire mid-load.
-    # Asserted on the gated coroutine: the route only wraps it in the padded
-    # response, and in-process callers await this instead (see load_model_gated).
+    # Asserted on the gated coroutine: the route only adds the padded response.
     import inspect
 
     src = inspect.getsource(inference_route.load_model_gated)
@@ -1625,8 +1624,8 @@ def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unload
     standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
     standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
     standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
-    # No parens: both teardowns are asyncio.to_thread arguments (a 600 GB one measures
-    # 160s and on-loop would block /load's tunnel padding).
+    # No parens: both teardowns are asyncio.to_thread args (on-loop a 160s one would
+    # block /load's tunnel padding).
     unload_gguf = src.index("llama_backend.unload_model", standard_wait)
 
     assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
@@ -3186,7 +3185,7 @@ def test_note_model_unloaded_clears_reload_stash(monkeypatch):
 
 def test_unload_route_clears_reload_stash(monkeypatch):
     # The /unload route must clear the stash on both the GGUF and non-GGUF branches.
-    # Asserted on the impl: the route only wraps it in the padded response.
+    # Asserted on the impl: the route only adds the padded response.
     import inspect
     src = inspect.getsource(inference_route._unload_model_impl)
     assert src.count("note_model_unloaded()") >= 2
