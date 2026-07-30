@@ -38,6 +38,12 @@ from trl import SFTConfig, SFTTrainer
 from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
 
 
+class _FakeConfig(SimpleNamespace):
+    # get_transformers_model_type() resolves through to_dict(), which SimpleNamespace lacks.
+    def to_dict(self):
+        return dict(self.__dict__)
+
+
 def _build_packed_training_setup(tmp_path, device):
     dtype = None
     if device.type == "cuda":
@@ -172,14 +178,14 @@ def test_configure_padding_free():
 def _hybrid_config_model():
     # Qwen3.5 / Qwen3-Next style: explicit linear_attention layer schedule.
     return SimpleNamespace(
-        config = SimpleNamespace(layer_types = ["linear_attention", "full_attention"])
+        config = _FakeConfig(layer_types = ["linear_attention", "full_attention"])
     )
 
 
 def _gemma3_model():
     # Has layer_types but no linear_attention -> must NOT be flagged as hybrid.
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = "gemma3", layer_types = ["sliding_attention", "full_attention"]
         ),
     )
@@ -187,7 +193,7 @@ def _gemma3_model():
 
 def _dense_qwen3_model():
     return SimpleNamespace(
-        config = SimpleNamespace(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"])
+        config = _FakeConfig(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"])
     )
 
 
@@ -500,7 +506,7 @@ def _patch_fake_sft_trainer():
 
 def _vlm_model():
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             architectures = ["Gemma4ForConditionalGeneration"],
             model_type = "gemma4",
             vision_config = SimpleNamespace(),
@@ -511,7 +517,7 @@ def _vlm_model():
 
 def _text_model():
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             architectures = ["LlamaForCausalLM"],
             model_type = "llama",
         ),
@@ -579,7 +585,7 @@ def test_encoder_decoder_disables_packing(model_type, architecture):
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     model = SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = model_type,
             architectures = [architecture],
             is_encoder_decoder = True,
@@ -598,7 +604,7 @@ def test_decoder_only_conditional_generation_keeps_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     model = SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = "csm",
             architectures = ["CsmForConditionalGeneration"],
             is_encoder_decoder = False,
@@ -615,7 +621,7 @@ def test_decoder_only_conditional_generation_keeps_packing():
 
 def _hybrid_trainer_model():
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = "qwen3_next",
             architectures = ["Qwen3NextForCausalLM"],
             layer_types = ["linear_attention", "full_attention"],
@@ -652,7 +658,7 @@ def test_string_hybrid_model_disables_packing(monkeypatch):
     monkeypatch.setattr(
         trainer_module,
         "_resolve_string_model_config",
-        lambda name, cfg: SimpleNamespace(
+        lambda name, cfg: _FakeConfig(
             model_type = "qwen3_next",
             architectures = ["Qwen3NextForCausalLM"],
             layer_types = ["linear_attention", "full_attention"],
@@ -976,6 +982,9 @@ def test_enable_sample_packing():
     assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
+)
 def test_enable_sample_packing_trl_collator(tmp_path):
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -1037,6 +1046,9 @@ def test_enable_padding_free_metadata():
     assert trainer.args.remove_unused_columns is False
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
+)
 def test_packing_sdpa(tmp_path):
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -1251,15 +1263,9 @@ def test_resolve_string_model_config_merges_top_level_trust_remote_code(monkeypa
     assert captured.get("trust_remote_code") is False
 
 
-class _WarnConfig(SimpleNamespace):
-    # get_transformers_model_type() resolves through to_dict(), which SimpleNamespace lacks.
-    def to_dict(self):
-        return dict(self.__dict__)
-
-
 def _warn_text_model():
     return SimpleNamespace(
-        config = _WarnConfig(architectures = ["LlamaForCausalLM"], model_type = "llama"),
+        config = _FakeConfig(architectures = ["LlamaForCausalLM"], model_type = "llama"),
         max_seq_length = 16,
     )
 
