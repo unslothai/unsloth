@@ -3181,9 +3181,11 @@ class TestLocalLoraRemoteBaseIsInTheGuardTargets:
         checked = 0
         bad = []
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "to_thread"):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "to_thread"
+            ):
                 continue
             if not node.args or getattr(node.args[0], "id", None) != "_offline_guarded":
                 continue
