@@ -1709,6 +1709,7 @@ def _is_local_mtp_drafter(path: Path, model_root: Optional[Path], fallback: str)
     return (
         model_root is not None
         and model_root.name.lower() == "mtp"
+        and "/" not in context
         and _is_terminal_gemma_mtp(path.name)
     )
 
