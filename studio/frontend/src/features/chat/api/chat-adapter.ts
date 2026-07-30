@@ -1234,6 +1234,7 @@ function extractAudioPartBase64(
 // Exported for tests.
 export function findLatestUserAudioBase64(
   messages: RunMessages,
+  includePendingAudio = true,
 ): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
@@ -1264,7 +1265,9 @@ export function findLatestUserAudioBase64(
   }
 
   // Runtime store (main composer's audio upload).
-  const pendingAudio = useChatRuntimeStore.getState().pendingAudioBase64;
+  const pendingAudio = includePendingAudio
+    ? useChatRuntimeStore.getState().pendingAudioBase64
+    : null;
   return pendingAudio ?? undefined;
 }
 
@@ -2326,7 +2329,11 @@ export function createOpenAIStreamAdapter(
             createdRun,
             detachResearchFollow,
           );
-          if (!queuedRunSettings) {
+          if (
+            !queuedRunSettings ||
+            resolvedThreadId ===
+              useChatRuntimeStore.getState().activeThreadId
+          ) {
             runtime.setDeepResearchEnabled(false);
           }
           if (abortSignal.aborted) {
@@ -2787,7 +2794,10 @@ export function createOpenAIStreamAdapter(
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
-      const audioBase64 = findLatestUserAudioBase64(survivingMessages);
+      const audioBase64 = findLatestUserAudioBase64(
+        survivingMessages,
+        !queuedRunSettings,
+      );
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
@@ -2846,7 +2856,7 @@ export function createOpenAIStreamAdapter(
         }
       }
       // Clear pending audio from store after extracting (consumed on send).
-      if (audioBase64) {
+      if (audioBase64 && !queuedRunSettings) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
           const lastUserMsg = [...survivingMessages]

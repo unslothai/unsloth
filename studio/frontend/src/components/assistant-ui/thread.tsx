@@ -375,6 +375,7 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   } catch (error) {
     handleQueuedPromptAppendFailure(run, item, error);
   }
+  schedulePromptQueueTargetStatePoll(run);
 }
 
 async function targetHasIndexingDocuments(item: PromptQueueItem) {
@@ -847,9 +848,16 @@ function advancePromptQueue(run: PromptQueueRun) {
   requestPromptQueuePump(100);
 }
 
+function shouldPollPromptQueueTargetState(run: PromptQueueRun) {
+  return (
+    run.waitingForTargetIdle ||
+    run.index < 0 ||
+    Boolean(getActivePromptQueueItem(run)?.dispatched)
+  );
+}
+
 function schedulePromptQueueTargetStatePoll(run: PromptQueueRun) {
-  const isWaitingForTargetState =
-    run.waitingForTargetIdle || run.index < 0;
+  const isWaitingForTargetState = shouldPollPromptQueueTargetState(run);
   if (run.retryTimer || !isWaitingForTargetState) {
     return;
   }
@@ -859,7 +867,7 @@ function schedulePromptQueueTargetStatePoll(run: PromptQueueRun) {
     if (
       promptQueueRuns.get(run.id) !== run ||
       generation !== run.generation ||
-      (!run.waitingForTargetIdle && run.index >= 0)
+      !shouldPollPromptQueueTargetState(run)
     ) {
       return;
     }
@@ -867,7 +875,10 @@ function schedulePromptQueueTargetStatePoll(run: PromptQueueRun) {
       run,
       useChatRuntimeStore.getState().runningByThreadId,
     );
-    if (run.waitingForTargetIdle || run.index < 0) {
+    if (
+      promptQueueRuns.get(run.id) === run &&
+      shouldPollPromptQueueTargetState(run)
+    ) {
       schedulePromptQueueTargetStatePoll(run);
     }
   }, PROMPT_QUEUE_TARGET_STATE_POLL_MS);

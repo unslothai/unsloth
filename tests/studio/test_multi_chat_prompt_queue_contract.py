@@ -70,6 +70,13 @@ def test_each_chat_queue_stays_sequential_and_targets_its_background_runtime():
     assert "isPromptQueueRunTargetRunning(run" in state_handler
     assert "advancePromptQueue(run)" in state_handler
     assert "promptQueueActiveRunIds.has(run.id)" in THREAD
+    assert "Boolean(getActivePromptQueueItem(run)?.dispatched)" in THREAD
+    append = _between(
+        THREAD,
+        "function appendQueuedPrompt(",
+        "async function targetHasIndexingDocuments(",
+    )
+    assert "schedulePromptQueueTargetStatePoll(run)" in append
 
 
 def test_switching_or_starting_a_chat_does_not_stop_an_existing_queue():
@@ -160,6 +167,12 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "temporary: incognitoAtQueueStart" in THREAD
     assert "temporary: promptQueueRunIsTemporary(run)" in THREAD
     assert "entry.temporary" in QUEUE_BOUNDARY
+    assert (
+        "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
+        in CHAT_ADAPTER
+    )
+    assert "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings" in CHAT_ADAPTER
+    assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
 
 
 def test_stop_delete_archive_and_clear_are_thread_scoped():
