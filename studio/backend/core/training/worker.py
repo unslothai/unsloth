@@ -2362,9 +2362,9 @@ def _recorded_local_adapter_base(model_name) -> "str | None":
         cfg = _Path(model_name) / "adapter_config.json"
         if not cfg.is_file():
             return None
-        return _json.loads(cfg.read_text(encoding = "utf-8-sig")).get(
-            "base_model_name_or_path"
-        ) or None
+        return (
+            _json.loads(cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path") or None
+        )
     except Exception:
         return None
 

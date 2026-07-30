@@ -387,7 +387,8 @@ class TestLocalLoraTrainingJobStillProbes:
 
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         spec = importlib.util.spec_from_file_location(
-            "training_worker_lora_gate", backend_root / "core" / "training" / "worker.py",
+            "training_worker_lora_gate",
+            backend_root / "core" / "training" / "worker.py",
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -398,7 +399,8 @@ class TestLocalLoraTrainingJobStillProbes:
 
         w = self._worker()
         (tmp_path / "adapter_config.json").write_text(
-            json.dumps({"base_model_name_or_path": "org/base"}), encoding = "utf-8",
+            json.dumps({"base_model_name_or_path": "org/base"}),
+            encoding = "utf-8",
         )
         assert w._training_job_is_local({"model_name": str(tmp_path)}) is False
 
@@ -409,7 +411,8 @@ class TestLocalLoraTrainingJobStillProbes:
         base = tmp_path / "base"
         base.mkdir()
         (tmp_path / "adapter_config.json").write_text(
-            json.dumps({"base_model_name_or_path": str(base)}), encoding = "utf-8",
+            json.dumps({"base_model_name_or_path": str(base)}),
+            encoding = "utf-8",
         )
         assert w._training_job_is_local({"model_name": str(tmp_path)}) is True
 
@@ -422,7 +425,8 @@ class TestLocalLoraTrainingJobStillProbes:
 
         w = self._worker()
         (tmp_path / "adapter_config.json").write_text(
-            json.dumps({"base_model_name_or_path": None}), encoding = "utf-8",
+            json.dumps({"base_model_name_or_path": None}),
+            encoding = "utf-8",
         )
         assert w._training_job_is_local({"model_name": str(tmp_path)}) is True
 
@@ -434,10 +438,12 @@ class TestLocalLoraTrainingJobStillProbes:
 
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         (tmp_path / "adapter_config.json").write_text(
-            json.dumps({"base_model_name_or_path": "org/base"}), encoding = "utf-8",
+            json.dumps({"base_model_name_or_path": "org/base"}),
+            encoding = "utf-8",
         )
         spec = importlib.util.spec_from_file_location(
-            "inference_worker_lora_gate", backend_root / "core" / "inference" / "worker.py",
+            "inference_worker_lora_gate",
+            backend_root / "core" / "inference" / "worker.py",
         )
         inf = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(inf)
@@ -460,33 +466,37 @@ class TestLoadRouteResolvesConfigOffTheLoop:
         tree = ast.parse(src)
 
         impl = next(
-            n for n in ast.walk(tree)
+            n
+            for n in ast.walk(tree)
             if isinstance(n, ast.AsyncFunctionDef) and n.name == "_load_model_impl"
         )
         threaded = set()
         for node in ast.walk(impl):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "to_thread" and node.args):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "to_thread"
+                and node.args
+            ):
                 name = getattr(node.args[0], "id", None)
                 if name:
                     threaded.add(name)
-        assert "_resolve_config" in threaded, (
-            "the load guard must be awaited off the event loop, as /validate does"
-        )
+        assert (
+            "_resolve_config" in threaded
+        ), "the load guard must be awaited off the event loop, as /validate does"
 
         # And nothing in that function may enter the guard inline any more.
         bad = [
-            n.lineno for n in ast.walk(impl)
-            if isinstance(n, ast.With) and any(
+            n.lineno
+            for n in ast.walk(impl)
+            if isinstance(n, ast.With)
+            and any(
                 isinstance(i.context_expr, ast.Call)
                 and (getattr(i.context_expr.func, "id", "") or "").startswith(
                     "_hf_offline_if_unreachable"
                 )
                 for i in n.items
             )
-            and not any(
-                isinstance(p, ast.FunctionDef) and n in ast.walk(p)
-                for p in ast.walk(impl)
-            )
+            and not any(isinstance(p, ast.FunctionDef) and n in ast.walk(p) for p in ast.walk(impl))
         ]
         assert bad == [], f"guard still entered inline on the event loop at {bad}"
