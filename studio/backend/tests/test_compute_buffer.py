@@ -472,13 +472,70 @@ class TestContextBufferLayerSplit:
         split_mib = b._compute_buffer_ctx_bytes(ctx, ub, "q8_0", layer_split = True) / MIB
         assert split_mib >= 1330 + mask_mib
 
-    @pytest.mark.parametrize("arch", ["deepseek4", "inkling"])
-    def test_per_architecture_rates_unchanged(self, arch):
-        # deepseek4/inkling carry their own measured totals and return before the flag.
-        b = _backend(embd = 4096, arch = arch)
+    def test_deepseek4_rate_unchanged(self):
+        # Its own rate already carries the mask copies: 72000 - 65.5 KiB/tok measured
+        # = 4928 B/tok of margin against the 4608 a split adds.
+        b = _backend(embd = 4096, arch = "deepseek4")
         assert b._compute_buffer_ctx_bytes(
             131072, cache_type_kv = "f16", layer_split = True
         ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+        measured = TestContextBufferDSV4._MEASURED_1M_GIB * 1024**3 / 1048576
+        split_masks = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * (
+            512 * 2 * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+        )
+        assert LlamaCppBackend._DSV4_CTX_COMPUTE_BYTES_PER_TOK - measured >= split_masks
+
+
+class TestContextBufferInklingSplit:
+    """Inkling's own rates are single-device totals like the generic ones, and the
+    banded 8192 B/tok has only ~1.5x headroom over its 5.6 KiB/tok measurement -- too
+    little to absorb a split's extra KQ-mask copies."""
+
+    _MEASURED_BANDED = 5734  # ~5.6 KiB/tok compute at ub 512 (see the constant)
+    _CTX = 1048576
+    _UB = 512
+
+    def _rate(self, ct, layer_split, ub = 512):
+        b = _backend(embd = 4096, arch = "inkling")
+        return b._compute_buffer_ctx_bytes(
+            self._CTX, ub, cache_type_kv = ct, layer_split = layer_split
+        ) / self._CTX
+
+    def test_pre_fix_banded_split_reserve_was_short(self):
+        # The bug: the banded rate alone does not cover measured + 3 more masks.
+        measured_split = self._MEASURED_BANDED + 3 * self._UB * 2
+        assert LlamaCppBackend._INKLING_CTX_COMPUTE_BYTES_PER_TOK < measured_split
+        assert self._rate("f16", True) >= measured_split
+
+    @pytest.mark.parametrize("ct", ["f16", None, "q8_0"])
+    def test_split_adds_exactly_the_extra_mask_copies(self, ct):
+        delta = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * (
+            self._UB * 2 * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+        )
+        assert self._rate(ct, True) == pytest.approx(self._rate(ct, False) + delta, rel = 1e-9)
+
+    def test_dense_fallback_delta_is_present_but_tiny(self):
+        # ~402 KiB/tok dwarfs the 4608 B/tok of masks, yet the masks are allocated on
+        # that path too, so charge them rather than argue about the margin.
+        single, split = self._rate("q8_0", False), self._rate("q8_0", True)
+        assert single < split <= single * 1.02
+
+    def test_split_delta_scales_with_ubatch(self):
+        assert self._rate("f16", True, ub = 1024) - self._rate("f16", False, ub = 1024) == (
+            pytest.approx(2 * (self._rate("f16", True) - self._rate("f16", False)), rel = 1e-9)
+        )
+
+    def test_single_device_rates_unchanged(self):
+        # No context is lost on a single GPU: the flag defaults off.
+        for ct in ("f16", "q8_0"):
+            assert self._rate(ct, False) == pytest.approx(
+                (
+                    LlamaCppBackend._INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK
+                    if ct == "q8_0"
+                    else LlamaCppBackend._INKLING_CTX_COMPUTE_BYTES_PER_TOK
+                ),
+                rel = 1e-6,
+            )
 
 
 class TestLayerSplitWiring:
@@ -769,3 +826,114 @@ class TestPerDeviceSplitReserve:
         # Gated on the chosen context, and only reachable after the pooled test.
         assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact
         assert "+_cc_sub(capped)//n_gpus," in compact
+
+
+class TestSplitRateRecheckAfterSelection:
+    """``_select_gpus`` derives the device count FROM the footprint, so the paths that
+    call it can only price the context-compute buffer at the single-device rate. A
+    multi-GPU answer then has to be re-priced at the split rate before it is pinned
+    with ``use_fit = False``, or a high-context explicit request OOMs at launch.
+
+    Synthetic VRAM maps over the production helper: 24 GB cards at 0.97 (usable 23838
+    MiB each), ctx 1M at ub 512 f16 -> 1536 MiB of compute per device single-device,
+    6144 MiB split, so each card in a split owes 4608 MiB more than the first pass
+    charged it."""
+
+    _OH = LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB * MIB
+    _UB = 512
+    _CTX = 1048576
+    _FRAC = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+    _CARD = 24_576
+
+    def _cards(self, n):
+        return [(i, self._CARD) for i in range(n)], {i: self._CARD for i in range(n)}
+
+    def _pin(self, total_mib, n_cards, recheck = True, min_gpus = 1, ctx = None):
+        """Mirror of the explicit-context branch: total_mib is its weights + KV + MTP
+        footprint, to which each path adds one single-device compute copy."""
+        b = _backend(embd = 4096)
+        ctx = ctx or self._CTX
+        cc1 = b._compute_buffer_ctx_bytes(ctx, self._UB, "f16")
+        cc_split = b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = True)
+        gpus, totals = self._cards(n_cards)
+        return LlamaCppBackend._select_gpus_split_aware(
+            total_mib * MIB + cc1,
+            gpus,
+            usable_fraction = self._FRAC,
+            total_by_idx = totals,
+            per_device_overhead_bytes = self._OH + cc1,
+            min_gpus = min_gpus,
+            split_extra_bytes = (cc_split - cc1) if recheck else 0,
+        )
+
+    def test_pre_fix_pinned_a_pair_that_cannot_hold_the_split_rate(self):
+        # The bug, over the plain selector this branch used to call: the pair needs
+        # 44096 MiB of its 47677 MiB pool at the single-device rate, but 53312 at the
+        # split rate -- pinned ~5.5 GiB short, with no --fit fallback after -ngl -1.
+        b = _backend(embd = 4096)
+        cc1 = b._compute_buffer_ctx_bytes(self._CTX, self._UB, "f16")
+        ccs = b._compute_buffer_ctx_bytes(self._CTX, self._UB, "f16", layer_split = True)
+        gpus, totals = self._cards(2)
+        assert LlamaCppBackend._select_gpus(
+            40_000 * MIB + cc1,
+            gpus,
+            usable_fraction = self._FRAC,
+            total_by_idx = totals,
+            per_device_overhead_bytes = self._OH + cc1,
+        ) == ([0, 1], False)
+        pool = 2 * (self._CARD - (1.0 - self._FRAC) * self._CARD)
+        assert (40_000 * MIB + ccs + self._OH + ccs) / MIB > pool
+
+    def test_recheck_falls_back_to_fit_when_no_subset_holds_it(self):
+        # Honest failure: --fit on degrades to CPU offload, matching this branch's
+        # documented behaviour, instead of pinning a launch that OOMs.
+        assert self._pin(40_000, 2) == (None, True)
+
+    def test_recheck_widens_the_subset_when_a_card_is_spare(self):
+        # Three cards: the first pass still answers 2, the re-check takes all 3.
+        assert self._pin(40_000, 3, recheck = False) == ([0, 1], False)
+        assert self._pin(40_000, 3) == ([0, 1, 2], False)
+
+    def test_single_gpu_pin_is_untouched(self):
+        # The split rate must not cost a single-card load any context.
+        assert self._pin(20_000, 2) == ([0], False)
+        assert self._pin(20_000, 2, recheck = False) == ([0], False)
+
+    def test_recheck_never_collapses_to_one_gpu(self):
+        # The 1-GPU branch already failed at the smaller figure, so one retry is exact.
+        for total in range(24_000, 46_000, 2_000):
+            gi, use_fit = self._pin(total, 4)
+            assert use_fit or (gi is not None and len(gi) >= 2)
+
+    def test_zero_step_reduces_to_plain_selection(self):
+        # llama.cpp declining pipeline parallelism makes the step 0 (_cc_split_extra
+        # reads the same layer_split gate), and the helper is then a pass-through.
+        b = _backend(embd = 4096)
+        cc1 = b._compute_buffer_ctx_bytes(self._CTX, self._UB, "f16")
+        gpus, totals = self._cards(3)
+        for total_mib in (20_000, 40_000, 90_000):
+            assert self._pin(total_mib, 3, recheck = False) == LlamaCppBackend._select_gpus(
+                total_mib * MIB + cc1,
+                gpus,
+                usable_fraction = self._FRAC,
+                total_by_idx = totals,
+                per_device_overhead_bytes = self._OH + cc1,
+            )
+
+    def test_small_context_is_unaffected(self):
+        # 4096 ctx: the 18 MiB of extra masks changes no decision.
+        assert self._pin(40_000, 2, ctx = 4096) == self._pin(40_000, 2, recheck = False, ctx = 4096)
+
+    def test_wired_into_both_call_sites(self):
+        import inspect
+
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # Explicit-context pin and the reduced-slot retry both pass the step.
+        assert load.count("split_extra_bytes=_cc_split_extra(effective_ctx)") == 2
+        assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
+        # The step rides the same pipelining gate as _cc_bytes, so it is 0 when
+        # llama.cpp declines the split.
+        assert "returnmax(0,_cc_bytes(ctx,2)//2-_cc_bytes(ctx))" in load
+        slots = "".join(inspect.getsource(LlamaCppBackend._slots_that_fit_on_gpu).split())
+        assert "self._select_gpus_split_aware(" in slots
+        assert "split_extra_bytes=split_extra_bytes," in slots
