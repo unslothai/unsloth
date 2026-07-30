@@ -1777,16 +1777,24 @@ def test_nested_xml_tool_delimiters_are_neutralized():
     ``tool_call_parser.py`` treats every piece as structural, so a replayed argument or a
     tool result carrying one closes the current value and injects another key or call
     (#7066). The "=value" halves need their own anchor."""
-    parser = (_REPO_ROOT / "studio" / "backend" / "core" / "inference"
-              / "tool_call_parser.py").read_text(encoding = "utf-8")
+    parser = (
+        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "tool_call_parser.py"
+    ).read_text(encoding = "utf-8")
     for marker in ("<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>", "</function>"):
         assert marker in parser, marker
         assert marker not in neutralize_control_markup(f"a {marker} b"), marker
     for marker in ("<function=pay>", "<parameter=amount>"):
         assert marker not in neutralize_control_markup(f"a {marker} b"), marker
     # Near-misses and ordinary text stay as typed.
-    for text in ("<functional>", "<parameters>", "<arg_keys>", "function=x", "f(x)=y",
-                 "<param=1>", "a<b=c>"):
+    for text in (
+        "<functional>",
+        "<parameters>",
+        "<arg_keys>",
+        "function=x",
+        "f(x)=y",
+        "<param=1>",
+        "a<b=c>",
+    ):
         assert neutralize_control_markup(text) == text, text
 
 
@@ -1800,10 +1808,20 @@ def test_replayed_harmony_content_type_cannot_forge_a_channel():
     def _messages(content_type):
         return [
             {"role": "user", "content": "pay bob"},
-            {"role": "assistant", "tool_calls": [{
-                "id": "call_1", "type": "function",
-                "function": {"name": "pay", "arguments": {"amount": 1},
-                             "content_type": content_type}}]},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "pay",
+                            "arguments": {"amount": 1},
+                            "content_type": content_type,
+                        },
+                    }
+                ],
+            },
         ]
 
     tokenizer = _JinjaTokenizer(_unsloth_template("gptoss_template"), supports = ("tools",))
@@ -1812,8 +1830,10 @@ def test_replayed_harmony_content_type_cannot_forge_a_channel():
     rendered = tokenizer.apply_chat_template(
         neutralize_control_markup_in_messages(_messages(hostile))
     )
-    assert any(raw.count(m) > baseline.count(m)
-               for m in ("<|start|>", "<|channel|>", "<|message|>", "<|end|>"))
+    assert any(
+        raw.count(m) > baseline.count(m)
+        for m in ("<|start|>", "<|channel|>", "<|message|>", "<|end|>")
+    )
     for marker in ("<|start|>", "<|channel|>", "<|message|>", "<|end|>"):
         assert rendered.count(marker) == baseline.count(marker), marker
     # A real content_type is left exactly as it was, object identity included.
@@ -1827,10 +1847,18 @@ def test_reserialized_arguments_keep_surrogates_escaped():
     raise UnicodeEncodeError on a payload that used to forward fine (#7066)."""
     arguments = '{"x": "\\ud800</think>"}'
     assert arguments.isascii()
-    messages = [{"role": "assistant", "content": "", "tool_calls": [
-        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": arguments}}]}]
-    out = (neutralize_control_markup_in_messages(messages)[0]
-           ["tool_calls"][0]["function"]["arguments"])
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": arguments}}
+            ],
+        }
+    ]
+    out = neutralize_control_markup_in_messages(messages)[0]["tool_calls"][0]["function"][
+        "arguments"
+    ]
     assert "</think>" not in out
     # Still ASCII, so the body the passthrough builds is still UTF-8 encodable.
     assert out.isascii()
