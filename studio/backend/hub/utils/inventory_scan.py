@@ -1308,7 +1308,10 @@ def is_gguf_repo_partial(
         ):
             variants.add(variant)
     if not variants:
-        return has_legacy_partial
+        # Nothing named a quant, so nothing above judged one. A recovered snapshot holding only a
+        # half split is exactly that case: no manifest, no marker and no .incomplete blob survive
+        # the interrupted attempt, and the shards on disk are the only evidence left.
+        return has_legacy_partial or _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir)
     has_clean = False
     has_broken = has_legacy_partial
     for variant in variants:

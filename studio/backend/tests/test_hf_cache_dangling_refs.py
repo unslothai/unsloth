@@ -860,6 +860,46 @@ def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, project
     assert list_local_gguf_variants(str(snapshot))[1] is has_vision
 
 
+@pytest.mark.parametrize(
+    ("files", "torn"),
+    [
+        pytest.param(
+            {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256},
+            True,
+            id = "the-only-quant-is-half-a-split",
+        ),
+        pytest.param(
+            {
+                "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256,
+                "Model-Q4_K_M-00002-of-00002.gguf": b"\0" * 256,
+            },
+            False,
+            id = "the-split-is-whole",
+        ),
+        pytest.param(
+            {
+                "Model-Q8_0.gguf": b"\0" * 256,
+                "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256,
+            },
+            False,
+            id = "a-whole-quant-beside-the-torn-one",
+        ),
+        pytest.param(
+            {"Model-Q4_K_M.gguf": b"\0" * 256}, False, id = "one-unsplit-quant"
+        ),
+    ],
+)
+def test_a_manifestless_torn_quant_is_still_reported(tmp_path, monkeypatch, files, torn):
+    """Every quant signal above this point comes from a manifest, a marker or the completed set, so
+    a recovery holding only half a split named nothing and the row read runnable. The interrupted
+    attempt leaves no manifest, marker or .incomplete blob, so the shards are the only evidence.
+    One whole quant beside the torn one still serves the row, as it always did."""
+    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is torn
+    assert rows[0]["capabilities"]["can_chat"] is not torn
+
+
 def test_a_repo_root_drafter_still_leaves_a_real_quant_selectable(tmp_path, monkeypatch):
     """The rule must stay narrow: a snapshot holding a drafter *and* a real quant is still a
     payload snapshot."""
