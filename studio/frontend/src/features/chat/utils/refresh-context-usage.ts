@@ -234,6 +234,16 @@ export async function refreshContextUsage(options?: {
     if (useChatRuntimeStore.getState().contextUsage !== usageBeforeCount) {
       return;
     }
+    // A run streaming into an existing turn grows its content without moving the branch
+    // length or its last id, so the signature below cannot see it; that partial is what
+    // this count priced. The run writes its own usage when it lands, and leaves the bar
+    // alone if it is stopped, so declining here never loses a number.
+    if (
+      capturedThreadId != null &&
+      useChatRuntimeStore.getState().runningByThreadId[capturedThreadId]
+    ) {
+      return;
+    }
     // The snapshot above only sees a completion that WROTE usage. A run stopped before
     // emitting any leaves it untouched, so the branch is the only witness for a turn added.
     if (countedBranch != null) {

@@ -144,6 +144,7 @@ const state: any = {
   activeGgufVariant: null,
   ggufContextLength: null,
   modelLoading: false,
+  runningByThreadId: {},
 };
 
 function set(updater: any): void {
@@ -759,6 +760,63 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
         "totalTokens"
     ) == expected_total, "a total for a branch that has since gained a turn must not reach the bar"
     assert (out["cached"] or {}).get("totalTokens") == expected_total
+
+
+@pytest.mark.parametrize(
+    ("running", "expected_total"),
+    [(True, None), (False, 62)],
+    ids = ["streaming_into_an_existing_turn", "not_running"],
+)
+def test_a_count_taken_while_the_thread_is_running_is_dropped(running, expected_total):
+    """A run streaming into a turn that already exists grows its content without moving the
+    branch length or its last id, so the branch signature cannot see it and the partial is
+    what got priced. The run writes its own usage when it lands, so declining loses nothing."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage,
+              seed,
+              setActiveBranchReader,
+              snapshot,
+              world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            const live = [
+              {{ id: "m1", role: "user", createdAt: new Date(1), content: [{{ type: "text", text: "hi" }}] }},
+              {{ id: "m2", role: "assistant", createdAt: new Date(2), content: [{{ type: "text", text: "yo" }}] }},
+            ];
+            setActiveBranchReader(() => live.slice());
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {{}},
+              runningByThreadId: {{ "thread-a": {str(running).lower()} }},
+            }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // Same id, same length: only the streamed content grew.
+            live[1].content = [{{ type: "text", text: "yo" + " and a great deal more" }}];
+            release();
+            await pending;
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1, "the count is still attempted"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a partial mid-stream total must not reach the bar"
+        if running
+        else "an idle thread must still publish"
+    )
 
 
 def test_adopting_the_resident_gguf_reprices_the_open_thread():
