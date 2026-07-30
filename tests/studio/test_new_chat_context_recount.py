@@ -807,7 +807,7 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
             const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
             await new Promise((resolve) => setTimeout(resolve, 20));
             if ({str(grew).lower()}) {{
-              // Same id, same length: only the streamed content grew.
+              // Same id, same part count: only the streamed content grew.
               live[1].content = [{{ type: "text", text: "yo" + " and a great deal more" }}];
             }}
             release();
@@ -825,6 +825,75 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
         "a partial mid-stream total must not reach the bar"
         if expected_total is None
         else "an idle, unchanged thread must still publish"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_total"),
+    [
+        # A tool result arriving on a tool-call part that already existed. It carries no `text`,
+        # and filling it in adds no part, so neither a text length nor a part tally moves.
+        ('live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };', None),
+        # An edit to different text of the same length, which a size-based signature cannot see.
+        ('live[0].content = [{ type: "text", text: "ih" }];', None),
+        ("", 62),
+    ],
+    ids = ["tool_result_filled_in", "text_swapped_same_length", "unchanged"],
+)
+def test_a_count_for_a_branch_mutated_without_growing_is_dropped(mutation, expected_total):
+    """The branch a count priced has to be identified by its content, not its size: a tool loop
+    mutates parts in place, so a size-based signature would publish a total for a prompt that
+    has since gained an entire tool result."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage,
+              seed,
+              setActiveBranchReader,
+              snapshot,
+              world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            const live = [
+              {{ id: "m1", role: "user", createdAt: new Date(1), content: [{{ type: "text", text: "hi" }}] }},
+              {{
+                id: "m2",
+                role: "assistant",
+                createdAt: new Date(2),
+                content: [{{
+                  type: "tool-call",
+                  toolCallId: "c1",
+                  toolName: "query_docs",
+                  argsText: '{{"q":"hi"}}',
+                  args: {{ q: "hi" }},
+                }}],
+              }},
+            ];
+            setActiveBranchReader(() => live.slice());
+            seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            {mutation}
+            release();
+            await pending;
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1, "the count is still attempted"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a total for content that has since changed must not reach the bar"
+        if expected_total is None
+        else "an unchanged branch must still publish"
     )
 
 

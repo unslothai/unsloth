@@ -108,19 +108,39 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   return chain.reverse();
 }
 
+/** Rolling 32-bit hash. Only has to change when the input does, not resist an adversary. */
+function foldHash(text: string, seed: number): number {
+  let hash = seed;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (Math.imul(hash, 31) + text.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
 /**
- * Identity of the branch a count priced. Text length is in it because a run streaming into
- * a turn that already exists grows its content without moving the count or the last id, and
- * that partial is what a mid-stream count measured.
+ * Identity of the branch a count priced. Content is hashed rather than measured because a
+ * run mutates a turn that already exists without moving the count or the last id: streaming
+ * grows its text, and a tool result lands on a part that has no `text` at all, so neither a
+ * length nor a part tally sees it.
  */
 function branchSignature(messages: readonly ThreadMessage[]): string {
-  let chars = 0;
+  let hash = 0;
+  let parts = 0;
   for (const message of messages) {
-    for (const part of message.content as readonly { text?: unknown }[]) {
-      if (typeof part?.text === "string") chars += part.text.length;
+    for (const part of message.content as readonly unknown[]) {
+      parts += 1;
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(part) ?? "";
+      } catch {
+        // An unserializable artifact or interrupt payload: fall back to the part kind, which
+        // both sides of the comparison derive the same way.
+        serialized = String((part as { type?: unknown })?.type);
+      }
+      hash = foldHash(serialized, hash);
     }
   }
-  return `${messages.length}:${messages.at(-1)?.id ?? ""}:${chars}`;
+  return `${messages.length}:${parts}:${messages.at(-1)?.id ?? ""}:${hash}`;
 }
 
 /** The branch the mounted runtime is showing for the thread the store calls active. */
