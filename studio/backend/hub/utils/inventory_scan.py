@@ -669,17 +669,24 @@ def _snapshot_legacy_partial(
     )
 
 
+_UNJUDGEABLE_FAMILY = object()
+
+
 def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     if snapshot_dir is None:
         return set()
-    whole: set[str] = set()
     # Keyed on quant, then on the shard family (directory, prefix, total), the same grouping
-    # _snapshot_lacks_a_complete_weight_family uses. One quant label can cover several families and
-    # the lister advertises only the lexicographically first file under the label, so grouping on
-    # total alone let a complete family vouch for the torn one that actually gets offered.
+    # _snapshot_lacks_a_complete_weight_family uses. One quant label can cover several families.
     split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
+    # The family the lister offers and the loader then loads: both take the lexicographically
+    # first file under the label. Judging that one family is what keeps this honest in both
+    # directions. A torn sibling nothing selects must not veto a loadable quant, and a whole
+    # sibling must not vouch for a torn family that does get selected. Sorted for that reason.
+    # None means a file naming no total, i.e. a family of one; _UNJUDGEABLE_FAMILY is a
+    # nonsensical shard spec, never loadable.
+    selected: dict[str, object] = {}
     try:
-        paths = list(snapshot_dir.rglob("*"))
+        paths = sorted(snapshot_dir.rglob("*"))
     except OSError:
         return set()
     for path in paths:
@@ -698,26 +705,30 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
             continue
         split = _GGUF_SPLIT_RE.search(path.name)
         if split is None:
-            whole.add(quant)
+            selected.setdefault(quant, None)
             continue
         index = int(split.group(1))
         total = int(split.group(2))
         if index <= 0 or total <= 0 or index > total:
+            selected.setdefault(quant, _UNJUDGEABLE_FAMILY)
             continue
         family = (
             path.parent.relative_to(snapshot_dir).as_posix(),
             path.name[: split.start()],
             total,
         )
+        # Every shard is recorded, not just the first: the rest of the selected family
+        # sorts after the shard that selected it.
         split_groups.setdefault(quant, {}).setdefault(family, set()).add(index)
+        selected.setdefault(quant, family)
     complete: set[str] = set()
-    for quant in whole | set(split_groups):
-        # Every family under the label must be whole, since any of them may be the one offered.
-        if all(
-            indices == set(range(1, total + 1))
-            for (_dir, _prefix, total), indices in split_groups.get(quant, {}).items()
-        ):
+    for quant, family in selected.items():
+        if family is None:
             complete.add(quant)
+        elif isinstance(family, tuple):
+            total = family[2]
+            if split_groups.get(quant, {}).get(family) == set(range(1, total + 1)):
+                complete.add(quant)
     return complete
 
 

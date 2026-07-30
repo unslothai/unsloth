@@ -2011,3 +2011,66 @@ def test_a_self_contained_snapshot_is_not_made_partial_by_a_second_one(
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is False
     assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def _snapshot_with(tmp_path, files: dict) -> Path:
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    for name, size in files.items():
+        (snapshot / name).write_bytes(b"\0" * size)
+    return snapshot
+
+
+def test_a_torn_sibling_family_does_not_veto_the_quant_that_loads(tmp_path):
+    """Two file families can share one quant label. The lister offers the
+    lexicographically first file and the loader loads that family alone, so a
+    whole a-Q4_K_M.gguf is what a Q4_K_M request resolves to; the torn z- set
+    beside it is never selected and must not make the label unavailable."""
+    snapshot = _snapshot_with(
+        tmp_path,
+        {"a-Q4_K_M.gguf": 64, "z-Q4_K_M-00001-of-00002.gguf": 16},
+    )
+    assert inventory_scan._completed_gguf_variants(snapshot) == {"Q4_K_M"}
+    assert _local_offer(snapshot) == [("Q4_K_M", True)]
+
+
+def test_a_whole_sibling_family_does_not_vouch_for_the_torn_one_that_loads(tmp_path):
+    """The same rule in the other direction, which is why this keys on the
+    selected family rather than on any complete family. Here the torn set sorts
+    first, so that is what the loader picks and the label cannot be offered."""
+    snapshot = _snapshot_with(
+        tmp_path,
+        {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M.gguf": 64},
+    )
+    assert inventory_scan._completed_gguf_variants(snapshot) == set()
+    assert _local_offer(snapshot) == [("Q4_K_M", False)]
+
+
+def test_the_selected_family_is_judged_on_its_own_shards(tmp_path):
+    """A complete split set selected ahead of a torn sibling stays complete: the
+    later family's missing shard belongs to a family nothing reads."""
+    snapshot = _snapshot_with(
+        tmp_path,
+        {
+            "a-Q4_K_M-00001-of-00002.gguf": 16,
+            "a-Q4_K_M-00002-of-00002.gguf": 16,
+            "z-Q4_K_M-00001-of-00003.gguf": 16,
+        },
+    )
+    assert inventory_scan._completed_gguf_variants(snapshot) == {"Q4_K_M"}
+
+
+def test_two_torn_families_under_one_label_stay_incomplete(tmp_path):
+    """Control: selecting one family must not turn two broken sets into a load."""
+    snapshot = _snapshot_with(
+        tmp_path,
+        {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M-00001-of-00002.gguf": 16},
+    )
+    assert inventory_scan._completed_gguf_variants(snapshot) == set()
+
+
+def test_a_nonsensical_shard_spec_is_never_complete(tmp_path):
+    """A shard numbered past its own total cannot be loaded, and an empty index
+    set must not read as a satisfied range."""
+    snapshot = _snapshot_with(tmp_path, {"Model-Q4_K_M-00003-of-00002.gguf": 16})
+    assert inventory_scan._completed_gguf_variants(snapshot) == set()
