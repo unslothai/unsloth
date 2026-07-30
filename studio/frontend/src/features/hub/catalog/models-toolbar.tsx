@@ -172,7 +172,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     "focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:border-border",
   );
   return (
-    <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
+    <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
       <div
         className={cn(
           "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
@@ -218,7 +218,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </button>
       </div>
 
-      <div className="relative min-w-0 flex-1 lg:flex-[1_1_360px]">
+      <div className="relative min-w-0 flex-1 lg:min-w-[220px] lg:flex-[1_1_220px]">
         <HugeiconsIcon
           icon={Search01Icon}
           strokeWidth={1.8}
