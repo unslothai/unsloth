@@ -880,15 +880,22 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
     # Recognised by filename, so it classifies, but nothing can parse it.
     if payload.model_format in payload.unreadable_config_formats:
         return True
-    order = ("adapter", "base") if payload.model_format == "adapter" else ("base", "adapter")
+    wanted = "adapter" if payload.model_format == "adapter" else "base"
+    other = "base" if wanted == "adapter" else "adapter"
+    order = (wanted, other)
     for kind in order:
         if kind in payload.whole:
-            return False
+            # Only the row's own kind proves it loads. The other kind proving it meant a lone
+            # adapter_model.bin, which reads as checkpoint-like without an adapter_config.json,
+            # stood in as the base payload of a checkpoint row that has no base weights at all.
+            return kind != wanted
         if payload.groups[kind]:
             return all(
                 indices != set(range(1, family[2] + 1))
                 for family, indices in payload.groups[kind].items()
             )
+    # No family either way. Absence is not evidence here: a diffusion or .ckpt payload classifies
+    # from its suffix while naming no family this walk recognises, so it must not read as broken.
     return False
 
 

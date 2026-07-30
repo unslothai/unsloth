@@ -1210,14 +1210,26 @@ def test_chat_autoload_records_a_terminal_validation_failure():
     the Hub download. Hence the two terminal markers are recorded at the preflight boundary; an
     ordinary validation failure stays per-candidate and the sweep continues."""
     adapter = _read("features/chat/api/chat-adapter.ts")
-    preflight = adapter.split("async function canAutoLoadRecordingTerminalFailures", 1)[1]
-    preflight = preflight.split("async function loadAutoLoadCandidate", 1)[0]
-    assert "unslothTransportFailure === true" in preflight
-    assert "unslothUserCancelled === true" in preflight
-    assert "noteLoadFailure(label, error)" in preflight
-    # Rethrown, so the candidate still fails and control flow is unchanged.
-    assert "throw error;" in preflight
-    # The candidate preflight goes through it rather than calling canAutoLoad raw.
+    recorder = adapter.split("function recordTerminalFailure", 1)[1]
+    recorder = recorder.split("async function canAutoLoadRecordingTerminalFailures", 1)[0]
+    assert "unslothTransportFailure === true" in recorder
+    assert "unslothUserCancelled === true" in recorder
+    assert recorder.count("noteLoadFailure(label, error)") == 2
+    # A declined token dialog halts the sweep, since retrying reopens it once per candidate. A
+    # transport failure deliberately does not, so a later candidate still loads after a blip.
+    assert "autoLoadCancelled = true;" in recorder
+    assert recorder.index("autoLoadCancelled = true;") < recorder.index(
+        "unslothTransportFailure === true"
+    ), "the halt belongs to the cancellation branch, not the transport one"
+    # Rethrown by the wrapper, so the candidate still fails and control flow is unchanged.
+    wrapper = adapter.split("async function canAutoLoadRecordingTerminalFailures", 1)[1]
+    wrapper = wrapper.split("async function loadAutoLoadCandidate", 1)[0]
+    assert "recordTerminalFailure(label, error)" in wrapper
+    assert "throw error;" in wrapper
     autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    # The preflight goes through the wrapper rather than calling canAutoLoad raw, the GGUF metadata
+    # probe records too, and a cancelled sweep skips every later candidate.
     assert "canAutoLoadRecordingTerminalFailures(failureLabel, {" in autoload
+    assert "recordTerminalFailure(failureLabel, error)" in autoload
+    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload

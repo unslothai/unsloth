@@ -1516,6 +1516,10 @@ async function autoLoadSmallestModel(): Promise<{
     current: { label: string; detail: string; blamesModel: boolean } | null;
   } = { current: null };
 
+  // Set once the user declines the HF token dialog, so the rest of the sweep and
+  // the Hub default download do not ask again.
+  let autoLoadCancelled = false;
+
   function noteLoadFailure(label: string, error: unknown): void {
     const detail =
       error instanceof Error && error.message.trim() ? error.message.trim() : "";
@@ -1573,6 +1577,29 @@ async function autoLoadSmallestModel(): Promise<{
     return true;
   }
 
+  function recordTerminalFailure(label: string, error: unknown): void {
+    // Only the two terminal markers. An ordinary failure stays this candidate's
+    // problem and the sweep moves on, which is what recovering from a transient
+    // blip on the first candidate depends on.
+    const marker = error as {
+      unslothTransportFailure?: boolean;
+      unslothUserCancelled?: boolean;
+    };
+    if (marker?.unslothUserCancelled === true) {
+      noteLoadFailure(label, error);
+      // The user declined once. Trying the next candidate reopens the same
+      // dialog, so the sweep stops rather than asking again per repo. A
+      // transport failure deliberately does NOT stop it: the backend can come
+      // back within the sweep, and a later candidate still loading is the
+      // recovery autoload/transport_failure_then_success covers.
+      autoLoadCancelled = true;
+      return;
+    }
+    if (marker?.unslothTransportFailure === true) {
+      noteLoadFailure(label, error);
+    }
+  }
+
   async function canAutoLoadRecordingTerminalFailures(
     label: string,
     payload: Parameters<typeof canAutoLoad>[0],
@@ -1582,18 +1609,8 @@ async function autoLoadSmallestModel(): Promise<{
     } catch (error) {
       // validateModel prepares the token too, so a dismissed dialog or a dead
       // backend surfaces here, not from loadModel below, and the sweep's bare
-      // catches would drop it and go on to the Hub download. Only the terminal
-      // markers are recorded; anything else stays this candidate's problem.
-      const marker = error as {
-        unslothTransportFailure?: boolean;
-        unslothUserCancelled?: boolean;
-      };
-      if (
-        marker?.unslothTransportFailure === true ||
-        marker?.unslothUserCancelled === true
-      ) {
-        noteLoadFailure(label, error);
-      }
+      // catches would drop it and go on to the Hub download.
+      recordTerminalFailure(label, error);
       throw error;
     }
   }
@@ -1601,7 +1618,7 @@ async function autoLoadSmallestModel(): Promise<{
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
-    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
@@ -1662,6 +1679,11 @@ async function autoLoadSmallestModel(): Promise<{
           model_path: modelPath,
           gguf_variant: candidate.ggufVariant,
           hf_token: preparedToken.token,
+        }).catch((error: unknown) => {
+          // Same authFetch as validate and load, so a dead backend throws here
+          // too, ahead of both their catches. Record it for the same reason.
+          recordTerminalFailure(failureLabel, error);
+          throw error;
         })
       ).isDiffusion;
     }

@@ -2520,3 +2520,41 @@ def test_a_bare_gguf_file_with_no_marker_is_not_resolved(tmp_path):
     (folder / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 64)
 
     assert inventory_scan._completed_gguf_variants(folder / "Model-Q4_K_M.gguf") == set()
+
+
+def test_an_adapter_file_does_not_stand_in_for_a_checkpoint_row(tmp_path, monkeypatch):
+    """adapter_model.bin reads as checkpoint-like, so a snapshot holding it beside a config.json
+    and no adapter_config.json classifies checkpoint. The completeness walk then accepted the
+    adapter file as that row's payload, though a checkpoint load finds no base weights."""
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"config.json": b'{"model_type":"llama"}',
+                                "adapter_model.bin": b"\0" * 256}},
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["model_format"] == "checkpoint"
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"config.json": b"{}", "model.safetensors": b"\0" * 256},
+        {"adapter_config.json": b'{"peft_type":"LORA"}', "adapter_model.bin": b"\0" * 256},
+        # Classifies from the suffix while naming no family this walk recognises. Absence of a
+        # family is not evidence of breakage, or every diffusion and .ckpt payload reads as broken.
+        {"config.json": b"{}", "diffusion_pytorch_model.safetensors": b"\0" * 256},
+        {"config.json": b"{}", "model.ckpt": b"\0" * 256},
+    ],
+    ids = ["safetensors", "adapter", "diffusion", "ckpt-file"],
+)
+def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, monkeypatch):
+    """The controls that bound the rule above: only weights of the OTHER kind standing in is
+    evidence of a mismatch, and finding no family at all is not."""
+    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
