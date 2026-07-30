@@ -15798,7 +15798,7 @@ def _build_passthrough_payload(
         # the client forced, and forwarding that choice would both name a function the
         # catalog no longer advertises and hand llama-server the raw markup we just
         # removed. Fall back to "auto" so the request stays self-consistent (#7066).
-        tool_choice = _reconciled_tool_choice(tool_choice, safe_tools)
+        tool_choice = _reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:
@@ -15848,20 +15848,32 @@ def _forced_tool_name(tool_choice):
     return name if isinstance(name, str) and name else None
 
 
-def _reconciled_tool_choice(tool_choice, safe_tools):
-    """Downgrade a forced ``tool_choice`` to "auto" when its tool was dropped (#7066)."""
-    forced = _forced_tool_name(tool_choice)
-    if forced is None:
-        return tool_choice
-    available = set()
-    for tool in safe_tools or []:
+def _catalog_tool_names(tools) -> set:
+    """Every ``function.name`` in a tool catalog, either nesting."""
+    names = set()
+    for tool in tools or []:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
         name = function.get("name") if isinstance(function, dict) else tool.get("name")
         if isinstance(name, str):
-            available.add(name)
-    if forced in available:
+            names.add(name)
+    return names
+
+
+def _reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
+    """Downgrade a forced ``tool_choice`` to "auto" when WE dropped its tool (#7066).
+
+    Only when the neutralizer removed it: the name has to be in the caller's catalog and
+    gone from the sanitized one. A client forcing a function it never declared is a
+    different, pre-existing case that the healing path deliberately reads to decide a
+    streamed call must NOT be promoted, so silently rewriting it there would change
+    unrelated behaviour.
+    """
+    forced = _forced_tool_name(tool_choice)
+    if forced is None or forced in _catalog_tool_names(safe_tools):
+        return tool_choice
+    if forced not in _catalog_tool_names(openai_tools):
         return tool_choice
     logger.warning(
         "Forcing tool %r is no longer possible: it was dropped from the catalog for "

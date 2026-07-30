@@ -1608,10 +1608,13 @@ def test_clean_json_arguments_stay_byte_identical():
         assert neutralize_control_markup_in_messages(messages) is messages, arguments
 
 
-def test_forced_tool_choice_is_downgraded_when_its_tool_is_dropped():
+def test_forced_tool_choice_is_downgraded_only_when_we_dropped_its_tool():
     """A mixed catalog keeps ``safe_tools`` non-empty while still dropping the forced
     tool, so the request would name a function the catalog no longer advertises and hand
-    llama-server back the raw markup the drop removed (#7066)."""
+    llama-server back the raw markup the drop removed (#7066). A client forcing a
+    function it never declared is a different, pre-existing case: the healing path reads
+    that mismatch to decide a streamed call must NOT be promoted, so it must pass through
+    untouched."""
     import sys
     from pathlib import Path
 
@@ -1626,21 +1629,24 @@ def test_forced_tool_choice_is_downgraded_when_its_tool_is_dropped():
         {"type": "function", "function": {"name": hostile, "description": "bad"}},
         {"type": "function", "function": {"name": "get_weather", "description": "ok"}},
     ]
-    body = _build_passthrough_payload(
-        [{"role": "user", "content": "hi"}], tools,
-        temperature = 0.7, top_p = 0.9, top_k = 40, stream = False,
-        tool_choice = {"type": "function", "function": {"name": hostile}},
-        max_tokens = 16, stop = None, backend_ctx = 4096,
-    )
-    assert [t["function"]["name"] for t in body["tools"]] == ["get_weather"]
-    assert body["tool_choice"] == "auto"
-    assert hostile not in json.dumps(body)
-    # A forced choice whose tool survived is forwarded untouched, in both spellings.
-    for choice in ({"type": "function", "function": {"name": "get_weather"}},
-                   {"type": "tool", "name": "get_weather"}, "auto", "none", "required"):
-        kept = _build_passthrough_payload(
+
+    def _body(choice):
+        return _build_passthrough_payload(
             [{"role": "user", "content": "hi"}], tools,
             temperature = 0.7, top_p = 0.9, top_k = 40, stream = False,
             tool_choice = choice, max_tokens = 16, stop = None, backend_ctx = 4096,
         )
-        assert kept["tool_choice"] == choice, choice
+
+    dropped = _body({"type": "function", "function": {"name": hostile}})
+    assert [t["function"]["name"] for t in dropped["tools"]] == ["get_weather"]
+    assert dropped["tool_choice"] == "auto"
+    assert hostile not in json.dumps(dropped)
+
+    # Never-declared name: untouched, because we did not drop it.
+    undeclared = {"type": "function", "function": {"name": "never_declared"}}
+    assert _body(undeclared)["tool_choice"] == undeclared
+
+    # A surviving tool, and the string forms, are forwarded verbatim in both spellings.
+    for choice in ({"type": "function", "function": {"name": "get_weather"}},
+                   {"type": "tool", "name": "get_weather"}, "auto", "none", "required"):
+        assert _body(choice)["tool_choice"] == choice, choice
