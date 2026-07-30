@@ -123,12 +123,11 @@ import type {
   SelectedResourceRef,
 } from "./types";
 
-// What per-model settings are keyed by, which is not always what the loader is handed: a
-// repo cached outside the active HF cache loads by snapshot path, while the picker and the
-// auto-switch index key it by repo id, so saving under the path strands the settings.
-// The row decides that, not the view it is shown in: the same cached repo is reachable from
-// Discover, where the kind is "discover" while the resource is still the cache row. `hub_cache`
-// is set only for a cached repo; a local row in the active cache stays on its run id.
+// What per-model settings are keyed by, which is not always what the loader is handed: a repo
+// cached outside the active HF cache loads by snapshot path while the picker and the auto-switch
+// index key it by repo id, so saving under the path strands them. The row decides that, not the
+// view it is shown in (a cache row is reachable from Discover too); `hub_cache` marks exactly
+// those, while a local row in the active cache stays on its run id.
 function modelConfigIdentity(
   kind: SelectedModelView["kind"],
   resource: SelectedResourceRef,
@@ -392,18 +391,13 @@ export function ModelsPage() {
 
   // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
-  // /status cannot say whether an empty answer is an idle eviction that will reload
-  // or a real unload, and only this endpoint knows. Read alongside every status read
-  // rather than cached: the idle timeout is editable from Settings while this page
-  // stays mounted, and a cached answer would read a later eviction against a setting
-  // that no longer holds. Awaited with the status read, never raced, because the first
-  // read is the one most likely to land on an already-evicted model.
-  //
-  // Last answer wins on failure, not the default. The default is "disarmed", which is
-  // the side that clears the checkpoint, so a transient failure would discard a
-  // selection the idle loop is about to bring back. Before any successful read it is
-  // false, which is the setting's own default: idle unload is off unless a timeout is
-  // configured.
+  // /status cannot say whether an empty answer is an idle eviction that will reload or a real
+  // unload, and only this endpoint knows. Read alongside every status read rather than cached,
+  // since the idle timeout is editable from Settings while this page stays mounted, and awaited
+  // with it, since the first read is the one most likely to land on an evicted model.
+  // Last answer wins on failure, not the default: "disarmed" is the side that clears the
+  // checkpoint, so a transient failure would discard a selection the idle loop is bringing
+  // back. Before any successful read it is false, the setting's own default.
   const idleUnloadArmed = useRef(false);
   const readIdleUnloadArmed = useCallback(
     (): Promise<boolean> =>
@@ -424,9 +418,8 @@ export function ModelsPage() {
         const store = useChatRuntimeStore.getState();
         adoptResidentModelStatus(
           {
-            // The loadable identifier, as every other status reader records it: a GGUF
-            // off disk loads by path, while active_model is the clean public id. Two
-            // files sharing a stem collapse onto one id, so one row would look loaded.
+            // The loadable identifier, as every other status reader records it: a GGUF off
+            // disk loads by path, and two files sharing a stem collapse onto one public id.
             checkpointId: resolveInferenceCheckpointId(status),
             ggufVariant: status.gguf_variant ?? null,
           },
@@ -458,9 +451,8 @@ export function ModelsPage() {
       .catch(() => undefined);
   }, [readIdleUnloadArmed]);
 
-  // Mount, then again whenever this tab could have missed an API-driven switch.
-  // adoptResidentModelStatus makes re-reading safe: it stands down for an external
-  // selection and for a load this tab started.
+  // Mount, then again whenever this tab could have missed an API-driven switch. Re-reading is
+  // safe: adoptResidentModelStatus stands down for an external selection and this tab's loads.
   useEffect(() => {
     void refreshResidentModelStatus();
     const unsubscribe = subscribeResidentStatusRefresh(
@@ -1331,10 +1323,9 @@ export function ModelsPage() {
   const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
     null,
   );
-  // Opening settings is where a stale read costs something: the editor is seeded once and
-  // Apply reloads with what it seeded, so this covers a switch that landed while the window
-  // kept focus. It cannot cover resolving the target itself, since a target must exist
-  // first; openModelSettings does its own read, and this is for ready-made targets.
+  // Opening settings is where a stale read costs something: the editor is seeded once and Apply
+  // reloads with what it seeded, so this covers a switch that landed while the window kept
+  // focus. Resolving a target is openModelSettings' own read; this is for ready-made targets.
   useEffect(() => {
     if (settingsTarget) void refreshResidentModelStatus();
   }, [settingsTarget, refreshResidentModelStatus]);
@@ -1343,11 +1334,9 @@ export function ModelsPage() {
   const openModelSettings = useCallback(
     async (row: CachedInventoryRow | LocalInventoryRow) => {
       const openSeq = ++settingsOpenSeq.current;
-      // Before anything reads the store: the effect that re-reads status watches
-      // settingsTarget, so it cannot run until the target exists, and the Hub only
-      // re-reads on focus and visibility. Every path out of here seeds the editor from
-      // the store and Apply reloads with what it seeded, so a target built on a
-      // pre-switch read can persist and launch the wrong settings.
+      // Before anything reads the store: the status effect watches settingsTarget, so it
+      // cannot run until the target exists. Every path out of here seeds the editor from the
+      // store and Apply reloads with that, so a pre-switch read would launch wrong settings.
       await refreshResidentModelStatus();
       if (settingsOpenSeq.current !== openSeq) return;
       // loadId is what the loader accepts; repoId is only a display/API alias.
@@ -1357,15 +1346,13 @@ export function ModelsPage() {
         row.kind === "local"
           ? [id, row.repoId, row.path]
           : [id, row.repoId, row.cachePath];
-      // Cached repo rows never carry a quant, and a null variant keys the config to
-      // `repo::` while the loader reads `repo::Q4_K_M`, so it never applies. Resolve it
-      // as the on-device card does.
+      // Cached repo rows never carry a quant, and a null variant keys the config to `repo::`
+      // while the loader reads `repo::Q4_K_M`, so resolve one as the on-device card does.
       let ggufVariant = settingsGgufVariantForRow(row);
       if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
-        // A local row only carries a repo id inside the HF cache, so a plain folder of
-        // quants has none while still needing one. The listing takes a path in the same
-        // position and scans it, as the on-device card already does; without the
-        // fallback this menu entry could only reach the "couldn't determine" toast.
+        // A local row only carries a repo id inside the HF cache, so a plain folder of quants
+        // has none while still needing one. The listing scans a path in the same position, as
+        // the on-device card does; without it this menu entry only reaches the error toast.
         const repoId =
           row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);
         if (repoId) {
@@ -1376,11 +1363,10 @@ export function ModelsPage() {
                 row.kind === "local" ? row.path : (row.cachePath ?? null),
             });
             const downloaded = res.variants.filter((v) => v.downloaded);
-            // Re-read after this await too: the lookup hits the network, and a switch
-            // during it would leave the branch below picking the displaced model's quant.
-            // Re-read against the server, not just the store: nothing pushes an
-            // API-driven switch into this tab, so the store alone is as old as the read
-            // above and the second look would agree with the first by construction.
+            // Re-read after this await too: the lookup hits the network, and a switch during
+            // it would leave the branch below on the displaced model's quant. Against the
+            // server, not the store: nothing pushes an API switch into this tab, so the store
+            // is as old as the read above.
             await refreshResidentModelStatus();
             if (settingsOpenSeq.current !== openSeq) return;
             const settled = useChatRuntimeStore.getState();
@@ -1394,8 +1380,7 @@ export function ModelsPage() {
             );
             ggufVariant =
               // Loaded quant, then repo default, then whatever is on disk, mirroring
-              // LocalOnDeviceCard. Only for the loaded row: Q4_K_M exists in most
-              // repos, so an unguarded match would target the wrong model.
+              // LocalOnDeviceCard. Loaded row only: Q4_K_M exists in most repos.
               (settledIsActive
                 ? downloaded.find((v) =>
                     ggufVariantsMatch(v.quant, settled.activeGgufVariant),
@@ -1557,10 +1542,9 @@ export function ModelsPage() {
     [selectedModel, refreshResidentModelStatus],
   );
   // Whether the settings page is open on the loaded model, so it can show the live launch
-  // config. A GGUF off disk loads by path but is reported by its public id, so the row's
-  // path and its settings identity are both offered as aliases. A loose .gguf carries no
-  // variant by design while the loader derives one from the filename, so requiring the two
-  // to agree would never hold and the page would withhold the live config.
+  // config. A GGUF off disk loads by path but is reported by its public id, so the row's path
+  // and its settings identity are both offered as aliases. A loose .gguf carries no variant while
+  // the loader derives one from its filename, so the two can never be required to agree.
   const settingsTargetIsStandaloneFile =
     settingsTarget !== null &&
     settingsTarget.ggufVariant == null &&

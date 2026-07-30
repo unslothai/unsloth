@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Labels for model load/unload/download rows, shared by the overlay and the page.
-//
-// Their own module because the overlay mounts from __root.tsx: importing them from the
-// page would pull it into the eager bundle and undo the route's lazyRouteComponent.
+// Labels for model load/unload/download rows, shared by the overlay and the page. Their own
+// module because the overlay mounts from __root.tsx: importing them from the page would pull it
+// into the eager bundle and undo the route's lazyRouteComponent.
 
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 

@@ -134,9 +134,8 @@ test("a load in flight is not fought", () => {
 });
 
 test("an empty status drops the checkpoint when idle unload is disarmed", () => {
-  // Nothing will bring the model back, so it really is gone: another tab, the
-  // monitor or the API unloaded it. Leaving the row resident seeds the settings
-  // editor from a launch config nothing is running.
+  // Nothing will bring the model back, so it really is gone. Leaving the row resident would
+  // seed the settings editor from a launch config nothing is running.
   const cleared: string[] = [];
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null },
@@ -156,9 +155,8 @@ test("an empty status drops the checkpoint when idle unload is disarmed", () => 
 });
 
 test("an empty status leaves the checkpoint pinned while idle unload is armed", () => {
-  // An empty status is not the model going away: an idle unload frees it but keeps a
-  // stash the next request reloads, and /status carries no field telling the two apart.
-  // The store names the model meanwhile, so an observation must not clear it.
+  // An empty status is not the model going away: an idle unload frees it but keeps a stash the
+  // next request reloads, and /status cannot tell the two apart, so this must not clear it.
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null },
     emptyStore({
@@ -236,9 +234,9 @@ test("a tab going hidden does not read", () => {
 });
 
 test("an auto-switch under a mounted Hub stops hiding the live config", () => {
-  // End to end: an API request swaps the resident model under a mounted Hub. Without a
-  // second read settingsTargetIsResident says the new model is not resident, so the
-  // editor seeds from saved values that Apply then reloads over the API's choice.
+  // End to end: an API request swaps the resident model under a mounted Hub. Without a second
+  // read settingsTargetIsResident says it is not resident, so the editor seeds from saved
+  // values that Apply then reloads over the API's choice.
   const store = emptyStore({
     checkpoint: "unsloth/Qwen3-8B-GGUF",
     activeGgufVariant: "Q4_K_M",

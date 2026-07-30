@@ -460,9 +460,8 @@ def update_openai_auto_switch_override(
             }
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
-            # A fill keeps the stored flags without echoing them back through validation:
-            # one denylisted since it was saved would 400 the one-time migration, which
-            # then retries on every start.
+            # A fill keeps the stored flags without echoing them back through validation: one
+            # denylisted since it was saved would 400 the migration, which then retries forever.
             if not (payload.fill_absent_fields and stored):
                 requested_extra_args = stored.get("llama_extra_args")
                 if requested_extra_args is None:
@@ -472,8 +471,7 @@ def update_openai_auto_switch_override(
                         requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
                 if requested_extra_args is None:
                     # Same for the other spelling of a cached repo, which this save retires
-                    # below: its flags have nowhere else to live once the entry goes, and the
-                    # page can neither show nor restore them.
+                    # below: its flags have nowhere else to live, and the page cannot show them.
                     for alias_id in cached_repo_alias_keys(payload.model_id):
                         requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
                         if requested_extra_args is not None:
@@ -482,17 +480,15 @@ def update_openai_auto_switch_override(
         extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
-            # not the literal one sent: the browser normalizes casing, so a stale entry would
-            # survive. And every spelling: clearing one of two leaves the survivor as the sole
-            # fold match, so the next load applies what was just forgotten.
+            # not the literal one sent (the browser normalizes casing), and every spelling:
+            # clearing one of two leaves the survivor as the sole fold match.
             target_ids = resolve_model_override_keys(payload.model_id) or [
                 payload.model_id,
             ]
             for target_id in target_ids:
                 set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
             # A standalone .gguf is keyed by its bare path now, but a load also reads the
-            # filename-derived <path>:LABEL entry an upgraded install still holds. Clearing
-            # only what the resolver sees leaves that one applying to every later API load.
+            # filename-derived <path>:LABEL an upgraded install holds, which would outlive this.
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
             if legacy_id and legacy_id not in target_ids:
                 set_model_override(
@@ -500,18 +496,12 @@ def update_openai_auto_switch_override(
                     llama_extra_args = [],
                     max_seq_length = None,
                 )
-            # The mirror image of the carry-over above. A save under repo:QUANT copies the
-            # flags off a legacy bare `repo` entry and leaves that entry in place, and the
-            # loader falls back to it when the qualified key misses, so clearing only the
-            # qualified key hands the same flags straight back on the next load and the
-            # forget silently does nothing. Nothing in the UI can reach the bare entry for
-            # a repo that requires a variant, so this is its only way out.
-            #
-            # Only once it is nobody else's fallback, though: the same bare entry backs
-            # every quant of the repo that has no entry of its own, so forgetting Q4 must
-            # not strip what Q8 is still reading. Another qualified key surviving means the
-            # bare one is still load-bearing, and this forget is not the last word on the
-            # model.
+            # The mirror image of the carry-over above: a save under repo:QUANT copies the
+            # flags off a legacy bare `repo` entry and leaves it in place, and the loader falls
+            # back to it when the qualified key misses, so clearing only the qualified key hands
+            # the same flags straight back and the forget does nothing. Nothing in the UI can
+            # reach that bare entry. Only once it is nobody else's fallback, though: it backs
+            # every quant with no entry of its own, so forgetting Q4 must not strip Q8.
             bare_id = _bare_model_id(payload.model_id)
             if (
                 bare_id
@@ -526,9 +516,8 @@ def update_openai_auto_switch_override(
                     llama_extra_args = [],
                     max_seq_length = None,
                 )
-            # And the other spelling of a cached repo, for the same reason: the loader reads
-            # the load path before the advertised id, so a forget that clears only the id
-            # leaves the snapshot-path entry applying the settings just forgotten.
+            # And the other spelling of a cached repo: the loader reads the load path before
+            # the advertised id, so clearing only the id leaves the path entry still applying.
             for alias_id in cached_repo_alias_keys(payload.model_id):
                 set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
         else:
@@ -552,14 +541,12 @@ def update_openai_auto_switch_override(
                 gpu_ids = payload.gpu_ids,
                 fill_absent_fields = payload.fill_absent_fields,
             )
-            # A repo cached outside the active HF cache is keyed by its repo id here while
-            # the loader reads the snapshot path it loads from first, and an older release
-            # keyed that same row by the path, so an upgraded install can hold both. Retire
-            # the spelling this save supersedes (its flags were carried over above), or the
-            # leftover outranks the key just written and every API load applies the settings
-            # the user replaced. After the write, so a rejected save deletes nothing. Not on
-            # a fill: that pass only adds what is missing, and the one-time migration
-            # mirroring both spellings must not delete either.
+            # A repo cached outside the active HF cache is keyed here by its repo id, while the
+            # loader reads the snapshot path first and an older release keyed the row by that
+            # path, so an upgrade can hold both. Retire the spelling this save supersedes (its
+            # flags were carried over above), or the leftover outranks the key just written.
+            # After the write, so a rejected save deletes nothing. Not on a fill: that pass only
+            # adds, and the migration mirroring both spellings must not delete either.
             if not payload.fill_absent_fields:
                 for alias_id in cached_repo_alias_keys(target_id):
                     set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)

@@ -52,9 +52,8 @@ export interface ModelPickTarget {
   ggufVariant?: string | null;
   isGguf: boolean;
   /**
-   * Whether an OpenAI-compatible request can actually load this model. Not the same as
-   * isGguf: local_model_resolver skips Ollama's scanner, so an Ollama GGUF is never in
-   * the index. Defaults to isGguf when unknown.
+   * Whether an OpenAI-compatible request can actually load this model. Not the same as isGguf:
+   * local_model_resolver skips Ollama's scanner. Defaults to isGguf when unknown.
    */
   apiLoadable?: boolean;
   /**

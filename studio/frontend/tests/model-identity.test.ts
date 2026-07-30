@@ -269,9 +269,8 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   );
 });
 
-// Every answer below is the one the backend's split_quant_suffix gives. The backfill
-// folds a stored key with this before comparing, so a suffix this splits and the backend
-// does not collapses two models onto one key on the browser side only.
+// Every answer below is the one the backend's split_quant_suffix gives. The backfill folds a
+// stored key with this before comparing, so a disagreement collapses two models onto one key.
 const CASES: [string, [string, string] | null][] = [
   // A known quant label, with and without the optional bpw modifier.
   ["org/Repo-GGUF:Q4_K_M", ["org/Repo-GGUF", "Q4_K_M"]],
@@ -333,9 +332,8 @@ test("a .gguf filename carrying a colon is not folded into a variant", () => {
   assert.notEqual(modelStorageKey(upper, null), modelStorageKey(lower, null));
 });
 
-// Repo ids ending in .gguf are real on the Hub, an iMat repo among them, and those hold
-// every quant of a model. Reading one as a single file drops its variant, so Q4 and Q8
-// save under the same key and the last one written wins for both.
+// Repo ids ending in .gguf are real on the Hub, an iMat repo among them, and those hold every
+// quant. Reading one as a single file drops the variant, so Q4 and Q8 save under one key.
 const STANDALONE_GGUF_CASES: [string, boolean][] = [
   ["/models/llama.gguf", true],
   ["/mnt/c/models/llama.gguf", true],

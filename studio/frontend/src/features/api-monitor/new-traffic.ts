@@ -56,11 +56,9 @@ export function rearmWatch(watch: ApiMonitorWatch): void {
 }
 
 /**
- * When this watch began, on the server's clock.
- *
- * Server ``time.time()`` minus a browser *duration*, never minus a browser timestamp, so a
- * browser clock disagreeing with the server's cancels instead of skewing the answer. Null
- * on a backend with no clock field, which keeps the old behaviour.
+ * When this watch began, on the server's clock. Server ``time.time()`` minus a browser
+ * *duration*, never minus a browser timestamp, so a clock disagreeing with the server's cancels
+ * instead of skewing the answer. Null on a backend with no clock field.
  */
 function historyCutoff(
   watch: ApiMonitorWatch,
@@ -87,9 +85,7 @@ function isHistory(entry: WatchedEntry, cutoff: number | null): boolean {
   return entry.started_at <= cutoff;
 }
 
-/**
- * Fold a snapshot in and report whether it holds API-key traffic not shown yet.
- */
+/** Fold a snapshot in and report whether it holds API-key traffic not shown yet. */
 export function observeResponse(
   watch: ApiMonitorWatch,
   response: WatchedResponse,

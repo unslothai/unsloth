@@ -1,23 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Adopting the resident model into the chat runtime store from the Hub.
-//
-// Landing straight on /hub is the one entry point where nothing has applied
-// /api/inference/status yet. Pinning only the checkpoint leaves every other field
-// useActiveModelConfig reads at its default, so the settings page would pass those
-// defaults on as the live config and Apply would reload with them. Adoption therefore
-// applies the whole status, exactly as the chat runtime's refresh does.
+// Adopting the resident model into the chat runtime store from the Hub. Landing straight on /hub
+// is the one entry point where nothing has applied /api/inference/status yet, and pinning only
+// the checkpoint leaves every other useActiveModelConfig field at its default, which the settings
+// page would pass on as the live config. So adoption applies the whole status, as chat does.
 
 import { ggufVariantsMatch, modelIdsMatch } from "./model-identity.ts";
 
 /** The parts of the chat runtime store adoption has to look at. */
 export interface ResidentAdoptionState {
-  /** ``params.checkpoint``. */
   checkpoint: string | null;
   /** Whether that checkpoint names an external provider's model. */
   checkpointIsExternal: boolean;
-  /** ``activeGgufVariant``. */
   activeGgufVariant: string | null;
   /** ``modelLoading``: a load this tab started still owns the store. */
   modelLoading: boolean;
@@ -30,7 +25,6 @@ export interface ResidentAdoptionState {
 export interface ResidentStatusFacts {
   /** ``resolveInferenceCheckpointId(status)``; null when nothing is loaded. */
   checkpointId: string | null;
-  /** ``status.gguf_variant``. */
   ggufVariant: string | null;
 }
 
@@ -41,9 +35,8 @@ export interface ResidentAdoptionActions {
    * that only wants the pinning half can leave it out. */
   clearCheckpoint?: () => void;
   /**
-   * Apply the rest of the status. Receives the store values from BEFORE
-   * ``setCheckpoint`` ran, which is how applyActiveModelStatusToStore tells a
-   * hydration from steady state.
+   * Apply the rest of the status. Receives the store values from BEFORE ``setCheckpoint`` ran,
+   * which is how applyActiveModelStatusToStore tells a hydration from steady state.
    */
   applyStatus: (previous: {
     checkpoint: string | null;
@@ -52,10 +45,8 @@ export interface ResidentAdoptionActions {
 }
 
 /**
- * Adopt the resident model reported by ``/api/inference/status``.
- *
- * Returns whether anything was adopted. Never loads or unloads a model: it only
- * mirrors what the server already has.
+ * Adopt the resident model reported by ``/api/inference/status``. Returns whether anything was
+ * adopted. Never loads or unloads: it only mirrors what the server already has.
  */
 export function adoptResidentModelStatus(
   status: ResidentStatusFacts,
@@ -74,11 +65,10 @@ export function adoptResidentModelStatus(
     return false;
   }
   if (!checkpointId) {
-    // An empty status means one of two things and /status cannot say which. Armed,
-    // the idle loop frees the model but keeps a stash the next request reloads, and
-    // the store names it meanwhile, so clearing would drop a selection that is coming
-    // back. Disarmed, nothing will bring it back, and leaving the row resident seeds
-    // the settings editor from a launch config nothing is running.
+    // An empty status means one of two things and /status cannot say which. Armed, the idle
+    // loop frees the model but keeps a stash the next request reloads, so clearing would drop
+    // a selection that is coming back. Disarmed, nothing brings it back, and leaving the row
+    // resident seeds the settings editor from a launch config nothing is running.
     if (state.idleUnloadArmed) {
       return false;
     }

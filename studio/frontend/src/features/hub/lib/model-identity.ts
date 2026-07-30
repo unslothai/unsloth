@@ -96,12 +96,10 @@ function hfCacheRepoId(path: string): string | null {
 }
 
 /**
- * The clean id the backend reports for a model loaded by path.
- *
- * Mirrors ``public_model_id`` in studio/backend/core/inference/model_ids.py, which
- * is what ``/api/inference/status`` puts in ``active_model``: an HF cache snapshot
- * becomes its repo id and any other local GGUF becomes its filename stem. Repo ids
- * and already-clean names come back unchanged.
+ * The clean id the backend reports for a model loaded by path. Mirrors ``public_model_id`` in
+ * core/inference/model_ids.py, which is what ``/api/inference/status`` puts in ``active_model``:
+ * an HF cache snapshot becomes its repo id, any other local GGUF its filename stem, and a repo
+ * id or clean name comes back unchanged.
  */
 export function publicModelId(identifier: string): string {
   const trimmed = identifier.trim();
@@ -122,14 +120,11 @@ export function publicModelId(identifier: string): string {
 /**
  * Whether the model the backend reports as loaded is one of *candidates*.
  *
- * A GGUF from an inactive HF cache loads by path, so a caller holding only the public id
- * would read an exact comparison as "not loaded". Candidates are compared literally
- * first, then by the public id.
- *
- * That second pass only accepts an identity that names one model: an HF snapshot
- * collapses onto its unique repo id, while every other path collapses onto a stem two
- * models can share. Accepting a stem would mark the wrong row resident and save one
- * model's live config under another's key.
+ * A GGUF from an inactive HF cache loads by path, so a caller holding only the public id would
+ * read an exact comparison as "not loaded": candidates are compared literally first, then by
+ * public id. That second pass only accepts an identity naming one model, since an HF snapshot
+ * collapses onto its unique repo id while every other path collapses onto a stem two models can
+ * share, and accepting a stem would save one model's live config under another's key.
  */
 export function residentModelIdMatches(
   activeModelId: string | null | undefined,
@@ -169,25 +164,22 @@ export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
     .some((segment) => OLLAMA_LINK_SEGMENTS.has(segment));
 }
 
-// A dropped or file-picked GGUF is the API's second unreachable identity: /status
-// withholds the host path for a lease-backed load, so the browser keys settings by the
-// bare file name the backend echoes back. _build_index keys a standalone GGUF by its
-// path and its stem, so that name is never an index key. Anything the API can load is
-// keyed by a path or a repo id, both of which carry a separator.
+// A dropped or file-picked GGUF is the API's second unreachable identity: /status withholds the
+// host path for a lease-backed load, so the browser keys settings by the bare file name echoed
+// back, which _build_index (path and stem only) never uses as an index key. Anything the API can
+// load is keyed by a path or a repo id, both of which carry a separator.
 const NATIVE_FILE_LABEL_RE = /^[^/\\]+\.gguf$/i;
 
 export function isNativeFileLabel(modelId: string | null | undefined): boolean {
   return modelId != null && NATIVE_FILE_LABEL_RE.test(modelId);
 }
 
-// A scanned standalone .gguf, keyed by its on-disk path with no variant: it has no quant
-// to choose between, and adopting the filename label would key one file's config two
-// ways. settings-identity.ts applies the same rule to a Hub row.
-//
-// The suffix alone does not say that. Repo ids ending in .gguf are real on the Hub, an
-// iMat repo among them, and those hold every quant of a model: reading one as a single
-// file drops its variant and collapses Q4 and Q8 onto the same key. So the id also has to
-// name something on this machine, which a repo id never does.
+// A scanned standalone .gguf, keyed by its on-disk path with no variant: it has no quant to
+// choose between, and adopting the filename label would key one file's config two ways
+// (settings-identity.ts applies the same rule to a Hub row). The suffix alone does not say that:
+// repo ids ending in .gguf are real on the Hub, an iMat repo among them, and those hold every
+// quant, so reading one as a single file would collapse Q4 and Q8 onto the same key. The id has
+// to name something on this machine too, which a repo id never does.
 export function isStandaloneGgufPath(
   modelId: string | null | undefined,
 ): boolean {

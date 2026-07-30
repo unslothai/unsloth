@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One-time backfill of per-model settings into the server override map.
-//
-// Settings used to live only in this browser, so on upgrade an already-configured model
-// still shows as remembered while an API load uses app defaults.
+// One-time backfill of per-model settings into the server override map. Settings used to live
+// only in this browser, so on upgrade an already-configured model still shows as remembered
+// while an API load uses app defaults.
 
 import {
   isNativeFileLabel,
@@ -45,11 +44,9 @@ function markRan(): void {
 }
 
 /**
- * A server key under the same identity this browser stores.
- *
- * `app_settings` has no schema version, so an old install holds keys the backend resolves
- * to this model while an exact lookup calls them missing and overwrites them. The
- * quant-aware split folds repo ids and leaves POSIX paths alone.
+ * A server key under the same identity this browser stores. `app_settings` has no schema
+ * version, so an old install holds keys the backend resolves to this model while an exact lookup
+ * calls them missing and overwrites them. The split folds repo ids and leaves POSIX paths alone.
  */
 function normalizedOverrideKey(key: string): string {
   const split = splitQuantSuffix(key);
@@ -63,10 +60,8 @@ function normalizedOverrideKey(key: string): string {
 }
 
 /**
- * The fields *config* would contribute that the stored entry does not hold.
- *
- * A malformed entry (nothing constrains what an older install wrote into
- * app_settings) counts as holding nothing, so the migration still runs.
+ * The fields *config* would contribute that the stored entry does not hold. A malformed entry
+ * (nothing constrains what an older install wrote) counts as holding nothing.
  */
 function absentFields(
   stored: ApiModelOverride,
@@ -80,12 +75,10 @@ function absentFields(
 }
 
 /**
- * Push local settings the server does not hold. Never deletes and never overwrites: a
- * value already there is the newer authority.
- *
- * Field by field, not entry by entry: a legacy entry holds only llama_extra_args and
- * max_seq_length, so treating the key as done would skip exactly the settings this
- * migration exists to carry and then mark it complete.
+ * Push local settings the server does not hold. Never deletes and never overwrites: a value
+ * already there is the newer authority. Field by field, not entry by entry, since a legacy entry
+ * holds only llama_extra_args and max_seq_length, so treating the key as done would skip exactly
+ * the settings this migration exists to carry.
  */
 export async function backfillModelOverrides(): Promise<void> {
   if (alreadyRan()) {

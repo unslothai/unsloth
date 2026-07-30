@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Identity of one ModelConfigPage editor instance.
-//
-// ModelConfigPage seeds its state from `loadedConfig` in a useState initializer, so it
-// reads that prop once per mount. A host that opens the page before status has hydrated
-// gets null first and the live config a moment later; without the config in the React
-// key the instance survives that flip and keeps showing saved/default values, which
-// Apply then writes back over the running model.
+// Identity of one ModelConfigPage editor instance. The page seeds its state from `loadedConfig`
+// in a useState initializer, so it reads that prop once per mount: a host that opens it before
+// status hydrates gets null first and the live config a moment later, and without the config in
+// the React key the instance survives that flip and keeps showing saved values, which Apply
+// then writes back over the running model.
 
 import type { PerModelConfig } from "./per-model-config";
 
@@ -40,10 +38,8 @@ function hashString(value: string): number {
 }
 
 /**
- * Signature of the live config an editor was seeded from.
- *
- * `null` (not resident, or status has not answered yet) is deliberately its own value:
- * the arrival of the live config is exactly the transition that has to remount.
+ * Signature of the live config an editor was seeded from. `null` (not resident, or status has
+ * not answered yet) is its own value: the arrival of the live config must remount.
  */
 export function loadedConfigSignature(
   config: PerModelConfig | null | undefined,

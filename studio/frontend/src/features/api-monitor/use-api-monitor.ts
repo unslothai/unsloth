@@ -77,9 +77,8 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let requests = 0;
 
   for (const entry of entries) {
-    // A load, unload or download is not an HTTP call: it reads as "running" throughout,
-    // so counting it invents an in-flight request and folds a download into "Avg
-    // latency". The backend leaves these out of active_count too.
+    // A load, unload or download is not an HTTP call: it reads as "running" throughout, so
+    // counting it invents an in-flight request. The backend leaves these out of active_count.
     if (entry.kind === "lifecycle") {
       continue;
     }
@@ -175,12 +174,10 @@ interface UseApiMonitorResult {
 }
 
 /**
- * Live view of the server's OpenAI-compatible API traffic.
- *
- * Polls rather than streams because the backing monitor is a ring buffer with no change
- * feed. Polling self-reschedules (never overlapping), and pausing stops it so reading a
- * payload is not fighting a list that reorders. `intervalMs` trades freshness for cost:
- * the closed overlay slows right down while only watching for traffic to pop it open.
+ * Live view of the server's OpenAI-compatible API traffic. Polls rather than streams because the
+ * backing monitor is a ring buffer with no change feed. Polling self-reschedules (never
+ * overlapping), and pausing stops it so reading a payload is not fighting a reordering list.
+ * `intervalMs` trades freshness for cost: the closed overlay slows right down.
  */
 export function useApiMonitor({
   intervalMs = POLL_INTERVAL_MS,

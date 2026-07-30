@@ -1734,9 +1734,8 @@ def test_an_empty_status_is_read_against_the_idle_unload_setting():
     checkpoint only while the loop is armed."""
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     adopt = " ".join(_read("features/hub/lib/adopt-inference-status.ts").split())
-    # Awaited, not raced: the first status read is the one most likely to land on an
-    # evicted model, and an unresolved default of false would clear a checkpoint the
-    # idle loop is about to bring back.
+    # Awaited, not raced: the first status read is the one most likely to land on an evicted
+    # model, and an unresolved default of false would clear a checkpoint that is coming back.
     assert (
         "Promise.all([getInferenceStatus(), readIdleUnloadArmed()]) "
         ".then(([status, idleUnloadArmed]) => {" in hub
@@ -1796,10 +1795,9 @@ def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
     repo id; the server backfill only mirrors what is stored, so nothing else moves it."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function adoptLegacyConfigKey(" in config
-    # The key is renamed in one write. Saving the second copy before dropping the first puts
-    # a full map one entry over its budget, and savePerModelConfig then evicts the oldest
-    # unrelated model, silently and still reporting success, with no eviction list handed
-    # back here, so that model's server override outlives its settings.
+    # The key is renamed in one write. Saving the second copy first puts a full map one entry
+    # over budget, and savePerModelConfig then evicts the oldest unrelated model silently, with
+    # no eviction list handed back here, so that model's server override outlives its settings.
     assert "savePerModelConfig(modelId, ggufVariant, legacy)" not in config
     assert (
         "const alreadySaved = findConfigKeyForModelVariant(map, modelId, ggufVariant) "

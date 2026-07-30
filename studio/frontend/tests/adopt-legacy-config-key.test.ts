@@ -50,9 +50,8 @@ const MAX_ENTRIES = 500;
 const BIG_TEMPLATE = "x".repeat(60_000);
 const TEMPLATE_MODELS = 16;
 
-// The values have to be asserted, not just the key. Passing the config where the quant
-// goes writes an all-defaults record (normalize rejects the string, isDefaultConfig then
-// takes the delete branch) and reports success, after which the legacy record is dropped
+// The values have to be asserted, not just the key. Passing the config where the quant goes
+// writes an all-defaults record and reports success, after which the legacy record is dropped
 // anyway, so a key-count or source-substring check still reads as a successful move.
 test("a legacy-keyed config moves to the current id with its values", () => {
   store.clear();
@@ -119,10 +118,9 @@ test("nothing to move is not a move", () => {
   assert.equal(listPerModelConfigs().length, 1);
 });
 
-// A save before the delete holds two copies of the record at once, which is one entry over
-// a full map. savePerModelConfig then evicts the oldest unrelated model to fit, silently
-// and still reporting success, and this path passes no eviction list, so that model's
-// server override keeps applying to API loads with nothing in the UI able to forget it.
+// A save before the delete holds two copies at once, one entry over a full map, and
+// savePerModelConfig then evicts the oldest unrelated model silently. This path passes no
+// eviction list, so that model's server override outlives anything the UI could forget.
 test("moving a legacy key at the entry budget keeps every other model", () => {
   store.clear();
   // A full map, with the stale record saved partway through so it is not the oldest entry

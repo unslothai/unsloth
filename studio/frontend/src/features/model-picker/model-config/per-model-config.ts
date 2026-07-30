@@ -507,9 +507,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
 }
 
 /**
- * A config in the exact shape storage keeps it in: the UI carries sentinels storage does
- * not (Speculative Decoding "auto" canonicalizes to null), so an edited config would
- * otherwise read as non-default when it is not.
+ * A config in the exact shape storage keeps it in: the UI carries sentinels storage does not
+ * (Speculative Decoding "auto" canonicalizes to null), which would read as non-default.
  */
 export function normalizePerModelConfig(raw: unknown): PerModelConfig {
   return normalize(raw);
@@ -765,14 +764,10 @@ export function deletePerModelConfig(
  * is already stored, so without this the model reads as never remembered and comes up on
  * defaults after an upgrade.
  *
- * Returns whether anything moved. A config already saved under *modelId* wins and the
- * stale record is dropped, so this can never overwrite a newer save.
- *
- * The key is renamed in one write rather than saved and then deleted. Holding both copies
- * at once puts the map over its entry or byte budget when it is already at it, and the
- * save then evicts the oldest unrelated model: silently, still reporting success, and with
- * no eviction list to hand back, so that model's server override keeps applying to API
- * loads while nothing in the UI has it to forget. A rename cannot grow the entry count.
+ * The key is renamed in one write rather than saved and then deleted: holding both copies at once
+ * puts an already-full map over its budget, and the save then evicts the oldest unrelated model
+ * silently, with no eviction list to hand back, so that model's server override outlives anything
+ * the UI could forget. A rename cannot grow the entry count.
  */
 export function adoptLegacyConfigKey(
   modelId: string,
@@ -811,10 +806,9 @@ export function adoptLegacyConfigKey(
     const [key] = storageKeysForModelVariant(modelId, ggufVariant);
     map[key] = toStoredConfig(legacy);
   }
-  // Only the key strings change length, and a repo id is normally shorter than the
-  // snapshot path it replaces. If it is not, and that tips the map past its byte cap,
-  // leave storage exactly as it was: the stale record is still readable and a later
-  // attempt can still move it, where evicting an unrelated model would not be undoable.
+  // Only the key strings change length, and a repo id is normally shorter than the snapshot
+  // path it replaces. If it is not, and that tips the map past its byte cap, leave storage as
+  // it was: the stale record is still readable, where an eviction would not be undoable.
   const bytesAfter = serializedMapSize(map);
   if (
     bytesAfter > bytesBefore &&
@@ -839,18 +833,14 @@ export function resolveInitialConfig(
 /**
  * Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
  *
- * An API auto-switch hands the loader the concrete snapshot path (the resolver index
- * only ever holds paths), so ``model_identifier`` names that path while this model's
- * settings are keyed by its repo id -- what ``modelConfigIdentity`` writes for a cached
- * repo, and what the backend's override lookup already tries alongside the path. Reading
- * the raw identifier alone therefore reports the resident model as unremembered, blanking
- * a control the model is running with; the next save then writes that blank back over the
- * saved record.
- *
- * Only a namespaced collapse is adopted, the rule ``residentModelIdMatches`` applies: an
- * HF snapshot path collapses onto a repo id that names exactly one model, while every
- * other path collapses onto a file stem two models can share, and reading a stem would
- * apply one model's saved settings to another.
+ * An API auto-switch hands the loader the concrete snapshot path (the resolver index only holds
+ * paths), so ``model_identifier`` names that path while this model's settings are keyed by its
+ * repo id -- what ``modelConfigIdentity`` writes for a cached repo, and what the backend's
+ * override lookup already tries alongside the path. Reading the raw identifier alone reports the
+ * resident model as unremembered, blanking a control it is running with, which the next save then
+ * writes back over the saved record. Only a namespaced collapse is adopted, the rule
+ * ``residentModelIdMatches`` applies: an HF snapshot collapses onto a repo id naming exactly one
+ * model, while every other path collapses onto a stem two models can share.
  */
 export function resolveResidentInitialConfig(
   modelId: string,

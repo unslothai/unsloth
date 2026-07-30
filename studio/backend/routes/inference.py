@@ -1827,9 +1827,8 @@ def _request_used_api_key(request: Any) -> bool:
     what separates "someone is using Unsloth as an API server" from "someone is
     using Unsloth".
     """
-    # Total by construction: this decides a monitor label, and a load must not fail
-    # over one. Only a real Request is guaranteed to hand back a string here, and
-    # the load routes are driven with stand-ins too.
+    # Total by construction: this only decides a monitor label and must never fail a
+    # load. Only a real Request hands back a string; the load routes take stand-ins too.
     try:
         header = request.headers.get("authorization")
     except Exception:
@@ -4559,14 +4558,13 @@ async def _maybe_auto_switch_model(
                             _record_serving_alias()
                             return
                         # Apply the saved launch config so an API swap loads as the picker
-                        # would. Variant-qualified keys first (quants of one repo differ),
-                        # then bare ids, and within each pair the load path before the
-                        # advertised id: the settings UI keys every local row by that path
-                        # while override_id is only a derived alias, so reading the alias
-                        # first let an older entry shadow the settings just saved. A cached
-                        # repo has no path entry and resolves on the second try. An early
-                        # build keyed a loose .gguf by its filename label, so read
-                        # "<path>:LABEL" too, after the bare path the picker writes today.
+                        # would. Order: variant-qualified keys before bare ids, and the
+                        # load path before the advertised id, since the settings UI keys
+                        # local rows by that path while override_id is a derived alias, so
+                        # reading the alias first let an older entry shadow a fresh save. A
+                        # cached repo has no path entry and resolves on the second try; an
+                        # early build keyed a loose .gguf by its filename label, so
+                        # "<path>:LABEL" is read too, after the bare path used today.
                         file_variant = None
                         if not variant and target_id.lower().endswith(".gguf"):
                             from hub.utils.gguf import extract_quant_label
@@ -4616,9 +4614,8 @@ async def _maybe_auto_switch_model(
                                 current_request_counted = True,
                             )
                         except HTTPException as exc:
-                            # The pre-flight check cannot mirror every loader gpu_ids
-                            # rule, and a stale placement must never block a request,
-                            # so retry once without the saved pin.
+                            # The pre-flight check cannot mirror every loader gpu_ids rule,
+                            # and a stale pin must never block a request, so retry without it.
                             if not (
                                 exc.status_code == 400
                                 and load_kwargs.get("gpu_ids")

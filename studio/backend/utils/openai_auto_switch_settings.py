@@ -253,7 +253,6 @@ def set_openai_auto_switch(
 # so an API load applies the same launch settings the picker would. Legacy entries hold just
 # {llama_extra_args, max_seq_length}. Every field is optional and absent means "app default";
 # a write replaces the fields it expresses, so the route carries `llama_extra_args` over.
-#
 # Known gap: the picker's global fallbacks for GPU memory mode and speculative decoding live
 # in browser localStorage, so an API load of a model following the global gets the default.
 
@@ -522,9 +521,8 @@ def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
         _BPW_SUFFIX.sub("", tail)
     ):
         return head, tail
-    # A .gguf with no quant token is labelled by its stem ("...CustomModel.gguf:custommodel").
-    # Storage lowercases the label while the scanner keeps filename casing, hence the
-    # case-insensitive compare. Requiring exactly that label keeps an ordinary colon out.
+    # A .gguf with no quant token is labelled by its stem, lowercased in storage while the
+    # scanner keeps filename casing. Requiring exactly that label keeps an ordinary colon out.
     if not head.lower().endswith(".gguf"):
         return None
     filename = head.replace("\\", "/").rsplit("/", 1)[-1]
@@ -575,9 +573,9 @@ def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
     """
     if not isinstance(model_id, str):
         return []
-    # POSIX paths are case-sensitive, so folding "/models/Foo.gguf" onto "/models/foo.gguf"
-    # would replay another model's settings. Windows drive, UNC and WSL paths do fold, and
-    # the browser folds exactly those before storing, so not folding them here strands them.
+    # POSIX paths are case-sensitive, so folding two casings would replay another model's
+    # settings. Windows drive, UNC and WSL paths do fold, and so does the browser before
+    # storing, so not folding them here strands them.
     if _looks_like_filesystem_path(model_id):
         folded = _fold_case_insensitive_path(model_id)
         if folded is not None:

@@ -4496,9 +4496,8 @@ def test_the_retired_snapshot_path_entry_hands_over_its_launch_flags(override_st
 
 
 def test_a_snapshot_path_save_retires_the_repo_id_entry(override_store):
-    # The same rule the other way round: a row the picker still keys by its path (an
-    # inactive cache reached as a local row) must not be shadowed either, so whichever
-    # spelling was saved last is the one that survives.
+    # The same rule the other way round: a row the picker still keys by its path (an inactive
+    # cache reached as a local row) must not be shadowed, so the last spelling saved survives.
     settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
 
     resp = _put(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
@@ -4516,9 +4515,8 @@ def test_forgetting_a_cached_repo_also_clears_its_snapshot_path_entry(override_s
 
 
 def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
-    # Only the same repo and the same quant fold together. A ./models path is keyed by
-    # its path and by nothing else, another quant has its own settings, and a bare entry
-    # backs every quant of the repo, so the path-first read order still finds all three.
+    # Only the same repo and the same quant fold together: a ./models path is keyed by its path
+    # alone, another quant has its own settings, and a bare entry backs every quant.
     settings.set_model_override("/models/local/x.gguf:Q4_K_M", max_seq_length = 1024)
     settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q8_0", max_seq_length = 2048)
     settings.set_model_override(_LEGACY_SNAPSHOT, max_seq_length = 4096)
@@ -4925,9 +4923,8 @@ def test_forget_clears_the_filename_derived_key_a_load_still_reads(override_stor
 
 
 def test_forget_clears_the_bare_repo_entry_the_quant_inherited_from(override_store):
-    # A save under repo:QUANT copies the flags off a legacy bare entry and leaves it in
-    # place, and the loader falls back to it when the qualified key misses. Clearing only
-    # the qualified key hands the same flags straight back on the next load.
+    # A save under repo:QUANT copies the flags off a legacy bare entry and leaves it in place,
+    # and the loader falls back to it, so clearing only the qualified key hands them back.
     settings.set_model_override(
         "unsloth/B-GGUF",
         llama_extra_args = ["--flash-attn"],

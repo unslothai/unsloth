@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Server-side mirror of the per-model config.
-//
-// ../model-config/per-model-config.ts lives in browser localStorage, so an API
-// auto-switch load (no browser in the loop) came up with none of the user's settings.
-// routes/inference.py reads this map and rebuilds the LoadRequest the picker would send.
+// Server-side mirror of the per-model config. ../model-config/per-model-config.ts lives in
+// browser localStorage, so an API auto-switch load (no browser in the loop) came up with none of
+// the user's settings. routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -73,11 +71,10 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
 }
 
 /**
- * Translate the UI's per-model config into the backend's schema.
- *
- * Only fields the user set are sent: an absent field reads as "app default", so nulls
- * would pin defaults and stop the model following later global changes. A `null` config
- * clears the entry. Exported so the backfill can compare it against the stored entry.
+ * Translate the UI's per-model config into the backend's schema. Only fields the user set are
+ * sent: an absent field reads as "app default", so nulls would pin defaults and stop the model
+ * following later global changes. A `null` config clears the entry. Exported so the backfill
+ * can compare it against the stored entry.
  */
 export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (!config) {
@@ -120,12 +117,10 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (typeof config.nCpuMoe === "number" && config.nCpuMoe > 0) {
     payload.n_cpu_moe = config.nCpuMoe;
   }
-  // Only a physical pin travels. The same integers mean a Vulkan ordinal under Vulkan
-  // and a CUDA/ROCm device index elsewhere, and the override carries no namespace to say
-  // which, so after a backend change the server would accept them in the wrong one and
-  // pin the model to a different device -- its availability check cannot catch that,
-  // because the ids are valid there too. An absent kind is a record written before the
-  // field existed, which was physical-only. Dropping the pin leaves automatic placement.
+  // Only a physical pin travels. The same integers are a Vulkan ordinal under Vulkan and a
+  // CUDA/ROCm index elsewhere, and the override carries no namespace, so after a backend change
+  // the server would pin a different device with ids its availability check accepts. An absent
+  // kind predates the field, which was physical-only. Dropping the pin leaves auto placement.
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
   if (
     config.selectedGpuIds &&
@@ -143,19 +138,15 @@ const writesByKey = new Map<string, Promise<void>>();
 
 export interface PutModelOverrideOptions {
   /**
-   * Fill in only what is missing: every value already on the server stays as it is.
-   *
-   * The backfill reads the map once then writes each model in turn, so another tab's
-   * save would be overwritten by this browser's older copy. Field level, so a legacy
-   * entry gains the browser-only fields without the server losing anything.
+   * Fill in only what is missing: every value already on the server stays as it is. The backfill
+   * reads the map once then writes each model in turn, so another tab's save would be overwritten
+   * by this browser's older copy. Field level, so a legacy entry gains the browser-only fields.
    */
   fillAbsentFields?: boolean;
   /**
-   * Clear the fields this UI mirrors but leave the server's own launch flags alone.
-   *
-   * Evicting a local entry for the storage budget is not a forget, so it must not take
-   * `llama_extra_args` the page can neither show nor restore. The route still drops the
-   * row once nothing is left in it.
+   * Clear the fields this UI mirrors but leave the server's own launch flags alone. Evicting a
+   * local entry for the storage budget is not a forget, so it must not take `llama_extra_args`
+   * the page can neither show nor restore. The route drops the row once nothing is left in it.
    */
   keepLaunchFlags?: boolean;
 }
@@ -225,10 +216,9 @@ async function sendModelOverride(
 }
 
 /**
- * Mirror a per-model config save to the backend without blocking the UI.
- *
- * Best-effort: the localStorage write already happened, so a failed sync must not fail
- * the save. Logged, not toasted: an API load falls back to defaults until the next save.
+ * Mirror a per-model config save to the backend without blocking the UI. Best-effort: the
+ * localStorage write already happened, so a failed sync must not fail the save. Logged, not
+ * toasted: an API load falls back to defaults until the next save.
  */
 export function syncModelOverride(
   modelId: string,

@@ -121,10 +121,9 @@ function ggufQuantLabel(filename: string): string {
 }
 
 /**
- * `[head, quant]` for a `head:QUANT` key, or null when the colon is not one.
- *
- * The suffix must look like a real quant, so an ordinary colon in a POSIX filename
- * ("/models/foo:bar.gguf") and a Windows drive letter are left alone.
+ * `[head, quant]` for a `head:QUANT` key, or null when the colon is not one. The suffix must
+ * look like a real quant, so an ordinary colon in a POSIX filename and a drive letter are left
+ * alone.
  */
 export function splitQuantSuffix(value: string): [string, string] | null {
   const separator = value.lastIndexOf(":");

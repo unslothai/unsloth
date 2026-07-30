@@ -1046,13 +1046,11 @@ export function ModelConfigPage({
     } else {
       saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
     }
-    // Mirror to the server so an API load of this model gets these settings, not app
-    // defaults. Best-effort: the localStorage write above already governs this browser.
-    //
-    // Skipped when the local write failed, or the two would permanently disagree. Gated
-    // on auto-switch reach, not just GGUF-ness, since the resolver skips Ollama. A
-    // native-path lease is the same case: this id is only the file's display name, which
-    // the resolver never keys. The token, not the name, decides.
+    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort:
+    // the localStorage write above already governs this browser, and it is skipped when that
+    // write failed, or the two would permanently disagree. Gated on auto-switch reach, not just
+    // GGUF-ness, since the resolver skips Ollama, and a native-path lease is the same case: the
+    // id is only the file's display name, which the resolver never keys.
     if (
       !saveFailed &&
       (target.apiLoadable ?? target.isGguf) &&

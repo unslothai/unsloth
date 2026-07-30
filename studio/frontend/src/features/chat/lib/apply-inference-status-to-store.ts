@@ -400,12 +400,10 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
-    // The one load param that only ever seeded from null, so a switch left the previous
-    // model's template in the store. The Hub settings page reads that as the new model's
-    // loaded config, and Apply or Remember then saves A's template under B and reloads B
-    // with the wrong prompt format. Re-seeding needs BOTH guards the fields above use:
-    // seedLoadParams alone is just "no load in flight", so it holds on an ordinary poll
-    // and would overwrite an unsaved edit every refresh.
+    // The one load param that only ever seeded from null, so a switch left the previous model's
+    // template in the store, which the Hub settings page reads as the new model's loaded config:
+    // Apply then saves A's template under B. Re-seeding needs BOTH guards the fields above use,
+    // since seedLoadParams alone is just "no load in flight" and holds on an ordinary poll.
     ...(status.chat_template_override !== undefined &&
       seedLoadParams &&
       (hydratingExistingModel ||

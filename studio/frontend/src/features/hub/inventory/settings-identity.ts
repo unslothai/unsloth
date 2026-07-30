@@ -6,11 +6,10 @@
 import type { CachedInventoryRow, LocalInventoryRow } from "./types";
 
 /**
- * The GGUF variant a settings page keys this row's config by, before any per-repo lookup.
- *
- * A standalone `.gguf` has no quant to choose between, but the inventory still labels it
- * from its filename. Adopting that label would key its settings to `<path>:Q4_K_M` while
- * every other surface uses the bare path, leaving two configs for one file.
+ * The GGUF variant a settings page keys this row's config by, before any per-repo lookup. A
+ * standalone `.gguf` has no quant to choose between, but the inventory still labels it from its
+ * filename, and adopting that label would key its settings to `<path>:Q4_K_M` while every other
+ * surface uses the bare path, leaving two configs for one file.
  */
 export function settingsGgufVariantForRow(
   row: CachedInventoryRow | LocalInventoryRow,

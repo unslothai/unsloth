@@ -442,10 +442,9 @@ class ApiMonitor:
                 if entry.shared and entry.status != "running":
                     hidden.add(entry.id)
             # Shared rows are hidden, never dropped, even when owned: they are another
-            # caller's history too. An own row still running is not history either, by the
-            # same rule applied to shared rows just above, and dropping it loses the request
-            # outright: active_count falls to zero and the finish or fail that follows has
-            # no entry left to land on.
+            # caller's history too. An own running row is not history either, and dropping
+            # it loses the request outright: active_count falls to zero and the finish or
+            # fail that follows has no entry left to land on.
             self._entries = deque(
                 entry
                 for entry in self._entries

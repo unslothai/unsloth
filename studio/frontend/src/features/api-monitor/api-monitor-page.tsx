@@ -512,11 +512,10 @@ export function ApiMonitorPage(): ReactElement {
         return;
       }
       await unloadModel({ model_path: checkpoint });
-      // As in the chat eject flow, but only when the store holds the model just
-      // unloaded: chat can have an external provider selected while a local model stays
-      // resident, and clearCheckpoint would delete a selection this button never touched.
-      // Both spellings, since status reports the load path while the store may hold the
-      // advertised repo id.
+      // As in the chat eject flow, but only when the store holds the model just unloaded: chat
+      // can have an external provider selected while a local model stays resident, and
+      // clearCheckpoint would delete a selection this button never touched. Both spellings,
+      // since status reports the load path while the store may hold the advertised repo id.
       const store = useChatRuntimeStore.getState();
       const selected = store.params.checkpoint;
       const unloadedAliases = [checkpoint, status.active_model];
