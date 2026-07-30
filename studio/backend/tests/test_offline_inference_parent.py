@@ -375,3 +375,118 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
         # The user's own flag still wins in both.
         assert inf.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1
         assert trn.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1
+
+
+class TestLocalLoraTrainingJobStillProbes:
+    """A local adapter can name a remote base, which activation resolves and later
+    training and security code fetches, so the job is not filesystem-only."""
+
+    def _worker(self):
+        import importlib.util
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location(
+            "training_worker_lora_gate", backend_root / "core" / "training" / "worker.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_local_adapter_with_a_remote_base_is_not_local(self, tmp_path):
+        import json
+
+        w = self._worker()
+        (tmp_path / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": "org/base"}), encoding = "utf-8",
+        )
+        assert w._training_job_is_local({"model_name": str(tmp_path)}) is False
+
+    def test_local_adapter_with_a_local_base_is_local(self, tmp_path):
+        import json
+
+        w = self._worker()
+        base = tmp_path / "base"
+        base.mkdir()
+        (tmp_path / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": str(base)}), encoding = "utf-8",
+        )
+        assert w._training_job_is_local({"model_name": str(tmp_path)}) is True
+
+    def test_a_plain_local_checkpoint_is_still_local(self, tmp_path):
+        w = self._worker()
+        assert w._training_job_is_local({"model_name": str(tmp_path)}) is True
+
+    def test_a_null_recorded_base_does_not_force_a_probe(self, tmp_path):
+        import json
+
+        w = self._worker()
+        (tmp_path / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": None}), encoding = "utf-8",
+        )
+        assert w._training_job_is_local({"model_name": str(tmp_path)}) is True
+
+    def test_both_workers_agree(self, tmp_path):
+        """The two gates must classify the same adapter the same way."""
+        import importlib.util
+        import json
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        (tmp_path / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": "org/base"}), encoding = "utf-8",
+        )
+        spec = importlib.util.spec_from_file_location(
+            "inference_worker_lora_gate", backend_root / "core" / "inference" / "worker.py",
+        )
+        inf = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inf)
+
+        base = inf._recorded_local_adapter_base(str(tmp_path))
+        assert inf._hub_targets_are_local(str(tmp_path), base) is False
+        assert self._worker()._training_job_is_local({"model_name": str(tmp_path)}) is False
+
+
+class TestLoadRouteResolvesConfigOffTheLoop:
+    """_load_model_impl is awaited directly by the route, so a guard that can spend
+    seconds on DNS plus a HEAD and its TCP fallback must not run inline."""
+
+    def test_the_guard_and_config_resolution_run_in_a_thread(self):
+        import ast
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
+        tree = ast.parse(src)
+
+        impl = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "_load_model_impl"
+        )
+        threaded = set()
+        for node in ast.walk(impl):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "to_thread" and node.args):
+                name = getattr(node.args[0], "id", None)
+                if name:
+                    threaded.add(name)
+        assert "_resolve_config" in threaded, (
+            "the load guard must be awaited off the event loop, as /validate does"
+        )
+
+        # And nothing in that function may enter the guard inline any more.
+        bad = [
+            n.lineno for n in ast.walk(impl)
+            if isinstance(n, ast.With) and any(
+                isinstance(i.context_expr, ast.Call)
+                and (getattr(i.context_expr.func, "id", "") or "").startswith(
+                    "_hf_offline_if_unreachable"
+                )
+                for i in n.items
+            )
+            and not any(
+                isinstance(p, ast.FunctionDef) and n in ast.walk(p)
+                for p in ast.walk(impl)
+            )
+        ]
+        assert bad == [], f"guard still entered inline on the event loop at {bad}"

@@ -5678,14 +5678,19 @@ async def _load_model_impl(
         cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
-        # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
-        # checks before the worker starts.
-        with _hf_offline_if_unreachable_for(model_identifier):
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
-            )
+        # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
+        # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
+        # its TCP fallback, and this handler is awaited directly by the route, so running
+        # it inline would stall every unrelated request. Same shape as /validate.
+        def _resolve_config():
+            with _hf_offline_if_unreachable_for(model_identifier):
+                return ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
+
+        config = await asyncio.to_thread(_resolve_config)
 
         if not config:
             raise HTTPException(
