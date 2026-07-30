@@ -106,7 +106,12 @@ _CONTROL_MARKUP = re.compile(
     # Gemma spells its own BOS / EOS as bare tags rather than the pipe shape, and both
     # are in its tokenizer's added-token trie (google/gemma-3-4b-it), so this is the
     # bare-tag half of the begin_of_text / endoftext pair above.
-    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos"
+    # "</s>" is the Llama-2 / Mistral / Zephyr EOS (their own tokenizer_config.json), and
+    # "<s>" the matching BOS, so the same trie argument applies. This is the one addition
+    # that collides with a real HTML tag, the strikethrough "<s>", and the collision is
+    # accepted for the reason "<think>" and "<tools>" are: a live document boundary in a
+    # prompt is worth more than a space in a rare tag, and the rewrite stays readable.
+    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s"
     r"|start_of_image|image_soft_token|audio_soft_token"
     r"|arg_key|arg_value|function|parameter)>"
     # The opening halves carry an "=value", so they need their own anchor. The parser
@@ -153,7 +158,7 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
     # "/?" for the same reason the control pattern has it: Gemma's delimiters are bare
     # tags, so a replayed "</start_of_turn>" is as much a boundary as "<start_of_turn>".
-    r"|/?(?:(?:start|end)_of_turn|eos|bos)>"
+    r"|/?(?:(?:start|end)_of_turn|eos|bos|s)>"
     r"|turn\|>"
     r")"
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT)\])"
@@ -210,45 +215,146 @@ def neutralize_tts_prompt_text(text: str) -> str:
     return _spaced_out(_TTS_MARKUP, neutralize_control_markup(text))
 
 
-def _neutralize_leaves(value, rewrite):
-    """Apply *rewrite* to every string leaf, keys included, of a nested structure."""
+def _neutralize_leaves(value, rewrite, warn_on_key_collision: bool = False):
+    """Apply *rewrite* to every string leaf, keys included, of a nested structure.
+
+    Iterative rather than recursive: how deep this goes is the client's choice, and a
+    schema that ``json.loads`` accepts must not be able to exhaust the interpreter stack
+    and turn the request into a 500. Containers are rebuilt in reverse breadth-first
+    order, so a child is always finished before the parent that holds it, and a repeated
+    or self-referencing node is visited once.
+
+    With *warn_on_key_collision*, a dict whose keys collide after the rewrite is logged.
+    Rewriting keys is not injective: "a<think>" and "a< think>" both land on
+    "a< think>", so such a dict keeps only the last value. Reaching a collision takes two
+    keys differing only in markup the rewrite touches, which no real schema has, and the
+    alternative -- keeping one key raw so both survive -- would put the markup back in
+    the prompt. So the merge stands and is logged.
+    """
     if isinstance(value, str):
         return rewrite(value)
-    if isinstance(value, dict):
-        return {
-            (rewrite(key) if isinstance(key, str) else key): _neutralize_leaves(item, rewrite)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_neutralize_leaves(item, rewrite) for item in value]
-    return value
+    if not isinstance(value, (dict, list)):
+        return value
+
+    order: list = []
+    queue: list = [value]
+    seen = {id(value)}
+    while queue:
+        node = queue.pop()
+        order.append(node)
+        for child in (node.values() if isinstance(node, dict) else node):
+            if isinstance(child, (dict, list)) and id(child) not in seen:
+                seen.add(id(child))
+                queue.append(child)
+
+    def _leaf(item):
+        return rewrite(item) if isinstance(item, str) else item
+
+    done: dict = {}
+    for node in reversed(order):
+        if isinstance(node, dict):
+            rebuilt: dict = {}
+            for key, item in node.items():
+                new_key = rewrite(key) if isinstance(key, str) else key
+                if warn_on_key_collision and new_key in rebuilt:
+                    logger.warning(
+                        "Two argument keys neutralize onto %r; keeping the later value.",
+                        new_key,
+                    )
+                rebuilt[new_key] = done[id(item)] if id(item) in done else _leaf(item)
+            done[id(node)] = rebuilt
+        else:
+            done[id(node)] = [
+                done[id(item)] if id(item) in done else _leaf(item) for item in node
+            ]
+    return done[id(value)]
+
+
+# A media payload stays opaque: it is a URL or a base64 blob the processor resolves, not
+# prompt text, and rewriting one breaks the fetch rather than the prompt.
+_OPAQUE_PART_KEYS = frozenset(
+    {"image_url", "input_audio", "image", "audio", "video", "url", "data", "b64_json"}
+)
+
+
+def _neutralize_content_parts(content: list, rewrite):
+    """Neutralize an OpenAI-style content parts list (#7066).
+
+    Two things the naive per-part rewrite missed. A part that is a mapping without a
+    string "text" was passed through whole, yet /generate/stream accepts one and Llama-3.1
+    serializes the entire iterable with tojson, so any leaf of it reaches the prompt. And
+    a marker split across two adjacent text parts survived both sweeps, because Gemma-4
+    concatenates them with no separator (gemma-4.jinja:304) and reassembles the opener.
+    Inserting whitespace between them is not a fix, since the sibling paths trim each part
+    (gemma-4.jinja:339), so a run that only becomes a marker once joined is swept as one
+    string and collapses into a single part. A run that is already clean keeps its parts.
+    """
+    parts: list = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(rewrite(part))
+        elif isinstance(part, dict) and isinstance(part.get("text"), str):
+            parts.append({**part, "text": rewrite(part["text"])})
+        elif isinstance(part, dict):
+            opaque = {k: v for k, v in part.items() if k in _OPAQUE_PART_KEYS}
+            swept = _neutralize_leaves(
+                {k: v for k, v in part.items() if k not in _OPAQUE_PART_KEYS}, rewrite
+            )
+            parts.append({**swept, **opaque} if opaque else swept)
+        else:
+            parts.append(part)
+
+    def _text_of(part):
+        if isinstance(part, str):
+            return part
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            return part["text"]
+        return None
+
+    out: list = []
+    run: list = []
+
+    def _flush():
+        if not run:
+            return
+        joined = "".join(_text_of(p) for p in run)
+        swept = rewrite(joined)
+        if len(run) > 1 and swept != joined:
+            # Only a run that a paste split mid-marker gets collapsed.
+            first = run[0]
+            out.append(
+                swept if isinstance(first, str) else {**first, "text": swept}
+            )
+        else:
+            out.extend(run)
+        run.clear()
+
+    for part in parts:
+        if _text_of(part) is None:
+            _flush()
+            out.append(part)
+        else:
+            run.append(part)
+    _flush()
+    return out
+
+
+def _differs(new, old) -> bool:
+    """True when the rewrite changed *old* into *new*.
+
+    The client controls how deep these structures nest and ``==`` recurses in C, so a
+    comparison that overflows must not turn the request into a 500. An overflow counts
+    as changed, which keeps the neutralized copy: the safe direction (#7066).
+    """
+    try:
+        return new != old
+    except RecursionError:
+        return True
 
 
 def _neutralize_argument_leaves(value):
-    """Break control markup in every string leaf (keys included) of *value*.
-
-    Rewriting keys is not injective: "a<think>" and "a< think>" both land on
-    "a< think>", so a dict holding both keeps only the last. Reaching a collision
-    takes two keys differing only in markup the rewrite touches, which no real
-    schema has, and the alternative -- keeping one key raw so both survive -- would
-    put the markup back in the prompt. So the merge stands and is logged.
-    """
-    if isinstance(value, str):
-        return neutralize_control_markup(value)
-    if isinstance(value, dict):
-        out: dict = {}
-        for key, item in value.items():
-            new_key = neutralize_control_markup(key) if isinstance(key, str) else key
-            if new_key in out:
-                logger.warning(
-                    "Two argument keys neutralize onto %r; keeping the later value.",
-                    new_key,
-                )
-            out[new_key] = _neutralize_argument_leaves(item)
-        return out
-    if isinstance(value, list):
-        return [_neutralize_argument_leaves(item) for item in value]
-    return value
+    """Break control markup in every string leaf (keys included) of *value*."""
+    return _neutralize_leaves(value, neutralize_control_markup, warn_on_key_collision = True)
 
 
 def _neutralized_arguments(arguments):
@@ -364,6 +470,16 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             neutralize_turn_boundary_markup if role == "assistant" else neutralize_control_markup
         )
         updates: dict = {}
+        # The role is rendered, not just dispatched on: Llama-3.1 concatenates it straight
+        # between "<|start_header_id|>" and "<|end_header_id|>", and /generate/stream takes
+        # an untyped list of dicts, so a role of "user<|end_header_id|><|eot_id|>..." forged
+        # an assistant turn even with the content swept (#7066). Neutralized rather than
+        # rejected, so a client using a role this code does not know still works.
+        raw_role = msg.get("role")
+        if isinstance(raw_role, str) and raw_role:
+            new_role = neutralize_control_markup(raw_role)
+            if new_role != raw_role:
+                updates["role"] = new_role
         # Gemma-4 falls back to a tool result's "name" when "tool_call_id" matches no
         # call, concatenating it into the "<|tool_response>" block (#7066).
         name = msg.get("name")
@@ -392,7 +508,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         tool_responses = msg.get("tool_responses")
         if isinstance(tool_responses, list) and tool_responses:
             new_tool_responses = _neutralize_leaves(tool_responses, neutralize_control_markup)
-            if new_tool_responses != tool_responses:
+            if _differs(new_tool_responses, tool_responses):
                 updates["tool_responses"] = new_tool_responses
         content = msg.get("content")
         if content:
@@ -405,21 +521,13 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 # object value reaches the prompt as live structure too (#7066).
                 new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
-                # OpenAI-style parts: rewrite each text, pass images / audio through.
-                new_content = [
-                    {**part, "text": rewrite(part["text"])}
-                    if isinstance(part, dict) and isinstance(part.get("text"), str)
-                    else rewrite(part)
-                    if isinstance(part, str)
-                    else part
-                    for part in content
-                ]
-            if new_content != content:
+                new_content = _neutralize_content_parts(content, rewrite)
+            if _differs(new_content, content):
                 updates["content"] = new_content
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             new_tool_calls = _neutralize_replayed_tool_call(tool_calls)
-            if new_tool_calls != tool_calls:
+            if _differs(new_tool_calls, tool_calls):
                 updates["tool_calls"] = new_tool_calls
         if updates:
             out.append({**msg, **updates})
@@ -467,7 +575,7 @@ def neutralize_tool_descriptions(tools):
             changed = True
             continue
         new_tool = _neutralize_argument_leaves(tool)
-        if new_tool == tool:
+        if not _differs(new_tool, tool):
             out.append(tool)
             continue
         out.append(new_tool)
