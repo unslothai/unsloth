@@ -540,7 +540,10 @@ async def get_gguf_variants_response(
         hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None
 
         def _local_response(
-            response_repo_id: str, variants, has_vision: bool, complete = None
+            response_repo_id: str,
+            variants,
+            has_vision: bool,
+            complete = None,
         ) -> GgufVariantsResponse:
             """*complete* is the set of quants whose shards are all on disk.
 
@@ -611,9 +614,7 @@ async def get_gguf_variants_response(
             # offered from this directory has to resolve in it. Pass the
             # completed set rather than filtering: a torn quant stays listed to
             # resume or delete, it just is not reported downloaded.
-            return _local_response(
-                repo_id, variants, has_vision, _complete_quants_under(repo_id)
-            )
+            return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))
 
         # Reject invalid remote repo_ids up front (like download/delete) so a
         # malformed id returns 400 instead of a 500 from the HF client.
