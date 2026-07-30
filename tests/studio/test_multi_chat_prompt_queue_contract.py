@@ -143,6 +143,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "registerQueuedChatRunSettings(" in target
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
+    assert target.index("addQueuedChatRunSettingsThreadIds(settingsId") < target.index(
+        "syncPromptQueueUI()"
+    ) < target.index("await thread.append(")
     assert "let cancelled = false" in target
     assert "if (cancelled || !pendingSettingsIds.has(settingsId))" in target
     assert target.index("if (cancelled || !pendingSettingsIds.has(settingsId))") < target.index(

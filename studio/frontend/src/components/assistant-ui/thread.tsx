@@ -2175,6 +2175,10 @@ const Composer: FC<{
             ...getQueueThreadIds(),
             remoteId,
           ]);
+          // Initialization can replace a fresh thread's local id with a remote
+          // id. Refresh queue aliases before the run begins so stop dialogs
+          // deduplicate the two identities.
+          syncPromptQueueUI();
           await thread.append(appendTextToThread(prompt));
         } catch (error) {
           pendingSettingsIds.delete(settingsId);
