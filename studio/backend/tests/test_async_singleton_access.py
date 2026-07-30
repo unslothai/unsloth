@@ -24,6 +24,11 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+# Every read below pins utf-8. Path.read_text() defaults to the locale
+# encoding, which is cp1252 on Windows, and routes/inference.py carries 2442
+# non-ASCII bytes that cp1252 cannot decode (it dies on 0x81). Without this
+# these guards do not fail honestly on Windows -- they raise UnicodeDecodeError,
+# which reads as "the offload is missing" when nothing is wrong with the code.
 _ROUTE_FILES = ("routes/inference.py", "routes/models.py")
 
 
@@ -34,7 +39,7 @@ def _async_call_sites(rel: str) -> list[str]:
     is an ast.Name and never an ast.Call here. Only a real on-loop invocation is
     reported.
     """
-    tree = ast.parse((_BACKEND / rel).read_text())
+    tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
     found = []
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef):
@@ -58,14 +63,14 @@ def test_the_offload_is_actually_present():
     """Guard against the sweep passing because the calls simply vanished."""
     total = 0
     for rel in _ROUTE_FILES:
-        text = (_BACKEND / rel).read_text()
+        text = (_BACKEND / rel).read_text(encoding = "utf-8")
         total += text.count("await asyncio.to_thread(get_inference_backend)")
     assert total >= 14, f"expected the offloaded call sites to survive, found {total}"
 
 
 def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
     """Sync functions in this module that call get_inference_backend() inline."""
-    tree = ast.parse((_BACKEND / rel).read_text())
+    tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
     names = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef):  # sync only
@@ -93,7 +98,7 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
         helpers = _sync_helpers_that_build_the_singleton(rel)
         if not helpers:
             continue
-        tree = ast.parse((_BACKEND / rel).read_text())
+        tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
         for fn in ast.walk(tree):
             if not isinstance(fn, ast.AsyncFunctionDef):
                 continue
@@ -136,7 +141,7 @@ def test_the_offload_stays_at_the_call_site():
     orchestrator.py resolves orchestrator's own global, so the patch would not
     take and the test hangs on a load gate that never opens.
     """
-    orch = (_BACKEND / "core/inference/orchestrator.py").read_text()
+    orch = (_BACKEND / "core/inference/orchestrator.py").read_text(encoding = "utf-8")
     assert "async def get_inference_backend_async" not in orch, (
         "an async accessor in orchestrator.py bypasses callers that patch the "
         "route module's get_inference_backend"

@@ -27,7 +27,7 @@ _MAIN = _BACKEND / "main.py"
 
 
 def _lifespan_body() -> ast.AsyncFunctionDef:
-    tree = ast.parse(_MAIN.read_text())
+    tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan":
             return node
@@ -35,7 +35,7 @@ def _lifespan_body() -> ast.AsyncFunctionDef:
 
 
 def _post_warm_body() -> ast.FunctionDef:
-    tree = ast.parse(_MAIN.read_text())
+    tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_post_warm_background_work":
             return node
