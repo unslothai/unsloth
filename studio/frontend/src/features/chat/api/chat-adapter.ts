@@ -1274,11 +1274,10 @@ export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
 /**
- * The OpenAI-form messages a completion would send for `messages`, for the token
- * recount that fills the context usage bar. Mirrors the prune + system-prompt half of
- * createOpenAIStreamAdapter; the tool catalog is priced server-side from the flags
- * buildLocalTokenCountExtras sends, since `unsloth run --enable-tools` can inject
- * schemas the client cannot see.
+ * The OpenAI-form messages a completion would send, for the token recount behind the
+ * context usage bar. Mirrors the prune + system-prompt half of createOpenAIStreamAdapter.
+ * The tool catalog is priced server-side from buildLocalTokenCountExtras' flags, since
+ * `unsloth run --enable-tools` can inject schemas the client cannot see.
  */
 export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
@@ -1327,10 +1326,9 @@ export async function buildOutboundMessagesForTokenCount(
     });
   }
 
-  // Canvas appends one of these to the system prompt on every request, tool schema or
-  // not, so a count without it reads low by that instruction and can say a chat fits
-  // when the next completion would not. The adapter's image gate is never the reason
-  // render_html is off here: the count route refuses messages carrying an image.
+  // Canvas appends one of these on every request, tool schema or not, so a count without
+  // it reads low and can say a chat fits when the next completion would not. The adapter's
+  // image gate is never why render_html is off here: the count route refuses images.
   const canvasInstruction = artifactsEnabled
     ? supportsTools
       ? CANVAS_TOOL_INSTRUCTION
@@ -1352,12 +1350,11 @@ export async function buildOutboundMessagesForTokenCount(
 }
 
 /**
- * The reasoning fields a completion would send. The backend turns these into
- * llama-server `chat_template_kwargs`, and llama-server only falls back to the
- * load-time `--chat-template-kwargs` for keys a request omits -- so a count that sends
- * none of them renders the template in whatever mode the model was LOADED in. Templates
- * that prefill a thinking block, or that drop past reasoning unless preserve_thinking is
- * set, then report a different prompt size from the next completion.
+ * The reasoning fields a completion would send. The backend turns these into llama-server
+ * `chat_template_kwargs`, and llama-server falls back to the load-time
+ * `--chat-template-kwargs` only for keys a request omits -- so a count that sends none of
+ * them renders the template in whatever mode the model was LOADED in, and any template that
+ * prefills a thinking block or drops past reasoning reports the wrong prompt size.
  */
 export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   const {
@@ -1377,8 +1374,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   );
   return {
     // enable_thinking, never the Anthropic-style `thinking` block the request may use:
-    // ChatCompletionRequest normalizes that shape into enable_thinking anyway, and this
-    // route models the normalized field directly.
+    // ChatCompletionRequest normalizes that shape into enable_thinking anyway.
     ...(supportsReasoning
       ? reasoningStyle === "enable_thinking_effort"
         ? reasoningEnabled
@@ -1397,9 +1393,9 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 }
 
 /**
- * The tool flags a completion would send, so the count includes the tool schemas and
- * the action nudge. Same gates the adapter applies before it turns tools on; the
- * render_html image gate is left to the server, which sees the rendered prompt.
+ * The tool flags a completion would send, so the count includes the tool schemas and the
+ * action nudge. Same gates the adapter applies before it turns tools on; the render_html
+ * image gate is left to the server, which sees the rendered prompt.
  */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,

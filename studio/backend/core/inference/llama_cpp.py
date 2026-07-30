@@ -13273,9 +13273,8 @@ class LlamaCppBackend:
         the tokenizer fails or the chat template cannot be rendered, since the
         text-only fallback is an approximation and not a count.
 
-        ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller
-        pricing a request that renders the template in a non-default reasoning
-        mode counts the prompt that request will actually build.
+        ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller can
+        price a request that renders the template in a non-default reasoning mode.
         """
         if not self.is_loaded:
             if strict:

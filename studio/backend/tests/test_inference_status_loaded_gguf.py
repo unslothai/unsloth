@@ -3,12 +3,10 @@
 
 """``GET /api/inference/status`` must answer with a GGUF loaded.
 
-The loaded-GGUF branch runs inside a ``try`` whose ``except`` reports 500, so a name
-undefined there is invisible until something loads a model and asks for status. Nothing
-called the handler that way, which is how ``_native_grant_backed`` once lost its binding
-to a refactor while ``is_local_model`` kept reading it.
-
-No GPU, no llama-server, no GGUF on disk: the backend is a stub.
+The loaded-GGUF branch sits inside a ``try`` whose ``except`` reports 500, so an undefined
+name there is invisible until something loads a model and asks for status -- which is how
+``_native_grant_backed`` once lost its binding to a refactor while ``is_local_model`` kept
+reading it. The backend here is a stub: no GPU, no llama-server, no GGUF on disk.
 """
 
 import asyncio
@@ -22,8 +20,8 @@ import routes.inference as inference_route
 class _StatusBackend:
     """A loaded GGUF with the shape ``get_status`` reads, not a full backend.
 
-    Unknown attributes answer None so a later Optional field needs no edit here; the typed
-    ones are set explicitly so the response model validates for real, not against a mock.
+    Unknown attributes answer None so a later Optional field needs no edit here; typed ones
+    are set explicitly so the response model validates for real, not against a mock.
     """
 
     def __init__(

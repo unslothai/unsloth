@@ -3,19 +3,16 @@
 
 """The token recount must price the same system prompt the completion would send.
 
-``createOpenAIStreamAdapter`` appends a Canvas instruction to the outbound system
-prompt whenever the Canvas pill is on -- the render_html wording when the model can
-call the tool, the fenced-HTML fallback otherwise. Neither is a tool schema, so the
-server cannot add it back from the flags ``buildLocalTokenCountExtras`` sends: a count
-that skips it reports fewer tokens than the next completion actually spends.
+``createOpenAIStreamAdapter`` appends a Canvas instruction to the outbound system prompt
+whenever the Canvas pill is on -- the render_html wording when the model can call the tool,
+the fenced-HTML fallback otherwise. Neither is a tool schema, so the server cannot add it
+back from the flags ``buildLocalTokenCountExtras`` sends. Same for the reasoning settings:
+llama-server layers a request's ``chat_template_kwargs`` over the load-time
+``--chat-template-kwargs``, so a count that sends none of them renders the template in
+whatever mode the model was LOADED in. Either way the count reads low.
 
-The same applies to the reasoning settings: llama-server layers a request's
-``chat_template_kwargs`` over the load-time ``--chat-template-kwargs``, so a count that
-sends none of them renders the template in whatever mode the model was LOADED in.
-
-``studio/frontend`` carries no JS test runner, so the builders, both instruction
-constants and the shared effort clamp are sliced verbatim out of the studio sources and
-run under ``node``.
+The builders, both instruction constants and the shared effort clamp are sliced verbatim out
+of the studio sources and run under ``node`` (see ``_node_harness``).
 """
 
 from __future__ import annotations
@@ -181,27 +178,25 @@ WITH_PROMPT = (
 @pytest.mark.parametrize(
     ("seed_patch", "constant", "prompt"),
     [
-        # Canvas on against a tool-capable model: the request carries the render_html
-        # wording appended to the user's system prompt, so the count has to carry it too.
+        # Canvas on, tool-capable model: the request appends the render_html wording to the
+        # user's system prompt, so the count has to as well.
         pytest.param(WITH_PROMPT, "CANVAS_TOOL_INSTRUCTION", SYSTEM_PROMPT, id = "render_html"),
-        # No tool support means no render_html and the fenced-HTML fallback instead. With
-        # no system prompt to append to, it becomes the leading system turn -- exactly what
-        # the adapter's addSystemInstruction does.
+        # No tool support: the fenced-HTML fallback instead, and with no system prompt to
+        # append to it becomes the leading system turn, as addSystemInstruction does.
         pytest.param(
             "{ artifactsEnabled: true, supportsTools: false }",
             "CANVAS_FALLBACK_INSTRUCTION",
             "",
             id = "fenced_html_fallback",
         ),
-        # The pill is off by default; the count must not invent a prompt the request has
-        # no reason to send.
+        # The pill is off by default; the count must not invent a prompt.
         pytest.param("{ artifactsEnabled: false, supportsTools: true }", None, "", id = "canvas_off"),
     ],
 )
 def test_the_recount_prices_the_canvas_instruction(seed_patch, constant, prompt):
-    """#7450's bar answers "does this chat still fit", so it has to price every part of
-    the prompt the next completion builds -- including the Canvas instruction, which is
-    not a tool schema and so cannot be added back server-side from the tool flags."""
+    """#7450's bar answers "does this chat still fit", so it has to price every part of the
+    prompt the next completion builds -- including the Canvas instruction, which is not a
+    tool schema and so cannot be added back server-side from the tool flags."""
     instruction = _instruction(constant) if constant else ""
     expected_system = "\n\n".join(part for part in (prompt, instruction) if part)
     out = _run(_count_script(seed_patch))
@@ -229,8 +224,8 @@ def test_the_request_path_sends_the_same_constants():
     [
         # No reasoning support: send nothing, and llama-server keeps its own defaults.
         pytest.param("{ supportsReasoning: false }", {}, id = "no_reasoning_support"),
-        # Qwen3-style gate turned off. The completion sends this, the template prefills an
-        # empty thinking block for it, and a count without it prices the loaded default.
+        # Qwen3-style gate off: the completion sends this, the template prefills an empty
+        # thinking block for it, and a count without it prices the loaded default.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking", reasoningEnabled: false }',
             {"enable_thinking": False},
@@ -243,8 +238,8 @@ def test_the_request_path_sends_the_same_constants():
             {"reasoning_effort": "low"},
             id = "effort_level",
         ),
-        # GLM-style: the on/off gate plus a level, clamped to the levels this template
-        # offers, exactly as the request build clamps it. "high" is not one of them here.
+        # GLM-style: the gate plus a level, clamped to the levels this template offers
+        # exactly as the request build clamps it ("high" is not one of them here).
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking_effort",'
             ' reasoningEnabled: true, reasoningEffort: "high", reasoningEffortLevels: ["max"] }',
@@ -261,9 +256,8 @@ def test_the_request_path_sends_the_same_constants():
 )
 def test_the_recount_sends_the_reasoning_mode_the_completion_would(seed_patch, expected):
     """llama-server layers a request's chat_template_kwargs over the load-time
-    --chat-template-kwargs, so a count that omits them renders the template in whatever
-    mode the model was LOADED in and reports a prompt size the next completion will not
-    match."""
+    --chat-template-kwargs, so a count that omits them renders the template in whatever mode
+    the model was LOADED in."""
     out = _run(
         textwrap.dedent(
             f"""

@@ -1182,9 +1182,9 @@ function useStudioRuntimeAdapters(
             store.setContextUsage(savedUsage);
           }
         }
-        // Saved usage above is the last completion's, and there may be none at all
-        // (a thread opened after a model switch). Price the branch as loaded, so the
-        // bar answers "does this chat still fit" before the next message (#7450).
+        // Saved usage above is the last completion's, and a thread opened after a model
+        // switch has none at all. Price the branch as loaded so the bar answers "does this
+        // chat still fit" before the next message (#7450).
         void refreshContextUsage({ threadId: remoteId });
 
         // If any message has a stored parentId, reconstruct the tree so
@@ -1406,14 +1406,13 @@ function ThreadNewChatSwitch({
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, nonce]);
 
-  // The effect above blanks the bar, and this view reaches no other recount trigger: it
-  // has no persisted thread for the history loader and ActiveThreadSync is off while a
-  // nonce is present. The template and system prompt are already in the request, so price
-  // them. Keyed on the model too, because on a RELOAD of /chat?new=<uuid> neither the
-  // checkpoint nor the window is known until /api/inference/status answers; without that
-  // retry an empty New Chat opened against an already-resident GGUF hides the bar until
-  // the first completion. Only into a blank bar on an unpersisted thread, so a real
-  // completion's usage is never overwritten.
+  // The effect above blanks the bar, and this view reaches no other recount trigger: no
+  // persisted thread for the history loader, and ActiveThreadSync is off while a nonce is
+  // present. The template and system prompt are already in the request, so price them.
+  // Keyed on the model too because on a RELOAD of /chat?new=<uuid> neither the checkpoint
+  // nor the window is known until /api/inference/status answers; without that retry the bar
+  // stays hidden until the first completion. Only into a blank bar on an unpersisted thread,
+  // so a real completion's usage is never overwritten.
   useEffect(() => {
     if (isLoading || modelLoading || !checkpoint || ggufContextLength == null) {
       return;
@@ -1446,9 +1445,8 @@ function ActiveThreadSync({
 }
 
 // Lets the token recount read the branch on screen rather than the stored records: an
-// incognito thread stores none at all, and a thread the user retried or edited has a
-// newest stored leaf that is not the branch the runtime would send. Registered only for
-// the single-chat pane, which is the one whose thread the context bar tracks.
+// incognito thread stores none, and a retried or edited thread's newest stored leaf is not
+// the branch the runtime would send. Only the single-chat pane, whose thread the bar tracks.
 function ActiveBranchRegistrar({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -1472,14 +1470,13 @@ function ActiveBranchRegistrar({
   return null;
 }
 
-// Price whichever thread the bar is pointed at whenever it has nothing to show. Two
-// paths reach this and no other: a model change empties contextUsageByThreadId, and a
-// thread already mounted in the runtime does not rerun its history loader on the way
-// back, so revisiting any thread other than the one that was open during the load
-// restores no usage; and on a deep link to /chat/:id the history loader can run before
-// /api/inference/status has a checkpoint, while the status response can land before the
-// thread is active, so neither of those two independently timed callbacks counts.
-// Reading the model fields here is what retries once they hydrate.
+// Price whichever thread the bar points at whenever it has nothing to show. Two paths reach
+// this and no other: (1) a model change empties contextUsageByThreadId and an already-
+// mounted thread does not rerun its history loader, so revisiting any thread but the one
+// open during the load restores no usage; (2) on a deep link to /chat/:id the history loader
+// can run before /api/inference/status has a checkpoint while the status response can land
+// before the thread is active, so neither independently timed callback counts. Reading the
+// model fields here is what retries once they hydrate.
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {

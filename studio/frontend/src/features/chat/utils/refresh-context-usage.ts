@@ -72,10 +72,10 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
 /**
- * Reproduce the branch the runtime displays for a stored thread, as the history adapter does:
- * sort by (createdAt, role, id), parent legacy records to the previous one, then take the
- * ancestor chain of the last record (an import without a headId resets the head there). A
- * greedy newest-child descent picks a different branch and drops pre-parentId history.
+ * The branch the runtime displays for a stored thread, rebuilt as the history adapter does:
+ * sort by (createdAt, role, id), parent legacy records to the previous one, then walk the
+ * last record's ancestor chain. A greedy newest-child descent picks a different branch and
+ * drops pre-parentId history.
  */
 function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   const sorted = messages.slice().sort((a, b) => {
@@ -119,9 +119,9 @@ type ActiveBranchReader = () => readonly ThreadMessage[] | null;
 let readActiveBranch: ActiveBranchReader | null = null;
 
 /**
- * Publish the mounted runtime's view of the visible branch, so the recount can price it
- * instead of the persisted records. Only the single-chat pane registers one; compare
- * panes never own the bar. Pass null on unmount.
+ * Publish the mounted runtime's view of the visible branch so the recount prices it instead
+ * of the persisted records. Only the single-chat pane registers one (compare panes never own
+ * the bar); pass null on unmount.
  */
 export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
   readActiveBranch = reader;
@@ -160,17 +160,13 @@ export async function refreshContextUsage(options?: {
     useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
 
   try {
-    // The mounted runtime is what the next request reads from, so prefer it: a
-    // temporary/incognito thread persists nothing (listStoredChatMessages returns [] by
-    // design) and would otherwise be priced as a bare template, and after a retry or an
-    // edit the newest stored leaf is a branch the user has switched away from. Only for
-    // the thread the store calls active, since that is the one the bar belongs to; the
-    // history loader's own call runs before the import, so it falls through below.
-    // A captured null is excluded rather than matched: New Chat leaves the outgoing
-    // conversation mounted and only voids switchToNewThread(), so between
-    // setActiveThreadId(null) and that promise settling the reader still returns the
-    // branch being left behind, and null === null would price it into the empty chat.
-    // A thread with no id is an unpersisted New Chat, whose prompt is the bare template.
+    // Prefer the mounted runtime: it is what the next request reads from. An incognito
+    // thread persists nothing (listStoredChatMessages returns [] by design) and after a
+    // retry or edit the newest stored leaf is a branch the user switched away from. Only for
+    // the active thread, the one the bar belongs to. A captured null is EXCLUDED, not
+    // matched: New Chat leaves the outgoing conversation mounted and only voids
+    // switchToNewThread(), so until that settles the reader still returns the branch being
+    // left, and null === null would price it into the empty chat -- a bare template.
     const liveBranch =
       capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId === capturedThreadId
@@ -197,8 +193,7 @@ export async function refreshContextUsage(options?: {
 
     // A completion finishing mid-count writes exact usage for a turn this count predates, so
     // drop the recount rather than roll the bar backwards. Sampled as soon as runMessages is
-    // fixed: the payload build awaits storage, and a completion landing in that window would
-    // otherwise be captured here and compare equal.
+    // fixed: the payload build awaits storage, so anything in that window compares equal.
     const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
     // undefined, not null: a chat with no persisted thread has no project to resolve from.
@@ -222,15 +217,13 @@ export async function refreshContextUsage(options?: {
       });
 
     if (stale()) return;
-    // The response type is a compile-time assertion only. Anything else answering 200 on
-    // this path publishes undefined into the bar, which renders "undefined / 8.2k" and
-    // throws from toLocaleString when the tooltip opens.
+    // The response type is a compile-time assertion only: anything else answering 200 here
+    // would put undefined on the bar, rendering "undefined / 8.2k" and throwing from
+    // toLocaleString.
     if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) return;
-    // That endpoint counts with whatever is resident, never the model asked for, so a
-    // load from another tab or API client landing between this client's last status
-    // refresh and the count returns a total from a tokenizer whose window the bar is
-    // not showing. The checkpoint guards above cannot see it -- this client's own
-    // checkpoint never moved -- so the identity reported back is the only witness.
+    // The endpoint counts with whatever is resident, never the model asked for, so a load
+    // from another tab returns a total from a tokenizer whose window the bar is not showing.
+    // The checkpoint guards cannot see it (this client's own checkpoint never moved).
     if (countedModel != null && countedModel !== capturedCheckpoint) {
       return;
     }
