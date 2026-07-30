@@ -305,15 +305,6 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
     return None
 
 
-def _snapshot_declares_quantization(snapshot_path: str) -> bool:
-    try:
-        with open(os.path.join(snapshot_path, "config.json"), encoding = "utf-8") as fh:
-            config = _json.load(fh)
-        return isinstance(config, dict) and bool(config.get("quantization_config"))
-    except (OSError, ValueError):
-        return False
-
-
 def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     resume = bool(config.get("resume_from_checkpoint"))
     model_name = config["model_name"]
@@ -375,17 +366,7 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     elif model_claimed:
         pinned_repo_id = canonical_model_repo_id(model_name)
         pin = _resolve_model_snapshot(model_name, config.get("model_local_path"))
-        if (
-            pin is not None
-            and config.get("load_in_4bit")
-            and not _snapshot_declares_quantization(pin)
-        ):
-            warnings.append(
-                f"Cached copy of {model_name} is full-precision; loading Unsloth's "
-                f"pre-quantized 4-bit weights instead (may download from Hugging Face)."
-            )
-            pin = None
-        elif pin is None:
+        if pin is None:
             warnings.append(
                 f"Cached copy of {model_name} not found on disk; downloading from Hugging Face."
             )

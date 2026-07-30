@@ -41,13 +41,9 @@ type AttemptPhase = "preflight" | "transport" | "finished";
 function captureTrainingStartInputs(config: TrainingConfigState) {
   const payload = buildTrainingStartPayload(config);
   payload.hf_token = null;
-  payload.model_known_cached = false;
-  payload.model_local_path = null;
   payload.model_format = isUntrainableModelFormat(config.modelFormat)
     ? config.modelFormat
     : null;
-  payload.dataset_known_cached = false;
-  payload.dataset_local_path = null;
   return {
     payload,
     modelType: config.modelType,

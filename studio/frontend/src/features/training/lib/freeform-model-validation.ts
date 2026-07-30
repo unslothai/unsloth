@@ -9,7 +9,7 @@ import { classifyUnslothSupport, isGgufLike } from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 
 const ADAPTER_ARTIFACT_PATTERN =
-  /(?:^|[/\\])adapter_(?:config\.json|model\.safetensors)$/i;
+  /(?:^|[/\\])adapter_(?:config\.json|model\.(?:safetensors|bin))$/i;
 
 function hasPeftMetadata({
   tags,

@@ -557,6 +557,67 @@ def test_check_format_rejects_invalid_path_as_400():
     assert exc_info.value.status_code == 400
 
 
+def test_cached_preview_does_not_fallback_from_selected_path(monkeypatch):
+    monkeypatch.setattr(
+        formatting,
+        "_shared_dataset_snapshot_from_cache_path",
+        lambda _local_path, _repo_id: None,
+    )
+    monkeypatch.setattr(
+        formatting,
+        "_shared_latest_cached_dataset_snapshot",
+        lambda *_args, **_kwargs: pytest.fail("selected cache path must remain strict"),
+    )
+
+    assert formatting._latest_cached_dataset_snapshot("Org/Data", "/cache/selected") is None
+
+
+def test_processed_preview_loads_selected_cache_path(monkeypatch):
+    calls = []
+
+    class _PreviewDataset:
+        def __len__(self):
+            return 3
+
+        def select(self, indices):
+            assert list(indices) == [0, 1]
+            return [{"text": "selected"}]
+
+    def load_cached(repo_id, local_path, **kwargs):
+        calls.append((repo_id, local_path, kwargs))
+        return _PreviewDataset()
+
+    monkeypatch.setattr(formatting, "_shared_load_cached_hf_dataset", load_cached)
+    monkeypatch.setattr(
+        formatting,
+        "_shared_latest_cached_dataset_path",
+        lambda *_args, **_kwargs: pytest.fail("selected cache path must remain strict"),
+    )
+    request = CheckFormatRequest(
+        dataset_name = "Org/Data",
+        subset = "english",
+        train_split = "validation",
+        prefer_local_cache = True,
+        local_path = "/cache/selected",
+    )
+
+    preview, total_rows = formatting._load_processed_hf_preview_slice(
+        request,
+        2,
+        "hf_test",
+    )
+
+    assert preview == [{"text": "selected"}]
+    assert total_rows == 3
+    assert calls == [
+        (
+            "Org/Data",
+            "/cache/selected",
+            {"subset": "english", "split": "validation", "token": "hf_test"},
+        )
+    ]
+
+
 def test_dataset_download_status_preserves_idle_shape():
     status = downloads._dataset_status("Org/Data")
 

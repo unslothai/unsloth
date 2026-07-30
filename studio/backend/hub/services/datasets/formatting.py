@@ -29,7 +29,10 @@ from hub.services.datasets.local import (
 )
 from hub.utils.dataset_cache import (
     cached_dataset_candidates as _shared_cached_dataset_candidates,
+    dataset_snapshot_from_cache_path as _shared_dataset_snapshot_from_cache_path,
+    latest_cached_dataset_path as _shared_latest_cached_dataset_path,
     latest_cached_dataset_snapshot as _shared_latest_cached_dataset_snapshot,
+    load_cached_hf_dataset as _shared_load_cached_hf_dataset,
     split_label_matches as _split_label_matches,
 )
 from hub.utils import download_registry
@@ -147,6 +150,8 @@ def _serialize_preview_rows(rows):
 def _latest_cached_dataset_snapshot(
     repo_id: str, local_path: Optional[str] = None
 ) -> Optional[Path]:
+    if local_path:
+        return _shared_dataset_snapshot_from_cache_path(local_path, repo_id)
     return _shared_latest_cached_dataset_snapshot(repo_id, local_path)
 
 
@@ -222,25 +227,19 @@ def _load_processed_hf_preview_slice(
 ):
     if not _is_valid_repo_id(request.dataset_name):
         return None
-    try:
-        from datasets import DownloadConfig
-
-        # Non-streaming loads take the cached builder lock; use the EACCES-safe wrapper.
-        from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
-    except Exception:
-        return None
-
-    load_kwargs = {
-        "path": request.dataset_name,
-        "split": request.train_split or "train",
-        "download_config": DownloadConfig(local_files_only = True),
-    }
-    if request.subset:
-        load_kwargs["name"] = request.subset
-    if hf_token:
-        load_kwargs["token"] = hf_token
-
-    dataset = load_dataset(**load_kwargs)
+    local_path = request.local_path
+    if not local_path:
+        cached_path = _shared_latest_cached_dataset_path(request.dataset_name)
+        if cached_path is None:
+            return None
+        local_path = str(cached_path)
+    dataset = _shared_load_cached_hf_dataset(
+        request.dataset_name,
+        local_path,
+        subset = request.subset,
+        split = request.train_split or "train",
+        token = hf_token,
+    )
     total_rows = len(dataset)
     preview_slice = dataset.select(range(min(preview_size, total_rows)))
     return preview_slice, total_rows

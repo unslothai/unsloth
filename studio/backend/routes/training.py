@@ -326,8 +326,11 @@ def _reject_untrainable_model_request(
     if is_local_path(request.model_name):
         try:
             path = Path(request.model_name).expanduser().resolve(strict = True)
-        except (OSError, RuntimeError, ValueError):
-            return
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Local model path was not found or could not be accessed.",
+            ) from error
     else:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 

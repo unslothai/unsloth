@@ -91,6 +91,18 @@ def test_start_rejects_adapter_only_local_dir(tmp_path):
     assert "Adapter-only local models" in exc_info.value.detail
 
 
+def test_start_rejects_missing_local_model(tmp_path):
+    route = _load_route_module("training_route_reject_missing_local_model")
+    request = _request(model_name = str(tmp_path / "missing-model"))
+
+    with patch.object(route, "get_training_backend", return_value = _refusing_backend()):
+        with pytest.raises(HTTPException) as exc_info:
+            _start(route, request)
+
+    assert exc_info.value.status_code == 400
+    assert "Local model path was not found" in exc_info.value.detail
+
+
 def test_start_rejects_partial_adapter_local_dir(tmp_path):
     route = _load_route_module("training_route_reject_partial_adapter_dir")
     (tmp_path / "adapter_config.json").write_text("{}")
@@ -1275,7 +1287,11 @@ def test_legacy_cached_dataset_loads_offline_without_completion_manifest(monkeyp
     assert events == []
 
 
-def test_training_model_load_target_uses_verified_inactive_snapshot(tmp_path):
+@pytest.mark.parametrize("load_in_4bit", [False, True])
+def test_training_model_load_target_uses_verified_inactive_snapshot(
+    tmp_path,
+    load_in_4bit,
+):
     from core.training.training import resolve_training_model_load_target
     model_snap = _model_repo_with_ref(tmp_path, "unsloth/test", "commit-old")
 
@@ -1284,7 +1300,7 @@ def test_training_model_load_target_uses_verified_inactive_snapshot(tmp_path):
             "model_name": "unsloth/test",
             "model_known_cached": True,
             "model_local_path": str(model_snap),
-            "load_in_4bit": False,
+            "load_in_4bit": load_in_4bit,
         }
     ) == str(model_snap.resolve())
 

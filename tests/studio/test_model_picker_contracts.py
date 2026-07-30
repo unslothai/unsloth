@@ -1758,6 +1758,10 @@ def test_training_start_attempt_is_bound_to_checked_inputs():
     assert "buildTrainingStartPayload(attempt.config)" in source
     assert "buildTrainingStartPayload(useTrainingConfigStore.getState())" not in source
     assert "hasIncompatibleTrainingModalities(attempt.config)" in source
+    assert "payload.model_known_cached = false;" not in source
+    assert "payload.model_local_path = null;" not in source
+    assert "payload.dataset_known_cached = false;" not in source
+    assert "payload.dataset_local_path = null;" not in source
 
     readiness = _read("features/training/hooks/use-training-readiness.ts")
     assert "hasIncompatibleTrainingModalities(state)" in readiness
@@ -1771,6 +1775,11 @@ def test_freeform_device_model_keeps_local_path_intent():
     assert "const localPath = explicitLocalPath(id);" in freeform
     assert "pick(" in freeform
     assert "{ knownCached: false, localPath, modelFormat: null }" in freeform
+
+
+def test_freeform_model_validation_rejects_binary_peft_artifact():
+    validation = _read("features/training/lib/freeform-model-validation.ts")
+    assert r"model\.(?:safetensors|bin)" in validation
 
 
 def test_freeform_device_dataset_keeps_local_path_intent():
