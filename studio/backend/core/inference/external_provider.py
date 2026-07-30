@@ -960,7 +960,6 @@ class ExternalProviderClient:
                 neutralize_control_markup_in_messages,
                 neutralize_tool_descriptions,
             )
-
             messages = neutralize_control_markup_in_messages(messages)
             if tools:
                 safe_tools = neutralize_tool_descriptions(tools)
