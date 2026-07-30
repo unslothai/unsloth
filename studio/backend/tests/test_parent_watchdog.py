@@ -60,8 +60,42 @@ def test_callback_exception_is_contained():
     pw._fire(_boom)  # must not raise
 
 
+def test_explicit_owner_pid_uses_a_liveness_probe(monkeypatch):
+    # Not our direct parent (e.g. a wrapper in between): probe the owner pid.
+    monkeypatch.setattr(pw.os, "getppid", lambda: 4242)
+
+    def _dead(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(pw.os, "kill", _dead)
+    fired = threading.Event()
+    pw._watch_unix(9999, fired.set, threading.Event(), poll_seconds = 0.01)
+    assert fired.is_set()
+
+
+def test_liveness_probe_treats_eperm_as_alive(monkeypatch):
+    monkeypatch.setattr(pw.os, "getppid", lambda: 4242)
+    calls = {"n": 0}
+
+    def _kill(pid, sig):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError  # exists, owned by someone else: alive
+        raise ProcessLookupError
+
+    monkeypatch.setattr(pw.os, "kill", _kill)
+    fired = threading.Event()
+    pw._watch_unix(9999, fired.set, threading.Event(), poll_seconds = 0.01)
+    assert fired.is_set()
+    assert calls["n"] == 3
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason = "unix reparenting path")
 def test_process_exits_when_parent_dies(tmp_path):
+    # The callback writes a marker before exiting: liveness cannot be probed
+    # with kill(pid, 0), which also succeeds while the child is an unreaped
+    # zombie under a non-reaping init.
+    marker = tmp_path / "fired"
     watcher = tmp_path / "watcher.py"
     watcher.write_text(
         f"""
@@ -71,32 +105,31 @@ stub = types.ModuleType("loggers")
 stub.get_logger = lambda name: logging.getLogger(name)
 sys.modules.setdefault("loggers", stub)
 from utils.parent_watchdog import start_parent_watchdog
-start_parent_watchdog(lambda: os._exit(0), poll_seconds = 0.05)
+
+def _exit():
+    open({str(marker)!r}, "w").write("fired")
+    os._exit(0)
+
+start_parent_watchdog(_exit, poll_seconds = 0.05)
 time.sleep(30)
 os._exit(1)
 """
     )
     parent = tmp_path / "parent.py"
-    pidfile = tmp_path / "watcher.pid"
     parent.write_text(
         f"""
 import subprocess, sys
-proc = subprocess.Popen([sys.executable, {str(watcher)!r}])
-open({str(pidfile)!r}, "w").write(str(proc.pid))
+subprocess.Popen([sys.executable, {str(watcher)!r}])
 """
     )
 
     # The intermediate parent spawns the watcher and exits immediately,
     # orphaning it; the watchdog must notice and exit the watcher.
     subprocess.run([sys.executable, str(parent)], check = True, timeout = 15)
-    watcher_pid = int(pidfile.read_text())
 
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(watcher_pid, 0)
-        except ProcessLookupError:
+        if marker.exists():
             return
         time.sleep(0.1)
-    os.kill(watcher_pid, 9)
-    pytest.fail("watcher outlived its dead parent")
+    pytest.fail("watchdog never fired after the parent died")

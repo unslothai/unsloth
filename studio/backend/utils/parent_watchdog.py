@@ -28,23 +28,46 @@ def _fire(on_parent_exit: Callable[[], None]) -> None:
 
 
 def _watch_unix(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
-    # Reparenting (to init or a subreaper) is the death signal; pids are never
-    # probed, so pid reuse cannot fool this.
+    # Direct child: reparenting is the death signal, immune to pid reuse.
+    # Explicit owner pid with an intermediary in between: liveness-probe it
+    # instead (kill 0); EPERM still means alive.
+    direct_child = os.getppid() == parent_pid
     while not stop.wait(poll_seconds):
-        if os.getppid() != parent_pid:
-            _fire(on_parent_exit)
-            return
+        if direct_child:
+            if os.getppid() != parent_pid:
+                _fire(on_parent_exit)
+                return
+        else:
+            try:
+                os.kill(parent_pid, 0)
+            except ProcessLookupError:
+                _fire(on_parent_exit)
+                return
+            except OSError:
+                pass
 
 
 def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
     import ctypes
+    from ctypes import wintypes
 
     kernel32 = ctypes.windll.kernel32
+    # Explicit signatures: handles are pointer-sized and would be truncated by
+    # the c_int defaults on 64-bit, leaving the wait on an invalid handle.
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
     SYNCHRONIZE = 0x00100000
     WAIT_OBJECT_0 = 0
     handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
     if not handle:
-        logger.debug("parent_watchdog: OpenProcess(%s) failed", parent_pid)
+        # A same-user owner is always openable, so failure means the parent
+        # already died and its pid went stale: exit, don't abandon the watch.
+        _fire(on_parent_exit)
         return
     try:
         # Bounded waits so a stop request is honored.
@@ -56,13 +79,16 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
         kernel32.CloseHandle(handle)
 
 
-# Returns the stop event, or None when the parent was already gone (the
-# callback fires immediately: reparented to init means the app died before
-# the watch could arm, e.g. during a slow backend startup).
+# Watches parent_pid (the spawning app's own pid when it passes one, else the
+# direct parent). Returns the stop event, or None when the parent was already
+# gone at arm time, in which case the callback fires immediately.
 def start_parent_watchdog(
-    on_parent_exit: Callable[[], None], poll_seconds: float = _DEFAULT_POLL_SECONDS
+    on_parent_exit: Callable[[], None],
+    parent_pid: Optional[int] = None,
+    poll_seconds: float = _DEFAULT_POLL_SECONDS,
 ) -> Optional[threading.Event]:
-    parent_pid = os.getppid()
+    if parent_pid is None:
+        parent_pid = os.getppid()
     if parent_pid <= 1:
         _fire(on_parent_exit)
         return None
