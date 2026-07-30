@@ -8,27 +8,27 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
-THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = "utf-8")
-APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
-CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
+THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding="utf-8")
+APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding="utf-8")
+CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding="utf-8")
 MODEL_RUNTIME = (FRONTEND / "features/chat/hooks/use-chat-model-runtime.ts").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
 CONFIRM_MODEL_SWAP = (FRONTEND / "features/chat/utils/confirm-stop-running-chats.ts").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
-RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(encoding = "utf-8")
-CHAT_PAGE = (FRONTEND / "features/chat/chat-page.tsx").read_text(encoding = "utf-8")
+RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(encoding="utf-8")
+CHAT_PAGE = (FRONTEND / "features/chat/chat-page.tsx").read_text(encoding="utf-8")
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
 QUEUED_SETTINGS = (FRONTEND / "features/chat/utils/queued-chat-run-settings.ts").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
 SIDEBAR_ITEMS = (FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
-CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_text(encoding = "utf-8")
+CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_text(encoding="utf-8")
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -143,6 +143,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "registerQueuedChatRunSettings(" in target
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
+    assert "await updateStoredChatThread(remoteId" in target
+    assert 'modelId: runSettingsAtQueueStart.params.checkpoint ?? ""' in target
+    assert target.index("await updateStoredChatThread(remoteId") < target.index(
+        "await thread.append("
+    )
     assert (
         target.index("addQueuedChatRunSettingsThreadIds(settingsId")
         < target.index("syncPromptQueueUI()")

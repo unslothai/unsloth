@@ -123,6 +123,7 @@ import {
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { updateStoredChatThread } from "@/features/chat/utils/chat-history-storage";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -2175,6 +2176,15 @@ const Composer: FC<{
             ...getQueueThreadIds(),
             remoteId,
           ]);
+          // initialize() persists a fresh thread using the live global model.
+          // Correct that metadata to the model captured for this queued run
+          // before any later navigation or compatibility check can observe it.
+          await updateStoredChatThread(remoteId, {
+            modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+          });
+          if (cancelled || !pendingSettingsIds.has(settingsId)) {
+            return;
+          }
           // Initialization can replace a fresh thread's local id with a remote
           // id. Refresh queue aliases before the run begins so stop dialogs
           // deduplicate the two identities.
