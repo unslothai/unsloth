@@ -2312,8 +2312,6 @@ def test_a_stale_ref_does_not_suppress_the_manifest_on_the_loaded_snapshot(
     )
     snapshot = repo / "snapshots" / SNAPSHOT
     assert (
-        inventory_scan.is_snapshot_partial(
-            "model", "Org/Model", repo, snapshot_dir = snapshot
-        )
+        inventory_scan.is_snapshot_partial("model", "Org/Model", repo, snapshot_dir = snapshot)
         is partial
     )
