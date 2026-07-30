@@ -552,9 +552,8 @@ async def get_gguf_variants_response(
                 # An unlabelled quant cannot be judged, so it is kept as ready.
                 return complete is None or not v.quant or v.quant in complete
 
-            # The picker takes this default without re-checking downloaded, so recommending a quant
-            # short a shard selects one that cannot load while a whole one sits beside it. Every row
-            # is still the fallback: with nothing ready the default is a download target, not a load.
+            # The picker never re-checks downloaded, so the default comes from the ready rows. With
+            # none ready every row is the fallback, making it a download target rather than a load.
             ready = [v for v in variants if _downloaded(v)]
             best = pick_best_gguf([v.filename for v in (ready or variants)])
             default_variant = extract_quant_label(best) if best else None

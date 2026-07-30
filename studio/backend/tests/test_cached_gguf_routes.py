@@ -428,9 +428,8 @@ def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monke
 def test_the_local_default_variant_is_one_that_can_load(
     tmp_path, files, expected_default, expected_ready
 ):
-    """The picker takes default_variant and only re-checks whether it fits in memory, never whether
-    it is downloaded, so recommending a quant short a shard selects one that cannot load while a
-    whole one sits beside it."""
+    """The picker re-checks only that default_variant fits in memory, never that it is downloaded,
+    so a quant short a shard gets recommended over a whole one sitting beside it."""
     snapshot = tmp_path / "models--Org--Model" / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
     for name, blob in files.items():

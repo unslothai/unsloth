@@ -888,10 +888,8 @@ def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, project
     ],
 )
 def test_a_manifestless_torn_quant_is_still_reported(tmp_path, monkeypatch, files, torn):
-    """Every quant signal above this point comes from a manifest, a marker or the completed set, so
-    a recovery holding only half a split named nothing and the row read runnable. The interrupted
-    attempt leaves no manifest, marker or .incomplete blob, so the shards are the only evidence.
-    One whole quant beside the torn one still serves the row, as it always did."""
+    """Every other quant signal comes from a manifest, a marker or the completed set, and an
+    interrupted attempt leaves none of those, so the shards are the only evidence of a torn split."""
     _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is torn
