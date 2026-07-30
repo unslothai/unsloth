@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
@@ -24,7 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -59,6 +60,13 @@ import {
 } from "react";
 
 type StudioT = ReturnType<typeof useT>;
+type HyperparameterTab = "optimization" | "schedule" | "memory";
+
+function selectableOptionStateClassName(selected: boolean): string {
+  return selected
+    ? "border-ring-strong bg-primary/5"
+    : "border-border hover:border-foreground/20";
+}
 
 function Row({
   label,
@@ -193,7 +201,17 @@ export function ParamsSection({
   const showVisionImageSize = showVisionLora && !isDeepseekOcr;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
+  const [hyperparameterTab, setHyperparameterTab] =
+    useState<HyperparameterTab>("optimization");
   const showAdvanced = mode === "advanced";
+  const hyperparameterTabs = [
+    {
+      value: "optimization",
+      label: t("studio.params.optimization"),
+    },
+    { value: "schedule", label: t("studio.params.schedule") },
+    { value: "memory", label: t("studio.params.memory") },
+  ] as const;
   const [ctxDraft, setCtxDraft] = useState(() => ({
     contextLength: store.contextLength,
     value: String(store.contextLength),
@@ -691,6 +709,7 @@ export function ParamsSection({
                             <button
                               key={mod}
                               type="button"
+                              aria-pressed={active}
                               onClick={() => {
                                 store.setTargetModules(
                                   active
@@ -700,10 +719,10 @@ export function ParamsSection({
                                     : [...store.targetModules, mod],
                                 );
                               }}
-                              className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${
+                              className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
                                 active
-                                  ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
-                                  : "text-muted-foreground hover:bg-muted/50"
+                                  ? "text-foreground"
+                                  : "text-muted-foreground"
                               }`}
                             >
                               {mod}
@@ -747,12 +766,9 @@ export function ParamsSection({
                       disabled={
                         isMac && (opt.value === "loftq" || opt.value === "dora")
                       }
+                      aria-pressed={store.loraVariant === opt.value}
                       onClick={() => store.setLoraVariant(opt.value)}
-                      className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
-                        store.loraVariant === opt.value
-                          ? "border-ring-strong bg-primary/5"
-                          : "border-border hover:border-foreground/20"
-                      }`}
+                      className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === opt.value)}`}
                     >
                       <p className="text-xs font-medium">{opt.label}</p>
                       <p className="text-ui-10 text-muted-foreground">
@@ -780,27 +796,19 @@ export function ParamsSection({
               {t("studio.params.trainingHyperparameters")}
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
-              <Tabs defaultValue="optimization" className="w-full">
-                <TabsList className="w-full">
-                  <TabsTrigger
-                    value="optimization"
-                    className="flex-1 !corner-squircle text-xs cursor-pointer"
-                  >
-                    {t("studio.params.optimization")}
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="schedule"
-                    className="flex-1 text-xs cursor-pointer"
-                  >
-                    {t("studio.params.schedule")}
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="memory"
-                    className="flex-1 text-xs cursor-pointer"
-                  >
-                    {t("studio.params.memory")}
-                  </TabsTrigger>
-                </TabsList>
+              <Tabs
+                value={hyperparameterTab}
+                onValueChange={(value) =>
+                  setHyperparameterTab(value as HyperparameterTab)
+                }
+                className="w-full"
+              >
+                <SegmentedTabsList
+                  value={hyperparameterTab}
+                  options={hyperparameterTabs}
+                  ariaLabel={t("studio.params.trainingHyperparameters")}
+                  size="compact"
+                />
 
                 <TabsContent
                   value="optimization"

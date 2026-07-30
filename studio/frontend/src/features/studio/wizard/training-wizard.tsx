@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedTabsList } from "@/components/segmented-tabs";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -146,47 +147,24 @@ function ParamModeToggle({
   onChange: (next: ParamMode) => void;
 }) {
   const t = useT();
+  const options = [
+    { value: "simple", label: t("studio.params.mode.simple") },
+    { value: "advanced", label: t("studio.params.mode.advanced") },
+  ] as const;
+
   return (
     <Tabs
       value={mode}
       onValueChange={(value) => onChange(value as ParamMode)}
       className="contents"
     >
-      <TabsList
-        unstyled={true}
-        aria-label={t("studio.params.mode.ariaLabel")}
-        className="hub-menu-trigger hub-tab-toggle relative inline-flex h-8 w-full shrink-0 items-center rounded-full @md/train-card:w-[170px]"
-      >
-        <span
-          aria-hidden="true"
-          className={cn(
-            "hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
-            mode === "advanced" ? "translate-x-full" : "translate-x-0",
-          )}
-        />
-        {(["simple", "advanced"] as const).map((value) => {
-          const active = mode === value;
-          return (
-            <TabsTrigger
-              key={value}
-              value={value}
-              indicatorClassName="hidden"
-              className={cn(
-                "relative z-10 h-8 flex-1 rounded-full border-0 px-3 py-0 text-ui-12p5",
-                active
-                  ? "text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {t(
-                value === "simple"
-                  ? "studio.params.mode.simple"
-                  : "studio.params.mode.advanced",
-              )}
-            </TabsTrigger>
-          );
-        })}
-      </TabsList>
+      <SegmentedTabsList
+        value={mode}
+        options={options}
+        ariaLabel={t("studio.params.mode.ariaLabel")}
+        size="compact"
+        className="@md/train-card:w-[170px]"
+      />
     </Tabs>
   );
 }
