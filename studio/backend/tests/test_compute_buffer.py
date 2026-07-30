@@ -827,7 +827,15 @@ class TestPerDeviceSplitReserve:
             return sorted(idx for idx, _ in subset), capped
         return None, 0
 
-    def _drive_reduced(self, b, gpus, totals, model_mib, min_gpus = 2, enforce = True):
+    def _drive_reduced(
+        self,
+        b,
+        gpus,
+        totals,
+        model_mib,
+        min_gpus = 2,
+        enforce = True,
+    ):
         """Mirror of the reduced-to-4096 loop the native loop falls through to. Same
         pooled admission, so it needs the same per-device gate."""
         frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
