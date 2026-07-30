@@ -2528,8 +2528,9 @@ def test_an_adapter_file_does_not_stand_in_for_a_checkpoint_row(tmp_path, monkey
     adapter file as that row's payload, though a checkpoint load finds no base weights."""
     _repo_with(
         tmp_path,
-        snapshots = {SNAPSHOT: {"config.json": b'{"model_type":"llama"}',
-                                "adapter_model.bin": b"\0" * 256}},
+        snapshots = {
+            SNAPSHOT: {"config.json": b'{"model_type":"llama"}', "adapter_model.bin": b"\0" * 256}
+        },
         refs = {"main": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
