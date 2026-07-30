@@ -1714,6 +1714,30 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _pipeline_parallel_disabled_by_args(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether the launch turns OFF llama.cpp's pipeline parallelism, which is what
+    quadruples the per-device context-linear compute buffer (see
+    ``_CTX_COMPUTE_SPLIT_MULT``). llama-context.cpp requires, among other things, no
+    tensor overrides and KV offload on; either of those flags takes the multiplier
+    back to 1x, so a fit that charged it anyway would waste context. Studio passes
+    neither itself; both can arrive through extra_args or the environment.
+    """
+    source_env = os.environ if env is None else env
+    if source_env.get("LLAMA_ARG_OVERRIDE_TENSOR"):
+        return True
+    if source_env.get("LLAMA_ARG_KV_OFFLOAD") in _LLAMA_ARG_FALSE_VALUES:
+        return True
+    for raw in extra_args or ():
+        flag = _flag_name(str(raw))
+        # Any -ot at all disables it, even a pattern that matches no tensor:
+        # llama.cpp only checks that the override list is non-empty.
+        if flag in {"-ot", "--override-tensor", "-nkvo", "--no-kv-offload"}:
+            return True
+    return False
+
+
 def _kv_unified_from_args(
     extra_args: Optional[Iterable[str]],
     default: bool = False,
@@ -4778,15 +4802,27 @@ class LlamaCppBackend:
     _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
     _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
     # Once the model spans more than one device under `-sm layer`, the f16 ctx-linear
-    # term per device is 4x the single-device one, not 1x. Measured per device with
-    # llama.cpp's own memory breakdown, dividing out n_ctx and n_ubatch: exactly 2.00
-    # B/tok/ubatch on 1 GPU, and exactly 8.00 on 2, 3, 4, 5, 6 and 8 GPUs. It is a step
-    # on "is split", not a ramp in device count (2*n_gpus would only fit n=1 and n=4),
+    # term per device is 4x the single-device one, not 1x. The cause is llama.cpp's
+    # pipeline parallelism: llama-context.cpp enables it when n_devices > 1 (plus the
+    # conditions _pipeline_parallel_disabled_by_args covers), which sets the ggml
+    # scheduler's n_copies to GGML_SCHED_MAX_COPIES == 4. Every tensor flagged
+    # GGML_TENSOR_FLAG_INPUT is then duplicated n_copies times per backend, and each
+    # copy is marked input AND output so ggml-alloc cannot reuse its memory
+    # (ggml-backend.cpp, "prevent ggml-alloc from overwriting the tensor"). The KQ mask
+    # is such an input, sized [n_kv, n_ubatch] f16, so 1 live copy becomes 4. That is
+    # why the multiplier is exactly 4 and why it is a step on "is split" rather than a
+    # ramp in device count (2*n_gpus would only fit n=1 and n=4). Verified causally: on
+    # the same two GPUs, a -ot pattern matching no tensor changes no placement but trips
+    # has_tensor_overrides(), and the measured rate falls 8.00 -> 2.00.
+    # Measured per device with llama.cpp's own memory breakdown, dividing out n_ctx and
+    # n_ubatch: exactly 2.00 B/tok/ubatch on 1 GPU, and exactly 8.00 on 2, 3, 4, 5, 6
+    # and 8 GPUs,
     # and it is architecture-independent: the same 2 -> 8 step holds on Qwen3.5-9B
     # (dense GQA), Qwen3.6-35B-A3B and gemma-4-12b/26B (MoE) and Kimi-K3 (MLA), at
-    # ub=512 and ub=2048. It is not the --parallel slot count in disguise: the same
-    # 2.00 -> 8.00 step measures identically at --parallel 1 and --parallel 4 (the
-    # ctx-linear rate is slot-independent; only the flat term moves, by ~3 MiB).
+    # ub=512 and ub=2048. It is not the --parallel slot count in disguise: the full
+    # [n_gpus 1..4] x [--parallel 1..4] grid on gemma-4-12b-it is 2.00 in all four
+    # single-GPU cells and 8.00 in all twelve split cells (the ctx-linear rate is
+    # slot-independent here; only the flat term moves, by ~3 MiB).
     # Without it a multi-GPU fit under-reserves this term 2.67x
     # (i.e. 8/(2*1.5)), which spends the whole safety margin and then some: Kimi-K3
     # UD-IQ1_M at 1M ctx on 4 GPUs reserved 1.5 GiB per device against 4.0 GiB actual.
@@ -7276,6 +7312,7 @@ class LlamaCppBackend:
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
                 )
+                _pipeline_parallel_off = _pipeline_parallel_disabled_by_args(extra_args)
                 # A hard-crash recovery may relaunch this same plan with FA off.
                 # Size that larger cache up front so the recovery cannot OOM.
                 planned_flash_attn = False
@@ -7794,12 +7831,14 @@ class LlamaCppBackend:
                         # by the device count; a large model at high context otherwise
                         # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs). The
                         # per-device rate itself also steps up once split, so tell the
-                        # estimator which side of that step we are on.
+                        # estimator which side of that step we are on -- unless the
+                        # launch is one where llama.cpp declines pipeline parallelism,
+                        # which is what causes the step.
                         return max(1, n_gpus) * self._compute_buffer_ctx_bytes(
                             ctx,
                             _effective_ubatch,
                             cache_type_kv,
-                            layer_split = n_gpus > 1,
+                            layer_split = n_gpus > 1 and not _pipeline_parallel_off,
                         )
 
                     # Layer-split compute buffer (one lump; tensor mode reserves it

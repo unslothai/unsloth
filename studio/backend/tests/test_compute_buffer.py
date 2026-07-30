@@ -492,3 +492,59 @@ class TestLayerSplitWiring:
         # The step is per device on top of the existing replication, not instead of
         # it: n devices x the split rate. Dropping either halves the reserve.
         assert "max(1, n_gpus) * self._compute_buffer_ctx_bytes" in self._cc_bytes_source()
+
+
+class TestPipelineParallelPredicate:
+    """The 4x step is llama.cpp's pipeline parallelism (ggml n_copies == 4), which
+    llama-context.cpp declines when there are tensor overrides or KV offload is off.
+    Charging the step on such a launch would waste context for nothing, so the fit
+    has to detect them. Verified causally: on two GPUs, a -ot pattern matching no
+    tensor changes no placement but takes the measured rate from 8.00 to 2.00."""
+
+    def _off(self, args = None, env = None):
+        from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+        return _pipeline_parallel_disabled_by_args(args, env = env or {})
+
+    def test_plain_launch_keeps_the_step(self):
+        assert self._off([]) is False
+        assert self._off(None) is False
+        assert self._off(["-c", "131072", "--parallel", "4"]) is False
+
+    @pytest.mark.parametrize("flag", ["-ot", "--override-tensor"])
+    def test_any_tensor_override_disables(self, flag):
+        # Even a pattern that matches nothing: llama.cpp only checks the list is
+        # non-empty (has_tensor_overrides), which is exactly the causal experiment.
+        assert self._off([flag, "zzz_matches_nothing=CUDA0"]) is True
+
+    @pytest.mark.parametrize("flag", ["-nkvo", "--no-kv-offload"])
+    def test_kv_offload_off_disables(self, flag):
+        assert self._off([flag]) is True
+
+    def test_env_tensor_override_disables(self):
+        assert self._off([], env = {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"}) is True
+        assert self._off([], env = {"LLAMA_ARG_OVERRIDE_TENSOR": ""}) is False
+
+    @pytest.mark.parametrize("val", ["off", "0", "false", "disabled"])
+    def test_env_kv_offload_off_disables(self, val):
+        assert self._off([], env = {"LLAMA_ARG_KV_OFFLOAD": val}) is True
+
+    def test_env_kv_offload_on_keeps_the_step(self):
+        assert self._off([], env = {"LLAMA_ARG_KV_OFFLOAD": "1"}) is False
+
+    def test_unrelated_flags_do_not_disable(self):
+        assert self._off(["--kv-unified", "-fa", "on", "-ngl", "-1"]) is False
+
+    @pytest.mark.parametrize(
+        "flag", ["-otd", "--override-tensor-draft", "--spec-draft-override-tensor"]
+    )
+    def test_draft_override_does_not_disable(self, flag):
+        # -otd targets the speculative draft model, so it does not set the main
+        # model's tensor_buft_overrides and does not disable pipeline parallelism.
+        assert self._off([flag, "exps=CPU"]) is False
+
+    def test_wired_into_the_fit(self):
+        # The flag has to reach _cc_bytes, else the predicate is dead code.
+        import inspect
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_pipeline_parallel_disabled_by_args(extra_args)" in src
+        assert "layer_split = n_gpus > 1 and not _pipeline_parallel_off" in src
