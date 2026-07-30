@@ -121,7 +121,14 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
+        proc = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+        )
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
@@ -463,7 +470,7 @@ def _run_llama_phase(
         # otherwise re-route and silently replace it. Re-assert via setup's env/CLI flags.
         if llama_backend == "vulkan" or (asset and "vulkan" in asset.lower()):
             env["UNSLOTH_FORCE_VULKAN"] = "1"
-            env["UNSLOTH_LLAMA_BACKEND"] = "vulkan"
+            env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
         _flow.stream_installer(
             cmd,
             env,

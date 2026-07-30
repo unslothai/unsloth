@@ -35,9 +35,11 @@ from core.inference.tool_call_parser import (
     _strip_mistral_reasoning,
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS,
+    NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
+    is_reprompt_repeat,
     is_short_intent_without_action,
     parse_tool_calls_from_text,
     reprompt_to_act_message,
@@ -564,6 +566,8 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
+    last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
     # re-prompt (which would raise the confirmation gate again).
     tool_denied = False
@@ -1014,9 +1018,11 @@ def run_safetensors_tool_loop(
                     and not rag_autoinjected
                     and not tool_denied
                     and not any(record.executed for record in tool_controller.history)
+                    and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
                 ):
                     reprompt_count += 1
+                    last_reprompt_text = intent_text
                     logger.info(
                         "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
@@ -1032,9 +1038,10 @@ def run_safetensors_tool_loop(
                             "content": reprompt_to_act_message(tool_hint),
                         }
                     )
-                    # Empty status clears the badge and resets the route's
-                    # per-turn text cursor before the re-prompted turn streams.
+                    # Blank first: it clears the badge and resets the route's per-turn
+                    # text cursor. The badge then shows the pause is a re-prompt, not a stall.
                     yield {"type": "status", "text": ""}
+                    yield {"type": "status", "text": NUDGE_TOOL_CALLS_STATUS}
                     continue
 
                 # Final answer. If a literal tool marker in prose was buffered but

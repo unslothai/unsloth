@@ -50,6 +50,7 @@ export {
   readPersistedSpeculativeType,
   readPersistedGpuMemoryMode,
   reconcilePersistedGpuIds,
+  reconcilePersistedGpuSelection,
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export {

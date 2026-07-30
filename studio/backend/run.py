@@ -10,7 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import NoReturn, Optional, Sequence, Tuple
 
 
 def _fix_torch_cuda_ld_path():
@@ -689,6 +689,33 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     return None
 
 
+def _bind_addresses(host: str, port: int) -> "set[str]":
+    """Every address *host* resolves to. `localhost` is both 127.0.0.1 and ::1, and
+    recording only the first lets a later launch on the other one miss us."""
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return {host}
+    return {info[4][0] for info in infos} or {host}
+
+
+def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
+    """Would a server bound to *recorded* block a bind to *host*?
+
+    *recorded* may list several addresses. Unknown or wildcard on either side
+    collides: refusing with a clear message beats silently starting a duplicate.
+    """
+    wildcards = ("0.0.0.0", "::", "")
+    if not recorded or host in wildcards:
+        return True
+    listed = {a.strip() for a in recorded.split(",") if a.strip()}
+    if not listed or listed & set(wildcards):
+        return True
+    return bool(listed & _bind_addresses(host, port))
+
+
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding.
 
@@ -733,18 +760,215 @@ def _find_free_port(
     host: str,
     start: int,
     max_attempts: int = 20,
+    avoid_own_studio: bool = False,
 ) -> int:
-    """Find a free port from `start`, trying up to max_attempts ports."""
+    """Find a free port from `start`, trying up to max_attempts ports.
+
+    ``avoid_own_studio`` aborts rather than skipping past one of our own servers
+    in the fallback range, which would start a duplicate on a later port.
+    """
     for offset in range(max_attempts):
         candidate = start + offset
         if _is_port_free(host, candidate):
             return candidate
+        if avoid_own_studio:
+            own = _own_studio_on_port(candidate, host)
+            if own is not None:
+                _abort_already_running(own, candidate)
     raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
 
 
 from utils.paths.storage_roots import studio_root as _studio_root
 
+# Legacy single-instance file; still read so `stop` finds an older build's server.
 _PID_FILE = _studio_root() / "studio.pid"
+PID_FILE_GLOB = "studio-*.pid"
+
+
+def _pid_file_for_port(port: int) -> Path:
+    # PID in the name: 127.0.0.1 and ::1 can share a port, and one file per port
+    # would let the second bind overwrite the first.
+    return _studio_root() / f"studio-{port}-{os.getpid()}.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except ImportError:
+        pass
+    if sys.platform == "win32":
+        # os.kill(pid, 0) raises OSError for every pid on Windows, so tasklist is
+        # the only usable probe here.
+        import subprocess
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+            ).stdout
+        except Exception:
+            # Unconfirmed means keep, matching the CLI's _pid_alive. Pruning a
+            # live server's record is what lets the next launch fall back past it
+            # and strand it, which is the bug this file exists to fix. A stale
+            # record instead costs one clear "already running" message.
+            return True
+        return f'"{int(pid)}"' in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _process_create_time(pid: int) -> "float | None":
+    try:
+        import psutil
+        return psutil.Process(pid).create_time()
+    except Exception:
+        return None
+
+
+def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
+    """Parse ``pid`` / optional ``create_time`` / optional bind address."""
+    try:
+        lines = path.read_text(encoding = "utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not lines or not lines[0].strip().isdigit():
+        return None
+    try:
+        # isdigit() is not enough: a superscript two passes it but int() rejects it.
+        pid = int(lines[0].strip())
+    except ValueError:
+        return None
+    # kill(0) signals our whole process group; kill(1) is init. Never either.
+    if pid < 2:
+        return None
+    created = None
+    if len(lines) > 1:
+        try:
+            created = float(lines[1].strip())
+        except ValueError:
+            created = None
+    address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
+    return pid, created, address
+
+
+def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
+    """False only when a recorded start time proves this PID is a different process.
+
+    Any recorded time matching is enough -- a stale record must not veto a live
+    server that reused the PID. Untimed records cannot be checked at all, so they
+    are trusted: a legacy `python run.py` has no telltale argv, and guessing from
+    the command line rejected real servers.
+    """
+    known = [c for c in created_times if c is not None]
+    if not known:
+        return True
+    actual = _process_create_time(pid)
+    if actual is None:
+        return True
+    return any(abs(actual - c) < 1.0 for c in known)
+
+
+def _own_studio_on_port(port: int, host: str) -> "int | None":
+    """PID of one of our own servers already bound to *port* for *host*.
+
+    Reads our own records rather than enumerating listeners: psutil is optional,
+    and without it a listener scan finds nothing and we silently start a duplicate.
+    """
+    try:
+        paths = list(_studio_root().glob(f"studio-{port}-*.pid"))
+    except OSError:
+        return None
+    for path in paths:
+        record = _read_pid_record(path)
+        if record is None:
+            continue
+        pid, created, address = record
+        if not _pid_alive(pid):
+            # Pruning is a courtesy; an undeletable record must not abort startup.
+            try:
+                path.unlink(missing_ok = True)
+            except OSError:
+                pass
+            continue
+        if not _addresses_collide(address, host, port):
+            continue
+        if _pid_is_studio_backend(pid, [created]):
+            return pid
+    return _legacy_studio_on_port(port)
+
+
+def _legacy_studio_on_port(port: int) -> "int | None":
+    """A pre-upgrade server recorded only its PID, so match it to the listener.
+
+    Falling back past one leaves it running while `_write_pid_file` overwrites the
+    only record of it. When the listener is unknowable, assume it is ours.
+    """
+    record = _read_pid_record(_PID_FILE)
+    if record is None:
+        return None
+    pid, created, _address = record
+    if not _pid_alive(pid):
+        return None
+    # A current build writes a per-port file too, so its port is already known --
+    # and this port's records were just checked. Only count a record that still
+    # matches the live process: a stale one may just share a reused PID.
+    for other in _per_port_records():
+        if other and other[0] == pid and _pid_is_studio_backend(pid, [other[1]]):
+            return None
+    blocker = _get_pid_on_port(port)
+    if blocker is not None and blocker[0] != pid:
+        return None
+    if not _pid_is_studio_backend(pid, [created]):
+        return None
+    return pid
+
+
+def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
+    try:
+        return [_read_pid_record(p) for p in _studio_root().glob(PID_FILE_GLOB)]
+    except OSError:
+        return []
+
+
+def _resolve_port(
+    host: str,
+    port: int,
+    avoid_own_studio: bool = True,
+) -> int:
+    """The requested port, or the next free one.
+
+    With ``avoid_own_studio`` this aborts rather than falling back past one of our
+    own servers, on *port* itself or anywhere in the fallback range: skipping one
+    is what strands it. Callers that read the bound port back pass False and keep
+    the plain fallback.
+    """
+    if _is_port_free(host, port):
+        return port
+    if avoid_own_studio:
+        own = _own_studio_on_port(port, host)
+        if own is not None:
+            _abort_already_running(own, port)
+    return _find_free_port(host, port + 1, avoid_own_studio = avoid_own_studio)
+
+
+def _abort_already_running(pid: int, port: int) -> "NoReturn":
+    print(
+        f"Error: Unsloth Studio is already running on port {port} (PID {pid}). Run "
+        "`unsloth studio stop` first, or start this one on a different --port.",
+        file = sys.stderr,
+        flush = True,
+    )
+    sys.exit(1)
+
 
 # Direct backend launches bypass the CLI's env re-export; do it here for
 # real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
@@ -770,23 +994,101 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
-def _write_pid_file():
-    """Write the current process PID to the studio PID file."""
+_OWN_PID_FILE: "Path | None" = None
+
+
+def _write_pid_file(port: int, host: str = ""):
+    """Record this PID under its own port so `stop` can find every server."""
+    global _OWN_PID_FILE
+    path = _pid_file_for_port(port)
     try:
-        _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
-        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
+        path.parent.mkdir(parents = True, exist_ok = True)
+    except OSError:
+        pass
+    try:
+        # Start time pins the record to this process; the bind address tells a
+        # later launch whether this server would actually block it.
+        created = _process_create_time(os.getpid())
+        address = ",".join(sorted(_bind_addresses(host, port))) if host else ""
+        body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}"
+        # Write-then-rename: `stop` reads these concurrently, and a reader that
+        # catches the truncate window sees a corrupt record and deletes it.
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(body, encoding = "utf-8")
+            os.replace(tmp, path)
+        finally:
+            # A failed replace would otherwise leave the scratch file behind. It
+            # does not end in .pid, so no glob picks it up either way.
+            tmp.unlink(missing_ok = True)
+    except OSError:
+        pass
+    else:
+        _OWN_PID_FILE = path
+    # An older CLI's `stop` only reads this one, and expects a bare PID. Written
+    # independently of the per-port record: if that one failed, this is the only
+    # thing keeping the server stoppable at all.
+    try:
+        # Never take it from a server that is still running. A pre-upgrade server
+        # is recorded here and nowhere else, so overwriting its entry is exactly
+        # what strands it -- the orphan this file exists to prevent.
+        prior = _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
+        if prior is None or prior[0] == os.getpid() or not _pid_alive(prior[0]):
+            _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         pass
 
 
-def _remove_pid_file():
-    """Remove the PID file if it belongs to this process."""
+def _legacy_heir() -> "int | None":
+    """Another live server's PID, to hand the legacy studio.pid over to.
+
+    Only one server owns studio.pid at a time, so its exit would otherwise drop
+    the single record an older CLI can read, stranding any sibling that is still
+    serving.
+    """
     try:
-        if _PID_FILE.is_file():
-            stored = _PID_FILE.read_text(encoding = "utf-8").strip()
-            if stored == str(os.getpid()):
+        paths = sorted(_studio_root().glob(PID_FILE_GLOB))
+    except OSError:
+        return None
+    for path in paths:
+        if _OWN_PID_FILE is not None and path == _OWN_PID_FILE:
+            continue
+        record = _read_pid_record(path)
+        if record is None or record[0] == os.getpid():
+            continue
+        if _pid_alive(record[0]) and _pid_is_studio_backend(record[0], [record[1]]):
+            return record[0]
+    return None
+
+
+def _remove_pid_file():
+    """Remove the PID files that belong to this process.
+
+    _PID_FILE is checked even when the per-port record was never written, since
+    _write_pid_file writes the two independently.
+    """
+    # Nothing here may raise: _graceful_shutdown calls this at the end, and an
+    # unreadable or undeletable record must not abandon the rest of the exit
+    # path. _read_pid_record already swallows OSError/UnicodeDecodeError.
+    if _OWN_PID_FILE is not None:
+        try:
+            record = _read_pid_record(_OWN_PID_FILE) if _OWN_PID_FILE.is_file() else None
+            if record is not None and record[0] == os.getpid():
+                _OWN_PID_FILE.unlink(missing_ok = True)
+        except OSError:
+            pass
+    try:
+        record = _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
+        if record is not None and record[0] == os.getpid():
+            # Hand the pointer to a live sibling rather than deleting it. An
+            # older CLI reads only this file, so dropping it while another
+            # server is still up leaves that server unstoppable.
+            heir = _legacy_heir()
+            if heir is None:
                 _PID_FILE.unlink(missing_ok = True)
-    except (OSError, UnicodeDecodeError):
+            else:
+                _PID_FILE.write_text(str(heir), encoding = "utf-8")
+    except OSError:
         pass
 
 
@@ -796,7 +1098,6 @@ def _graceful_shutdown(server = None):
     Called from signal handlers to clean up children before exit. Critical on
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
-    _remove_pid_file()
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn (releases the listening socket).
@@ -849,6 +1150,9 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error in process-lifetime sweep: %s", e)
 
+    # Last: while cleanup runs the server is still alive, and dropping the record
+    # early leaves a retried `stop` or a new launch unable to find it.
+    _remove_pid_file()
     logger.info("All subprocesses cleaned up")
 
 
@@ -1326,7 +1630,8 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
     if not _auth_storage.requires_password_change(_admin):
         print(
             "Error: an Unsloth admin password is already set; --password only sets "
-            "the initial password. Run `unsloth studio reset-password` first.",
+            "the initial password. Change it in the UI, or run `unsloth studio "
+            "reset-password` for a new one.",
             file = sys.stderr,
             flush = True,
         )
@@ -1397,6 +1702,7 @@ def run_server(
     enable_tools: "Optional[bool]" = None,
     password: "Optional[str]" = None,
     emit_tauri_port: bool = True,
+    abort_if_own_studio: "Optional[bool]" = None,
 ):
     """
     Start the FastAPI server.
@@ -1530,10 +1836,16 @@ def run_server(
     )
 
     # Auto-find a free port if the requested one is in use.
-    if not _is_port_free(host, port):
-        original_port = port
-        blocker = _get_pid_on_port(port)
-        port = _find_free_port(host, port + 1)
+    original_port = port
+    # Refusing rather than falling back is for callers that cannot follow us to
+    # the new port. `studio run` reads app.state.server_port back and the desktop
+    # app reads TAURI_PORT, so both should keep the plain fallback; only the
+    # bare launch, which has nothing but the banner, benefits from the refusal.
+    if abort_if_own_studio is None:
+        abort_if_own_studio = not api_only
+    port = _resolve_port(host, port, avoid_own_studio = abort_if_own_studio)
+    if port != original_port:
+        blocker = _get_pid_on_port(original_port)
         if not silent:
             print("")
             print("=" * 50)
@@ -1731,7 +2043,7 @@ def run_server(
         (time.perf_counter() - boot_started) * 1000,
     )
 
-    _write_pid_file()
+    _write_pid_file(port, host)
     import atexit
 
     atexit.register(_remove_pid_file)
@@ -1920,7 +2232,8 @@ def _build_arg_parser():
         default = _PARALLEL_DEFAULT_PLAIN,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            "(Parallel Slots) override it per load."
         ),
     )
     return parser

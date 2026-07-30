@@ -19,6 +19,11 @@
   --status-warning: #eab308;
   --status-danger: #ef4444;
   --status-success: #11b686;
+  /* Fixed ink for text on --status-success. It cannot borrow
+     --primary-foreground: a custom accent recolors that, while the success
+     background stays put, so the pair would drift out of contrast. This is
+     the ink Classic and Minimal dark already render there, at 7.46:1. */
+  --status-success-foreground: #0d0d0d;
 }
 
 .dark {
@@ -29,6 +34,7 @@
   --status-warning: #fbbf24;
   --status-danger: #ef4444;
   --status-success: #11b686;
+  --status-success-foreground: #0d0d0d;
 }
 
 @theme inline {
@@ -39,6 +45,7 @@
   --color-status-warning: var(--status-warning);
   --color-status-danger: var(--status-danger);
   --color-status-success: var(--status-success);
+  --color-status-success-foreground: var(--status-success-foreground);
 }
 
 @layer base {
@@ -585,15 +592,17 @@
   }
 
   /* On-device rows reuse the result-row card but carry selection/active state:
-     a neutral tint for the inspected row and a success tint with a primary edge
-     for the model currently loaded. Discover rows never set these attributes. */
+     a neutral tint for the inspected row and a success tint with a matching
+     success edge for the model currently loaded. Discover rows never set these
+     attributes. */
   .hub-page .hub-result-row[data-selected="true"] {
     background-color: color-mix(in srgb, var(--foreground) 5%, var(--card));
   }
 
   .hub-page .hub-result-row[data-active="true"] {
     background-color: color-mix(in srgb, var(--status-success) 7%, var(--card));
-    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16), inset 2px 0 0 0 var(--primary);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16),
+      inset 2px 0 0 0 var(--status-success);
   }
 
   html.dark .hub-page .hub-result-row[data-selected="true"] {
@@ -603,7 +612,7 @@
 
   html.dark .hub-page .hub-result-row[data-active="true"] {
     background-color: color-mix(in srgb, var(--status-success) 14%, var(--background));
-    box-shadow: inset 2px 0 0 0 var(--primary);
+    box-shadow: inset 2px 0 0 0 var(--status-success);
   }
 
   /* Recent-searches suggestion panel. The surface comes from
@@ -731,7 +740,7 @@
 	   both loaded and selected still reads as loaded. */
   html:not(.dark) .hub-page .catalog-row[data-active="true"] {
     background-color: color-mix(in srgb, var(--status-success) 7%, transparent);
-    box-shadow: inset 2px 0 0 0 var(--primary);
+    box-shadow: inset 2px 0 0 0 var(--status-success);
   }
 
   html.dark .hub-page .catalog-row {
@@ -751,7 +760,7 @@
 
   html.dark .hub-page .catalog-row[data-active="true"] {
     background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
-    box-shadow: inset 2px 0 0 0 var(--primary);
+    box-shadow: inset 2px 0 0 0 var(--status-success);
   }
 }
 
@@ -840,7 +849,7 @@
     border-radius: 9999px;
     padding-inline: 0;
     background-color: var(--status-success);
-    color: var(--primary-foreground);
+    color: var(--status-success-foreground);
     font-size: calc(0.65625rem * var(--ui-font-scale, 1));
     font-weight: 600;
     line-height: 1;
@@ -1168,11 +1177,11 @@
     font-weight: 600;
     line-height: calc(1.125rem * var(--ui-font-scale, 1));
     letter-spacing: -0.025em;
-    color: var(--primary-foreground);
+    color: var(--status-success-foreground);
     transition: background-color 150ms, transform 150ms;
     box-shadow: inset 0 1px 0
-      color-mix(in srgb, var(--primary-foreground) 18%, transparent), 0 1px 2px
-      color-mix(in srgb, var(--status-success) 22%, transparent);
+      color-mix(in srgb, var(--status-success-foreground) 18%, transparent),
+      0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
   }
 
   .hub-run-action-btn:hover:not(:disabled) {
