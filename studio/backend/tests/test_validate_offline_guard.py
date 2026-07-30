@@ -10,6 +10,7 @@ keeps the check honest and order-independent. All three assertions share it so t
 interpreter and torch import are paid once.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -87,11 +88,17 @@ print("OFFLINE_GUARDED_OK")
 
 
 def test_offline_guarded_runtime_contract():
+    # utf-8 both ways: the child prints Unsloth's non-ASCII banner, and a Windows runner
+    # would otherwise decode it as cp1252 and fail on the banner rather than the contract.
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.run(
         [sys.executable, "-c", _DRIVER],
         cwd = _BACKEND_ROOT,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        env = env,
         timeout = 300,
     )
     assert (

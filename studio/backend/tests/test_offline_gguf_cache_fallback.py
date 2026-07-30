@@ -2748,7 +2748,7 @@ class TestValidateGuardCoversMetadataPreflights:
 
         # Anchored on __file__: CI runs pytest from the repo root, not studio/backend.
         backend_root = pathlib.Path(__file__).resolve().parent.parent
-        src = (backend_root / "routes" / "inference.py").read_text()
+        src = (backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
         tree = ast.parse(src)
         remote = {
             "check_upgrade_for_model",
@@ -2783,7 +2783,7 @@ class TestGuardIsKeyedOnWhatIsRead:
         import pathlib
 
         backend_root = pathlib.Path(__file__).resolve().parent.parent
-        src = (backend_root / "routes" / "inference.py").read_text()
+        src = (backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
         tree = ast.parse(src)
         fn = next(
             n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_any_remote"
@@ -2820,7 +2820,7 @@ class TestGuardIsKeyedOnWhatIsRead:
         import pathlib
 
         backend_root = pathlib.Path(__file__).resolve().parent.parent
-        src = (backend_root / "routes" / "inference.py").read_text()
+        src = (backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
         tree = ast.parse(src)
         bad = []
         for node in ast.walk(tree):
@@ -2852,7 +2852,7 @@ class TestTransformersOfflineDoesNotSilenceDatasets:
         import pathlib
 
         backend_root = pathlib.Path(__file__).resolve().parent.parent
-        src = (backend_root / "core" / "training" / "worker.py").read_text()
+        src = (backend_root / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         start = src.index("# Offline auto-detect:")
         return src[start : start + 2200]
 
