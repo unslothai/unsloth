@@ -28,23 +28,17 @@ def _fire(on_parent_exit: Callable[[], None]) -> None:
 
 
 def _watch_unix(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
-    # Direct child: reparenting is the death signal, immune to pid reuse.
-    # Explicit owner pid with an intermediary in between: liveness-probe it
-    # instead (kill 0); EPERM still means alive.
-    direct_child = os.getppid() == parent_pid
-    while not stop.wait(poll_seconds):
-        if direct_child:
-            if os.getppid() != parent_pid:
-                _fire(on_parent_exit)
-                return
-        else:
-            try:
-                os.kill(parent_pid, 0)
-            except ProcessLookupError:
-                _fire(on_parent_exit)
-                return
-            except OSError:
-                pass
+    # The app spawns the backend as its direct child on Unix, so "my parent is
+    # no longer the owner pid" is the death signal: kernel truth, immune to pid
+    # reuse, and indifferent to whether the corpse was reaped (a kill-0 probe
+    # would count an unreaped zombie as alive). Checked before the first wait
+    # so an owner that died during backend startup is caught immediately.
+    while True:
+        if os.getppid() != parent_pid:
+            _fire(on_parent_exit)
+            return
+        if stop.wait(poll_seconds):
+            return
 
 
 def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:

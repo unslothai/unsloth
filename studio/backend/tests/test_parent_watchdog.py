@@ -43,6 +43,7 @@ def test_fires_immediately_when_already_orphaned(monkeypatch):
     assert fired.is_set()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "dispatches to the Windows watcher, which opens the real pid")
 def test_stop_event_ends_the_watch(monkeypatch):
     monkeypatch.setattr(pw.os, "getppid", lambda: 4242)
     fired = threading.Event()
@@ -60,34 +61,15 @@ def test_callback_exception_is_contained():
     pw._fire(_boom)  # must not raise
 
 
-def test_explicit_owner_pid_uses_a_liveness_probe(monkeypatch):
-    # Not our direct parent (e.g. a wrapper in between): probe the owner pid.
-    monkeypatch.setattr(pw.os, "getppid", lambda: 4242)
-
-    def _dead(pid, sig):
-        raise ProcessLookupError
-
-    monkeypatch.setattr(pw.os, "kill", _dead)
+def test_fires_immediately_when_the_owner_is_not_the_current_parent(monkeypatch):
+    # Explicit owner pid but already reparented: the owner died during backend
+    # startup (reaped or zombie alike). Must fire before the first wait.
+    monkeypatch.setattr(pw.os, "getppid", lambda: 7777)
     fired = threading.Event()
-    pw._watch_unix(9999, fired.set, threading.Event(), poll_seconds = 0.01)
+    started = time.monotonic()
+    pw._watch_unix(4242, fired.set, threading.Event(), poll_seconds = 30)
     assert fired.is_set()
-
-
-def test_liveness_probe_treats_eperm_as_alive(monkeypatch):
-    monkeypatch.setattr(pw.os, "getppid", lambda: 4242)
-    calls = {"n": 0}
-
-    def _kill(pid, sig):
-        calls["n"] += 1
-        if calls["n"] < 3:
-            raise PermissionError  # exists, owned by someone else: alive
-        raise ProcessLookupError
-
-    monkeypatch.setattr(pw.os, "kill", _kill)
-    fired = threading.Event()
-    pw._watch_unix(9999, fired.set, threading.Event(), poll_seconds = 0.01)
-    assert fired.is_set()
-    assert calls["n"] == 3
+    assert time.monotonic() - started < 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "unix reparenting path")
