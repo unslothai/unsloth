@@ -144,6 +144,9 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.add(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
+    assert "promptQueueFactoryGenerationRef.current += 1" in THREAD
+    assert "promptQueueStartPendingRef.current.clear()" in THREAD
+    assert "promptQueueFactoryGenerationRef.current === factoryGeneration" in THREAD
     assert ".finally(() =>" in THREAD
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
@@ -171,8 +174,10 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "runSettingsAtQueueStart.deepResearchEnabled = false"
     )
     assert "void (appendResult as Promise<void>).catch(() => undefined)" in target
-    assert "function consumePromptQueueDeepResearch(run: PromptQueueRun)" in THREAD
-    assert ".then(() => consumePromptQueueDeepResearch(run))" in THREAD
+    assert "function consumePromptQueueDeepResearch(" in THREAD
+    assert "!item.target.usesDeepResearch" in THREAD
+    assert ".then(() => consumePromptQueueDeepResearch(run, item))" in THREAD
+    assert "usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled" in target
     assert "if (existingRun.deepResearchConsumed)" in THREAD
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
@@ -235,6 +240,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "visibleState.queuedSettingsEpoch" in CHAT_ADAPTER
     assert "queuedSettingsEpoch ===" in CHAT_ADAPTER
     assert "preserveVisibleSettings: true" in CHAT_ADAPTER
+    assert "captureResolvedRuntime: (runtime) =>" in CHAT_ADAPTER
+    assert "applyAutoLoadRuntimeState(options" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("trackQueuedSettings: !options?.preserveVisibleSettings") >= 4
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
@@ -270,6 +277,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "setModelLoading(true)" in eject
     assert "setModelLoading(false)" in eject
+    assert SHARED_COMPOSER.count("setModelLoading(true)") >= 1
+    assert SHARED_COMPOSER.count("setModelLoading(false)") >= 1
     assert "const latePromptQueueThreadIds = getLocalPromptQueueThreadIds()" in eject
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
     assert ".slice(Math.max(run.index, 0))" in THREAD

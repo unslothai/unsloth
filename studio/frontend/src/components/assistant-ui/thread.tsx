@@ -228,6 +228,7 @@ type PromptQueueTarget = {
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
+  usesDeepResearch: boolean;
   temporary: boolean;
   consumeDeepResearch: () => void;
 };
@@ -367,8 +368,11 @@ function handleQueuedPromptAppendFailure(
   scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
 }
 
-function consumePromptQueueDeepResearch(run: PromptQueueRun) {
-  if (run.deepResearchConsumed) {
+function consumePromptQueueDeepResearch(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+) {
+  if (run.deepResearchConsumed || !item.target.usesDeepResearch) {
     return;
   }
   run.deepResearchConsumed = true;
@@ -385,12 +389,12 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
     const result = item.target.append(item.prompt);
     if (result && typeof result.catch === "function") {
       void result
-        .then(() => consumePromptQueueDeepResearch(run))
+        .then(() => consumePromptQueueDeepResearch(run, item))
         .catch((error) => {
           handleQueuedPromptAppendFailure(run, item, error);
         });
     } else {
-      consumePromptQueueDeepResearch(run);
+      consumePromptQueueDeepResearch(run, item);
     }
   } catch (error) {
     handleQueuedPromptAppendFailure(run, item, error);
@@ -2072,12 +2076,44 @@ const Composer: FC<{
   const indexingActiveRef = useRef(false);
   const promptQueueTargetMountedRef = useRef(true);
   const promptQueueStartPendingRef = useRef(new Set<string>());
+  const promptQueueFactoryGenerationRef = useRef(0);
   useEffect(() => {
     promptQueueTargetMountedRef.current = true;
     return () => {
       promptQueueTargetMountedRef.current = false;
     };
   }, []);
+  useEffect(() => {
+    const cancelPendingQueueFactories = (
+      event: Event,
+    ) => {
+      const { threadIds } =
+        (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
+      if (threadIds && threadIds.length > 0) {
+        const state = aui.threadListItem().getState();
+        const aliases = compactIds([
+          state.id,
+          state.remoteId,
+          referenceThreadId,
+        ]);
+        if (!threadIds.some((threadId) => aliases.includes(threadId))) {
+          return;
+        }
+      }
+      promptQueueFactoryGenerationRef.current += 1;
+      promptQueueStartPendingRef.current.clear();
+    };
+    window.addEventListener(
+      PROMPT_QUEUE_STOP_EVENT,
+      cancelPendingQueueFactories,
+    );
+    return () => {
+      window.removeEventListener(
+        PROMPT_QUEUE_STOP_EVENT,
+        cancelPendingQueueFactories,
+      );
+    };
+  }, [aui, referenceThreadId]);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
@@ -2269,6 +2305,7 @@ const Composer: FC<{
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
+      usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
       temporary: incognitoAtQueueStart,
       consumeDeepResearch: () => {
         runSettingsAtQueueStart.deepResearchEnabled = false;
@@ -2291,9 +2328,13 @@ const Composer: FC<{
         return false;
       }
       promptQueueStartPendingRef.current.add(reservationKey);
+      const factoryGeneration = promptQueueFactoryGenerationRef.current;
       void createPromptQueueTarget()
         .then((target) => {
-          if (target) {
+          if (
+            target &&
+            promptQueueFactoryGenerationRef.current === factoryGeneration
+          ) {
             startPromptQueue(items, target, waitForCurrentRun);
             onStarted?.();
           }
@@ -2305,7 +2346,11 @@ const Composer: FC<{
           });
         })
         .finally(() => {
-          promptQueueStartPendingRef.current.delete(reservationKey);
+          if (
+            promptQueueFactoryGenerationRef.current === factoryGeneration
+          ) {
+            promptQueueStartPendingRef.current.delete(reservationKey);
+          }
         });
       return true;
     },

@@ -1458,10 +1458,70 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-async function autoLoadSmallestModel(options?: {
+type QueuedResolvedModelRuntime = {
+  checkpoint: string;
+  supportsTools: boolean;
+  supportsReasoning: boolean;
+  reasoningAlwaysOn: boolean;
+  reasoningStyle: ReturnType<typeof reasoningCapsFromLoad>["reasoningStyle"];
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: ReturnType<
+    typeof reasoningCapsFromLoad
+  >["reasoningEffortLevels"];
+  supportsPreserveThinking: boolean;
+  ggufContextLength: number | null;
+};
+
+function queuedResolvedModelFromStore(
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+): QueuedResolvedModelRuntime {
+  return {
+    checkpoint: state.params.checkpoint,
+    supportsTools: state.supportsTools,
+    supportsReasoning: state.supportsReasoning,
+    reasoningAlwaysOn: state.reasoningAlwaysOn,
+    reasoningStyle: state.reasoningStyle,
+    supportsReasoningOff: state.supportsReasoningOff,
+    reasoningEffortLevels: state.reasoningEffortLevels,
+    supportsPreserveThinking: state.supportsPreserveThinking,
+    ggufContextLength: state.ggufContextLength,
+  };
+}
+
+type AutoLoadOptions = {
   skipAdoptServerModel?: boolean;
   preserveVisibleSettings?: boolean;
-}): Promise<{
+  captureResolvedRuntime?: (runtime: QueuedResolvedModelRuntime) => void;
+};
+
+function applyAutoLoadRuntimeState(
+  options: AutoLoadOptions | undefined,
+  apply: () => void,
+) {
+  const visibleSettings = options?.preserveVisibleSettings
+    ? snapshotQueuedChatRunSettings(useChatRuntimeStore.getState())
+    : null;
+  try {
+    apply();
+    options?.captureResolvedRuntime?.(
+      queuedResolvedModelFromStore(useChatRuntimeStore.getState()),
+    );
+  } finally {
+    if (visibleSettings) {
+      useChatRuntimeStore
+        .getState()
+        .setCheckpoint(visibleSettings.params.checkpoint, undefined, {
+          trackQueuedSettings: false,
+        });
+      useChatRuntimeStore.setState({
+        ...visibleSettings,
+        params: { ...visibleSettings.params },
+      });
+    }
+  }
+}
+
+async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
@@ -1691,51 +1751,52 @@ async function autoLoadSmallestModel(options?: {
           }
         : {}),
     });
-    // Only persist the global preference when the value came from the global
-    // settings. A per-model config's choice must stay load-local, or autoloading
-    // a remembered model on startup would rewrite the global default.
-    if (config.speculativeType == null) {
-      saveSpeculativeType(effectiveSpeculativeType);
-    }
-    // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
-    persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
-    const loadedModelId = loadResp.model || modelPath;
-    useChatRuntimeStore
-      .getState()
-      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined, {
-        trackQueuedSettings: !options?.preserveVisibleSettings,
-      });
-    const store = useChatRuntimeStore.getState();
-    store.setModelRequiresTrustRemoteCode(
-      loadResp.requires_trust_remote_code ?? false,
-    );
-    store.setParams(
-      {
-        ...store.params,
-        ...(candidate.kind === "gguf"
-          ? {}
-          : { maxSeqLength: effectiveMaxSeqLength }),
-        maxTokens:
-          candidate.kind === "gguf"
-            ? loadResp.context_length ?? 131072
-            : effectiveMaxSeqLength,
-      },
-      { trackQueuedSettings: !options?.preserveVisibleSettings },
-    );
-    const autoModel: ChatModelSummary = {
-      id: loadedModelId,
-      name: loadResp.display_name ?? candidate.id,
-      isVision: loadResp.is_vision ?? false,
-      isLora: loadResp.is_lora ?? false,
-      isGguf: loadResp.is_gguf ?? candidate.kind === "gguf",
-      isAudio: loadResp.is_audio ?? false,
-      audioType: loadResp.audio_type ?? null,
-      hasAudioInput: loadResp.has_audio_input ?? false,
-    };
-    if (!store.models.some((m) => m.id === loadedModelId)) {
-      store.setModels([...store.models, autoModel]);
-    }
-    if (candidate.kind === "gguf") {
+    applyAutoLoadRuntimeState(options, () => {
+      // Only persist the global preference when the value came from the global
+      // settings. A per-model config's choice must stay load-local, or autoloading
+      // a remembered model on startup would rewrite the global default.
+      if (config.speculativeType == null) {
+        saveSpeculativeType(effectiveSpeculativeType);
+      }
+      // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
+      persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+      const loadedModelId = loadResp.model || modelPath;
+      useChatRuntimeStore
+        .getState()
+        .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined, {
+          trackQueuedSettings: !options?.preserveVisibleSettings,
+        });
+      const store = useChatRuntimeStore.getState();
+      store.setModelRequiresTrustRemoteCode(
+        loadResp.requires_trust_remote_code ?? false,
+      );
+      store.setParams(
+        {
+          ...store.params,
+          ...(candidate.kind === "gguf"
+            ? {}
+            : { maxSeqLength: effectiveMaxSeqLength }),
+          maxTokens:
+            candidate.kind === "gguf"
+              ? loadResp.context_length ?? 131072
+              : effectiveMaxSeqLength,
+        },
+        { trackQueuedSettings: !options?.preserveVisibleSettings },
+      );
+      const autoModel: ChatModelSummary = {
+        id: loadedModelId,
+        name: loadResp.display_name ?? candidate.id,
+        isVision: loadResp.is_vision ?? false,
+        isLora: loadResp.is_lora ?? false,
+        isGguf: loadResp.is_gguf ?? candidate.kind === "gguf",
+        isAudio: loadResp.is_audio ?? false,
+        audioType: loadResp.audio_type ?? null,
+        hasAudioInput: loadResp.has_audio_input ?? false,
+      };
+      if (!store.models.some((m) => m.id === loadedModelId)) {
+        store.setModels([...store.models, autoModel]);
+      }
+      if (candidate.kind === "gguf") {
       // Keep an explicit Manual+Auto context pin the load just applied (so a
       // later Apply doesn't silently revert it to auto-fit sizing), mirroring
       // the interactive path's keepCustomCtx; other cases baseline on
@@ -1782,7 +1843,7 @@ async function autoLoadSmallestModel(options?: {
         activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
-    } else {
+      } else {
       useChatRuntimeStore.setState({
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
@@ -1811,15 +1872,16 @@ async function autoLoadSmallestModel(options?: {
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
         activeModelIsLocal: loadResp.is_local_model ?? false,
       });
-    }
-    if (!(loadResp.is_lora ?? false)) {
-      recordLastLocalModelLoad({
-        id: candidate.id,
-        kind: candidate.kind,
-        ggufVariant: candidate.ggufVariant,
-      });
-    }
-    showAutoLoadSuccess(candidate.successLabel);
+      }
+      if (!(loadResp.is_lora ?? false)) {
+        recordLastLocalModelLoad({
+          id: candidate.id,
+          kind: candidate.kind,
+          ggufVariant: candidate.ggufVariant,
+        });
+      }
+      showAutoLoadSuccess(candidate.successLabel);
+    });
     return true;
   }
   try {
@@ -2042,37 +2104,38 @@ async function autoLoadSmallestModel(options?: {
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
       });
-      saveSpeculativeType(specSettings.speculativeType);
-      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
-      useChatRuntimeStore
-        .getState()
-        .setCheckpoint(
-          "unsloth/Qwen3.5-4B-MTP-GGUF",
-          "UD-Q4_K_XL",
+      applyAutoLoadRuntimeState(options, () => {
+        saveSpeculativeType(specSettings.speculativeType);
+        persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
+        useChatRuntimeStore
+          .getState()
+          .setCheckpoint(
+            "unsloth/Qwen3.5-4B-MTP-GGUF",
+            "UD-Q4_K_XL",
+            { trackQueuedSettings: !options?.preserveVisibleSettings },
+          );
+        const store = useChatRuntimeStore.getState();
+        store.setModelRequiresTrustRemoteCode(
+          loadResp.requires_trust_remote_code ?? false,
+        );
+        store.setParams(
+          {
+            ...store.params,
+            maxTokens: loadResp.context_length ?? 131072,
+          },
           { trackQueuedSettings: !options?.preserveVisibleSettings },
         );
-      const store = useChatRuntimeStore.getState();
-      store.setModelRequiresTrustRemoteCode(
-        loadResp.requires_trust_remote_code ?? false,
-      );
-      store.setParams(
-        {
-          ...store.params,
-          maxTokens: loadResp.context_length ?? 131072,
-        },
-        { trackQueuedSettings: !options?.preserveVisibleSettings },
-      );
-      const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
-        isVision: loadResp.is_vision ?? false,
-        isLora: false,
-        isGguf: true,
-      };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
-        store.setModels([...store.models, defaultModel]);
-      }
-      useChatRuntimeStore.setState({
+        const defaultModel: ChatModelSummary = {
+          id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+          name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
+          isVision: loadResp.is_vision ?? false,
+          isLora: false,
+          isGguf: true,
+        };
+        if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
+          store.setModels([...store.models, defaultModel]);
+        }
+        useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
           loadResp.max_context_length ?? loadResp.context_length ?? 131072,
@@ -2100,13 +2163,14 @@ async function autoLoadSmallestModel(options?: {
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
+        });
+        recordLastLocalModelLoad({
+          id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+          kind: "gguf",
+          ggufVariant: "UD-Q4_K_XL",
+        });
+        showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
       });
-      recordLastLocalModelLoad({
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        kind: "gguf",
-        ggufVariant: "UD-Q4_K_XL",
-      });
-      showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
@@ -2125,36 +2189,6 @@ async function autoLoadSmallestModel(options?: {
       blockedByTrustRemoteCode: blockedByTrustRemoteCode && !hadNonTrustFailure,
     };
   }
-}
-
-type QueuedResolvedModelRuntime = {
-  checkpoint: string;
-  supportsTools: boolean;
-  supportsReasoning: boolean;
-  reasoningAlwaysOn: boolean;
-  reasoningStyle: ReturnType<typeof reasoningCapsFromLoad>["reasoningStyle"];
-  supportsReasoningOff: boolean;
-  reasoningEffortLevels: ReturnType<
-    typeof reasoningCapsFromLoad
-  >["reasoningEffortLevels"];
-  supportsPreserveThinking: boolean;
-  ggufContextLength: number | null;
-};
-
-function queuedResolvedModelFromStore(
-  state: ReturnType<typeof useChatRuntimeStore.getState>,
-): QueuedResolvedModelRuntime {
-  return {
-    checkpoint: state.params.checkpoint,
-    supportsTools: state.supportsTools,
-    supportsReasoning: state.supportsReasoning,
-    reasoningAlwaysOn: state.reasoningAlwaysOn,
-    reasoningStyle: state.reasoningStyle,
-    supportsReasoningOff: state.supportsReasoningOff,
-    reasoningEffortLevels: state.reasoningEffortLevels,
-    supportsPreserveThinking: state.supportsPreserveThinking,
-    ggufContextLength: state.ggufContextLength,
-  };
 }
 
 async function resolveQueuedEmptyLocalModel(): Promise<{
@@ -2196,8 +2230,11 @@ async function resolveQueuedEmptyLocalModel(): Promise<{
       result = await autoLoadSmallestModel({
         skipAdoptServerModel: true,
         preserveVisibleSettings: true,
+        captureResolvedRuntime: (runtime) => {
+          modelRuntime = runtime;
+        },
       });
-      if (result.loaded) {
+      if (result.loaded && !modelRuntime) {
         modelRuntime = queuedResolvedModelFromStore(
           useChatRuntimeStore.getState(),
         );

@@ -1396,6 +1396,7 @@ export function SharedComposer({
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
+      useChatRuntimeStore.getState().setModelLoading(true);
       setComparing(true);
       try {
         // Side 1: load → generate → wait
@@ -1454,6 +1455,7 @@ export function SharedComposer({
           duration: 4000,
         });
       } finally {
+        useChatRuntimeStore.getState().setModelLoading(false);
         setComparing(false);
       }
     } else {
