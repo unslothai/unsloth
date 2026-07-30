@@ -495,11 +495,17 @@ class TestContextBufferInklingSplit:
     _CTX = 1048576
     _UB = 512
 
-    def _rate(self, ct, layer_split, ub = 512):
+    def _rate(
+        self,
+        ct,
+        layer_split,
+        ub = 512,
+    ):
         b = _backend(embd = 4096, arch = "inkling")
-        return b._compute_buffer_ctx_bytes(
-            self._CTX, ub, cache_type_kv = ct, layer_split = layer_split
-        ) / self._CTX
+        return (
+            b._compute_buffer_ctx_bytes(self._CTX, ub, cache_type_kv = ct, layer_split = layer_split)
+            / self._CTX
+        )
 
     def test_pre_fix_banded_split_reserve_was_short(self):
         # The bug: the banded rate alone does not cover measured + 3 more masks.
@@ -848,7 +854,14 @@ class TestSplitRateRecheckAfterSelection:
     def _cards(self, n):
         return [(i, self._CARD) for i in range(n)], {i: self._CARD for i in range(n)}
 
-    def _pin(self, total_mib, n_cards, recheck = True, min_gpus = 1, ctx = None):
+    def _pin(
+        self,
+        total_mib,
+        n_cards,
+        recheck = True,
+        min_gpus = 1,
+        ctx = None,
+    ):
         """Mirror of the explicit-context branch: total_mib is its weights + KV + MTP
         footprint, to which each path adds one single-device compute copy."""
         b = _backend(embd = 4096)
