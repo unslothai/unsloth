@@ -47,8 +47,16 @@ async def run_lifespan_shutdown(
 
     try:
         hw_module.DEVICE = None
+        # The completion signal has to go with it. /api/health takes a set event
+        # as "detection finished, DEVICE is authoritative", so leaving it set
+        # over a cleared DEVICE would make a second lifespan in this process
+        # publish a device that is no longer there instead of re-detecting.
+        # getattr: the unit tests inject a minimal hardware stub.
+        detection_complete = getattr(hw_module, "DETECTION_COMPLETE", None)
+        if detection_complete is not None:
+            detection_complete.clear()
     except Exception as exc:
-        logger.warning("clearing hardware DEVICE failed at shutdown: %s", exc)
+        logger.warning("clearing hardware detection state failed at shutdown: %s", exc)
 
     try:
         clear_compiled_cache()

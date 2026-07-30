@@ -341,7 +341,12 @@ from utils.hardware import (
 )
 import utils.hardware.hardware as _hw_module
 
-from utils.torch_warmup import DISABLE_ENV_VAR, join_background_warm, start_background_warm
+from utils.torch_warmup import (
+    DISABLE_ENV_VAR,
+    join_background_warm,
+    reset_background_warm,
+    start_background_warm,
+)
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
@@ -665,6 +670,11 @@ async def lifespan(app: FastAPI):
         clear_unsloth_compiled_cache,
         _hw_module,
     )
+    # Shutdown just cleared the hardware state this process's warm produced, so
+    # release the one-per-process latch too: a second lifespan on the same app
+    # object must be able to warm again rather than leave the stack cold. No-op
+    # while the first warm is still running.
+    reset_background_warm()
 
 
 app = FastAPI(

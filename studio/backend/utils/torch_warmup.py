@@ -285,6 +285,34 @@ def start_background_warm() -> bool:
         return True
 
 
+def reset_background_warm() -> bool:
+    """Let a later lifespan in this process start a fresh warm. True iff reset.
+
+    One warm per process is right while the process serves, but the same app can
+    be started twice -- repeated ASGI lifespan contexts, an embedded restart --
+    and shutdown clears the hardware state the first warm produced. A finished
+    thread left in place would make the second lifespan skip the warm entirely
+    and hand detection back to whichever request arrives first, which is the
+    stall this module exists to remove.
+
+    Declines while the previous warm is still running, so it can never put two
+    warms on the same imports. Detection still self-heals in that case:
+    shutdown clears DETECTION_COMPLETE and /api/health kicks
+    start_background_detection().
+    """
+    global _thread
+    with _start_lock:
+        thread = _thread
+        if thread is not None and thread.is_alive():
+            return False
+        _thread = None
+        _status["started"] = False
+        _status["finished"] = False
+        _status["stages"] = {}
+        _status.pop("seconds", None)
+        return True
+
+
 def warm_status() -> dict:
     """Snapshot of the warm for diagnostics and tests."""
     return {
