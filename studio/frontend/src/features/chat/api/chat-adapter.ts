@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
@@ -99,6 +100,7 @@ import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
   GenerationLengthError,
+  fetchGgufStagedMetadata,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -1569,9 +1571,38 @@ async function autoLoadSmallestModel(): Promise<{
       // the load with the picker hidden.
       await ensureGpuDeviceCache();
     }
+    let isDiffusion = false;
+    if (
+      candidate.kind === "gguf" &&
+      (config.selectedGpuIds != null || config.tensorParallel === true)
+    ) {
+      // Prepare the token before this probe, exactly as validateModel/loadModel
+      // (and the interactive performLoad path) do: the Hub 401s an invalid
+      // Authorization header even for a public repo, so sending the raw stored
+      // token here would abort this candidate before the existing anonymous/
+      // replacement-token recovery flow could run.
+      const preparedToken = await prepareHfTokenForUse(hfToken);
+      if (!preparedToken.proceed) {
+        throw new Error("Model load cancelled.");
+      }
+      isDiffusion = (
+        await fetchGgufStagedMetadata({
+          model_path: modelPath,
+          gguf_variant: candidate.ggufVariant,
+          hf_token: preparedToken.token,
+        })
+      ).isDiffusion;
+    }
+    const effectiveTensorParallel = isDiffusion
+      ? false
+      : config.tensorParallel;
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        ? reconcilePersistedGpuIds(
+            config.selectedGpuIds,
+            config.selectedGpuIndexKind,
+            isDiffusion,
+          )
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
     // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
@@ -1598,7 +1629,7 @@ async function autoLoadSmallestModel(): Promise<{
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
         cache_type_kv: config.kvCacheDtype,
-        tensor_parallel: config.tensorParallel,
+        tensor_parallel: effectiveTensorParallel,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
@@ -1627,7 +1658,7 @@ async function autoLoadSmallestModel(): Promise<{
       cache_type_kv: config.kvCacheDtype,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
-      tensor_parallel: config.tensorParallel,
+      tensor_parallel: effectiveTensorParallel,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
@@ -1726,6 +1757,7 @@ async function autoLoadSmallestModel(): Promise<{
         customContextLength: config.customContextLength,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
+        activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
     } else {
@@ -1755,6 +1787,7 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveLoadedSpeculativeSettings(loadResp),
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
+        activeModelIsLocal: loadResp.is_local_model ?? false,
       });
     }
     if (!(loadResp.is_lora ?? false)) {
@@ -1939,6 +1972,13 @@ async function autoLoadSmallestModel(): Promise<{
     );
     try {
       const rt = useChatRuntimeStore.getState();
+      if (rt.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
+      const defaultGpuIds = reconcilePersistedGpuIds(
+        rt.selectedGpuIds,
+        rt.selectedGpuIndexKind,
+      );
       if (
         !(await canAutoLoad({
           model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
@@ -1947,7 +1987,7 @@ async function autoLoadSmallestModel(): Promise<{
           gguf_variant: "UD-Q4_K_XL",
           // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
-          gpu_ids: rt.selectedGpuIds ?? undefined,
+          gpu_ids: defaultGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
         }))
       ) {
@@ -1978,7 +2018,7 @@ async function autoLoadSmallestModel(): Promise<{
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: GPU_LAYERS_AUTO,
         n_cpu_moe: 0,
-        gpu_ids: rt.selectedGpuIds ?? undefined,
+        gpu_ids: defaultGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
       persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
@@ -2029,6 +2069,7 @@ async function autoLoadSmallestModel(): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        activeModelIsLocal: loadResp.is_local_model ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
       recordLastLocalModelLoad({

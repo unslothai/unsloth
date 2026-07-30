@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.error
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -137,6 +137,7 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(start, "_npm_executable", lambda: "/usr/local/bin/npm")
     ran = []
     monkeypatch.setattr(
         start.subprocess,
@@ -148,7 +149,7 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     executable = start._install_agent("codex", "npm install -g @openai/codex")
     assert executable == "/usr/local/bin/codex"
-    assert ran == [["/bin/sh", "-c", "npm install -g @openai/codex"]]
+    assert ran == [["/usr/local/bin/npm", "install", "-g", "@openai/codex"]]
 
 
 def test_install_agent_uses_powershell_on_windows(monkeypatch):
@@ -178,9 +179,12 @@ def test_install_agent_windows_failure_hints_execution_policy(monkeypatch, capsy
     # A failed install on Windows points the user at the per-user execution-policy fix:
     # our subprocess bypasses the policy, but their own shell may still block npm.ps1
     # (PSSecurityException) when they run the install by hand.
-    monkeypatch.setattr(start.os, "name", "nt")
+    _simulate_windows(monkeypatch)
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(
+        start, "_npm_executable", lambda: r"C:\Users\me\AppData\Roaming\npm\npm.cmd"
+    )
     monkeypatch.setattr(
         start.subprocess,
         "run",
@@ -194,6 +198,23 @@ def test_install_agent_windows_failure_hints_execution_policy(monkeypatch, capsy
     err = capsys.readouterr().err
     assert "Install command failed" in err
     assert "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned" in err
+
+
+def test_install_command_uses_resolved_npm_cmd_on_windows(monkeypatch):
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start, "_npm_executable", lambda: r"C:\Managed Node\npm.cmd")
+
+    command, env = start._install_command(start._npm_install_hint("@openai/codex"))
+
+    assert command == [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& 'C:\\Managed Node\\npm.cmd' install -g '@openai/codex'",
+    ]
+    assert env is not None
 
 
 def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
@@ -213,6 +234,226 @@ def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, ca
     err = capsys.readouterr().err
     assert "Install command failed" in err
     assert "Set-ExecutionPolicy" not in err
+
+
+def test_npm_install_hint_uses_user_prefix_on_posix(monkeypatch, tmp_path):
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+
+    hint = start._npm_install_hint("@openai/codex")
+
+    assert shlex.split(hint) == [
+        "npm",
+        "install",
+        "-g",
+        "--prefix",
+        str(tmp_path / ".local"),
+        "@openai/codex",
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "managed node layout is POSIX")
+def test_npm_executable_uses_studio_managed_node(monkeypatch, tmp_path):
+    start.ensure_studio_backend_path()
+    from utils import node_runtime
+
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    node = managed_bin / "node"
+    npm = managed_bin / "npm"
+    node.touch()
+    npm.touch()
+    node.chmod(0o755)
+    npm.chmod(0o755)
+    monkeypatch.setattr(start.shutil, "which", lambda _: None)
+    monkeypatch.setattr(node_runtime, "managed_node_binary", lambda: node)
+    monkeypatch.setattr(node_runtime, "resolve_node_executable", lambda: str(node))
+
+    assert start._npm_executable() == str(npm)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
+    # WSL inherits the Windows PATH, so a shim can precede a usable native npm.
+    native = "/usr/bin/npm"
+    shim = "/mnt/c/Program Files/nodejs/npm"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs:/usr/bin")
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
+
+    found = {"/mnt/c/Program Files/nodejs": shim, "/usr/bin": native}
+
+    def fake_which(name, path = None):
+        if os.path.isabs(name):
+            return name
+        # No path given means search all of PATH, so the shim wins as it does in WSL.
+        for entry in (path or os.environ["PATH"]).split(os.pathsep):
+            if entry in found:
+                return found[entry]
+        return None
+
+    monkeypatch.setattr(start.shutil, "which", fake_which)
+
+    assert start._npm_executable() == native
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX hint form")
+def test_npm_install_hint_without_resolvable_home(monkeypatch):
+    # A bare container UID has no home; the hint must still build.
+    def no_home():
+        raise RuntimeError("no home directory")
+
+    monkeypatch.setattr(start.Path, "home", staticmethod(no_home))
+
+    assert start._npm_install_hint("@openai/codex") == "npm install -g @openai/codex"
+
+
+def test_managed_node_probe_tolerates_unsupported_path_flavour(monkeypatch):
+    def unsupported_backend_path():
+        raise RuntimeError("unsupported path flavour")
+
+    monkeypatch.setattr(start, "ensure_studio_backend_path", unsupported_backend_path)
+
+    assert start._managed_node_tools() is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "managed node layout is POSIX")
+def test_npm_executable_uses_managed_npm_when_system_node_has_none(monkeypatch, tmp_path):
+    start.ensure_studio_backend_path()
+    from utils import node_runtime
+
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    node = managed_bin / "node"
+    npm = managed_bin / "npm"
+    node.touch()
+    npm.touch()
+    node.chmod(0o755)
+    npm.chmod(0o755)
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+    monkeypatch.setattr(node_runtime, "managed_node_binary", lambda: node)
+    monkeypatch.setattr(node_runtime, "resolve_node_executable", lambda: str(node))
+
+    assert start._npm_executable() == str(npm)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_npm_executable_prefers_managed_npm_over_windows_npm_in_wsl(monkeypatch, tmp_path):
+    start.ensure_studio_backend_path()
+    from utils import node_runtime
+
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    node = managed_bin / "node"
+    npm = managed_bin / "npm"
+    node.touch(mode = 0o755)
+    npm.touch(mode = 0o755)
+    windows_npm = "/mnt/c/Program Files/nodejs/npm"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda name: windows_npm if name in ("npm", windows_npm) else None,
+    )
+    monkeypatch.setattr(node_runtime, "managed_node_binary", lambda: node)
+    monkeypatch.setattr(node_runtime, "resolve_node_executable", lambda: str(node))
+
+    assert start._npm_executable() == str(npm)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "managed node layout is POSIX")
+def test_augment_path_includes_studio_managed_node(monkeypatch, tmp_path):
+    start.ensure_studio_backend_path()
+    from utils import node_runtime
+
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    node = managed_bin / "node"
+    npm = managed_bin / "npm"
+    node.touch(mode = 0o755)
+    npm.touch(mode = 0o755)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(node_runtime, "managed_node_binary", lambda: node)
+    monkeypatch.setattr(node_runtime, "resolve_node_executable", lambda: str(node))
+    monkeypatch.setenv("PATH", os.pathsep.join([os.defpath, str(managed_bin)]))
+
+    start._augment_path_with_install_dirs()
+
+    path = os.environ["PATH"].split(os.pathsep)
+    assert path[0] == str(managed_bin)
+    assert path.count(str(managed_bin)) == 1
+
+
+def test_install_agent_missing_npm_names_node_requirement(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(start, "_npm_executable", lambda: None)
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("should not run an installer without npm"),
+    )
+
+    with pytest.raises(start.typer.Exit):
+        start._install_agent("codex", "npm install -g @openai/codex")
+
+    err = capsys.readouterr().err
+    assert "npm is required" in err
+    assert "Unsloth-managed Node" in err
+    assert "Install Node.js with npm" in err
+
+
+def test_install_agent_reports_os_error_without_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(start, "_npm_executable", lambda: "/broken/npm")
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("permission denied")),
+    )
+
+    with pytest.raises(start.typer.Exit):
+        start._install_agent("codex", "npm install -g @openai/codex")
+
+    err = capsys.readouterr().err
+    assert "Could not run the install command: permission denied" in err
+    assert "Run it yourself, then re-run" in err
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX install command")
+def test_install_agent_runs_managed_npm_with_its_node_on_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    npm = tmp_path / "managed-node" / "bin" / "npm"
+    monkeypatch.setattr(start, "_npm_executable", lambda: str(npm))
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    hint = start._npm_install_hint("@openai/codex")
+
+    assert start._install_agent("codex", hint) == "/usr/local/bin/codex"
+    assert captured["command"] == [
+        str(npm),
+        "install",
+        "-g",
+        "--prefix",
+        str(tmp_path / ".local"),
+        "@openai/codex",
+    ]
+    assert captured["env"]["PATH"].split(os.pathsep)[0] == str(npm.parent)
 
 
 def test_install_agent_warns_remote_installer_is_unverified_third_party(monkeypatch, capsys):
@@ -531,6 +772,25 @@ def _parse_toml(text: str) -> dict:
     return tomllib.loads(text)
 
 
+def test_project_declares_direct_click_dependency():
+    project = _parse_toml((_REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
+    assert "click>=8.0" in project["project"]["dependencies"]
+
+
+def test_agent_paths_use_cli_studio_home_without_backend_imports(monkeypatch, tmp_path):
+    studio = ModuleType("unsloth_cli.commands.studio")
+    studio.STUDIO_HOME = tmp_path
+    monkeypatch.setitem(sys.modules, studio.__name__, studio)
+    monkeypatch.setattr(
+        start,
+        "ensure_studio_backend_path",
+        lambda: pytest.fail("agent paths should not import backend runtime packages"),
+    )
+
+    assert start._key_cache_path() == tmp_path / "auth" / "agent_api_key.json"
+    assert start._agents_config_root() == tmp_path / "auth" / "agents"
+
+
 def test_merge_codex_config_fresh():
     merged = start._merge_codex_config("", BASE)
     parsed = _parse_toml(merged)
@@ -797,20 +1057,34 @@ def test_write_codex_parent_overlay_uses_windows_home_for_windows_codex(tmp_path
     assert (overlay / "auth.json").read_text() == '{"auth": "windows"}\n'
 
 
-def test_codex_parent_overlay_launch_uses_private_temp_root_and_cleans_up(tmp_path, monkeypatch):
+def test_codex_parent_overlay_can_use_session_home(tmp_path, monkeypatch):
     source = tmp_path / "user-codex"
     source.mkdir()
     (source / "auth.json").write_text("{}\n")
     monkeypatch.setenv("CODEX_HOME", str(source))
+    session_home = tmp_path / "session"
+
+    overlay = start.write_codex_parent_overlay(session_home / "parent")
+
+    assert overlay == session_home / "parent"
+    assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in (overlay / "AGENTS.md").read_text()
+    assert overlay.exists()
+
+
+def test_ephemeral_codex_parent_overlay_is_cleaned_with_session(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(source))
     agents_root = tmp_path / "agents"
     monkeypatch.setattr(start, "_agents_config_root", lambda: agents_root)
 
-    with start._codex_parent_overlay(tmp_path / "session", launch = True, persist = False) as overlay:
-        assert overlay.parent == agents_root / ".tmp"
-        assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in (overlay / "AGENTS.md").read_text()
+    with start._session_config("codex-subagent", launch = True) as session_home:
+        overlay = start.write_codex_parent_overlay(session_home / "parent")
         assert overlay.exists()
+        assert session_home.exists()
 
     assert not overlay.exists()
+    assert not session_home.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -895,6 +1169,115 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
     assert f"--as-subagent is not supported for {agent}." in result.output
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+def test_launch_preflights_agent_before_connect(agent, monkeypatch):
+    events = []
+
+    def require(name, hint, launch):
+        assert name == agent
+        assert hint
+        assert launch is True
+        events.append("agent")
+
+    def connect(*args, **kwargs):
+        events.append("connect")
+        raise RuntimeError("stop after ordering check")
+
+    monkeypatch.setattr(start, "_require_agent_for_launch", require)
+    monkeypatch.setattr(start, "_connect", connect)
+
+    result = CliRunner().invoke(start.start_app, [agent])
+
+    assert result.exit_code == 1
+    assert events == ["agent", "connect"]
+
+
+def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
+    installs = []
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    monkeypatch.setattr(
+        start,
+        "_install_agent",
+        lambda name, hint: installs.append((name, hint)),
+    )
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *a, **k: pytest.fail("declined install must stop before model connection"),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--as-subagent"])
+
+    assert result.exit_code == 1
+    assert len(installs) == 1
+    assert installs[0][0] == "opencode"
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("non-interactive launch must not install"),
+    )
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: pytest.fail("missing agent must stop before connection"),
+    )
+
+    result = CliRunner().invoke(start.start_app, [agent])
+
+    assert result.exit_code == 1
+    assert f"`{agent}` not found on PATH" in result.output
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+def test_no_launch_skips_agent_resolution(agent, monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda _: pytest.fail("--no-launch must not resolve an agent"),
+    )
+    monkeypatch.setattr(
+        start,
+        "_install_agent",
+        lambda *args: pytest.fail("--no-launch must not install an agent"),
+    )
+
+    def stop_at_connect(*args, **kwargs):
+        raise RuntimeError
+
+    monkeypatch.setattr(start, "_connect", stop_at_connect)
+
+    result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+
+
+def test_missing_pi_subagent_extension_fails_before_install_or_connect(monkeypatch, tmp_path):
+    monkeypatch.setattr(start, "_PI_SUBAGENT_EXTENSION", tmp_path / "missing.ts")
+    monkeypatch.setattr(
+        start,
+        "_require_agent_for_launch",
+        lambda *args: pytest.fail("local prerequisites must be checked before installation"),
+    )
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: pytest.fail(
+            "local prerequisites must be checked before connection"
+        ),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["pi", "--as-subagent"])
+
+    assert result.exit_code == 1
+    assert "Missing Pi subagent extension" in result.output
+
+
 @pytest.fixture()
 def fake_studio(tmp_path, monkeypatch):
     calls = []
@@ -934,6 +1317,7 @@ def fake_studio(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
     # --no-launch session configs land under tmp instead of the real Unsloth dir.
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: None)
     # No `claude` on PATH, so _claude_flags never probes the real binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
@@ -3678,12 +4062,12 @@ def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio,
         lambda name: "/usr/local/bin/opencode" if installed.get("done") else None,
     )
 
-    def install(name, hint):
+    def require(name, hint, launch):
+        assert launch is True
         installed["done"] = True
         installed["name"] = name
-        return "/usr/local/bin/opencode"
 
-    monkeypatch.setattr(start, "_install_agent", install)
+    monkeypatch.setattr(start, "_require_agent_for_launch", require)
     inspected = {}
 
     def inline(path, permission):
@@ -4732,12 +5116,15 @@ def test_session_config_persist_uses_stable_dir_and_survives(monkeypatch, tmp_pa
     assert (home / "marker").read_text() == "kept"
 
 
-def test_session_config_default_launch_is_ephemeral():
-    # Default launch (no --persist) still uses a throwaway temp dir wiped on exit.
+def test_session_config_default_launch_is_ephemeral(monkeypatch, tmp_path):
+    agents_root = tmp_path / "agents"
+    monkeypatch.setattr(start, "_agents_config_root", lambda: agents_root)
     with start._session_config("codex", launch = True) as home:
         assert home.exists()
         parent = start._ephemeral_session_parent("codex")
         assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
+        if parent is None:
+            assert home.parent == agents_root / ".tmp"
     assert not home.exists()
 
 
@@ -4811,6 +5198,130 @@ def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monke
     assert not first.exists()
 
 
+@pytest.mark.parametrize("agent", ["codex", "codex-subagent"])
+def test_windows_codex_homes_use_the_short_parent(monkeypatch, tmp_path, agent):
+    # codex-subagent nests CODEX_HOME under <home>/parent, so it needs the short root even more.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.Path, "home", staticmethod(lambda: tmp_path))
+
+    assert start._ephemeral_session_parent(agent) == tmp_path / ".unsloth" / ".tmp"
+    parent = start._ephemeral_session_parent(agent)
+    assert start._ephemeral_session_prefix(agent, parent) == "u-codex-"
+
+
+def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.Path, "home", staticmethod(lambda: tmp_path))
+
+    assert start._ephemeral_session_parent("claude") is None
+    assert start._ephemeral_session_prefix("claude", None) == "unsloth-claude-"
+
+
+def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeypatch, tmp_path):
+    # mkdir(exist_ok = True) succeeds on an existing unwritable root, so the lock fails first.
+    agents = tmp_path / "agents"
+    temp_root = agents / ".tmp"
+    temp_root.mkdir(parents = True)
+    os.chmod(temp_root, 0o500)
+    monkeypatch.setattr(start, "_agents_config_root", lambda: agents)
+
+    try:
+        with start._session_config("claude", launch = True) as home:
+            assert home.exists()
+            assert temp_root not in home.parents
+    finally:
+        os.chmod(temp_root, 0o700)
+    assert not home.exists()
+
+
+def test_augment_path_keeps_managed_node_without_a_home(monkeypatch, tmp_path):
+    # No home, but the managed Node still backs Node shims, so it must stay on PATH.
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    monkeypatch.setattr(
+        start,
+        "_managed_node_tools",
+        lambda: (managed_bin / "node", managed_bin / "npm", True),
+    )
+    monkeypatch.setattr(
+        start.Path,
+        "home",
+        staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("no home directory"))),
+    )
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    start._augment_path_with_install_dirs()
+
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(managed_bin)
+
+
+def test_augment_path_leaves_path_alone_when_nothing_to_add(monkeypatch):
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
+    monkeypatch.setattr(
+        start.Path,
+        "home",
+        staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("no home directory"))),
+    )
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    start._augment_path_with_install_dirs()
+
+    assert os.environ["PATH"] == "/usr/bin"
+
+
+def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path):
+    # A shim resolved via Studio's managed Node needs that node on PATH when it runs.
+    managed_bin = tmp_path / "node" / "bin"
+    managed_bin.mkdir(parents = True)
+    monkeypatch.setattr(
+        start,
+        "_managed_node_tools",
+        lambda: (managed_bin / "node", managed_bin / "npm", True),
+    )
+    before = os.environ.get("PATH")
+
+    env = start._probe_env(OPENCODE_CONFIG = "/tmp/cfg.json")
+
+    assert str(managed_bin) in env["PATH"]
+    assert env["OPENCODE_CONFIG"] == "/tmp/cfg.json"
+    assert os.environ.get("PATH") == before
+
+
+def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
+    # Attaching to a remote Studio needs no local auth tree, so a read-only one must not stop it.
+    readonly = tmp_path / "readonly"
+    readonly.mkdir(mode = 0o500)
+    monkeypatch.setattr(start, "_agents_config_root", lambda: readonly / "agents")
+
+    with start._session_config("claude", launch = True) as home:
+        assert home.exists()
+        assert readonly not in home.parents
+    assert not home.exists()
+
+
+def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
+    # Nothing else prunes Studio's auth tree, so a killed wrapper's home must be reclaimed.
+    agents_root = tmp_path / "agents"
+    temp_root = agents_root / ".tmp"
+    temp_root.mkdir(parents = True)
+    monkeypatch.setattr(start, "_agents_config_root", lambda: agents_root)
+    abandoned = temp_root / "unsloth-claude-abandoned"
+    abandoned.mkdir()
+    (abandoned / ".active.lock").write_bytes(b"\0")
+    (abandoned / "state.json").write_text("left behind")
+    old = time.time() - start._CODEX_EPHEMERAL_STALE_SECONDS - 1
+    os.utime(abandoned / ".active.lock", (old, old))
+    recent = temp_root / "unsloth-claude-still-running"
+    recent.mkdir()
+    (recent / ".active.lock").write_bytes(b"\0")
+
+    with start._session_config("claude", launch = True) as home:
+        assert not abandoned.exists()
+        assert recent.exists()
+        assert home.parent == temp_root
+    assert not home.exists()
+
+
 def test_session_config_serializes_normal_short_home_deletion(monkeypatch, tmp_path):
     short_parent = tmp_path / "u"
     short_parent.mkdir()
@@ -4875,7 +5386,8 @@ def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypa
     home = captured["env"][_RESUME_ENV_VAR[agent]]
     parent = start._ephemeral_session_parent(agent)
     assert start._ephemeral_session_prefix(agent, parent) in home
-    assert str(tmp_path / "agents") not in home
+    if parent is None:
+        assert Path(home).parent == tmp_path / "agents" / ".tmp"
 
 
 def test_resume_opencode_config_in_stable_dir(fake_studio, tmp_path, monkeypatch):

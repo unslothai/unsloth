@@ -27,10 +27,18 @@ export const ru = {
     product: "Unsloth Studio",
     accountMenu: "Меню аккаунта {name}",
     updateAvailable: "Доступно обновление",
+    resize: {
+      collapse: "Нажмите, чтобы свернуть",
+      expand: "Нажмите, чтобы развернуть",
+      drag: "Потяните, чтобы изменить размер",
+    },
     aria: {
       home: "Главная Unsloth",
       closeSidebar: "Закрыть боковую панель",
       openSidebar: "Открыть боковую панель",
+      resizeSidebar: "Изменить размер или свернуть боковую панель",
+      resizeRunSettings: "Изменить размер или закрыть настройки запуска",
+      openRunSettings: "Открыть настройки запуска",
       chatOptions: "Параметры чата",
       runOptions: "Параметры запуска",
     },
@@ -316,6 +324,8 @@ export const ru = {
         diskUsage: "{used} использовано / {total}",
         diskFree: "{free} свободно",
         modelsFolder: "Папка моделей",
+        modelsFolderKeywords:
+          "модели папка каталог путь расположение загрузки кэш хранилище диск перенести изменить models folder path hugging face",
         modelsFolderDescription: "Где хранятся загруженные модели.",
         openAction: "Открыть",
         copyAction: "Копировать путь",
@@ -449,7 +459,7 @@ export const ru = {
       codingAgents: "Кодинг-агенты",
       codingAgentsHint:
         "Запустите кодинг-агента к этому серверу. Он использует загруженную модель; локальный сервер выпускает ключ API автоматически, удалённый включает его в команду.",
-      codingAgentsSwap: "Замените claude на codex, openclaw, opencode, hermes или pi.",
+      codingAgentsSwap: "Замените claude на codex, openclaw, opencode или hermes.",
       codingAgentDetected: "Установлен на этой машине",
       codingAgentsDetectedHint: "Обнаружены на этой машине: {agents}.",
       relativeNever: "никогда",
