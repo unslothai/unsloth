@@ -22,9 +22,7 @@ CHAT_RUNTIME_STORE = (FRONTEND / "features/chat/stores/chat-runtime-store.ts").r
     encoding = "utf-8"
 )
 CHAT_PAGE = (FRONTEND / "features/chat/chat-page.tsx").read_text(encoding = "utf-8")
-SHARED_COMPOSER = (FRONTEND / "features/chat/shared-composer.tsx").read_text(
-    encoding = "utf-8"
-)
+SHARED_COMPOSER = (FRONTEND / "features/chat/shared-composer.tsx").read_text(encoding = "utf-8")
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
@@ -252,9 +250,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "!runningByThreadId[threadId] && !cancel" in STOP_CHAT_THREAD
     assert "serverCancels.length === 0" in STOP_CHAT_THREAD
     assert "await confirmStopRunningChatsIfNeeded(" in SHARED_COMPOSER
-    assert SHARED_COMPOSER.index(
-        "await confirmStopRunningChatsIfNeeded("
-    ) < SHARED_COMPOSER.index('setText("");')
+    assert SHARED_COMPOSER.index("await confirmStopRunningChatsIfNeeded(") < SHARED_COMPOSER.index(
+        'setText("");'
+    )
     assert "const latePromptQueueThreadIds = getLocalPromptQueueThreadIds()" in SHARED_COMPOSER
     assert "requestPromptQueueStop(promptQueueThreadIds)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.index(
