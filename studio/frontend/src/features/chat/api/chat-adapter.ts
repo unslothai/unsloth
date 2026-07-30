@@ -16,6 +16,7 @@ import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
@@ -27,6 +28,7 @@ import {
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   reasoningCapsFromLoad,
+  resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
 import {
@@ -103,6 +105,7 @@ import {
   generateAudio,
   GenerationLengthError,
   fetchGgufStagedMetadata,
+  getInferenceStatus,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -2469,17 +2472,56 @@ export function createOpenAIStreamAdapter(
         }
       }
 
+      let queuedEmptyModelRuntime: {
+        checkpoint: string;
+        supportsTools: boolean;
+        supportsReasoning: boolean;
+        reasoningAlwaysOn: boolean;
+        reasoningStyle: ReturnType<typeof reasoningCapsFromLoad>["reasoningStyle"];
+        supportsReasoningOff: boolean;
+        reasoningEffortLevels: ReturnType<
+          typeof reasoningCapsFromLoad
+        >["reasoningEffortLevels"];
+        supportsPreserveThinking: boolean;
+        ggufContextLength: number | null;
+      } | null = null;
       if (!runtime.params.checkpoint) {
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
-        try {
-          ({ loaded, blockedByTrustRemoteCode } =
-            await autoLoadSmallestModel());
-        } catch (error) {
-          clearSelectedImageEditReference();
-          notifyQueuedRunFailed();
-          throw error;
+        const liveCheckpoint =
+          useChatRuntimeStore.getState().params.checkpoint;
+        if (queuedRunSettings && isExternalModelId(liveCheckpoint)) {
+          const status = await getInferenceStatus().catch(() => null);
+          const checkpoint = status
+            ? resolveInferenceCheckpointId(status)
+            : null;
+          if (status && checkpoint) {
+            const reasoningCaps = reasoningCapsFromLoad(status);
+            queuedEmptyModelRuntime = {
+              checkpoint,
+              supportsTools: status.supports_tools ?? false,
+              supportsReasoning: status.supports_reasoning ?? false,
+              reasoningAlwaysOn: status.reasoning_always_on ?? false,
+              ...reasoningCaps,
+              supportsPreserveThinking:
+                status.supports_preserve_thinking ?? false,
+              ggufContextLength: status.is_gguf
+                ? (status.context_length ?? null)
+                : null,
+            };
+          }
+          loaded = queuedEmptyModelRuntime !== null;
+          blockedByTrustRemoteCode = false;
+        } else {
+          try {
+            ({ loaded, blockedByTrustRemoteCode } =
+              await autoLoadSmallestModel());
+          } catch (error) {
+            clearSelectedImageEditReference();
+            notifyQueuedRunFailed();
+            throw error;
+          }
         }
         if (!loaded) {
           toast.error(
@@ -2508,16 +2550,35 @@ export function createOpenAIStreamAdapter(
               ...queuedRunSettings,
               params: {
                 ...queuedRunSettings.params,
-                checkpoint: liveRuntime.params.checkpoint,
+                checkpoint:
+                  queuedEmptyModelRuntime?.checkpoint ??
+                  liveRuntime.params.checkpoint,
               },
-              supportsTools: liveRuntime.supportsTools,
-              supportsReasoning: liveRuntime.supportsReasoning,
-              reasoningAlwaysOn: liveRuntime.reasoningAlwaysOn,
-              reasoningStyle: liveRuntime.reasoningStyle,
-              supportsReasoningOff: liveRuntime.supportsReasoningOff,
-              reasoningEffortLevels: liveRuntime.reasoningEffortLevels,
-              supportsPreserveThinking: liveRuntime.supportsPreserveThinking,
-              ggufContextLength: liveRuntime.ggufContextLength,
+              supportsTools:
+                queuedEmptyModelRuntime?.supportsTools ??
+                liveRuntime.supportsTools,
+              supportsReasoning:
+                queuedEmptyModelRuntime?.supportsReasoning ??
+                liveRuntime.supportsReasoning,
+              reasoningAlwaysOn:
+                queuedEmptyModelRuntime?.reasoningAlwaysOn ??
+                liveRuntime.reasoningAlwaysOn,
+              reasoningStyle:
+                queuedEmptyModelRuntime?.reasoningStyle ??
+                liveRuntime.reasoningStyle,
+              supportsReasoningOff:
+                queuedEmptyModelRuntime?.supportsReasoningOff ??
+                liveRuntime.supportsReasoningOff,
+              reasoningEffortLevels:
+                queuedEmptyModelRuntime?.reasoningEffortLevels ??
+                liveRuntime.reasoningEffortLevels,
+              supportsPreserveThinking:
+                queuedEmptyModelRuntime?.supportsPreserveThinking ??
+                liveRuntime.supportsPreserveThinking,
+              ggufContextLength:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.ggufContextLength
+                  : liveRuntime.ggufContextLength,
             }
         : liveRuntime;
       const { params } = runtime;

@@ -214,10 +214,13 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "const { params } = runtime",
     )
     assert "...queuedRunSettings.params" in auto_load_merge
-    assert "checkpoint: liveRuntime.params.checkpoint" in auto_load_merge
-    assert "supportsTools: liveRuntime.supportsTools" in auto_load_merge
-    assert "supportsReasoning: liveRuntime.supportsReasoning" in auto_load_merge
-    assert "ggufContextLength: liveRuntime.ggufContextLength" in auto_load_merge
+    assert "queuedEmptyModelRuntime?.checkpoint" in auto_load_merge
+    assert "liveRuntime.params.checkpoint" in auto_load_merge
+    assert "liveRuntime.supportsTools" in auto_load_merge
+    assert "liveRuntime.supportsReasoning" in auto_load_merge
+    assert "liveRuntime.ggufContextLength" in auto_load_merge
+    assert "queuedRunSettings && isExternalModelId(liveCheckpoint)" in CHAT_ADAPTER
+    assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "return pendingSettings[index].settings" in QUEUED_SETTINGS
@@ -239,6 +242,14 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert MODEL_RUNTIME.index(
         "requestPromptQueueStop(latePromptQueueThreadIds)"
     ) < MODEL_RUNTIME.index("const loadResponse = await loadModel(")
+    eject = _between(
+        MODEL_RUNTIME,
+        "const ejectModel = useCallback(",
+        "return {",
+    )
+    assert "setModelLoading(true)" in eject
+    assert "setModelLoading(false)" in eject
+    assert "const latePromptQueueThreadIds = getLocalPromptQueueThreadIds()" in eject
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
     assert ".slice(Math.max(run.index, 0))" in THREAD
     assert ".some((item) => item.target.usesLocalModel)" in THREAD

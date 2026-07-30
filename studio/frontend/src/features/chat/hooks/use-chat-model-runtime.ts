@@ -1763,6 +1763,7 @@ export function useChatModelRuntime() {
       await refresh();
       return true;
     }
+    let markedModelLoading = false;
     try {
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it
       // leaves no model loaded, so it must not be worded as a reload.
@@ -1773,6 +1774,8 @@ export function useChatModelRuntime() {
       if (!stopDecision.proceed) return false;
       // Same window as selectModel: a load may have started during the confirm.
       if (bailIfLoading()) return false;
+      useChatRuntimeStore.getState().setModelLoading(true);
+      markedModelLoading = true;
 
       async function performUnload(): Promise<void> {
         const promptQueueThreadIds = getLocalPromptQueueThreadIds();
@@ -1783,6 +1786,10 @@ export function useChatModelRuntime() {
           model_path: params.checkpoint,
           force_cancel_active: stopDecision.forceCancelActive,
         });
+        const latePromptQueueThreadIds = getLocalPromptQueueThreadIds();
+        if (latePromptQueueThreadIds.length > 0) {
+          requestPromptQueueStop(latePromptQueueThreadIds);
+        }
         clearCheckpoint();
         await refresh();
       }
@@ -1802,6 +1809,10 @@ export function useChatModelRuntime() {
         error instanceof Error ? error.message : "Failed to unload model";
       setModelsError(message);
       return false;
+    } finally {
+      if (markedModelLoading) {
+        useChatRuntimeStore.getState().setModelLoading(false);
+      }
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 
