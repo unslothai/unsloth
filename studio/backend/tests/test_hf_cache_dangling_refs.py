@@ -832,6 +832,37 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
     assert (load_dir / "mmproj-F16.gguf").is_file() is has_vision
 
 
+@pytest.mark.parametrize(
+    ("projector", "has_vision"),
+    [
+        pytest.param(b"", False, id = "a-projector-with-nothing-behind-the-name"),
+        pytest.param(b"\0" * 128, True, id = "a-projector-with-content"),
+    ],
+)
+def test_an_empty_projector_is_not_vision_support(
+    tmp_path, monkeypatch, projector, has_vision
+):
+    """has_vision came off the filename alone, so an interrupted companion download advertised a
+    projector llama.cpp cannot open. The row's own quant is whole, so no other signal reports it and
+    an image-capable client would pick the model and fail."""
+    from hub.utils.gguf import list_local_gguf_variants
+
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {"Model-Q4_K_M.gguf": b"\0" * 256, "mmproj-F16.gguf": projector},
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    assert rows[0]["capabilities"].get("supports_vision") is has_vision
+    # The lister and the row capability read the same walk, so they cannot drift apart.
+    snapshot = tmp_path / "models--Org--Model" / "snapshots" / SNAPSHOT
+    assert list_local_gguf_variants(str(snapshot))[1] is has_vision
+
+
 def test_a_repo_root_drafter_still_leaves_a_real_quant_selectable(tmp_path, monkeypatch):
     """The rule must stay narrow: a snapshot holding a drafter *and* a real quant is still a
     payload snapshot."""
@@ -1694,6 +1725,47 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
     [
         pytest.param(
             {
+                "config.json": b'{"model_type":"llama"}',
+                "pytorch_model.bin": b"\0" * 256,
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": _shard_index(
+                    "model-00001-of-00002.safetensors", "model-00009-of-00009.safetensors"
+                ),
+            },
+            True,
+            id = "a-whole-bin-cannot-vouch-for-a-broken-safetensors-index",
+        ),
+        pytest.param(
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "pytorch_model.bin": b"\0" * 256,
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            },
+            False,
+            id = "the-same-shape-with-an-index-that-resolves",
+        ),
+        pytest.param(
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": _shard_index(
+                    "model-00001-of-00002.safetensors", "model-00009-of-00009.safetensors"
+                ),
+            },
+            False,
+            id = "a-whole-model-safetensors-is-picked-before-any-index",
+        ),
+        pytest.param(
+            {"config.json": b'{"model_type":"llama"}', "pytorch_model.bin": b"\0" * 256},
+            False,
+            id = "a-whole-bin-with-nothing-safetensors-beside-it",
+        ),
+        pytest.param(
+            {
                 "adapter_config.json": b'{"peft_type":"LORA"}',
                 "adapter_model-00001-of-00002.safetensors": b"\0" * 64,
                 "adapter_model-00002-of-00002.safetensors": b"\0" * 64,
@@ -1725,10 +1797,11 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
         ),
     ],
 )
-def test_a_numbered_adapter_set_is_never_a_loadable_payload(tmp_path, monkeypatch, files, torn):
-    """peft's load_peft_weights resolves adapter_model.safetensors or adapter_model.bin and has no
-    shard path, so numbered adapter files are unloadable however complete the set looks. Exempting
-    them from the index requirement let a set nothing can open count as a whole family."""
+def test_the_family_a_loader_would_pick_is_the_one_judged(tmp_path, monkeypatch, files, torn):
+    """Files on disk are not interchangeable evidence. transformers takes model.safetensors, then
+    its index, then pytorch_model.bin, and never falls back once it has picked, so a whole .bin
+    cannot vouch for a broken safetensors index. peft resolves only the singular adapter names and
+    has no shard path, so a numbered adapter set is unloadable however complete it looks."""
     _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is torn

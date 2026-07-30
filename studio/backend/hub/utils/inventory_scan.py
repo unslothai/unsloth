@@ -776,8 +776,8 @@ class _SnapshotPayload(NamedTuple):
     model_format: Optional[str]
     # Shard families per kind, keyed on (dir, prefix, total, suffix).
     groups: dict
-    # Kinds holding a file that names no total, i.e. a family of one.
-    whole: set
+    # Suffixes per kind holding a file that names no total, i.e. a family of one.
+    whole: dict
     # Required configs that exist but are empty, by format: evidence separate from whole weights.
     unreadable_config_formats: frozenset
     # Shard families no loader can read even with every numbered file present.
@@ -810,7 +810,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         False,
     )
     groups: dict[str, dict[tuple[str, str, int, str], set[int]]] = {"base": {}, "adapter": {}}
-    whole: set[str] = set()
+    whole: dict[str, set[str]] = {"base": set(), "adapter": set()}
     unreadable: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
@@ -852,7 +852,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             continue
         match = _WEIGHT_SHARD_RE.search(path.name)
         if match is None:
-            whole.add(kind)
+            whole[kind].add(path.suffix.lower())
             continue
         index = int(match.group(1))
         total = int(match.group(2))
@@ -935,17 +935,28 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
     other = "base" if wanted == "adapter" else "adapter"
     order = (wanted, other)
     for kind in order:
-        if kind in payload.whole:
-            # Only the row's own kind proves it loads: otherwise a lone adapter_model.bin (which
-            # reads as checkpoint-like) stood in as the base payload of a row with no base weights.
-            return kind != wanted
-        if payload.groups[kind]:
-            # An unloadable family is never complete rather than vetoing the snapshot: it is not a
-            # family this row can load, so a whole unsharded one beside it still serves.
-            return all(
-                indices != set(range(1, family[2] + 1)) or family in payload.unloadable_families
+        # Both loaders try safetensors before pickle and neither falls back once it has picked, so
+        # judge in that order: a whole pytorch_model.bin cannot vouch for a snapshot whose
+        # safetensors index is the one from_pretrained will choose and fail on.
+        for suffix in (".safetensors", ".bin"):
+            if suffix in payload.whole[kind]:
+                # Only the row's own kind proves it loads: otherwise a lone adapter_model.bin (which
+                # reads as checkpoint-like) stood in as the base payload of a row with no base
+                # weights.
+                return kind != wanted
+            families = {
+                family: indices
                 for family, indices in payload.groups[kind].items()
-            )
+                if family[3] == suffix
+            }
+            if families:
+                # An unloadable family is never complete rather than vetoing the snapshot: it is not
+                # a family this row can load, so a whole unsharded one beside it still serves.
+                return all(
+                    indices != set(range(1, family[2] + 1))
+                    or family in payload.unloadable_families
+                    for family, indices in families.items()
+                )
     # No family either way. Absence is not evidence here: a diffusion or .ckpt payload classifies
     # from its suffix while naming no family this walk recognises, so it must not read as broken.
     return False
