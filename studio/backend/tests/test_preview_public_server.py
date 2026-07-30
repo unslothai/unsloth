@@ -227,6 +227,27 @@ def test_listener_rejects_unsupported_methods(app):
     assert put.status_code == delete.status_code == options.status_code == 404
 
 
+def test_listener_masks_method_mismatches_on_real_routes(app):
+    # An allowed verb on the wrong route would 405 in FastAPI before the token
+    # check; the gate rewrites that to the same generic 404.
+    token = preview_token.sign_preview_ref("demorun")
+
+    async def _run():
+        listener = pps.PublicPreviewListener()
+        port = await listener.start(app)
+        try:
+            async with httpx.AsyncClient(base_url = f"http://127.0.0.1:{port}") as client:
+                get_on_chat = await client.get("/p/demorun/v1/chat/completions")
+                post_on_page = await client.post(f"/p/demorun?k={token}")
+        finally:
+            await listener.stop()
+        return get_on_chat, post_on_page
+
+    get_on_chat, post_on_page = asyncio.run(_run())
+    assert get_on_chat.status_code == 404
+    assert post_on_page.status_code == 404
+
+
 def test_health_marker_matches_the_tunnel_probe(app):
     # start_preview_tunnel only advertises a URL when this exact marker answers.
     import cloudflare_tunnel as ct

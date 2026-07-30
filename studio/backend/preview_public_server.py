@@ -57,6 +57,25 @@ async def _send_json(send, status: int, body: bytes) -> None:
     await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
+def _mask_405(send):
+    # FastAPI answers an allowed verb on the wrong preview route with 405
+    # before the token check runs; rewrite it to the generic 404 so verbs
+    # cannot probe which routes exist.
+    masked = False
+
+    async def wrapped(message):
+        nonlocal masked
+        if masked:
+            return
+        if message["type"] == "http.response.start" and message.get("status") == 405:
+            masked = True
+            await _send_json(send, 404, _NOT_FOUND_BODY)
+            return
+        await send(message)
+
+    return wrapped
+
+
 async def _ack_lifespan(receive, send) -> None:
     # The wrapped app's lifespan already ran under the authenticated server.
     while True:
@@ -93,7 +112,7 @@ class PreviewOnlyGate:
         ):
             await _send_json(send, 404, _NOT_FOUND_BODY)
             return
-        await self.app(scope, receive, send)
+        await self.app(scope, receive, _mask_405(send))
 
 
 def _bound_port(server) -> Optional[int]:
