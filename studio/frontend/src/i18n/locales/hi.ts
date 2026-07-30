@@ -459,7 +459,7 @@ export const hi = {
       codingAgents: "कोडिंग एजेंट",
       codingAgentsHint:
         "इस सर्वर के विरुद्ध एक कोडिंग एजेंट लॉन्च करें। यह लोड किए गए मॉडल का उपयोग करता है; एक स्थानीय सर्वर स्वचालित रूप से API key बनाता है, एक रिमोट सर्वर इसे कमांड में शामिल करता है।",
-      codingAgentsSwap: "claude को codex, openclaw, opencode, hermes, या pi से बदलें।",
+      codingAgentsSwap: "claude को codex, openclaw, opencode, या hermes से बदलें।",
       codingAgentDetected: "इस मशीन पर इंस्टॉल है",
       codingAgentsDetectedHint: "इस मशीन पर पाया गया: {agents}।",
       relativeNever: "कभी नहीं",

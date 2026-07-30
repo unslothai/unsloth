@@ -223,6 +223,16 @@ jobs:
             tests/studio/test_is_mlx_dispatch_gate.py \
             tests/studio/test_xpu_spoof_pipeline.py
 
+      - name: CLI tests (unsloth_cli)
+        # unsloth_cli/tests had no CI at all: `unsloth_cli/**` was only a paths
+        # trigger and a ruff target, so 673 tests covering the studio launcher,
+        # the pre-exposure gate and the auth secret writers ran nowhere, and
+        # four of them had been failing on main unnoticed.
+        # Own step, not folded into the tests/ discovery above: pyproject's
+        # testpaths is tests/, and this suite needs no PYTHONPATH or CUDA spoof
+        # (it self-bootstraps sys.path and imports neither unsloth nor torch).
+        run: python -m pytest unsloth_cli/tests -q --tb=short
+
       - name: Shell installer tests
         # Auto-discovered rather than allowlisted. The old hardcoded list had
         # silently fallen seven files behind tests/run_all.sh, including
