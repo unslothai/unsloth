@@ -215,7 +215,11 @@ def neutralize_tts_prompt_text(text: str) -> str:
     return _spaced_out(_TTS_MARKUP, neutralize_control_markup(text))
 
 
-def _neutralize_leaves(value, rewrite, warn_on_key_collision: bool = False):
+def _neutralize_leaves(
+    value,
+    rewrite,
+    warn_on_key_collision: bool = False,
+):
     """Apply *rewrite* to every string leaf, keys included, of a nested structure.
 
     Iterative rather than recursive: how deep this goes is the client's choice, and a
@@ -242,7 +246,7 @@ def _neutralize_leaves(value, rewrite, warn_on_key_collision: bool = False):
     while queue:
         node = queue.pop()
         order.append(node)
-        for child in (node.values() if isinstance(node, dict) else node):
+        for child in node.values() if isinstance(node, dict) else node:
             if isinstance(child, (dict, list)) and id(child) not in seen:
                 seen.add(id(child))
                 queue.append(child)
@@ -264,9 +268,7 @@ def _neutralize_leaves(value, rewrite, warn_on_key_collision: bool = False):
                 rebuilt[new_key] = done[id(item)] if id(item) in done else _leaf(item)
             done[id(node)] = rebuilt
         else:
-            done[id(node)] = [
-                done[id(item)] if id(item) in done else _leaf(item) for item in node
-            ]
+            done[id(node)] = [done[id(item)] if id(item) in done else _leaf(item) for item in node]
     return done[id(value)]
 
 
@@ -322,9 +324,7 @@ def _neutralize_content_parts(content: list, rewrite):
         if len(run) > 1 and swept != joined:
             # Only a run that a paste split mid-marker gets collapsed.
             first = run[0]
-            out.append(
-                swept if isinstance(first, str) else {**first, "text": swept}
-            )
+            out.append(swept if isinstance(first, str) else {**first, "text": swept})
         else:
             out.extend(run)
         run.clear()
