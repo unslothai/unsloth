@@ -41,10 +41,21 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
+# Capture a native command's merged output without letting its stderr abort us.
+# Windows PowerShell 5.1 raises a terminating NativeCommandError when a native
+# command writes to stderr under $ErrorActionPreference = "Stop"; PowerShell
+# 7.1+ does not. This suite is self-hosting via (Get-Process -Id $PID).Path, so
+# it can run under 5.1, where every rejected-argument case writes to stderr.
+function Invoke-Native([scriptblock]$Command) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { return (& $Command | Out-String) } finally { $ErrorActionPreference = $prev }
+}
+
 # Run the instrumented uninstaller in a child pwsh.
 function Invoke-Uninstaller([string[]]$ScriptArgs) {
     $argv = @("-NoProfile", "-File", $uninstallPath) + $ScriptArgs
-    $out = & $pwshPath @argv 2>&1 | Out-String
+    $out = Invoke-Native { & $pwshPath @argv 2>&1 }
     return [pscustomobject]@{ Code = $LASTEXITCODE; Output = $out }
 }
 
@@ -95,7 +106,7 @@ $s = Get-Content -Raw '__PATH__'
 try { & ([scriptblock]::Create($s)) --dry-run } catch { Write-Host $_.Exception.Message }
 Write-Host 'SESSION SURVIVED'
 '@ -replace '__PATH__', $uninstallPath
-    $out = & $pwshPath -NoProfile -Command $probe 2>&1 | Out-String
+    $out = Invoke-Native { & $pwshPath -NoProfile -Command $probe 2>&1 }
     Check "a bad argument does not kill the caller's session" ($out -match "SESSION SURVIVED")
     Check "the scriptblock flow never starts the uninstall"   ($out -notmatch $bodyMarker)
 } finally {
