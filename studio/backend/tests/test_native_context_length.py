@@ -441,9 +441,7 @@ class TestRouteCompleteness:
             if "llama_backend" in block and "_llama_runtime_fields(llama_backend)" in block:
                 found = True
                 break
-        assert (
-            found
-        ), "No InferenceStatusResponse block with llama_backend has runtime fields"
+        assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"
         assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):

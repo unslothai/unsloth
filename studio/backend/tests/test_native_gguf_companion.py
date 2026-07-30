@@ -28,7 +28,10 @@ from models.inference import LoadRequest
 
 
 def _request_matches_loaded_settings(
-    request, backend, _template = None, native_grant_backed = False
+    request,
+    backend,
+    _template = None,
+    native_grant_backed = False,
 ):
     model_path = backend.gguf_path
     root = _local_gguf_companion_search_root(model_path, model_path)

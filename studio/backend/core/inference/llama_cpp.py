@@ -1504,8 +1504,7 @@ def _with_gguf_load_marker(load: Callable):
                 hf_repo,
                 intent.hf_variant,
                 require_mmproj = bool(
-                    intent.is_vision
-                    and not extra_args_disable_mmproj(intent.extra_args)
+                    intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
                 ),
                 hf_token = intent.hf_token,
             ):
@@ -2890,17 +2889,12 @@ class LlamaCppBackend:
         return self._last_load_intent
 
     def _runtime_matches_intent(
-        self,
-        intent: GgufLoadIntent,
-        effective_extra_args: Optional[list[str]],
+        self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]
     ) -> bool:
         """Whether active runtime settings satisfy one resolved caller intent."""
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
-        if (
-            not self._is_diffusion
-            and self._requested_n_parallel != max(1, int(intent.n_parallel))
-        ):
+        if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
             return False
 
         def _norm(value):
@@ -2967,30 +2961,24 @@ class LlamaCppBackend:
         ):
             return False
         if (
-            (
-                speculative_type in ("mtp", "mtp+ngram")
-                or self._speculative_type == "draft-mtp"
-            )
+            (speculative_type in ("mtp", "mtp+ngram") or self._speculative_type == "draft-mtp")
             and intent.spec_draft_n_max is not None
             and intent.spec_draft_n_max != (self._spec_draft_n_max or 0)
         ):
             return False
-        if (self._chat_template_override or None) != (
-            intent.chat_template_override or None
-        ):
+        if (self._chat_template_override or None) != (intent.chat_template_override or None):
             return False
 
         if tuple(extra_args or ()) != tuple(self._extra_args or ()):
             return False
-        if (
-            (intent.gguf_path is not None or intent.compare_mtp_draft)
-            and speculative_type in ("auto", "mtp", "mtp+ngram")
+        if (intent.gguf_path is not None or intent.compare_mtp_draft) and speculative_type in (
+            "auto",
+            "mtp",
+            "mtp+ngram",
         ):
             try:
                 requested_draft = (
-                    Path(intent.mtp_draft_path).resolve()
-                    if intent.mtp_draft_path
-                    else None
+                    Path(intent.mtp_draft_path).resolve() if intent.mtp_draft_path else None
                 )
                 loaded_draft = (
                     Path(self._mtp_draft_path).resolve() if self._mtp_draft_path else None
@@ -7033,10 +7021,7 @@ class LlamaCppBackend:
         self._stdout_thread.start()
 
     @_with_gguf_load_marker
-    def load_model(
-        self,
-        intent: GgufLoadIntent,
-    ) -> bool:
+    def load_model(self, intent: GgufLoadIntent) -> bool:
         """Start llama-server from one immutable load intent."""
         gguf_path = intent.gguf_path
         mmproj_path = intent.mmproj_path
@@ -10775,6 +10760,7 @@ class LlamaCppBackend:
             if self._mtp_runtime_fallback_in_progress:
                 return False
             self._mtp_runtime_fallback_in_progress = True
+
         def _recover():
             try:
                 # Confirm the process really exited (the error can arrive a beat

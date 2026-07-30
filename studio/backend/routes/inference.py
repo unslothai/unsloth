@@ -3472,11 +3472,13 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
             None if llama_backend.is_diffusion else llama_backend.effective_parallel_slots
         ),
     )
-    unresolved = set(_InferenceRuntimeFields.model_fields) - fields.keys() - {
-        "requires_trust_remote_code"
-    }
+    unresolved = (
+        set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}
+    )
     if unresolved:
-        raise AttributeError(f"GGUF backend is missing runtime response fields: {sorted(unresolved)}")
+        raise AttributeError(
+            f"GGUF backend is missing runtime response fields: {sorted(unresolved)}"
+        )
     return fields
 
 
@@ -3599,12 +3601,9 @@ def _active_gguf_intent(
         gpu_ids = request.gpu_ids,
         n_parallel = n_parallel,
         preserve_multi_gpu_on_layer = (
-            llama_backend.layer_preserves_tensor_intent
-            and not _is_explicit_tensor_drop(request)
+            llama_backend.layer_preserves_tensor_intent and not _is_explicit_tensor_drop(request)
         ),
-        mtp_draft_path = _mtp_draft_for_path(
-            llama_backend.gguf_path, native_grant_backed
-        ),
+        mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
     )
 
@@ -4900,9 +4899,7 @@ async def _prepare_load_placement(
     resolved, is_vulkan = await _resolve_gguf_gpu_ids_for_request(
         config, requested, diffusion_kind = diffusion_kind
     )
-    _reject_draft_device_with_gpu_ids(
-        resolved, extra_args, gpu_ids_are_vulkan_ordinals = is_vulkan
-    )
+    _reject_draft_device_with_gpu_ids(resolved, extra_args, gpu_ids_are_vulkan_ordinals = is_vulkan)
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
@@ -4990,9 +4987,7 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    if is_gguf and request.gpu_memory_mode == "manual" and (
-        diffusion_kind is False
-    ):
+    if is_gguf and request.gpu_memory_mode == "manual" and (diffusion_kind is False):
         return
 
     diffusion_gpu = None
@@ -5611,9 +5606,7 @@ async def _load_model_impl(
         _n_parallel = _resolve_parallel_slots(request, fastapi_request)
 
         def _reuse_loaded_gguf(
-            intent: GgufLoadIntent,
-            *,
-            display_name: Optional[str] = None,
+            intent: GgufLoadIntent, *, display_name: Optional[str] = None
         ) -> Optional[LoadResponse]:
             if not (
                 llama_backend.matches_load_intent(intent)
@@ -5743,17 +5736,13 @@ async def _load_model_impl(
                 extra_llama_args, request.tensor_parallel
             )
             _tensor_intent_overall = _effective_tensor or _carry_preserved_tensor_intent(
-                preserved = getattr(
-                    llama_backend, "layer_preserves_tensor_intent", False
-                ),
+                preserved = getattr(llama_backend, "layer_preserves_tensor_intent", False),
                 same_model = same_loaded_model,
                 explicit_drop = _is_explicit_tensor_drop(request),
             )
             gguf_intent = replace(
                 gguf_intent,
-                preserve_multi_gpu_on_layer = (
-                    _tensor_intent_overall and not _effective_tensor
-                ),
+                preserve_multi_gpu_on_layer = (_tensor_intent_overall and not _effective_tensor),
             )
             reused = _reuse_loaded_gguf(
                 gguf_intent,
@@ -5895,9 +5884,7 @@ async def _load_model_impl(
                     tensor_parallel = tensor_parallel,
                     preserve_multi_gpu_on_layer = bool(
                         _tensor_intent_overall
-                        and not _effective_tensor_parallel(
-                            attempt_extra_args, tensor_parallel
-                        )
+                        and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
                 )
                 return await asyncio.to_thread(

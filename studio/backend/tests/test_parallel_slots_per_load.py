@@ -247,18 +247,20 @@ def _loaded_backend() -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, n_parallel: int) -> bool:
-    return backend.matches_load_intent(GgufLoadIntent(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        n_parallel = n_parallel,
-    ))
+    return backend.matches_load_intent(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            n_parallel = n_parallel,
+        )
+    )
 
 
 def test_already_in_target_state_matches_same_slots():
@@ -450,9 +452,7 @@ def _guard_required_gb(
         classmethod(lambda cls, binary = None: dict(caps or {})),
     )
 
-    config = _types.SimpleNamespace(
-        is_gguf = True, gguf_file = gguf_path, identifier = "local/model"
-    )
+    config = _types.SimpleNamespace(is_gguf = True, gguf_file = gguf_path, identifier = "local/model")
     request = _types.SimpleNamespace(
         model_path = "local/model",
         hf_token = None,
@@ -465,9 +465,7 @@ def _guard_required_gb(
         config,
         request,
         load_in_4bit = False,
-        placement = inf._LoadPlacement(
-            None, None, False, inf._classify_diffusion_gguf(config)
-        ),
+        placement = inf._LoadPlacement(None, None, False, inf._classify_diffusion_gguf(config)),
         n_parallel = n_parallel,
     )
     return seen["required_override_gb"]

@@ -659,8 +659,7 @@ def _matches_request(request, backend) -> bool:
         n_parallel = request.n_parallel or 1,
         extra_args = effective_extra,
         preserve_multi_gpu_on_layer = (
-            backend.layer_preserves_tensor_intent
-            and not routes._is_explicit_tensor_drop(request)
+            backend.layer_preserves_tensor_intent and not routes._is_explicit_tensor_drop(request)
         ),
     )
     return backend._runtime_matches_intent(intent, compare_extra)
@@ -678,13 +677,11 @@ def test_tensor_off_echo_preserves_multi_gpu_fallback():
 
     # Preserved fallback + bare tensor=false echo: dedupe, keep multi-GPU (no collapse).
     assert (
-        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True))
-        is True
+        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)) is True
     )
     # A genuine layer load (no preserved intent): tensor-off also dedupes, no churn.
     assert (
-        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = False))
-        is True
+        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = False)) is True
     )
 
 
@@ -717,8 +714,7 @@ def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
     req = LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"])
     assert "llama_extra_args" in req.model_fields_set
     assert (
-        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True))
-        is False
+        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)) is False
     )
 
 
@@ -730,8 +726,7 @@ def test_tensor_off_reload_requires_explicit_toggle():
     req = LoadRequest(model_path = "owner/repo")  # tensor_parallel left unset
     assert "tensor_parallel" not in req.model_fields_set
     assert (
-        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True))
-        is True
+        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)) is True
     )
 
 
@@ -746,8 +741,7 @@ def test_tensor_off_under_env_tensor_does_not_reload_loop(monkeypatch):
     assert "tensor_parallel" in req.model_fields_set
     # env still forces tensor -> not a real drop -> dedupe (no reload loop).
     assert (
-        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True))
-        is True
+        _matches_request(req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)) is True
     )
 
 

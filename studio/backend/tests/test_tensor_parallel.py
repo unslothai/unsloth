@@ -185,18 +185,20 @@ def _loaded_backend(tensor_parallel: bool) -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, tensor_parallel: bool) -> bool:
-    return backend.matches_load_intent(GgufLoadIntent(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        tensor_parallel = tensor_parallel,
-    ))
+    return backend.matches_load_intent(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            tensor_parallel = tensor_parallel,
+        )
+    )
 
 
 @pytest.mark.parametrize("flag", [True, False])
@@ -227,18 +229,20 @@ def test_already_in_target_state_reconciles_split_mode_extras():
     backend = _loaded_backend(tensor_parallel = True)
     backend._extra_args = ["--split-mode", "tensor"]
     assert (
-        backend.matches_load_intent(GgufLoadIntent(
-            gguf_path = None,
-            model_identifier = "owner/repo",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "auto",
-            chat_template_override = None,
-            extra_args = ["--split-mode", "tensor"],
-            is_vision = False,
-            tensor_parallel = False,
-        ))
+        backend.matches_load_intent(
+            GgufLoadIntent(
+                gguf_path = None,
+                model_identifier = "owner/repo",
+                hf_variant = "Q4_K_M",
+                n_ctx = 8192,
+                cache_type_kv = None,
+                speculative_type = "auto",
+                chat_template_override = None,
+                extra_args = ["--split-mode", "tensor"],
+                is_vision = False,
+                tensor_parallel = False,
+            )
+        )
         is True
     )
 

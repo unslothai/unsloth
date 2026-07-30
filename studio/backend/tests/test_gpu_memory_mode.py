@@ -157,18 +157,20 @@ def _loaded_backend(gpu_memory_mode: str) -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, gpu_memory_mode: str) -> bool:
-    return backend.matches_load_intent(GgufLoadIntent(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gpu_memory_mode = gpu_memory_mode,
-    ))
+    return backend.matches_load_intent(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            gpu_memory_mode = gpu_memory_mode,
+        )
+    )
 
 
 @pytest.mark.parametrize("mode", ["auto", "manual"])
@@ -387,21 +389,23 @@ def _target_state_manual(
     n_cpu_moe,
     tensor_split = None,
 ):
-    return backend.matches_load_intent(GgufLoadIntent(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gpu_memory_mode = "manual",
-        gpu_layers = gpu_layers,
-        n_cpu_moe = n_cpu_moe,
-        tensor_split = tensor_split,
-    ))
+    return backend.matches_load_intent(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            gpu_memory_mode = "manual",
+            gpu_layers = gpu_layers,
+            n_cpu_moe = n_cpu_moe,
+            tensor_split = tensor_split,
+        )
+    )
 
 
 def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
@@ -609,18 +613,20 @@ def test_gpu_ids_property_default_and_reset():
 
 
 def _target_state_gpu_ids(backend, gpu_ids):
-    return backend.matches_load_intent(GgufLoadIntent(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gpu_ids = gpu_ids,
-    ))
+    return backend.matches_load_intent(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            gpu_ids = gpu_ids,
+        )
+    )
 
 
 def test_gpu_ids_reload_detection_is_order_insensitive():
@@ -749,12 +755,14 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
     )
 
     with pytest.raises(ValueError, match = "DiffusionGemma"):
-        backend.load_model(GgufLoadIntent(
-            hf_repo = "owner/model",
-            hf_variant = "Q4_K_M",
-            model_identifier = "owner/model",
-            gpu_ids = [0],
-        ))
+        backend.load_model(
+            GgufLoadIntent(
+                hf_repo = "owner/model",
+                hf_variant = "Q4_K_M",
+                model_identifier = "owner/model",
+                gpu_ids = [0],
+            )
+        )
 
     assert killed == []
 
@@ -798,12 +806,14 @@ def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatc
         )
 
         with pytest.raises(type(failure)):
-            backend.load_model(GgufLoadIntent(
-                hf_repo = "owner/model",
-                hf_variant = "Q4_K_M",
-                model_identifier = "owner/model",
-                gpu_ids = [0],
-            ))
+            backend.load_model(
+                GgufLoadIntent(
+                    hf_repo = "owner/model",
+                    hf_variant = "Q4_K_M",
+                    model_identifier = "owner/model",
+                    gpu_ids = [0],
+                )
+            )
 
         assert order == ["download"], failure
 
@@ -821,11 +831,13 @@ def test_local_vulkan_diffusion_rejection_keeps_active_server(monkeypatch, tmp_p
     monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
 
     with pytest.raises(ValueError, match = "DiffusionGemma"):
-        backend.load_model(GgufLoadIntent(
-            gguf_path = str(gguf_path),
-            model_identifier = "local/diffusion",
-            gpu_ids = [0],
-        ))
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf_path),
+                model_identifier = "local/diffusion",
+                gpu_ids = [0],
+            )
+        )
 
     assert killed == []
 
@@ -879,11 +891,13 @@ def test_local_vulkan_pre_teardown_reads_the_real_gguf_header(monkeypatch, tmp_p
     )
 
     with pytest.raises(_ReachedServerStart):
-        backend.load_model(GgufLoadIntent(
-            gguf_path = _write_gguf_header(tmp_path / "chat.gguf", "llama"),
-            model_identifier = "local/chat",
-            gpu_ids = [0],
-        ))
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = _write_gguf_header(tmp_path / "chat.gguf", "llama"),
+                model_identifier = "local/chat",
+                gpu_ids = [0],
+            )
+        )
 
     assert killed == [True]
 
@@ -894,11 +908,13 @@ def test_local_vulkan_diffusion_header_rejects_before_teardown(monkeypatch, tmp_
     backend = _vulkan_pinned_backend(monkeypatch, killed)
 
     with pytest.raises(ValueError, match = "DiffusionGemma"):
-        backend.load_model(GgufLoadIntent(
-            gguf_path = _write_gguf_header(tmp_path / "d.gguf", "gemma3", diffusion = True),
-            model_identifier = "local/diffusion",
-            gpu_ids = [0],
-        ))
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = _write_gguf_header(tmp_path / "d.gguf", "gemma3", diffusion = True),
+                model_identifier = "local/diffusion",
+                gpu_ids = [0],
+            )
+        )
 
     assert killed == []
 
@@ -909,11 +925,13 @@ def test_local_vulkan_missing_gguf_is_reported_before_teardown(monkeypatch, tmp_
     backend = _vulkan_pinned_backend(monkeypatch, killed)
 
     with pytest.raises(FileNotFoundError):
-        backend.load_model(GgufLoadIntent(
-            gguf_path = str(tmp_path / "absent.gguf"),
-            model_identifier = "local/missing",
-            gpu_ids = [0],
-        ))
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(tmp_path / "absent.gguf"),
+                model_identifier = "local/missing",
+                gpu_ids = [0],
+            )
+        )
 
     assert killed == []
 
