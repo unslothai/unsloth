@@ -12,6 +12,7 @@ No GPU, no network, no subprocess. Cross-platform.
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 import os
 import sys
 import types as _types
@@ -25,17 +26,21 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Prefer the real modules, as with httpx below: these stubs go into sys.modules for the
-# whole session, so an empty one breaks any module imported later that actually uses them.
-try:
-    import loggers  # noqa: F401
-except ImportError:
+def _module_available(name: str) -> bool:
+    """True if the real module can be imported. Probed rather than imported: these stubs
+    land in sys.modules for the whole session, so an empty one breaks anything imported
+    later that actually uses the module."""
+    try:
+        return _importlib_util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+if not _module_available("loggers"):
     _loggers_stub = _types.ModuleType("loggers")
     _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
     sys.modules.setdefault("loggers", _loggers_stub)
-try:
-    import structlog  # noqa: F401
-except ImportError:
+if not _module_available("structlog"):
     sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 # Prefer real httpx if installed (CI installs it). Stub only as fallback.
 try:
