@@ -235,7 +235,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "visibleState.queuedSettingsEpoch" in CHAT_ADAPTER
     assert "queuedSettingsEpoch ===" in CHAT_ADAPTER
     assert "preserveVisibleSettings: true" in CHAT_ADAPTER
-    assert "trackQueuedSettings: !options?.preserveVisibleSettings" in CHAT_ADAPTER
+    assert CHAT_ADAPTER.count(
+        "trackQueuedSettings: !options?.preserveVisibleSettings"
+    ) >= 4
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
     assert "{ trackQueuedSettings: false }" in CHAT_ADAPTER

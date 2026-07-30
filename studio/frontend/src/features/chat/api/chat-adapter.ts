@@ -2046,15 +2046,22 @@ async function autoLoadSmallestModel(options?: {
       persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
       useChatRuntimeStore
         .getState()
-        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
+        .setCheckpoint(
+          "unsloth/Qwen3.5-4B-MTP-GGUF",
+          "UD-Q4_K_XL",
+          { trackQueuedSettings: !options?.preserveVisibleSettings },
+        );
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
-      store.setParams({
-        ...store.params,
-        maxTokens: loadResp.context_length ?? 131072,
-      });
+      store.setParams(
+        {
+          ...store.params,
+          maxTokens: loadResp.context_length ?? 131072,
+        },
+        { trackQueuedSettings: !options?.preserveVisibleSettings },
+      );
       const defaultModel: ChatModelSummary = {
         id: "unsloth/Qwen3.5-4B-MTP-GGUF",
         name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
