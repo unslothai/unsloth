@@ -24,6 +24,7 @@ if _BACKEND_DIR not in sys.path:
 from core.inference.llama_cpp import (
     _MAX_REPROMPTS,
     _PROVISIONAL_ARGS_MIN_CHARS,
+    GgufLoadIntent,
     LlamaCppBackend,
 )
 from core.inference.tool_call_parser import NUDGE_TOOL_CALLS_STATUS
@@ -3123,7 +3124,10 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     backend._unload_epoch = 0
     backend._mtp_runtime_fallback_in_progress = False
     backend._mtp_runtime_fallback_active = False
-    backend._last_load_kwargs = {"gguf_path": "/m.gguf"}
+    backend._last_load_intent = GgufLoadIntent(
+        gguf_path = "/m.gguf",
+        model_identifier = "m",
+    )
     backend._model_identifier = "m"
     dying = backend._process
     loads: list[dict] = []
@@ -3146,8 +3150,8 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
             {"status_code": 200, "chunks": [_sse({"content": "Recovered."}), _done()]},
         )()
 
-    def fake_load(**kwargs):
-        loads.append(kwargs)
+    def fake_load(intent):
+        loads.append(intent)
         backend._process = type("Live", (), {"poll": lambda self: None, "returncode": None})()
         backend._healthy = True
         return True

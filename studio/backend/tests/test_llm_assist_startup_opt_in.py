@@ -13,10 +13,14 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from core.inference import llama_cpp
+from core.inference.llama_cpp import GgufLoadIntent
+from hub.utils import llm_assist as hub_assist
 from models.datasets import AiAssistMappingRequest
 from routes import datasets as datasets_route
 from routes import settings as settings_route
 from utils import helper_precache_settings
+from utils.datasets import llm_assist as dataset_assist
 
 
 def _install_fake_studio_db(monkeypatch, *, stored = None):
@@ -125,3 +129,46 @@ def test_ai_assist_route_still_calls_on_demand_advisor(monkeypatch):
             "model_type": "text",
         }
     ]
+
+
+def test_helper_backends_load_with_one_intent(monkeypatch):
+    loaded = []
+
+    class FakeBackend:
+        def load_model(self, intent):
+            loaded.append(intent)
+            return False
+
+        def unload_model(self):
+            return True
+
+    repo, variant = "owner/helper-GGUF", "Q4_K_M"
+    monkeypatch.delenv("UNSLOTH_HELPER_MODEL_DISABLE", raising = False)
+    monkeypatch.setenv("UNSLOTH_HELPER_MODEL_REPO", repo)
+    monkeypatch.setenv("UNSLOTH_HELPER_MODEL_VARIANT", variant)
+    monkeypatch.setattr(llama_cpp, "LlamaCppBackend", FakeBackend)
+
+    advisor_kwargs = {"columns": ["text"], "samples": [{"text": "x"}]}
+    calls = [
+        (lambda: dataset_assist._run_with_helper("prompt"), "helper"),
+        (lambda: dataset_assist._run_multi_pass_advisor(**advisor_kwargs), "advisor"),
+        (
+            lambda: hub_assist._run_multi_pass_advisor(
+                **advisor_kwargs,
+                dataset_name = None,
+                dataset_card = None,
+                dataset_metadata = None,
+                model_name = None,
+                model_type = None,
+            ),
+            "hub-advisor",
+        ),
+    ]
+    for run, label in calls:
+        assert run() is None
+        assert loaded.pop() == GgufLoadIntent(
+            model_identifier = f"{label}:{repo}:{variant}",
+            hf_repo = repo,
+            hf_variant = variant,
+            n_ctx = 2048,
+        )

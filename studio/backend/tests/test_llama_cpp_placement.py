@@ -67,7 +67,7 @@ if "httpx" not in sys.modules:
         )
         sys.modules["httpx"] = module
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
 _REAL_POPEN = subprocess.Popen
 
@@ -126,11 +126,11 @@ def _launch(backend, gguf, **load_kwargs):
         )()
 
     with patch.object(subprocess, "Popen", side_effect = fake_popen):
-        assert backend.load_model(
+        assert backend.load_model(GgufLoadIntent(
             gguf_path = str(gguf),
             model_identifier = "test",
             **load_kwargs,
-        )
+        ))
     return captured
 
 
@@ -264,10 +264,10 @@ def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
     )
 
     with pytest.raises(ValueError, match = "no defined mapping"):
-        backend.load_model(
+        backend.load_model(GgufLoadIntent(
             hf_repo = "renamed/model",
             hf_variant = "Q4_K_M",
             model_identifier = "renamed/model",
             speculative_type = "off",
             gpu_ids = [1],
-        )
+        ))

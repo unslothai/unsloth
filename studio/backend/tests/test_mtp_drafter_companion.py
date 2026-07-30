@@ -406,6 +406,8 @@ def _target_state_kwargs(weight, mtp_draft_path):
 
 
 def test_already_in_target_state_bounces_on_new_drafter(tmp_path):
+    from core.inference.llama_cpp import GgufLoadIntent
+
     weight = tmp_path / "gemma-4-12b-it-Q4_K_M.gguf"
     weight.write_bytes(b"x")
     drafter = tmp_path / "mtp-gemma-4-12b-it.gguf"
@@ -413,10 +415,23 @@ def test_already_in_target_state_bounces_on_new_drafter(tmp_path):
 
     # Loaded without a drafter; one now exists on disk -> must reload.
     b = _loaded_backend(weight, None)
-    assert not b._already_in_target_state(**_target_state_kwargs(weight, str(drafter)))
+    assert not b.matches_load_intent(
+        GgufLoadIntent(**_target_state_kwargs(weight, str(drafter)))
+    )
     # Same drafter as launched -> still deduped.
     b = _loaded_backend(weight, str(drafter))
-    assert b._already_in_target_state(**_target_state_kwargs(weight, str(drafter)))
+    assert b.matches_load_intent(
+        GgufLoadIntent(**_target_state_kwargs(weight, str(drafter)))
+    )
+    intent = dict(
+        model_identifier = "local-gemma",
+        n_ctx = 4096,
+        mtp_draft_path = str(drafter),
+        compare_mtp_draft = True,
+    )
+    assert b.matches_load_intent(GgufLoadIntent(**intent))
+    intent["mtp_draft_path"] = None
+    assert not b.matches_load_intent(GgufLoadIntent(**intent))
 
 
 def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
