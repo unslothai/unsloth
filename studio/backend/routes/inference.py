@@ -15777,6 +15777,7 @@ def _build_passthrough_payload(
     from core.inference.chat_template_helpers import (
         neutralize_control_markup_in_messages,
         neutralize_tool_descriptions,
+        reconciled_tool_choice,
     )
 
     # Every passthrough body ends up here and llama-server applies the chat template
@@ -15798,7 +15799,7 @@ def _build_passthrough_payload(
         # the client forced, and forwarding that choice would both name a function the
         # catalog no longer advertises and hand llama-server the raw markup we just
         # removed. Fall back to "auto" so the request stays self-consistent (#7066).
-        tool_choice = _reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
+        tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:
@@ -15832,55 +15833,6 @@ def _build_passthrough_payload(
         # of the model's load-time default.
         body["chat_template_kwargs"] = chat_template_kwargs
     return body
-
-
-def _forced_tool_name(tool_choice):
-    """The function name a ``tool_choice`` pins, or None when it pins nothing.
-
-    OpenAI spells it ``{"type": "function", "function": {"name": ...}}`` and Anthropic
-    ``{"type": "tool", "name": ...}``; the string forms ("auto" / "none" / "required")
-    pin no particular tool.
-    """
-    if not isinstance(tool_choice, dict):
-        return None
-    function = tool_choice.get("function")
-    name = function.get("name") if isinstance(function, dict) else tool_choice.get("name")
-    return name if isinstance(name, str) and name else None
-
-
-def _catalog_tool_names(tools) -> set:
-    """Every ``function.name`` in a tool catalog, either nesting."""
-    names = set()
-    for tool in tools or []:
-        if not isinstance(tool, dict):
-            continue
-        function = tool.get("function")
-        name = function.get("name") if isinstance(function, dict) else tool.get("name")
-        if isinstance(name, str):
-            names.add(name)
-    return names
-
-
-def _reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
-    """Downgrade a forced ``tool_choice`` to "auto" when WE dropped its tool (#7066).
-
-    Only when the neutralizer removed it: the name has to be in the caller's catalog and
-    gone from the sanitized one. A client forcing a function it never declared is a
-    different, pre-existing case that the healing path deliberately reads to decide a
-    streamed call must NOT be promoted, so silently rewriting it there would change
-    unrelated behaviour.
-    """
-    forced = _forced_tool_name(tool_choice)
-    if forced is None or forced in _catalog_tool_names(safe_tools):
-        return tool_choice
-    if forced not in _catalog_tool_names(openai_tools):
-        return tool_choice
-    logger.warning(
-        "Forcing tool %r is no longer possible: it was dropped from the catalog for "
-        "carrying chat control markup. Falling back to tool_choice=auto.",
-        forced,
-    )
-    return "auto"
 
 
 def _nudge_retry_messages(body, data, allowed_tools):

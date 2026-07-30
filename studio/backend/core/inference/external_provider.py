@@ -959,12 +959,16 @@ class ExternalProviderClient:
             from core.inference.chat_template_helpers import (
                 neutralize_control_markup_in_messages,
                 neutralize_tool_descriptions,
+                reconciled_tool_choice,
             )
             messages = neutralize_control_markup_in_messages(messages)
             if tools:
                 safe_tools = neutralize_tool_descriptions(tools)
-                # A catalog that empties out must not leave a tool_choice behind naming a
-                # tool the server was never told about.
+                # A mixed catalog keeps safe_tools non-empty while still dropping the one
+                # tool the client forced, so an empty check is not enough: the same
+                # per-name reconciliation the passthrough builder uses has to run here or
+                # the body names a function the server was never told about.
+                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
                 if not safe_tools:
                     tool_choice = None
                 tools = safe_tools

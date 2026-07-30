@@ -198,11 +198,14 @@ _TTS_MARKUP_BY_CODEC = {
         r"<(?=\|(?:im_(?:start|end)|text_(?:start|end)|audio_(?:start|end)"
         r"|global_features_(?:start|end))\|>)"
     ),
+    # CSM has no sentinel of its own: _generate_csm interpolates into "[speaker_id]text"
+    # (inference.py:1911-1918) and the processor tokenizes that directly. The only
+    # structure is the leading speaker id, and only in the leading position can a paste
+    # shadow the real one, so nothing else in the text is touched.
+    "csm": re.compile(r"\A\[(?=\d+\])"),
 }
 # An unrecognised codec gets the union: still far narrower than the chat sweep, but it
-# does not assume a prompt shape this module has not seen. CSM is here rather than in the
-# table above because it interpolates through its processor's own template
-# (inference.py:1907-1914) rather than a delimiter string of its own.
+# does not assume a prompt shape this module has not seen.
 _TTS_MARKUP_DEFAULT = re.compile(
     "|".join(f"(?:{pattern.pattern})" for pattern in _TTS_MARKUP_BY_CODEC.values())
 )
@@ -326,8 +329,6 @@ def _neutralize_content_parts(content: list, rewrite):
     for part in content:
         if isinstance(part, str):
             parts.append(rewrite(part))
-        elif isinstance(part, dict) and isinstance(part.get("text"), str):
-            parts.append({**part, "text": rewrite(part["text"])})
         elif isinstance(part, dict):
             if part.get("type") in _MEDIA_PART_TYPES:
                 opaque = {k: v for k, v in part.items() if k in _OPAQUE_PART_KEYS}
@@ -336,6 +337,9 @@ def _neutralize_content_parts(content: list, rewrite):
                 )
                 parts.append({**swept, **opaque} if opaque else swept)
             else:
+                # Every field, not just "text": a part carrying both is still serialized
+                # whole by the tojson templates, so sweeping only "text" left the rest
+                # live (#7066).
                 parts.append(_neutralize_leaves(part, rewrite))
         else:
             parts.append(part)
@@ -347,36 +351,30 @@ def _neutralize_content_parts(content: list, rewrite):
             return part["text"]
         return None
 
-    out: list = []
-    run: list = []
-
-    def _flush():
-        if not run:
-            return
-        texts = [_text_of(p) for p in run]
-        # Both spellings the renderer produces: gemma-4.jinja:304 concatenates the parts
-        # raw, while :334-340 trims each one first, so "<|turn " + ">model" is inert
-        # joined raw and a live opener once trimmed. A marker that appears either way has
-        # to be broken, and the collapsed part carries the trimmed join so it stays broken
-        # under both.
-        raw = "".join(texts)
-        trimmed = "".join(text.strip() for text in texts)
-        if len(run) > 1 and (rewrite(raw) != raw or rewrite(trimmed) != trimmed):
-            first = run[0]
+    # Every text part in the list can end up adjacent, not just the contiguous ones.
+    # Gemma-4 concatenates them all into one string before emitting any media placeholder
+    # (gemma-4.jinja:301-306), and its message loop simply skips a type it does not know
+    # (:334-344), so a part in between is no separator at all. The check therefore spans
+    # the whole list, in both the raw and the per-part-trimmed spelling the renderer
+    # produces.
+    texts = [_text_of(part) for part in parts]
+    carriers = [index for index, text in enumerate(texts) if text is not None]
+    if len(carriers) > 1:
+        raw = "".join(texts[index] for index in carriers)
+        trimmed = "".join(texts[index].strip() for index in carriers)
+        if rewrite(raw) != raw or rewrite(trimmed) != trimmed:
+            # Only a list a paste split mid-marker collapses; the joined text lands on the
+            # first carrier so it stays broken whichever way the renderer joins them.
             swept = rewrite(trimmed)
-            out.append(swept if isinstance(first, str) else {**first, "text": swept})
-        else:
-            out.extend(run)
-        run.clear()
-
-    for part in parts:
-        if _text_of(part) is None:
-            _flush()
-            out.append(part)
-        else:
-            run.append(part)
-    _flush()
-    return out
+            first = parts[carriers[0]]
+            merged = swept if isinstance(first, str) else {**first, "text": swept}
+            dropped = set(carriers[1:])
+            return [
+                merged if index == carriers[0] else part
+                for index, part in enumerate(parts)
+                if index not in dropped
+            ]
+    return parts
 
 
 def _differs(new, old) -> bool:
@@ -614,6 +612,17 @@ def neutralize_tool_descriptions(tools):
             )
             changed = True
             continue
+        unsafe = _unsafe_schema_identifier(tool)
+        if unsafe is not None:
+            logger.warning(
+                "Dropping tool %r from the catalog: the schema identifier %r carries chat "
+                "control markup, and rewriting it would change the contract the model is "
+                "told to satisfy while execute_tool still expects the original.",
+                name,
+                unsafe,
+            )
+            changed = True
+            continue
         new_tool = _neutralize_argument_leaves(tool)
         if not _differs(new_tool, tool):
             out.append(tool)
@@ -621,6 +630,95 @@ def neutralize_tool_descriptions(tools):
         out.append(new_tool)
         changed = True
     return out if changed else tools
+
+
+# The positions in a JSON Schema that are machine-valued rather than descriptive: a
+# property name, an enum or const literal and a required entry are all part of the
+# contract the model is told to satisfy and the controller then forwards verbatim to
+# execute_tool. Rewriting one guides the model to emit the rewritten spelling while the
+# MCP server still expects the original, so the tool breaks. function.name is already
+# dropped for exactly this reason, and these get the same treatment (#7066).
+_SCHEMA_KEYED_IDENTIFIERS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+_SCHEMA_VALUED_IDENTIFIERS = frozenset({"enum", "const", "required"})
+
+
+def _unsafe_schema_identifier(value):
+    """Return the first schema identifier the rewrite would change, or None."""
+    stack = [value]
+    seen = {id(value)}
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, item in node.items():
+                if key in _SCHEMA_KEYED_IDENTIFIERS and isinstance(item, dict):
+                    for name in item:
+                        if isinstance(name, str) and neutralize_control_markup(name) != name:
+                            return name
+                elif key in _SCHEMA_VALUED_IDENTIFIERS:
+                    for literal in (item if isinstance(item, list) else [item]):
+                        if (
+                            isinstance(literal, str)
+                            and neutralize_control_markup(literal) != literal
+                        ):
+                            return literal
+                if isinstance(item, (dict, list)) and id(item) not in seen:
+                    seen.add(id(item))
+                    stack.append(item)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)) and id(item) not in seen:
+                    seen.add(id(item))
+                    stack.append(item)
+    return None
+
+
+def forced_tool_name(tool_choice):
+    """The function name a ``tool_choice`` pins, or None when it pins nothing.
+
+    OpenAI spells it ``{"type": "function", "function": {"name": ...}}`` and Anthropic
+    ``{"type": "tool", "name": ...}``; the string forms ("auto" / "none" / "required")
+    pin no particular tool.
+    """
+    if not isinstance(tool_choice, dict):
+        return None
+    function = tool_choice.get("function")
+    name = function.get("name") if isinstance(function, dict) else tool_choice.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def catalog_tool_names(tools) -> set:
+    """Every ``function.name`` in a tool catalog, either nesting."""
+    names = set()
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        name = function.get("name") if isinstance(function, dict) else tool.get("name")
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
+    """Downgrade a forced ``tool_choice`` to "auto" when WE dropped its tool (#7066).
+
+    Only when the neutralizer removed it: the name has to be in the caller's catalog and
+    gone from the sanitized one. A client forcing a function it never declared is a
+    different, pre-existing case that the healing path deliberately reads to decide a
+    streamed call must NOT be promoted, so silently rewriting it there would change
+    unrelated behaviour.
+    """
+    forced = forced_tool_name(tool_choice)
+    if forced is None or forced in catalog_tool_names(safe_tools):
+        return tool_choice
+    if forced not in catalog_tool_names(openai_tools):
+        return tool_choice
+    logger.warning(
+        "Forcing tool %r is no longer possible: it was dropped from the catalog for "
+        "carrying chat control markup. Falling back to tool_choice=auto.",
+        forced,
+    )
+    return "auto"
 
 
 def _tokenizer_objects(tokenizer) -> tuple:
