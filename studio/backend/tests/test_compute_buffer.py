@@ -392,9 +392,7 @@ class TestContextBufferLayerSplit:
         b = _backend(embd = 4096)
         one = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
         many = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16", layer_split = True)
-        assert many == pytest.approx(
-            one * LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT, rel = 1e-9
-        )
+        assert many == pytest.approx(one * LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT, rel = 1e-9)
 
     @pytest.mark.parametrize("name,n_gpus,ub,measured", _MEASURED)
     def test_upper_bounds_measured_per_device_rate(self, name, n_gpus, ub, measured):
@@ -429,17 +427,17 @@ class TestContextBufferLayerSplit:
         one = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16")
         measured = self._RATE_SPLIT * 512 * 1048576
         assert one < measured
-        assert b._compute_buffer_ctx_bytes(
-            1048576, cache_type_kv = "f16", layer_split = True
-        ) >= measured
+        assert (
+            b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) >= measured
+        )
 
     def test_kimi_k3_1m_four_gpu_reserve(self):
         # The case that surfaced it: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512.
         # llama.cpp allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
         b = _backend(embd = 7168, mla = 576)
-        gib = b._compute_buffer_ctx_bytes(
-            1048576, cache_type_kv = "f16", layer_split = True
-        ) / (1024**3)
+        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) / (
+            1024**3
+        )
         assert 4.0 <= gib <= 6.5
 
     @pytest.mark.parametrize("ct", ["q8_0", "q4_0"])
@@ -457,9 +455,7 @@ class TestContextBufferLayerSplit:
         b = _backend(embd = 2048)
         floored = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0", layer_split = True)
         assert floored > b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0")
-        assert floored == b._compute_buffer_ctx_bytes(
-            131072, cache_type_kv = "f16", layer_split = True
-        )
+        assert floored == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16", layer_split = True)
 
     @pytest.mark.parametrize("arch", ["deepseek4", "inkling"])
     def test_per_architecture_rates_unchanged(self, arch):
@@ -478,6 +474,7 @@ class TestLayerSplitWiring:
 
     def _cc_bytes_source(self):
         import inspect
+
         src = inspect.getsource(LlamaCppBackend.load_model).splitlines()
         start = next(i for i, l in enumerate(src) if "def _cc_bytes(" in l)
         indent = len(src[start]) - len(src[start].lstrip())
