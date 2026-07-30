@@ -672,7 +672,16 @@ class TestPerDeviceSplitReserve:
         b._estimate_kv_cache_bytes = lambda ctx, ct = None, **kw: max(0, ctx) * kv_per_tok
         return b
 
-    def _drive(self, b, gpus, totals, model_mib, native_ctx, min_gpus = 2, enforce = True):
+    def _drive(
+        self,
+        b,
+        gpus,
+        totals,
+        model_mib,
+        native_ctx,
+        min_gpus = 2,
+        enforce = True,
+    ):
         """Mirror of load_model's auto-context subset loop over the production fit
         and reserve helpers. Returns (gpu_indices, chosen_ctx)."""
         frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
@@ -716,9 +725,9 @@ class TestPerDeviceSplitReserve:
         gpus, totals = self._HETEROGENEOUS
         gpu_indices, ctx = self._drive(b, gpus, totals, 20_480, 262144, enforce = False)
         assert gpu_indices == [0, 1] and ctx == 262144
-        reserve_mib = (self._OH + b._compute_buffer_ctx_bytes(
-            ctx, self._UB, "f16", layer_split = True
-        )) / MIB
+        reserve_mib = (
+            self._OH + b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = True)
+        ) / MIB
         card1_usable = 2_500 - 0.03 * 24_576
         assert card1_usable < reserve_mib  # would OOM card 1 at load
 
