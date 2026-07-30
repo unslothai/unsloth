@@ -4784,7 +4784,10 @@ class LlamaCppBackend:
     # on "is split", not a ramp in device count (2*n_gpus would only fit n=1 and n=4),
     # and it is architecture-independent: the same 2 -> 8 step holds on Qwen3.5-9B
     # (dense GQA), Qwen3.6-35B-A3B and gemma-4-12b/26B (MoE) and Kimi-K3 (MLA), at
-    # ub=512 and ub=2048. Without it a multi-GPU fit under-reserves this term 2.67x
+    # ub=512 and ub=2048. It is not the --parallel slot count in disguise: the same
+    # 2.00 -> 8.00 step measures identically at --parallel 1 and --parallel 4 (the
+    # ctx-linear rate is slot-independent; only the flat term moves, by ~3 MiB).
+    # Without it a multi-GPU fit under-reserves this term 2.67x
     # (i.e. 8/(2*1.5)), which spends the whole safety margin and then some: Kimi-K3
     # UD-IQ1_M at 1M ctx on 4 GPUs reserved 1.5 GiB per device against 4.0 GiB actual.
     _CTX_COMPUTE_SPLIT_MULT = 4
