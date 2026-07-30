@@ -317,11 +317,10 @@ def list_gguf_variants_from_hf_cache(
 ) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
     """``(variants, has_vision, complete)`` for the snapshot a load would read.
 
-    Everything in that snapshot is listed, so a torn download stays visible to
-    resume or delete; *complete* is the subset whose shards are all present, so
-    the caller marks the rest partial rather than ready. Reporting readiness
-    instead of trimming is what keeps this agreeing with the snapshot-path form
-    of the same call, which lists a torn quant and flags it.
+    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
+    *complete* is the subset whose shards are all present, so the caller marks the rest partial
+    rather than ready. Reporting readiness instead of trimming keeps this agreeing with the
+    snapshot-path form of the same call, which lists a torn quant and flags it.
     """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
@@ -331,17 +330,14 @@ def list_gguf_variants_from_hf_cache(
         if root is not None
         else iter_hf_cache_snapshots(repo_id)
     )
-    # A local load reads one snapshot dir, so pick the same one the inventory
-    # row does: the newest snapshot holding a whole quant. has_vision travels
-    # with that snapshot (never OR-ed across the walk). If no snapshot is
-    # complete, the first non-empty wins.
+    # A local load reads one snapshot dir, so pick the same one the inventory row does: the newest
+    # holding a whole quant, else the first non-empty. has_vision travels with it, never OR-ed.
     fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         complete = complete_snapshot_variants(str(snapshot)) if variants else set()
         if variants:
-            # Selection only: an unlabelled quant cannot be judged, so it counts
-            # as usable. The whole list still goes back, flagged by *complete*.
+            # Selection only: an unlabelled quant cannot be judged, so it counts as usable.
             if any(not v.quant or v.quant in complete for v in variants):
                 return variants, has_vision, complete
         if fallback is None and (variants or has_vision):
@@ -458,9 +454,8 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
 
 
 def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, None]:
-    """The cache result reduced for a caller that has nowhere to put readiness.
-    Drops the quants short a shard, keeping the whole list only when none is
-    complete, so the folder still shows up to resume or delete."""
+    """Cache result for a caller with nowhere to put readiness: drops the quants short a shard,
+    keeping the whole list only when none is complete, so the folder still shows up to manage."""
     variants, has_vision, complete = cached
     whole = [v for v in variants if not v.quant or v.quant in complete]
     return whole or variants, has_vision, None

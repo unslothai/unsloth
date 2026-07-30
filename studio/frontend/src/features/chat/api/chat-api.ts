@@ -154,8 +154,7 @@ export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  // Tagged so auto-load can tell a user cancellation from a backend
-  // rejection; no HTTP request is made in this branch.
+  // Tagged so auto-load can tell a user cancellation from a backend rejection.
   if (!preparedToken.proceed)
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
@@ -177,8 +176,7 @@ export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  // Tagged so auto-load can tell a user cancellation from a backend
-  // rejection; no HTTP request is made in this branch.
+  // Tagged so auto-load can tell a user cancellation from a backend rejection.
   if (!preparedToken.proceed)
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
@@ -313,9 +311,8 @@ export interface CachedGgufRepo {
   capabilities?: CachedRepoCapabilities | null;
 }
 
-/** The subset of the row's capabilities auto-load acts on. The backend sends the
- *  whole block on both cache endpoints; the rest is read only by the Hub view
- *  models, which have their own wider type. */
+/** The subset of the row's capabilities auto-load acts on. The backend sends the whole block on both
+ *  cache endpoints; the rest is read only by the Hub view models, which have a wider type. */
 export interface CachedRepoCapabilities {
   can_chat?: boolean;
 }

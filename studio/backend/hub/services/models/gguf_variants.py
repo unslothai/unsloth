@@ -506,10 +506,9 @@ def _mark_empty_dir_cleanables(
 def _complete_quants_under(snapshot: str):
     """Quants whose shards are all present under *snapshot*, or None if unknown.
 
-    The completeness the local branches need: an absolute snapshot path is a
-    load id, so a quant offered from one must actually resolve there. None on
-    any error, which reports every row downloaded exactly as before -- a scan
-    problem must not silently mark a working folder unusable.
+    An absolute snapshot path is a load id, so a quant offered from one must resolve there. None on
+    any error, which reports every row downloaded as before: a scan problem must not silently mark a
+    working folder unusable.
     """
     try:
         return hf_cache_scan.complete_snapshot_variants(snapshot)
@@ -547,10 +546,9 @@ async def get_gguf_variants_response(
         ) -> GgufVariantsResponse:
             """*complete* is the set of quants whose shards are all on disk.
 
-            Without it every row is reported downloaded, which is what a scan of
-            a plain folder means. With it, a quant short a shard is still listed
-            (so it can be resumed or deleted) but is not offered as ready, since
-            the loader would ask llama-server for files that are not there.
+            Without it every row is reported downloaded, which is what a scan of a plain folder
+            means. With it, a quant short a shard stays listed (to resume or delete) but is not
+            offered as ready, since the loader would ask llama-server for files that are not there.
             """
             filenames = [v.filename for v in variants]
             best = pick_best_gguf(filenames)
@@ -610,10 +608,8 @@ async def get_gguf_variants_response(
         # Local directory path (e.g. LM Studio models) — scan filesystem
         if is_local_path(repo_id):
             variants, has_vision = list_local_gguf_variants(repo_id)
-            # A load id is an absolute snapshot path and lands here, so a quant
-            # offered from this directory has to resolve in it. Pass the
-            # completed set rather than filtering: a torn quant stays listed to
-            # resume or delete, it just is not reported downloaded.
+            # A load id is an absolute snapshot path, so a quant offered here has to resolve here.
+            # Pass the completed set rather than filtering: a torn quant stays listed, just not ready.
             return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))
 
         # Reject invalid remote repo_ids up front (like download/delete) so a
@@ -626,9 +622,8 @@ async def get_gguf_variants_response(
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete = cached
-                # The lister returns its offer untrimmed when no snapshot holds a
-                # whole quant, so pass the completed set: those rows stay listed
-                # for management but must not be reported ready.
+                # The lister leaves its offer untrimmed when no snapshot holds a whole quant, so pass
+                # the completed set: those rows stay listed for management but are not ready.
                 return _local_response(repo_id, variants, has_vision, complete)
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
@@ -660,9 +655,8 @@ async def get_gguf_variants_response(
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete = cached
-                # The lister returns its offer untrimmed when no snapshot holds a
-                # whole quant, so pass the completed set: those rows stay listed
-                # for management but must not be reported ready.
+                # The lister leaves its offer untrimmed when no snapshot holds a whole quant, so pass
+                # the completed set: those rows stay listed for management but are not ready.
                 return _local_response(repo_id, variants, has_vision, complete)
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:

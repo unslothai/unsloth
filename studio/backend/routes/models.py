@@ -2867,11 +2867,11 @@ async def get_gguf_download_progress(
 
 
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Pick the most useful on-disk path for a HF cache repo.
+    """Most useful on-disk path for a HF cache repo.
 
     Delegates to the Hub scanner's function of the same name so this route and
-    ``/api/hub/local-models`` name one directory: the most-recent snapshot dir
-    (what ``from_pretrained`` uses), ties broken by ``snapshot_selection_key``.
+    ``/api/hub/local-models`` name one directory: the most-recent snapshot dir (what
+    ``from_pretrained`` uses), ties broken by ``snapshot_selection_key``.
     """
     from hub.utils import inventory_scan as hf_cache_scan
     return hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
@@ -2943,15 +2943,14 @@ def _is_mmproj_filename(name: str) -> bool:
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A GGUF file that is a primary weight, not an mmproj vision adapter or
-    an MTP drafter. Same rule as ``hub.services.models.common``; pass a
-    snapshot-relative path to catch the ``MTP/`` subdir copies too."""
+    """A primary GGUF weight, not an mmproj vision adapter or an MTP drafter. Same rule as
+    ``hub.services.models.common``; pass a snapshot-relative path to catch ``MTP/`` copies too."""
     return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
 
 
 def _cached_repo_file_name(file_obj) -> str:
-    """Snapshot-relative name for a cached file. huggingface_hub records the
-    bare ``file_name``, which cannot tell an ``MTP/`` drafter from a quant."""
+    """Snapshot-relative name for a cached file: huggingface_hub records the bare ``file_name``,
+    which cannot tell an ``MTP/`` drafter from a quant."""
     from hub.services.models.cache_inventory import _cached_repo_file_name as impl
     return impl(file_obj)
 
@@ -3002,8 +3001,8 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
-            # Snapshot-relative: file_name is the bare name, so an MTP/ drafter
-            # is only distinguishable from a primary quant by its directory.
+            # Snapshot-relative: file_name is bare, so only the directory tells an MTP/ drafter
+            # from a primary quant.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
@@ -3081,9 +3080,8 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
             return None
     except (OSError, RuntimeError, ValueError):
         pass
-    # snapshot_selection_key is the key every selector shares, so this route and
-    # the /gguf-variants lister name one snapshot. Snapshot mtime, not blob
-    # mtime: the two disagree when HF reuses an older blob in a newer snapshot.
+    # snapshot_selection_key is shared by every selector, so this route and the /gguf-variants
+    # lister name one snapshot. Snapshot mtime, not blob mtime: HF reuses old blobs in new snapshots.
     candidates = [
         Path(snapshot)
         for revision in repo_info.revisions
@@ -3091,10 +3089,9 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
-    # Newest first, skipping any holding no whole quant: an interrupted download
-    # would otherwise beat an older snapshot that can still load. One whole quant
-    # is enough, matching _repo_gguf_payload_snapshots and the /gguf-variants
-    # lister, which trims its offer to the completed subset.
+    # Newest first, skipping any holding no whole quant: an interrupted download would otherwise beat
+    # an older snapshot that can still load. One whole quant is enough, matching
+    # _repo_gguf_payload_snapshots and the /gguf-variants lister, which trims to the completed subset.
     for snapshot in candidates:
         if snapshot_has_complete_variants(str(snapshot)):
             return str(snapshot)
