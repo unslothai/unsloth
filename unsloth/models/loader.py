@@ -1648,63 +1648,69 @@ class FastModel(FastBaseModel):
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
         if do_logging:
             redirector = contextlib.nullcontext()
+            devnull_file = None
         else:
-            redirector = contextlib.redirect_stdout(open(os.devnull, "w", encoding = "utf-8"))
+            devnull_file = open(os.devnull, "w", encoding = "utf-8")
+            redirector = contextlib.redirect_stdout(devnull_file)
 
-        model_types = ["siglip"] + model_types
-        # Set forced float32 env flag
-        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
-        do_forced_float32 = False
-        for model_type_arch in model_types:
-            if model_type_arch != "siglip":
-                break
-        for disable_name in FORCE_FLOAT32:
-            # add comma to model_types_all matching in case of exact match for end
-            if (
-                disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
-                or disable_name.lower() in model_types_all
-            ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
-                os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-                dtype = torch.bfloat16  # Change to bfloat16 loading
-                break
-        # Apply gradient checkpointing with smart heuristics
-        use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
-            use_gradient_checkpointing, max_seq_length, dtype
-        )
-        with redirector:
-            patch_loss_functions(torch_compile = False)
-            model_types, supports_sdpa = unsloth_compile_transformers(
-                dtype = dtype,
-                model_name = model_name,
-                model_types = model_types,
-                token = token,
-                sdpa_dynamic_mask = True,
-                sdpa_bool_masks = True,
-                sdpa_gqa_replace = True,
-                sdpa_dynamic_compile = True,
-                compile_attention = True,
-                disable_causal_masks = True,
-                compile_torch_modules = True,
-                compile_custom_modules = True,
-                compile_function_calls = True,
-                fuse_lm_head = True,
-                gradient_checkpointing = True,
-                manual_replacements = True,
-                fast_lora_forwards = True,
-                fast_residual_stream = False,
-                accurate_accumulation = True,
-                epilogue_fusion = True,
-                max_autotune = False,
-                shape_padding = True,
-                cudagraphs = False,
-                debug = False,
-                fullgraph = fullgraph,
-                import_from_cache = False,
-                disable = False,
-                return_logits = return_logits,
-                trust_remote_code = trust_remote_code,
-                unsloth_force_compile = unsloth_force_compile,
+        try:
+            model_types = ["siglip"] + model_types
+            # Set forced float32 env flag
+            os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+            do_forced_float32 = False
+            for model_type_arch in model_types:
+                if model_type_arch != "siglip":
+                    break
+            for disable_name in FORCE_FLOAT32:
+                # add comma to model_types_all matching in case of exact match for end
+                if (
+                    disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
+                    or disable_name.lower() in model_types_all
+                ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
+                    os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                    dtype = torch.bfloat16  # Change to bfloat16 loading
+                    break
+            # Apply gradient checkpointing with smart heuristics
+            use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
+                use_gradient_checkpointing, max_seq_length, dtype
             )
+            with redirector:
+                patch_loss_functions(torch_compile = False)
+                model_types, supports_sdpa = unsloth_compile_transformers(
+                    dtype = dtype,
+                    model_name = model_name,
+                    model_types = model_types,
+                    token = token,
+                    sdpa_dynamic_mask = True,
+                    sdpa_bool_masks = True,
+                    sdpa_gqa_replace = True,
+                    sdpa_dynamic_compile = True,
+                    compile_attention = True,
+                    disable_causal_masks = True,
+                    compile_torch_modules = True,
+                    compile_custom_modules = True,
+                    compile_function_calls = True,
+                    fuse_lm_head = True,
+                    gradient_checkpointing = True,
+                    manual_replacements = True,
+                    fast_lora_forwards = True,
+                    fast_residual_stream = False,
+                    accurate_accumulation = True,
+                    epilogue_fusion = True,
+                    max_autotune = False,
+                    shape_padding = True,
+                    cudagraphs = False,
+                    debug = False,
+                    fullgraph = fullgraph,
+                    import_from_cache = False,
+                    disable = False,
+                    return_logits = return_logits,
+                    trust_remote_code = trust_remote_code,
+                    unsloth_force_compile = unsloth_force_compile,
+                )
+        finally:
+            if not do_logging and devnull_file:
+                devnull_file.close()
         # Fix SDPA issues
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:
