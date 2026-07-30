@@ -3,20 +3,19 @@
 
 """A load slower than a proxy's idle timer still reaches the client.
 
-Cloudflare quick tunnels (`--secure` mode) drop a request whose origin has sent
-no body bytes for ~100s, and a 600 GB GGUF load runs for 100-330s: the browser
-reported "Request failed" on loads the server completed with a 200.
+Cloudflare quick tunnels (`--secure`) drop a request whose origin has sent no body
+bytes for ~100s, and a 600 GB GGUF load runs 100-330s, so the browser reported
+"Request failed" on loads the server completed with a 200. Measured on a real
+quick tunnel:
 
-Measured against a real quick tunnel before choosing this design:
+  * no body for 150s                -> 524
+  * headers at t=0, no body         -> 524 (headers are NOT enough)
+  * one byte at t=90s, then silence -> killed ~125s later, client sees 200 with an
+                                       EMPTY body
+  * one space every 20s             -> survives, body intact
 
-  * no body at all for 150s                      -> 524
-  * status line + headers at t=0, no body         -> 524 (headers are NOT enough)
-  * one byte at t=90s, then silence               -> connection killed ~125s later,
-                                                     client sees 200 with an EMPTY body
-  * one space every 20s                           -> survives, body intact
-
-So the padding has to be continuous, and because the status is committed before
-the work finishes, a failure discovered later can only travel in the body.
+So the padding must be continuous, and a failure found after the status commits
+can only travel in the body.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ if str(_backend_root) not in sys.path:
 def route(monkeypatch):
     from routes import inference as route_mod
 
-    # Keep the test fast while preserving the ordering the real values encode.
+    # Keep the test fast; the real defaults are guarded by the last test below.
     monkeypatch.setattr(route_mod, "_TUNNEL_KEEPALIVE_AFTER_S", 0.05)
     monkeypatch.setattr(route_mod, "_TUNNEL_KEEPALIVE_EVERY_S", 0.02)
     return route_mod
@@ -80,7 +79,6 @@ def test_a_slow_call_pads_then_sends_valid_json(route):
     response, chunks = asyncio.run(run())
     assert response.media_type == "application/json"
     assert response.headers["x-accel-buffering"] == "no"
-    # Padding first, real payload last, and it keeps arriving until then.
     assert chunks[0] == b" "
     assert len(chunks) > 2, "a call this slow must be padded more than once"
     assert all(c == b" " for c in chunks[:-1])
@@ -137,8 +135,8 @@ def test_the_work_survives_a_client_disconnect(route):
 def test_the_pad_interval_stays_inside_the_proxy_window():
     """The tunnel kills a connection ~100s after the last byte, so leave margin.
 
-    Reads the source rather than the module so the ``route`` fixture's fast
-    values cannot mask a bad default.
+    Reads the source, not the module, so the fixture's fast values cannot mask a
+    bad default.
     """
     src = (_backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
     after = float(src.split("_TUNNEL_KEEPALIVE_AFTER_S = ")[1].split("\n")[0])

@@ -3182,8 +3182,7 @@ def test_note_model_unloaded_clears_reload_stash(monkeypatch):
 
 def test_unload_route_clears_reload_stash(monkeypatch):
     # The /unload route must clear the stash on both the GGUF and non-GGUF branches.
-    # The body lives in the impl; the route itself only wraps it in the padded
-    # response that keeps a slow unload alive through a proxy.
+    # Asserted on the impl: the route only wraps it in the padded response.
     import inspect
     src = inspect.getsource(inference_route._unload_model_impl)
     assert src.count("note_model_unloaded()") >= 2

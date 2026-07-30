@@ -90,10 +90,9 @@ function parseErrorText(status: number, body: unknown): string {
 }
 
 /**
- * A long endpoint (`/api/inference/load`, `/unload`) pads its body so a proxy
- * cannot time the request out, which means its status is committed before the
- * work finishes. A failure discovered after that can only arrive in-band, under
- * a 200, as `_deferred_error`. Anything else keeps its real status code.
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the
+ * request out, which commits the status before the work finishes: a failure found
+ * after that can only arrive in-band, under a 200, as `_deferred_error`.
  */
 function deferredError(body: unknown): { status: number; message: string } | null {
   const deferred =

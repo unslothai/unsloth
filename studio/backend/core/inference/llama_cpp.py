@@ -8295,8 +8295,7 @@ class LlamaCppBackend:
                         f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"{_mtp_note}"
                         f"context: {effective_ctx}, "
-                        # "--fit on", not "does it fit": False means the subset above
-                        # was proven to hold the model and is pinned with --fit off.
+                        # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
                 except Exception as e:

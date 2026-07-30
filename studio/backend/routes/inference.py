@@ -1566,18 +1566,15 @@ def _tracked_cancel_unstarted_cleanup(tracker):
     return _cleanup
 
 
-# Cloudflare quick tunnels (--secure mode) drop a request whose origin has sent
-# no body bytes for ~100s, and a 600 GB GGUF load runs for 100-330s: the browser
-# shows "Request failed" on a load the server completes fine. Measured against a
-# real quick tunnel, flushing the status line early is NOT enough -- a response
-# with headers at t=0 and no body still 524s -- but a single space every 20s
-# survives indefinitely. So a slow call commits a 200 and pads until its payload
-# is ready. Leading whitespace is legal JSON, so clients parse the body as-is.
+# Cloudflare quick tunnels (--secure) drop a request whose origin has sent no body
+# bytes for ~100s, and a 600 GB GGUF load runs 100-330s. Measured on a real quick
+# tunnel: headers at t=0 with no body still 524s, one space every 20s survives. So
+# a slow call commits a 200 and pads until its payload is ready; leading whitespace
+# is legal JSON, so clients parse the body as-is.
 _TUNNEL_KEEPALIVE_AFTER_S = 15.0
 _TUNNEL_KEEPALIVE_EVERY_S = 20.0
 
-# Underscored so it cannot collide with a real field or the OpenAI ``error``
-# envelope: once the status is committed, a late failure can only travel in-band.
+# Underscored so it cannot collide with a real field or the OpenAI ``error`` envelope.
 _DEFERRED_ERROR_KEY = "_deferred_error"
 
 
@@ -1589,21 +1586,19 @@ def _deferred_error_body(status_code: int, detail) -> bytes:
 async def _tunnel_safe_json(coro, *, label: str):
     """Await ``coro``, padding the response body if it outruns the tunnel timer.
 
-    A call that finishes within ``_TUNNEL_KEEPALIVE_AFTER_S`` keeps the current
-    contract exactly, HTTPException and its status code included. Only a slower
-    one switches to a padded stream, and it pays for that by having to report a
-    late failure in the body: the status line is long gone by the time it is
-    known. Every failure raised before the delay elapses -- argument validation,
-    an unknown identifier, the download-manager and sidecar 409s -- still gets a
-    real status code, because those all raise in the first moments.
+    A call finishing within ``_TUNNEL_KEEPALIVE_AFTER_S`` keeps the current
+    contract exactly, HTTPException status code included; every early failure
+    (validation, unknown identifier, download-manager and sidecar 409s) raises in
+    that window. Only a slower call switches to a padded stream, and it must
+    report a late failure in the body because the status line is already gone.
 
-    A client disconnect does not cancel the work: the load should finish and
-    leave the model resident either way, as it does today.
+    A client disconnect does not cancel the work: the model stays resident, as
+    it does today.
     """
     task = asyncio.ensure_future(coro)
     # A client that disconnects mid-pad leaves nobody to await the task, and an
-    # unretrieved exception would log "Task exception was never retrieved".
-    # Retrieving it here does not consume it: result() below still raises.
+    # unretrieved exception logs "Task exception was never retrieved". Retrieving
+    # it here does not consume it: result() below still raises.
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
     done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
     if done:
@@ -6948,8 +6943,8 @@ async def install_latest_transformers_route(
 async def unload_model(request: UnloadRequest, current_subject: str = Depends(get_current_subject)):
     """Unload a model from memory.
 
-    Padded like /load: tearing a 600 GB GGUF down has been measured at 160s,
-    past the proxy timer. See ``_tunnel_safe_json``.
+    Padded like /load: a 600 GB GGUF teardown measures 160s, past the proxy
+    timer. See ``_tunnel_safe_json``.
     """
     return await _tunnel_safe_json(
         _unload_model_impl(request, current_subject), label = "Model unload"
