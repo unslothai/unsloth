@@ -209,7 +209,6 @@ def test_listener_still_requires_a_capability_token(app):
 def test_health_marker_matches_the_tunnel_probe(app):
     # start_preview_tunnel only advertises a URL when this exact marker answers.
     import cloudflare_tunnel as ct
-
     async def _run():
         listener = pps.PublicPreviewListener()
         port = await listener.start(app)
@@ -367,7 +366,9 @@ def test_stop_tears_down_tunnel_and_listener(monkeypatch, link):
     monkeypatch.setattr(psl, "listener", fake)
     monkeypatch.setattr(psl, "start_preview_tunnel", lambda port: "https://x.trycloudflare.com")
     stopped = {"n": 0}
-    monkeypatch.setattr(psl, "stop_studio_tunnel", lambda: stopped.__setitem__("n", stopped["n"] + 1))
+    monkeypatch.setattr(
+        psl, "stop_studio_tunnel", lambda: stopped.__setitem__("n", stopped["n"] + 1)
+    )
 
     app = _FakeApp()
     asyncio.run(link.ensure(app))

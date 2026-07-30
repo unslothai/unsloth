@@ -40,9 +40,7 @@ class PreviewShareLink:
             # Under the lock so a create queued behind a disable fails instead
             # of resurrecting the tunnel that disable just tore down.
             if not get_preview_sharing_enabled():
-                raise PreviewSharingDisabled(
-                    "Public preview links are turned off in Settings."
-                )
+                raise PreviewSharingDisabled("Public preview links are turned off in Settings.")
             studio_url = getattr(app.state, "cloudflare_url", None)
             if studio_url:
                 return studio_url

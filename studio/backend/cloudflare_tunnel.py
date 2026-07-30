@@ -439,9 +439,7 @@ def start_studio_tunnel(
             tunnel.start()
             url = tunnel.wait_for_ready(timeout)
             registered = url is not None
-            if url and not verify_public_url(
-                url, probe_path = probe_path, probe_marker = probe_marker
-            ):
+            if url and not verify_public_url(url, probe_path = probe_path, probe_marker = probe_marker):
                 url = None
         except Exception:
             url = None
