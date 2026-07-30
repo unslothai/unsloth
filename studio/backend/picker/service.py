@@ -14,7 +14,7 @@ from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import extract_quant_label, iter_hf_cache_snapshots
+from hub.utils.gguf import extract_quant_label, iter_snapshots_preferring_whole
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -346,7 +346,7 @@ def read_default_chat_template(
         # Resolve within each cached revision, newest first. A revision's sidecar
         # supersedes its own embedded GGUF copy, but must not override a newer
         # revision, so precedence stays per-snapshot rather than global.
-        for snapshot in iter_hf_cache_snapshots(resolved):
+        for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
             template = _chat_template_from_dir(snapshot, gguf_variant)
             if template:
                 return template

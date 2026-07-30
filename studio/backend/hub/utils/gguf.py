@@ -438,11 +438,33 @@ def list_partial_gguf_variants_from_state(
     return variants, has_vision
 
 
+def iter_snapshots_preferring_whole(repo_id: str, gguf_variant: Optional[str], root = None):
+    """Cache snapshots newest first, but every one holding *gguf_variant* whole ahead of any holding
+    it short a shard.
+
+    The variant lister and the load both take the whole copy, so a resolver ordering on mtime alone
+    reads header metadata and chat templates out of a newer half download that nothing will load.
+    """
+    ordered = list(iter_hf_cache_snapshots(repo_id, root = root))
+    if not gguf_variant or len(ordered) < 2:
+        return ordered
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    whole, torn = [], []
+    for snapshot in ordered:
+        try:
+            is_whole = gguf_variant in complete_snapshot_variants(str(snapshot))
+        except Exception:
+            is_whole = True
+        (whole if is_whole else torn).append(snapshot)
+    return whole + torn
+
+
 def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Optional[str]:
     """Absolute path to the (shard-1) GGUF file for ``repo_id`` + ``gguf_variant``
     if it is already downloaded in the HF cache, else ``None``. Read-only — never
     triggers a download. Lets callers read header metadata before a load."""
-    for snapshot in iter_hf_cache_snapshots(repo_id):
+    for snapshot in iter_snapshots_preferring_whole(repo_id, gguf_variant):
         variants, _ = list_local_gguf_variants(str(snapshot))
         for variant in variants:
             if gguf_variant is None or variant.quant == gguf_variant:

@@ -210,7 +210,9 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
     import huggingface_hub
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda resolved: [])
+    monkeypatch.setattr(
+        "picker.service.iter_snapshots_preferring_whole", lambda resolved, variant: []
+    )
 
     def _fail_download(*args, **kwargs):
         raise AssertionError("oversized remote template must not be downloaded")
@@ -245,7 +247,9 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
     observed_cache_dirs = []
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda resolved: [])
+    monkeypatch.setattr(
+        "picker.service.iter_snapshots_preferring_whole", lambda resolved, variant: []
+    )
     monkeypatch.setattr("picker.service.active_hf_hub_cache", lambda: str(selected_cache))
 
     def _fake_download(repo_id, rel, **kwargs):

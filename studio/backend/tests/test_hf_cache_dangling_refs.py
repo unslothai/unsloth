@@ -1690,6 +1690,38 @@ def test_a_torn_payload_stays_partial_when_the_ref_resolves(tmp_path, monkeypatc
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+@pytest.mark.parametrize(
+    "weight",
+    ["model.safetensors", "adapter_model.safetensors"],
+    ids = ["base", "adapter"],
+)
+def test_selection_passes_over_a_newer_snapshot_whose_weight_file_is_empty(
+    tmp_path, monkeypatch, weight
+):
+    """A zero-byte weight file used to be skipped outright, so the newer revision classified as
+    holding nothing broken and won selection over a complete older one. The loader picks the name
+    by existence, so it opens the empty file and fails."""
+    config = (
+        "adapter_config.json" if weight.startswith("adapter") else "config.json"
+    )
+    body = b'{"peft_type":"LORA"}' if config == "adapter_config.json" else b'{"model_type":"llama"}'
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {config: body, weight: b"\0" * 256},
+            NEWER: {config: body, weight: b""},
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    _age(repo_dir / "snapshots" / OLDER, 600)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
+
+
 def test_a_whole_payload_under_a_resolving_ref_is_still_chattable(tmp_path, monkeypatch):
     """Negative control for the test above: same shape, but the pinned payload is whole."""
     repo_dir = _two_snapshot_repo(
@@ -1832,6 +1864,25 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
             {"config.json": b'{"model_type":"llama"}', "adapter_model.bin": b"\0" * 128},
             True,
             id = "an-adapter-file-standing-in-for-base-weights-that-are-not-here",
+        ),
+        pytest.param(
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+                "pytorch_model.bin": b"\0" * 256,
+            },
+            False,
+            id = "index-less-shards-are-looked-past-to-the-whole-bin",
+        ),
+        pytest.param(
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+            },
+            True,
+            id = "index-less-shards-with-nothing-else-to-fall-back-to",
         ),
         pytest.param(
             {

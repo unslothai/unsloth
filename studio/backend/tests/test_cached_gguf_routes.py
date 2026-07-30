@@ -441,6 +441,32 @@ def test_the_local_default_variant_is_one_that_can_load(
     assert {v.quant for v in response.variants if v.downloaded} == expected_ready
 
 
+def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch, tmp_path):
+    """The variant lister and the load both take the whole copy, so a resolver ordering on mtime
+    alone reads header metadata and chat templates out of a newer half download nothing loads."""
+    import os
+
+    from hub.utils.gguf import iter_snapshots_preferring_whole
+
+    repo_dir = tmp_path / "models--Org--Quant"
+    older, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    for shard in ("00001", "00002"):
+        (older / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
+    (newer / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 256)
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    monkeypatch.setattr(
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [newer, older]
+    )
+
+    assert iter_snapshots_preferring_whole("Org/Quant", "Q4_K_M") == [older, newer]
+    # Without a variant to judge there is nothing to prefer, so the mtime order stands.
+    assert iter_snapshots_preferring_whole("Org/Quant", None) == [newer, older]
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
