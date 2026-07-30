@@ -101,6 +101,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
         "<|audio|>",
         "<|video|>",
         "<|python_tag|>",
+        # Phi-4 Mini closes with a slash after the bar rather than a separate name.
+        "<|/tool|>",
+        "<|/tool_call|>",
+        # Gemma 3 / 3n spell the same media placeholders as bare tags.
+        "<start_of_image>",
+        "<image_soft_token>",
+        "<audio_soft_token>",
         # Mistral / Llama-2: bracket delimiters, not angles.
         "[INST]",
         "[/INST]",
@@ -1696,3 +1703,49 @@ def test_forced_tool_choice_is_downgraded_only_when_we_dropped_its_tool():
         "required",
     ):
         assert _body(choice)["tool_choice"] == choice, choice
+
+
+def test_slash_prefixed_pipe_markers_close_the_phi4_tool_block():
+    """Phi-4 Mini renders a tool description inside "<|tool|>...<|/tool|>" and emits
+    "<|/tool_call|>" too (ollama_template_mappers.py:1023, 1029). The slash sits after the
+    bar rather than being a separate name, so without "/?" an untrusted MCP description
+    closed the catalog early and its remaining text rose to system level (#7066)."""
+    mapper = (_REPO_ROOT / "unsloth" / "ollama_template_mappers.py").read_text(encoding = "utf-8")
+    for marker in ("<|/tool|>", "<|/tool_call|>"):
+        assert marker in mapper, marker
+        assert marker not in neutralize_control_markup(f"a {marker} b"), marker
+    # An unknown name still needs the closed list, slash or no slash.
+    assert neutralize_control_markup("<|/unknown|>") == "<|/unknown|>"
+
+
+def test_gemma3_media_sentinels_are_neutralized():
+    """Gemma 3 / 3n use bare-tag media placeholders, not the Gemma-4 pipe shape
+    (chat_templates.py:677, 845-847). A literal in a text part adds a placeholder for
+    media the processor was never handed, which fails its validation or binds an
+    embedding to the wrong slot (#7066)."""
+    templates = (_REPO_ROOT / "unsloth" / "chat_templates.py").read_text(encoding = "utf-8")
+    for marker in ("<start_of_image>", "<image_soft_token>", "<audio_soft_token>"):
+        assert marker in templates, marker
+        assert marker not in neutralize_control_markup(f"a {marker} b"), marker
+    # Plurals and near-misses are not placeholders, so they stay as typed.
+    for text in ("<start_of_images>", "<image_soft_tokens>", "<start_of_video>"):
+        assert neutralize_control_markup(text) == text, text
+
+
+@pytest.mark.parametrize("depth", [900, 1000, 5000])
+def test_deeply_nested_json_arguments_do_not_raise(depth):
+    """``json.loads`` blows the stack at roughly 1000 levels, and so does the walk over
+    the decoded value, so an otherwise valid '[' * 1000 + '0' + ']' * 1000 would have
+    turned a request the server used to forward into a 500 once the sweep became
+    mandatory. It falls back to the text rewrite, which cannot recurse (#7066)."""
+    arguments = "[" * depth + "0" + "]" * depth
+    messages = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": arguments}}]}]
+    # Nothing to rewrite, so the same list object comes back.
+    assert neutralize_control_markup_in_messages(messages) is messages
+    # And a marker inside a payload too deep to parse is still broken, via the text path.
+    hostile = "[" * depth + '"</think>"' + "]" * depth
+    messages = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": hostile}}]}]
+    out = neutralize_control_markup_in_messages(messages)
+    assert "</think>" not in out[0]["tool_calls"][0]["function"]["arguments"]

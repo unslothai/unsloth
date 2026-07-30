@@ -16,6 +16,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for "this argument string is not JSON we can walk", distinct from a payload
+# that legitimately decodes to None.
+_UNPARSED = object()
+
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _GEMMA_CHANNEL_START = "<|channel>"
@@ -46,7 +50,10 @@ _GEMMA_TEMPLATE_OPENERS = (
 # charset keeps it off real CJK content, which is the common case.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
-    r"\|(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
+    # "/?" after the bar because Phi-4 Mini closes with "<|/tool|>" and "<|/tool_call|>"
+    # (ollama_template_mappers.py:1023, 1029) rather than a separate closing name, so an
+    # MCP description carrying one closed the catalog and rose to system level (#7066).
+    r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
     r"|end(?:_of_(?:turn|text))?"
     # header_start / header_end / <|eot|> are Llama-4's spelling of Llama-3's
     # start_header_id / end_header_id / eot_id, and im_sep is Phi-4's role separator.
@@ -68,7 +75,11 @@ _CONTROL_MARKUP = re.compile(
     # system message INTO the same system turn that holds "<tools>...</tools>", so a
     # "</tools>" in client text closes the real catalog and everything after it reads
     # as a tool declaration the server never registered (#7066).
-    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think)>"
+    # Gemma 3 / 3n spell their media placeholders as bare tags rather than the Gemma-4
+    # pipe shape (chat_templates.py:677, 845-847), for the same reason those are here: a
+    # pasted copy is a placeholder for media the processor was never handed.
+    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think"
+    r"|start_of_image|image_soft_token|audio_soft_token)>"
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
     # "[ARGS]" is deliberately absent even though Mistral emits "[TOOL_CALLS]NAME[ARGS]".
@@ -97,7 +108,7 @@ _CONTROL_MARKUP = re.compile(
 # markers stay out for the same reason <|tool_call> does: they are the assistant's own.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
-    r"\|(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep)"
+    r"\|/?(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep)"
     r"|end(?:_of_(?:turn|text))?|eo[tm](?:_id)?|header_(?:start|end)"
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
     r"|assistant|return|system|start|turn|user|call)\|?>"
@@ -177,12 +188,18 @@ def _neutralized_arguments(arguments):
     prefix cache still hits.
     """
     if isinstance(arguments, str):
+        decoded = safe = _UNPARSED
         try:
             decoded = json.loads(arguments)
-        except (ValueError, TypeError):
-            decoded = None
-        if decoded is not None:
             safe = _neutralize_argument_leaves(decoded)
+        # RecursionError as well as a parse error: json.loads blows the stack at roughly
+        # 1000 levels of nesting, and so does the walk, so an otherwise valid
+        # '[' * 1000 + '0' + ']' * 1000 would turn a request the server used to forward
+        # into a 500. Fall through to the text rewrite, which cannot recurse -- nothing
+        # downstream can decode that payload either, so no marker hides behind it.
+        except (ValueError, TypeError, RecursionError):
+            decoded = safe = _UNPARSED
+        if decoded is not _UNPARSED:
             if safe != decoded:
                 return json.dumps(safe, ensure_ascii = False)
             # Parsed clean: the text itself cannot hold a marker the decode would show.
