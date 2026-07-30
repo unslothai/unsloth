@@ -644,6 +644,27 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertEqual(len(captured), 1)
 
+    def test_zero_layer_unclassified_gguf_is_not_sized_as_cpu_only(self):
+        """Reaching the guard is not enough: it must not be handed a CPU-only token.
+
+        can_load_chat_during_training short-circuits an EMPTY single_device_gpu to
+        "cpu_only" and returns True unconditionally (routes/training_vram.py), so an
+        unclassified GGUF passed through with force_cpu would be allowed during
+        training on an assumption that only holds for a confirmed diffusion model.
+        The sibling test above cannot see this: it stubs can_load, so the empty-token
+        branch never executes.
+        """
+        captured = []
+        with self.assertRaises(HTTPException):
+            self._guard_zero_layer(diffusion_kind = None, captured = captured)
+        self.assertEqual(len(captured), 1)
+        token = captured[0].get("single_device_gpu")
+        self.assertTrue(
+            token is None or str(token).strip() != "",
+            "an unclassified zero-layer GGUF must not be budgeted as CPU-only; "
+            f"single_device_gpu was {token!r}, which training_vram reads as cpu_only",
+        )
+
     def test_unclassified_gguf_on_vulkan_build_budgets_as_ordinals(self):
         # Unknown GGUFs still use the Vulkan ordinal namespace selected by the build.
         captured = []

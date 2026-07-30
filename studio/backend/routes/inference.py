@@ -4888,10 +4888,15 @@ def _guard_chat_load_against_training(
         # followed by DG_GPU, the first parent-visible token, then GPU 0. Suppressed
         # for a Vulkan-ordinal pin so single-device CUDA budgeting can't override the
         # Vulkan-ordinal path (single_device_gpu wins in can_load_chat_during_training).
+        # No force_cpu here, deliberately. A CONFIRMED zero-layer diffusion split
+        # already returned above, so the only way to reach this with ngl 0 is an
+        # UNCLASSIFIED GGUF -- and an empty token makes can_load_chat_during_training
+        # short-circuit to "cpu_only" and always allow the load, on an assumption that
+        # only holds for real diffusion. Let the picker choose a device so an ordinary
+        # GGUF keeping VRAM at --gpu-layers 0 stays conservatively sized.
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
             requested_gpu_ids,
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
-            force_cpu = diffusion_ngl == 0,
         )
 
     # Detected once: both the tensor-parallel KV sizing below and the Vulkan
