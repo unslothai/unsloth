@@ -1,10 +1,9 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Argument contract for scripts/uninstall.ps1.
-#
-# Tests run against a temporary copy that aborts before the first uninstall
-# action, so a broken guard cannot perform a real uninstall.
+# Argument contract for scripts/uninstall.ps1. Tests run against a temporary
+# copy that aborts before the first uninstall action, so a broken guard cannot
+# perform a real uninstall.
 #
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
 
@@ -41,18 +40,15 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# Capture a native command's merged output without letting its stderr abort us.
-# Windows PowerShell 5.1 raises a terminating NativeCommandError when a native
-# command writes to stderr under $ErrorActionPreference = "Stop"; PowerShell
-# 7.1+ does not. This suite is self-hosting via (Get-Process -Id $PID).Path, so
-# it can run under 5.1, where every rejected-argument case writes to stderr.
+# Windows PowerShell 5.1 turns a native command's stderr into a terminating
+# NativeCommandError under $ErrorActionPreference = "Stop"; 7.1+ does not. This
+# suite can run under 5.1, where every rejected-argument case writes to stderr.
 function Invoke-Native([scriptblock]$Command) {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try { return (& $Command | Out-String) } finally { $ErrorActionPreference = $prev }
 }
 
-# Run the instrumented uninstaller in a child pwsh.
 function Invoke-Uninstaller([string[]]$ScriptArgs) {
     $argv = @("-NoProfile", "-File", $uninstallPath) + $ScriptArgs
     $out = Invoke-Native { & $pwshPath @argv 2>&1 }
@@ -60,7 +56,6 @@ function Invoke-Uninstaller([string[]]$ScriptArgs) {
 }
 
 try {
-    # Both the source and instrumented copy must parse.
     foreach ($parseCase in @(
         @{ Name = "source uninstall.ps1"; Path = $sourceUninstallPath },
         @{ Name = "instrumented uninstall.ps1"; Path = $uninstallPath }

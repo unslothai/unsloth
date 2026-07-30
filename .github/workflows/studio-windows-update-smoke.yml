@@ -63,8 +63,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # This workflow triggers on uninstall.ps1, so run both uninstaller unit
-      # tests here. The guard test cannot perform a real uninstall.
+      # This workflow triggers on uninstall.ps1; neither test really uninstalls.
       - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
         shell: pwsh
         run: |
@@ -74,10 +73,9 @@ jobs:
           pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-      # The argument guard is self-hosting via (Get-Process -Id $PID).Path, so
-      # launching it from powershell.exe exercises Windows PowerShell 5.1, the
-      # shell the README one-liner lands in on a stock Windows box. Nothing else
-      # in CI runs 5.1, and its native-stderr handling differs from pwsh 7.
+      # The guard is self-hosting, so launching it from powershell.exe covers
+      # Windows PowerShell 5.1: the shell the README one-liner lands in, handled
+      # nowhere else in CI, and it differs from pwsh 7 on native stderr.
       - name: uninstall.ps1 argument guard under Windows PowerShell 5.1
         shell: powershell
         run: |
