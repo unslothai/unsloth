@@ -1800,10 +1800,19 @@ def test_training_config_changes_clear_previous_start_error():
 def test_training_start_attempt_is_bound_to_checked_inputs():
     source = _read("features/training/lib/start-fresh-training-run.ts")
     assert "private expectedConfig: TrainingConfigStore;" in source
-    assert "useTrainingConfigStore.getState() === this.expectedConfig" in source
+    assert "private expectedInputs: TrainingStartInputs;" in source
+    assert (
+        source.count(
+            "this.expectedInputs = captureTrainingStartInputs(this.expectedConfig);"
+        )
+        == 2
+    )
+    assert "trainingStartInputsEqual(" in source
+    assert "!this.configInputsChanged()" in source
     assert "getHfToken() === this.expectedHfToken" in source
     assert source.count("abortIfInputsChanged()") >= 5
-    assert "this.expectedConfig = useTrainingConfigStore.getState();" in source
+    assert "this.expectedConfig = { ...this.expectedConfig, ...update };" in source
+    assert "this.expectedConfig = useTrainingConfigStore.getState();" not in source
     assert "buildTrainingStartPayload(attempt.config)" in source
     assert "buildTrainingStartPayload(useTrainingConfigStore.getState())" not in source
     assert "hasIncompatibleTrainingModalities(attempt.config)" in source

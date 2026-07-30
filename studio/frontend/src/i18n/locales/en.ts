@@ -1075,7 +1075,6 @@ export const en = {
       hardware: "Hardware",
       noGpu: "No GPU detected",
       hfToken: "HF token",
-      connected: "Connected",
       saved: "Saved",
       notSet: "Not set",
       files: "Files",

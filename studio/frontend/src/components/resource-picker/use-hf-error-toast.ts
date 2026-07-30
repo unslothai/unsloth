@@ -4,7 +4,7 @@
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect, useRef } from "react";
-import { isHfAuthError } from "./picker-tab-state";
+import { isHfAuthError } from "./hf-error";
 
 const HF_RATE_LIMIT_RE = /\b429\b|rate.?limit|too many requests/i;
 const HF_NETWORK_RE =

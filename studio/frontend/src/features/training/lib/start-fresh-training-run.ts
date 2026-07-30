@@ -15,6 +15,7 @@ import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 import type { CheckFormatResponse } from "../types/datasets";
 import { cacheLocalPathMatchesSelection } from "./cache-reference";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
+import { isUntrainableModelFormat } from "./model-support";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import {
@@ -37,15 +38,71 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
 
 type AttemptPhase = "preflight" | "transport" | "finished";
 
+function captureTrainingStartInputs(config: TrainingConfigState) {
+  const payload = buildTrainingStartPayload(config);
+  payload.hf_token = null;
+  payload.model_known_cached = false;
+  payload.model_local_path = null;
+  payload.model_format = isUntrainableModelFormat(config.modelFormat)
+    ? config.modelFormat
+    : null;
+  payload.dataset_known_cached = false;
+  payload.dataset_local_path = null;
+  return {
+    payload,
+    modelType: config.modelType,
+    isVisionModel: config.isVisionModel,
+    isAudioModel: config.isAudioModel,
+  };
+}
+
+type TrainingStartInputs = ReturnType<typeof captureTrainingStartInputs>;
+
+function trainingStartInputsEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (Array.isArray(left)) {
+    return (
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) =>
+        trainingStartInputsEqual(value, right[index]),
+      )
+    );
+  }
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) {
+    return false;
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  return (
+    leftKeys.length === Object.keys(rightRecord).length &&
+    leftKeys.every(
+      (key) =>
+        Object.hasOwn(rightRecord, key) &&
+        trainingStartInputsEqual(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
 class FreshTrainingStartAttempt {
   private readonly lease: TrainingStartLease;
   private expectedConfig: TrainingConfigStore;
+  private expectedInputs: TrainingStartInputs;
   private expectedHfToken: string;
   private phase: AttemptPhase = "preflight";
 
   constructor(lease: TrainingStartLease) {
     this.lease = lease;
     this.expectedConfig = useTrainingConfigStore.getState();
+    this.expectedInputs = captureTrainingStartInputs(this.expectedConfig);
     this.expectedHfToken = getHfToken();
   }
 
@@ -81,7 +138,7 @@ class FreshTrainingStartAttempt {
     if (!isTrainingStartLeaseActive(this.lease)) {
       return this.invalidate();
     }
-    if (useTrainingConfigStore.getState() !== this.expectedConfig) {
+    if (this.configInputsChanged()) {
       return this.abortForChangedInputs();
     }
     const nextToken = token ?? "";
@@ -96,12 +153,18 @@ class FreshTrainingStartAttempt {
     return true;
   }
 
-  updateConfig(update: () => void): boolean {
+  updateConfig(
+    update: Partial<TrainingConfigState>,
+    applyUpdate: () => void = () => {
+      useTrainingConfigStore.setState(update);
+    },
+  ): boolean {
     if (this.abortIfInputsChanged()) {
       return false;
     }
-    update();
-    this.expectedConfig = useTrainingConfigStore.getState();
+    applyUpdate();
+    this.expectedConfig = { ...this.expectedConfig, ...update };
+    this.expectedInputs = captureTrainingStartInputs(this.expectedConfig);
     return !this.abortIfInputsChanged();
   }
 
@@ -116,10 +179,7 @@ class FreshTrainingStartAttempt {
       this.invalidate();
       return true;
     }
-    if (
-      useTrainingConfigStore.getState() === this.expectedConfig &&
-      getHfToken() === this.expectedHfToken
-    ) {
+    if (!this.configInputsChanged() && getHfToken() === this.expectedHfToken) {
       return false;
     }
     this.abortForChangedInputs();
@@ -149,6 +209,13 @@ class FreshTrainingStartAttempt {
 
   private abortForChangedInputs(): false {
     return this.cancel(TRAINING_SETUP_CHANGED_ERROR);
+  }
+
+  private configInputsChanged(): boolean {
+    return !trainingStartInputsEqual(
+      captureTrainingStartInputs(useTrainingConfigStore.getState()),
+      this.expectedInputs,
+    );
   }
 
   private invalidate(): false {
@@ -262,12 +329,10 @@ function applyDetectedDatasetModality(
   ) {
     return true;
   }
-  return attempt.updateConfig(() => {
-    useTrainingConfigStore.setState({
-      isDatasetImage: isImage,
-      isDatasetAudio: isAudio,
-      ...(isImage || isAudio ? { datasetStreaming: false } : {}),
-    });
+  return attempt.updateConfig({
+    isDatasetImage: isImage,
+    isDatasetAudio: isAudio,
+    ...(isImage || isAudio ? { datasetStreaming: false } : {}),
   });
 }
 
@@ -280,8 +345,8 @@ function openManualMapping(
   const hint = buildManualMappingHint(attempt.config, check, isVlm, isAudio);
   if (
     Object.keys(hint).length > 0 &&
-    !attempt.updateConfig(() => {
-      useTrainingConfigStore.getState().setDatasetManualMapping(hint);
+    !attempt.updateConfig({
+      datasetManualMapping: hint,
     })
   ) {
     return false;
@@ -306,11 +371,9 @@ async function confirmSelectedModelRemoteCode(
     hfToken,
     requiresTrustRemoteCode: attempt.config.trustRemoteCode,
     onApprove: (fingerprint) => {
-      approvalApplied = attempt.updateConfig(() => {
-        useTrainingConfigStore.setState({
-          trustRemoteCode: true,
-          approvedRemoteCodeFingerprint: fingerprint,
-        });
+      approvalApplied = attempt.updateConfig({
+        trustRemoteCode: true,
+        approvedRemoteCodeFingerprint: fingerprint,
       });
     },
   });
@@ -386,9 +449,21 @@ async function checkSelectedDataset(
   }
 
   if (
-    !attempt.updateConfig(() => {
-      clearMissingDatasetCacheReference(datasetName, datasetLocalPath);
-    })
+    !attempt.updateConfig(
+      {
+        datasetKnownCached: false,
+        datasetLocalPath: null,
+        browseDatasetSelection: {
+          source: "huggingface",
+          dataset: datasetName,
+          knownCached: false,
+          localPath: null,
+        },
+      },
+      () => {
+        clearMissingDatasetCacheReference(datasetName, datasetLocalPath);
+      },
+    )
   ) {
     return null;
   }

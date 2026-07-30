@@ -93,7 +93,7 @@ def test_model_defaults_error_blocks_readiness_and_offers_retry():
     assert "modelError: string | null;" in readiness
     assert "const modelError = state.modelDefaultsError;" in readiness
     assert "!modelError &&" in readiness
-    assert "readinessCache.modelError === next.modelError" in readiness
+    assert "current.modelError === next.modelError" in readiness
     assert 't("studio.training.modelUnverified")' in cta
     assert "ensureModelDefaultsLoaded: state.ensureModelDefaultsLoaded" in cta
     assert "onClick={ensureModelDefaultsLoaded}" in cta
@@ -274,20 +274,37 @@ def test_async_training_views_scope_results_to_the_current_request():
     assert "setData(" not in dataset_preview
 
 
-def test_training_start_aborts_when_config_or_token_identity_changes():
+def test_training_start_aborts_when_semantic_config_or_token_changes():
     source = FRESH_TRAINING_START.read_text(encoding = "utf-8")
 
-    identity_guard = source.split("abortIfInputsChanged(): boolean", 1)[1].split(
+    input_guard = source.split("abortIfInputsChanged(): boolean", 1)[1].split(
         "enterTransport(): boolean", 1
     )[0]
-    assert "useTrainingConfigStore.getState() === this.expectedConfig" in identity_guard
-    assert "getHfToken() === this.expectedHfToken" in identity_guard
-    assert "this.abortForChangedInputs()" in identity_guard
+    assert "!this.configInputsChanged()" in input_guard
+    assert "getHfToken() === this.expectedHfToken" in input_guard
+    assert "this.abortForChangedInputs()" in input_guard
     assert "TRAINING_SETUP_CHANGED_ERROR" in source
+    snapshot = source.split(
+        "function captureTrainingStartInputs", 1
+    )[1].split("type TrainingStartInputs", 1)[0]
+    assert "buildTrainingStartPayload(config)" in snapshot
+    assert "payload.hf_token = null" in snapshot
+    assert "payload.model_known_cached = false" in snapshot
+    assert "payload.model_local_path = null" in snapshot
+    assert "payload.dataset_known_cached = false" in snapshot
+    assert "payload.dataset_local_path = null" in snapshot
+    assert "isUntrainableModelFormat(config.modelFormat)" in snapshot
+    assert "modelType: config.modelType" in snapshot
+    assert "isVisionModel: config.isVisionModel" in snapshot
+    assert "isAudioModel: config.isAudioModel" in snapshot
+    assert (
+        "useTrainingConfigStore.getState() === this.expectedConfig"
+        not in source
+    )
 
     token_acceptance = source.split(
         "acceptPreparedHfToken(token: string | null): boolean", 1
-    )[1].split("updateConfig(update: () => void): boolean", 1)[0]
+    )[1].split("\n  updateConfig(", 1)[0]
     assert "currentToken !== this.expectedHfToken" in token_acceptance
     assert "currentToken !== nextToken" in token_acceptance
     assert "useHfTokenStore.getState().setToken(nextToken)" in token_acceptance
@@ -500,6 +517,7 @@ def test_cancel_invalidates_fresh_and_resume_preflight_leases():
     stop_setter = runtime_store.split("setStopRequested: (value)", 1)[1].split(
         "setHydrating:", 1
     )[0]
+    assert "isStarting: value ? false : state.isStarting" in stop_setter
     assert "value && !state.stopRequested" in stop_setter
     assert "state.resetGeneration + 1" in stop_setter
     assert "currentRuntime.setStopRequested(false)" in actions

@@ -210,6 +210,16 @@ function formatRelativeTime(isoDate: string, t: StudioT): string {
   return t("studio.history.relativeDaysAgo", { count: days });
 }
 
+function hasTextSelectionWithin(element: HTMLElement): boolean {
+  const selection = window.getSelection();
+  return (
+    !!selection &&
+    !selection.isCollapsed &&
+    element.contains(selection.anchorNode) &&
+    element.contains(selection.focusNode)
+  );
+}
+
 interface HistoryCardGridProps {
   onSelectRun: (runId: string) => void;
   onResumeStarted?: () => void;
@@ -471,16 +481,21 @@ export function HistoryCardGrid({
               <button
                 type="button"
                 aria-label={title}
-                className="absolute inset-0 z-0 cursor-pointer rounded-[inherit] border-0 bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                onClick={() => onSelectRun(run.id)}
-              />
-              <div
                 className={cn(
-                  "pointer-events-none relative z-10 flex h-full flex-col gap-3 p-4 text-left",
+                  "relative z-0 flex h-full w-full cursor-pointer select-text flex-col gap-3 rounded-[inherit] border-0 bg-transparent p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                   (canResume || canCopyPreview) && "gap-2",
                 )}
+                onClick={(event) => {
+                  if (
+                    event.detail > 0 &&
+                    hasTextSelectionWithin(event.currentTarget)
+                  ) {
+                    return;
+                  }
+                  onSelectRun(run.id);
+                }}
               >
-                <div className="flex items-center justify-between pr-6">
+                <span className="flex items-center justify-between pr-6">
                   <span
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-ui-10 font-semibold",
@@ -501,85 +516,41 @@ export function HistoryCardGrid({
                   <span className="text-ui-10 text-muted-foreground">
                     {formatRelativeTime(run.started_at, t)}
                   </span>
-                </div>
-                {canResume && (
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    className="pointer-events-auto absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
-                    disabled={startPending || isResuming}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleResume(run.id);
-                    }}
+                </span>
+                <span className="block min-w-0 cursor-text">
+                  <span
+                    className="block truncate text-sm font-medium"
+                    title={title}
                   >
-                    {isResuming
-                      ? t("studio.history.resuming")
-                      : t("studio.history.resumeTraining")}
-                  </Button>
-                )}
-                {canCopyPreview && (
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    className="pointer-events-auto absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const ref = (run.preview_ref ?? "")
-                        .split("/")
-                        .map(encodeURIComponent)
-                        .join("/");
-                      const base = (
-                        cloudflareUrl ??
-                        serverUrl ??
-                        window.location.origin
-                      ).replace(/\/+$/, "");
-                      const url = `${base}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
-                      const ok = await copyToClipboard(url);
-                      toast[ok ? "success" : "error"](
-                        t(
-                          ok
-                            ? "studio.history.previewLinkCopied"
-                            : "studio.history.previewLinkCopyFailed",
-                        ),
-                      );
-                    }}
-                  >
-                    {t("studio.history.copyPreviewLink")}
-                  </Button>
-                )}
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium" title={title}>
                     {title}
-                  </p>
+                  </span>
                   {modelSubtitle && (
-                    <p
-                      className="truncate text-xs text-muted-foreground"
+                    <span
+                      className="block truncate text-xs text-muted-foreground"
                       title={modelSubtitle}
                     >
                       {modelSubtitle}
-                    </p>
+                    </span>
                   )}
-                  <p
-                    className="truncate text-xs text-muted-foreground"
+                  <span
+                    className="block truncate text-xs text-muted-foreground"
                     title={run.dataset_name}
                   >
                     {run.dataset_name}
-                  </p>
+                  </span>
                   {projectSubtitle && (
-                    <p
-                      className="truncate text-xs text-muted-foreground/80"
+                    <span
+                      className="block truncate text-xs text-muted-foreground/80"
                       title={projectSubtitle}
                     >
                       {projectSubtitle}
-                    </p>
+                    </span>
                   )}
-                </div>
+                </span>
                 {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
-                  <div
+                  <span
                     className={cn(
+                      "block",
                       (canResume || canCopyPreview) && "h-7 overflow-hidden",
                     )}
                   >
@@ -588,9 +559,9 @@ export function HistoryCardGrid({
                       id={run.id}
                       ariaLabel={t("studio.history.lossTrendSparkline")}
                     />
-                  </div>
+                  </span>
                 )}
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
+                <span className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
                   <span>
                     {t("studio.history.loss")}:{" "}
                     {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}
@@ -600,21 +571,62 @@ export function HistoryCardGrid({
                     {run.total_steps ?? "--"}
                   </span>
                   <span>{formatDuration(run.duration_seconds)}</span>
-                </div>
-                {!isRunning && (
-                  <button
-                    type="button"
-                    className="pointer-events-auto absolute right-3 top-3 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-                    aria-label={t("studio.history.deleteRun")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteTarget(run.id);
-                    }}
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                  </button>
-                )}
-              </div>
+                </span>
+              </button>
+              {canResume && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 left-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
+                  disabled={startPending || isResuming}
+                  onClick={() => void handleResume(run.id)}
+                >
+                  {isResuming
+                    ? t("studio.history.resuming")
+                    : t("studio.history.resumeTraining")}
+                </Button>
+              )}
+              {canCopyPreview && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 right-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
+                  onClick={async () => {
+                    const ref = (run.preview_ref ?? "")
+                      .split("/")
+                      .map(encodeURIComponent)
+                      .join("/");
+                    const base = (
+                      cloudflareUrl ??
+                      serverUrl ??
+                      window.location.origin
+                    ).replace(/\/+$/, "");
+                    const url = `${base}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
+                    const ok = await copyToClipboard(url);
+                    toast[ok ? "success" : "error"](
+                      t(
+                        ok
+                          ? "studio.history.previewLinkCopied"
+                          : "studio.history.previewLinkCopyFailed",
+                      ),
+                    );
+                  }}
+                >
+                  {t("studio.history.copyPreviewLink")}
+                </Button>
+              )}
+              {!isRunning && (
+                <button
+                  type="button"
+                  className="absolute right-3 top-3 z-10 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                  aria-label={t("studio.history.deleteRun")}
+                  onClick={() => setDeleteTarget(run.id)}
+                >
+                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                </button>
+              )}
             </div>
           );
         })}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useMemo } from "react";
 import {
   type StartValidationResult,
   hasIncompatibleTrainingModalities,
@@ -22,35 +23,9 @@ export interface TrainingReadiness {
   configValidation: StartValidationResult;
 }
 
-let readinessCache: Readonly<TrainingReadiness> | null = null;
-let readinessStateCache: TrainingConfigState | null = null;
-
-function stableReadiness(next: TrainingReadiness): Readonly<TrainingReadiness> {
-  if (
-    readinessCache &&
-    readinessCache.isReady === next.isReady &&
-    readinessCache.isLoadingModel === next.isLoadingModel &&
-    readinessCache.isCheckingDataset === next.isCheckingDataset &&
-    readinessCache.hasModel === next.hasModel &&
-    readinessCache.hasDataset === next.hasDataset &&
-    readinessCache.isIncompatible === next.isIncompatible &&
-    readinessCache.datasetUnverified === next.datasetUnverified &&
-    readinessCache.modelError === next.modelError &&
-    readinessCache.configValidation.ok === next.configValidation.ok &&
-    readinessCache.configValidation.message === next.configValidation.message
-  ) {
-    return readinessCache;
-  }
-  readinessCache = Object.freeze(next);
-  return readinessCache;
-}
-
-function selectTrainingReadiness(
+function deriveTrainingReadiness(
   state: TrainingConfigState,
-): Readonly<TrainingReadiness> {
-  if (state === readinessStateCache && readinessCache) {
-    return readinessCache;
-  }
+): TrainingReadiness {
   const configValidation = validateTrainingConfig(state);
   const hasModel = !!state.selectedModel;
   const hasDataset =
@@ -72,17 +47,15 @@ function selectTrainingReadiness(
     state.datasetCheckFailed &&
     !(hasDatasetModalityMetadata && modelHandlesAllModalities);
 
-  const isReady =
-    hasModel &&
-    hasDataset &&
-    !isLoadingModel &&
-    !modelError &&
-    !state.isCheckingDataset &&
-    !isIncompatible &&
-    configValidation.ok;
-
-  const readiness = stableReadiness({
-    isReady,
+  return {
+    isReady:
+      hasModel &&
+      hasDataset &&
+      !isLoadingModel &&
+      !modelError &&
+      !state.isCheckingDataset &&
+      !isIncompatible &&
+      configValidation.ok,
     isLoadingModel,
     isCheckingDataset: state.isCheckingDataset,
     hasModel,
@@ -91,11 +64,45 @@ function selectTrainingReadiness(
     datasetUnverified,
     modelError,
     configValidation,
-  });
-  readinessStateCache = state;
-  return readiness;
+  };
+}
+
+function readinessEqual(
+  current: Readonly<TrainingReadiness>,
+  next: TrainingReadiness,
+): boolean {
+  return (
+    current.isReady === next.isReady &&
+    current.isLoadingModel === next.isLoadingModel &&
+    current.isCheckingDataset === next.isCheckingDataset &&
+    current.hasModel === next.hasModel &&
+    current.hasDataset === next.hasDataset &&
+    current.isIncompatible === next.isIncompatible &&
+    current.datasetUnverified === next.datasetUnverified &&
+    current.modelError === next.modelError &&
+    current.configValidation.ok === next.configValidation.ok &&
+    current.configValidation.message === next.configValidation.message
+  );
+}
+
+function createTrainingReadinessSelector() {
+  let cachedReadiness: Readonly<TrainingReadiness> | null = null;
+  let cachedState: TrainingConfigState | null = null;
+
+  return (state: TrainingConfigState): Readonly<TrainingReadiness> => {
+    if (state === cachedState && cachedReadiness) {
+      return cachedReadiness;
+    }
+    const next = deriveTrainingReadiness(state);
+    if (!(cachedReadiness && readinessEqual(cachedReadiness, next))) {
+      cachedReadiness = Object.freeze(next);
+    }
+    cachedState = state;
+    return cachedReadiness;
+  };
 }
 
 export function useTrainingReadiness(): Readonly<TrainingReadiness> {
-  return useTrainingConfigStore(selectTrainingReadiness);
+  const selector = useMemo(() => createTrainingReadinessSelector(), []);
+  return useTrainingConfigStore(selector);
 }

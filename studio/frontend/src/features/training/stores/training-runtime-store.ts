@@ -150,6 +150,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
     setStopRequested: (value) =>
       set((state) => ({
         stopRequested: value,
+        isStarting: value ? false : state.isStarting,
         resetGeneration:
           value && !state.stopRequested
             ? state.resetGeneration + 1
