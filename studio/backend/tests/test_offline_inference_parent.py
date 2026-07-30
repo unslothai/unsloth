@@ -26,6 +26,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+
 def _module_available(name: str) -> bool:
     """True if the real module can be imported. Probed rather than imported: these stubs
     land in sys.modules for the whole session, so an empty one breaks anything imported

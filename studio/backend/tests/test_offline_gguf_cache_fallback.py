@@ -31,6 +31,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+
 # Stub heavy/unavailable external deps before importing the modules under
 # test (same pattern as other studio backend tests).
 def _module_available(name: str) -> bool:
