@@ -456,6 +456,33 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_cpu_moe"] = override["n_cpu_moe"]
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+
+    if kwargs.get("llama_extra_args"):
+        # One entry can hold a pass-through flag *and* the first-class field it shadows: the
+        # settings page has no control for flags, so a save carries the stored ones over
+        # (routes/settings.py) while writing the field just edited, and a legacy or
+        # API-authored entry can start out that way. Sending both explicitly puts the flag
+        # after Unsloth's own on the command line, where llama.cpp's last-wins parse hands it
+        # the load, so a stale "--ctx-size 8192" would quietly outrank a freshly saved 32768.
+        # The /load route strips exactly these groups off inherited extras
+        # (_resolve_inherited_extra_args); the stripper is imported rather than mirrored so
+        # the two paths cannot drift over which flag belongs to which group -- the allow-list
+        # this module stays out of is validate_extra_args, which remains the caller's job.
+        from core.inference.llama_server_args import strip_shadowing_flags
+
+        kwargs["llama_extra_args"] = strip_shadowing_flags(
+            kwargs["llama_extra_args"],
+            # Only the groups this override actually supplies, as the route gates on its
+            # request's set fields: a flag with no first-class field behind it is the user's
+            # only way to set that knob and still passes through.
+            strip_context = "max_seq_length" in kwargs,
+            strip_cache = "cache_type_kv" in kwargs,
+            strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
+            strip_template = "chat_template_override" in kwargs,
+            # Sent only when on, so it is always the Tensor Parallelism toggle overriding the
+            # flag; an override that leaves the toggle off keeps a row/none/layer split mode.
+            strip_split_mode = bool(kwargs.get("tensor_parallel")),
+        )
     return kwargs
 
 

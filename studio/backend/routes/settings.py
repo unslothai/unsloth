@@ -433,6 +433,36 @@ def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
     return resolve_model_override_key(f"{model_id}:{label}")
 
 
+def _fill_target_id(target_id: str) -> str:
+    """Where a one-time backfill write for ``target_id`` has to land.
+
+    A fill only adds, so unlike a save it cannot retire the other spelling of a cached
+    repo. Creating the snapshot-path key while the server already holds the repo id
+    would leave two entries for one quant, and the loader reads the load path before the
+    advertised id, so an upgraded browser's pre-upgrade copy would shadow the newer
+    server config on every API load. Fill into the entry already there instead: nothing
+    outranks it, and the fields it lacks still arrive.
+
+    Only in that direction. A repo-id key never outranks an existing path entry, and two
+    snapshot paths name two caches, neither of which is knowably the one loaded here.
+    """
+    from core.inference.model_ids import hf_cache_repo_id
+    from utils.openai_auto_switch_settings import split_quant_suffix
+
+    # Already stored, so this write creates no second key to outrank anything.
+    if isinstance(get_model_overrides().get(target_id), dict):
+        return target_id
+    split = split_quant_suffix(target_id)
+    # A bare id backs every quant and is read last, and only a cache path outranks.
+    if split is None or hf_cache_repo_id(split[0]) is None:
+        return target_id
+    for alias_id in cached_repo_alias_keys(target_id):
+        alias_split = split_quant_suffix(alias_id)
+        if alias_split is not None and hf_cache_repo_id(alias_split[0]) is None:
+            return alias_id
+    return target_id
+
+
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
@@ -469,6 +499,15 @@ def update_openai_auto_switch_override(
                     bare_id = _bare_model_id(payload.model_id)
                     if bare_id:
                         requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
+                if requested_extra_args is None:
+                    # And for a standalone .gguf upgraded from the build that keyed it by its
+                    # filename label: the bare path written here is read before that key, so
+                    # its flags would go dark with no page able to show or restore them.
+                    legacy_id = _legacy_standalone_gguf_key(payload.model_id)
+                    if legacy_id:
+                        requested_extra_args = get_model_override(legacy_id).get(
+                            "llama_extra_args"
+                        )
                 if requested_extra_args is None:
                     # Same for the other spelling of a cached repo, which this save retires
                     # below: its flags have nowhere else to live, and the page cannot show them.
@@ -524,6 +563,10 @@ def update_openai_auto_switch_override(
             # Save under the key a load resolves to, as the removal branch does: the literal
             # id would leave two keys for one model, making every other casing ambiguous.
             target_id = resolve_model_override_key(payload.model_id) or payload.model_id
+            if payload.fill_absent_fields:
+                # A fill retires nothing below, so it must not create the higher-priority
+                # spelling of a row the server already holds.
+                target_id = _fill_target_id(target_id)
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,

@@ -4272,6 +4272,75 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
 
 
+def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
+    # The settings page has no control for pass-through flags, so a save carries over the
+    # ones already stored while writing the field the user just edited, leaving one entry
+    # holding both. Sent together they reach llama-server with the extras appended last,
+    # and its parser takes the final -c, so the stale flag would pin the old context.
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--ctx-size", "8192", "--top-k", "40"])
+    saved = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 32768
+    assert entry["llama_extra_args"] == ["--ctx-size", "8192", "--top-k", "40"]
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 32768
+    # The shadowing flag goes; the sampling flag beside it is nobody's first-class field.
+    assert request.llama_extra_args == ["--top-k", "40"]
+
+
+def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
+    # Same rule the /load route applies to inherited extras: one group per first-class
+    # field actually being sent, so a flag with nothing to shadow still passes through.
+    override = {
+        "llama_extra_args": [
+            "-c",
+            "8192",
+            "--cache-type-k",
+            "f16",
+            "--spec-type",
+            "ngram",
+            "--jinja",
+            "--split-mode",
+            "row",
+            "--top-p",
+            "0.9",
+        ],
+        "max_seq_length": 32768,
+        "kv_cache_dtype": "q8_0",
+        "speculative_type": "mtp",
+        "chat_template_override": "{{ bos_token }}",
+        "tensor_parallel": True,
+    }
+    stripped = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert stripped["llama_extra_args"] == ["--top-p", "0.9"]
+
+    # Nothing is supplied to shadow them, so every flag survives.
+    kept = settings.model_override_load_kwargs(
+        {"llama_extra_args": override["llama_extra_args"]}, is_gguf = True
+    )
+    assert kept["llama_extra_args"] == override["llama_extra_args"]
+
+    # And one field strips one group.
+    ctx_only = settings.model_override_load_kwargs(
+        {"llama_extra_args": override["llama_extra_args"], "max_seq_length": 32768},
+        is_gguf = True,
+    )
+    assert ctx_only["llama_extra_args"] == override["llama_extra_args"][2:]
+
+
 def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
     # Parallel decode slots are a per-model setting the picker sends on every GGUF load.
     backend = _FakeBackend(None)
@@ -4495,6 +4564,25 @@ def test_the_retired_snapshot_path_entry_hands_over_its_launch_flags(override_st
     assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
 
 
+def test_a_standalone_gguf_save_keeps_its_filename_label_launch_flags(override_store):
+    # An early build keyed a loose .gguf by the quant label from its filename, and the bare
+    # path the picker writes today is read before that key (see
+    # test_the_filename_label_key_no_longer_shadows_the_bare_path), so writing the bare entry
+    # without the legacy flags puts them out of reach of a page that cannot show or restore
+    # them. The forget path already consults the same derived key.
+    path = "/models/Qwen3-8B-Q4_K_M.gguf"
+    settings.set_model_override(
+        f"{path}:q4_k_m",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 4096,
+    )
+
+    resp = _put(path, max_seq_length = 32768)
+    entry = resp.overrides[path]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 32768
+
+
 def test_a_snapshot_path_save_retires_the_repo_id_entry(override_store):
     # The same rule the other way round: a row the picker still keys by its path (an inactive
     # cache reached as a local row) must not be shadowed, so the last spelling saved survives.
@@ -4535,6 +4623,26 @@ def test_the_one_time_fill_retires_nothing(override_store):
     resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, fill_absent_fields = True)
     assert resp.overrides[f"{_LEGACY_SNAPSHOT}:Q4_K_M"]["max_seq_length"] == 4096
     assert resp.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 32768
+
+
+def test_a_fill_never_creates_a_snapshot_path_key_over_a_repo_id_entry(override_store):
+    # A fill only adds, so it cannot retire the other spelling the way a save does. Creating
+    # the snapshot path key would leave two entries for one quant, and the loader reads the
+    # load path before the advertised repo id, so an upgraded browser's pre-upgrade copy would
+    # shadow the newer server config on every API load. Fill into the entry that is already
+    # there instead: nothing outranks it and the fields it lacks still arrive.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+
+    resp = _put(
+        f"{_LEGACY_SNAPSHOT}:Q4_K_M",
+        max_seq_length = 2048,
+        kv_cache_dtype = "q8_0",
+        fill_absent_fields = True,
+    )
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 32768
+    assert entry["kv_cache_dtype"] == "q8_0"
 
 
 def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
