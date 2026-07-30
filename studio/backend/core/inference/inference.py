@@ -38,6 +38,7 @@ from core.inference.chat_template_helpers import (
     detect_reasoning_channel_markers,
     detect_think_prefill,
     neutralize_control_markup_in_messages,
+    neutralize_tts_prompt_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
@@ -1843,6 +1844,9 @@ class InferenceBackend:
             raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
 
         top_k = self._normalize_top_k(top_k)
+        # Every codec below builds its prompt by concatenation rather than through a
+        # template, so this is the one choke point for all four (#7066).
+        text = neutralize_tts_prompt_text(text)
 
         with self._generation_lock:
             if use_adapter is not None:

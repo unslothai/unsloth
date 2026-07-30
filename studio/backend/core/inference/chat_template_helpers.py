@@ -70,6 +70,11 @@ _CONTROL_MARKUP = re.compile(
     # start_header_id / end_header_id / eot_id, and im_sep is Phi-4's role separator.
     r"|header_(?:start|end)|im_(?:start|end|sep)"
     r"|assistant|constrain|channel|message|eo[tm](?:_id)?|final"
+    # TML Inkling's native call envelope, "<|message_model|>NAME
+    # <|content_invoke_tool_json|>{...}<|end_message|>". Longer than the "message" and
+    # "end" names above, so all three were passing through even though the repo parses
+    # them as a tool call (tool_call_parser.py:58, tool_healing.py:129-132, 701-707).
+    r"|message_model|content_invoke_tool_json|end_message"
     # Command-R / Aya spell every delimiter in caps: <|START_OF_TURN_TOKEN|> etc.
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
     # Gemma-4's media placeholders (its own image_token / audio_token / video_token,
@@ -104,8 +109,10 @@ _CONTROL_MARKUP = re.compile(
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos"
     r"|start_of_image|image_soft_token|audio_soft_token"
     r"|arg_key|arg_value|function|parameter)>"
-    # The opening halves carry an "=value", so they need their own anchor.
-    r"|(?:function|parameter)="
+    # The opening halves carry an "=value", so they need their own anchor. The parser
+    # accepts both spellings of the opener (tool_call_parser.py:_TOOL_CLOSED_PATS), so
+    # the attribute form needs its own alternative rather than riding on "function=".
+    r"|(?:function|parameter)=|function\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
     # "[ARGS]", Mistral v11's "[CALL_ID]" and Devstral's "[TOOL_CONTENT]" are absent on
@@ -156,6 +163,21 @@ _TURN_BOUNDARY_MARKUP = re.compile(
 )
 
 
+# TTS is not a chat template: the codec prompt is built by concatenation, so the text
+# sits between codec delimiters instead of template ones (inference.py:1918, 1948-1954,
+# llama_cpp.py:_TTS_PROMPTS). A closer pasted into it ends the text segment early or
+# opens the audio / global-token segment, which yields truncated or garbled audio (#7066).
+# Kept separate from _CONTROL_MARKUP because these names only delimit a codec prompt, and
+# "custom_token_N" in particular is too generic to sweep out of ordinary chat text.
+_TTS_MARKUP = re.compile(
+    r"<(?="
+    r"\|(?:task_tts|(?:start|end)_(?:content|global_token|semantic_token)"
+    r"|(?:text|audio)_(?:start|end)|global_features_(?:start|end))\|>"
+    r"|custom_token_\d+>"
+    r")"
+)
+
+
 def _spaced_out(pattern, text: str) -> str:
     """Insert one space after every marker opener *pattern* found."""
     if not text or ("<" not in text and "[" not in text):
@@ -177,6 +199,15 @@ def neutralize_control_markup(text: str) -> str:
 def neutralize_turn_boundary_markup(text: str) -> str:
     """Break only the turn-boundary sentinels, for replayed assistant text (#7066)."""
     return _spaced_out(_TURN_BOUNDARY_MARKUP, text)
+
+
+def neutralize_tts_prompt_text(text: str) -> str:
+    """Break control and codec markup in the text of a TTS prompt (#7066).
+
+    Both sweeps: an Orpheus prompt ends its text segment with "<|eot_id|>" and a Spark /
+    Oute one stops on "<|im_end|>", so the chat delimiters matter here too.
+    """
+    return _spaced_out(_TTS_MARKUP, neutralize_control_markup(text))
 
 
 def _neutralize_leaves(value, rewrite):
@@ -340,14 +371,19 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             new_name = neutralize_control_markup(name)
             if new_name != name:
                 updates["name"] = new_name
-        # Gemma-4 concatenates a replayed "reasoning" / "reasoning_content" into its
-        # thought channel and Harmony renders "thinking", none of which is "content", so a
-        # boundary in one closed the reasoning block and forged a turn (#7066). Boundary
-        # rewrite only: the thought's own think / channel markup is structural.
+        # A separate reasoning field is the INNER text of a thought block whose opener and
+        # closer the template supplies itself: Qwen wraps it in "<think>...</think>"
+        # (chat_templates.py:759), Gemma-4 in "<|channel>thought ... <channel|>"
+        # (gemma-4.jinja:245), Harmony in "<|channel|>analysis<|message|> ... <|end|>"
+        # (chat_templates.py:1330). None of them is "content", so it was reaching the
+        # prompt unswept, and an embedded closer exits the thought and exposes the rest as
+        # answer text (#7066). Hence the FULL rewrite: unlike replayed "content", which
+        # carries the assistant's own think tags and which Qwen splits on to recover this
+        # very field, the field itself must never contain its enclosing delimiters.
         for field in ("reasoning", "reasoning_content", "thinking"):
             value = msg.get(field)
             if isinstance(value, str) and value:
-                new_value = neutralize_turn_boundary_markup(value)
+                new_value = neutralize_control_markup(value)
                 if new_value != value:
                     updates[field] = new_value
         # Gemma-4's legacy assistant-level "tool_responses": format_tool_response_block

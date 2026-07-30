@@ -13518,9 +13518,12 @@ class LlamaCppBackend:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
+        # llama-server gets a raw prompt string, not messages, so the codec delimiters
+        # around the text are the only structure there is to break (#7066).
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
 
         payload: dict = {
-            "prompt": tpl.format(text = text),
+            "prompt": tpl.format(text = neutralize_tts_prompt_text(text)),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,
