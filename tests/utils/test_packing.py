@@ -26,6 +26,7 @@ from unsloth.utils.packing import (
     patch_hybrid_linear_attention_varlen,
 )
 
+import logging
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1248,3 +1249,67 @@ def test_resolve_string_model_config_merges_top_level_trust_remote_code(monkeypa
     )
     trainer_module._resolve_string_model_config("org/remote-hybrid", config_arg)
     assert captured.get("trust_remote_code") is False
+
+
+class _WarnConfig(SimpleNamespace):
+    # get_transformers_model_type() resolves through to_dict(), which SimpleNamespace lacks.
+    def to_dict(self):
+        return dict(self.__dict__)
+
+
+def _warn_text_model():
+    return SimpleNamespace(
+        config = _WarnConfig(architectures = ["LlamaForCausalLM"], model_type = "llama"),
+        max_seq_length = 16,
+    )
+
+
+def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
+    # Two things the message used to get wrong: it blamed a "custom data collator" for
+    # UNSLOTH_RETURN_LOGITS (which unsloth sets itself for compute_metrics), and it quoted a
+    # token limit read before max_seq_length / max_length / the model limit are reconciled.
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(
+        packing = True,
+        padding_free = None,
+        remove_unused_columns = True,
+        max_seq_length = 4096,
+        max_length = 512,
+    )
+
+    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
+        fake_trainer(
+            model = _warn_text_model(),
+            args = config,
+            train_dataset = Dataset.from_dict({"text": ["sample"]}),
+        )
+
+    messages = [r.message for r in caplog.records if "packing=True ignored" in r.message]
+    assert len(messages) == 1
+    assert "UNSLOTH_RETURN_LOGITS" in messages[0]
+    assert "custom data collator" not in messages[0]
+    assert "4096" not in messages[0] and "512" not in messages[0]
+    # compute_metrics is one of several setters, so the message must not name it.
+    assert "compute_metrics" not in messages[0]
+
+
+def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
+    # A passed collator must still be named as the cause; the env-var fallback is only for
+    # the case where nothing else blocks packing.
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
+        fake_trainer(
+            model = _warn_text_model(),
+            args = config,
+            data_collator = lambda features: features,
+            train_dataset = Dataset.from_dict({"text": ["sample"]}),
+        )
+
+    messages = [r.message for r in caplog.records if "packing=True ignored" in r.message]
+    assert len(messages) == 1
+    assert "custom data collator" in messages[0]
+    assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
