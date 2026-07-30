@@ -11,6 +11,7 @@ import type {
   ApiMonitorResponse,
 } from "@/features/chat/types/api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { clearMonitor } from "./clear-monitor";
 
 /** Poll cadence while live. Matches the settings console it replaces. */
 const POLL_INTERVAL_MS = 1500;
@@ -274,11 +275,19 @@ export function useApiMonitor({
     return true;
   }, []);
 
-  const clear = useCallback(async (): Promise<void> => {
-    await clearApiMonitor();
-    setDetails({});
-    await load();
-  }, [load]);
+  // The Clear log button discards this promise, so a failed DELETE has to land in the
+  // error banner here: rethrowing leaves an unhandled rejection and a log that silently
+  // did not clear. Sequence lives in a plain module so the node --test suite can drive it.
+  const clear = useCallback(
+    (): Promise<void> =>
+      clearMonitor({
+        clearRemote: clearApiMonitor,
+        resetDetails: () => setDetails({}),
+        reload: load,
+        onError: setError,
+      }),
+    [load],
+  );
 
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);

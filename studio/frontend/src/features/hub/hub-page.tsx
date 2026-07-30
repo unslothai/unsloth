@@ -78,6 +78,11 @@ import { settingsGgufVariantForRow } from "./inventory/settings-identity";
 import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
+  type RefreshSupersession,
+  registerRefresh,
+  supersedingRefresh,
+} from "./lib/superseded-refresh";
+import {
   CHANNEL_TO_SECTION,
   type ChannelId,
   type ChannelPreset,
@@ -391,6 +396,12 @@ export function ModelsPage() {
 
   // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
+  // The newest read started, so a dropped response can resolve with that instead of with
+  // nothing. A caller awaits a settled store, and the settings handlers' own guard counts
+  // settings opens only: a focus or visibilitychange refresh supersedes one without bumping it.
+  const residentStatusSupersession = useRef<RefreshSupersession>({
+    latest: null,
+  });
   // /status cannot say whether an empty answer is an idle eviction that will reload or a real
   // unload, and only this endpoint knows. Read alongside every status read rather than cached,
   // since the idle timeout is editable from Settings while this page stays mounted, and awaited
@@ -412,9 +423,13 @@ export function ModelsPage() {
   // Returns the read so a caller that needs the answer first can wait for it.
   const refreshResidentModelStatus = useCallback((): Promise<void> => {
     const seq = ++residentStatusSeq.current;
-    return Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+    const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
       .then(([status, idleUnloadArmed]) => {
-        if (seq !== residentStatusSeq.current) return;
+        // A newer read owns the store, so this writes nothing; resolving with the refresh
+        // that took it over keeps an awaiting caller from reading the store it has not
+        // written yet, which is the pre-switch store the await was there to replace.
+        if (seq !== residentStatusSeq.current)
+          return supersedingRefresh(residentStatusSupersession.current, seq);
         const store = useChatRuntimeStore.getState();
         adoptResidentModelStatus(
           {
@@ -449,6 +464,10 @@ export function ModelsPage() {
         );
       })
       .catch(() => undefined);
+    // In start order, synchronously with the sequence number, so a dropped response always
+    // finds the read that took the store over rather than one older than itself.
+    registerRefresh(residentStatusSupersession.current, seq, read);
+    return read;
   }, [readIdleUnloadArmed]);
 
   // Mount, then again whenever this tab could have missed an API-driven switch. Re-reading is
