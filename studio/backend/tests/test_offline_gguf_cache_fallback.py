@@ -3060,11 +3060,16 @@ class TestLocalModelWithRemoteBaseIsGuarded:
 
         bare = []
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "is_vision_model"):
+            if not (
+                isinstance(node, ast.Call) and getattr(node.func, "id", None) == "is_vision_model"
+            ):
                 continue
             # Only calls on a name that came from resolved metadata, not on the identifier
             # the caller already guarded.
             arg = node.args[0] if node.args else None
-            if getattr(arg, "id", None) in ("base", "check_model") and node.lineno not in guarded_lines:
+            if (
+                getattr(arg, "id", None) in ("base", "check_model")
+                and node.lineno not in guarded_lines
+            ):
                 bare.append(node.lineno)
         assert bare == [], f"unguarded base vision probe at line(s) {bare}"

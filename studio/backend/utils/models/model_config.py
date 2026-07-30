@@ -2987,9 +2987,7 @@ class ModelConfig:
                         meta = json.loads(meta_path.read_text(encoding = "utf-8-sig"))
                         base = meta.get("base_model")
                         with _offline_while_reading(base):
-                            base_is_vision = bool(
-                                base and is_vision_model(base, hf_token = hf_token)
-                            )
+                            base_is_vision = bool(base and is_vision_model(base, hf_token = hf_token))
                         if base_is_vision:
                             logger.info(f"GGUF base model '{base}' is a vision model")
                     except Exception as e:
