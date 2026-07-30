@@ -1226,12 +1226,8 @@ def test_vulkan_inference_devices_are_the_pickable_set():
 def test_first_chat_default_autoload_revalidates_final_load_snapshot():
     """The load must validate and consume one stable post-transfer snapshot."""
     src = _read("features/chat/api/chat-adapter.ts")
-    after_download = src.split(
-        "const downloadResult = await downloadModelWithManager", 1
-    )[1]
-    before_load, load_and_after = after_download.split(
-        "const loadResp = await loadModel", 1
-    )
+    after_download = src.split("const downloadResult = await downloadModelWithManager", 1)[1]
+    before_load, load_and_after = after_download.split("const loadResp = await loadModel", 1)
 
     assert "for (let attempt = 0; attempt < 3; attempt += 1)" in before_load
     assert "const allowed = await canAutoLoad(" in before_load
