@@ -2991,9 +2991,7 @@ class ModelConfig:
                         # would make a wholly local load pay the reachability probe.
                         if base:
                             with _offline_while_reading(base):
-                                base_is_vision = bool(
-                                    is_vision_model(base, hf_token = hf_token)
-                                )
+                                base_is_vision = bool(is_vision_model(base, hf_token = hf_token))
                         if base_is_vision:
                             logger.info(f"GGUF base model '{base}' is a vision model")
                     except Exception as e:

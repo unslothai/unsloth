@@ -3092,14 +3092,15 @@ class TestMetadataUrlsUseTheDownloadRoute:
         except Exception:
             return
         theirs = hf_hub_url(
-            "acme/ministral-3b", "config.json", endpoint = "https://hf.mirror.internal",
+            "acme/ministral-3b",
+            "config.json",
+            endpoint = "https://hf.mirror.internal",
         )
         assert ours == theirs, f"diverged from the hub client: {ours} vs {theirs}"
 
     def test_trailing_slash_endpoint_does_not_double_up(self, monkeypatch):
         monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
         from utils.transformers_version import _hf_raw_url
-
         assert "//acme" not in _hf_raw_url("acme/m", "config.json").removeprefix("https://")
 
     def test_no_raw_route_remains_in_the_metadata_readers(self):
@@ -3156,5 +3157,4 @@ class TestLocalGgufWithoutABaseSkipsTheProbe:
     def test_none_target_would_otherwise_be_treated_as_remote(self):
         """Why the check is needed: a null target is classified remote, not local."""
         from utils.paths import is_local_path
-
         assert is_local_path(None or "") is False
