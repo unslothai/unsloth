@@ -175,9 +175,7 @@ def test_list_cached_gguf_pins_a_snapshot_for_a_recovered_active_cache_repo(monk
         [],
         repo_dir,
         revisions = [
-            SimpleNamespace(
-                files = [_file("Model-Q4_K_M.gguf", 256)], snapshot_path = snapshot
-            ),
+            SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 256)], snapshot_path = snapshot),
         ],
     )
     monkeypatch.setattr(
