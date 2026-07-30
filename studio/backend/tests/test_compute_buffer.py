@@ -965,9 +965,10 @@ class TestPerDeviceReserveCap:
     def test_cap_is_exact_at_the_256_boundary(self):
         b = self._fit_backend()
         usable = 2_500 - 0.03 * 24_576  # 1762.72 MiB
-        reserve = lambda c: (
-            self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True)
-        ) / MIB
+        reserve = (
+            lambda c: (self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True))
+            / MIB
+        )
         assert reserve(31_488) == 1762.0 <= usable
         assert reserve(31_744) == 1768.0 > usable
 
@@ -989,21 +990,21 @@ class TestPerDeviceReserveCap:
     def test_cap_floors_at_4096_and_still_rejects_below_it(self):
         # usable 1118.72 < reserve(4096) == 1120.0: nothing to salvage.
         b = self._fit_backend()
-        assert self._drive(b, [(0, 40_000), (1, 1_856)], {0: 49_152, 1: 24_576},
-                           20_480, 262144) == (None, 0)
+        assert self._drive(
+            b, [(0, 40_000), (1, 1_856)], {0: 49_152, 1: 24_576}, 20_480, 262144
+        ) == (None, 0)
 
     def test_cap_keeps_a_card_that_holds_exactly_4096(self):
         b = self._fit_backend()
-        assert self._drive(b, [(0, 40_000), (1, 1_858)], {0: 49_152, 1: 24_576},
-                           20_480, 262144) == ([0, 1], 4096)
+        assert self._drive(
+            b, [(0, 40_000), (1, 1_858)], {0: 49_152, 1: 24_576}, 20_480, 262144
+        ) == ([0, 1], 4096)
 
     def test_flat_arch_term_is_not_rate_inverted(self):
         # deepseek4 carries a flat indexer term, so inverting the per-token rate
         # answers 43341, whose reserve is 6048 MiB on a 4000 MiB card.
         b = _backend(embd = 7168, arch = "deepseek4")
-        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(
-            c, 512, "q8_0", layer_split = True
-        )
+        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(c, 512, "q8_0", layer_split = True)
         cap = LlamaCppBackend._cap_ctx_to_per_device_reserve(200_000, [4000.0], reserve)
         assert cap == 13_312
         assert reserve(cap) / MIB <= 4000.0 < reserve(cap + 256) / MIB
@@ -1011,9 +1012,7 @@ class TestPerDeviceReserveCap:
 
     def test_flat_arch_below_the_floor_is_infeasible(self):
         b = _backend(embd = 7168, arch = "deepseek4")
-        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(
-            c, 512, "q8_0", layer_split = True
-        )
+        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(c, 512, "q8_0", layer_split = True)
         assert LlamaCppBackend._cap_ctx_to_per_device_reserve(200_000, [2500.0], reserve) == 0
 
     @pytest.mark.parametrize("model_mib", [8_192, 16_384, 20_480, 30_720])
