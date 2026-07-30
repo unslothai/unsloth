@@ -58,6 +58,7 @@ def _post_chat_authorized(scope, path: str) -> bool:
 
     return verify_preview_ref(ref, token)
 
+
 # Tunnel-readiness probe, answered by the gate itself on a path outside /p so
 # it can never shadow a run page (runs live under /p/{run}).
 _PREVIEW_HEALTH_PATH = "/_preview_health"
