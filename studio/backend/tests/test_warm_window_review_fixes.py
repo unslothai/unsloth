@@ -665,17 +665,14 @@ def test_the_delete_guard_runs_off_the_event_loop():
     path = _BACKEND / "hub" / "services" / "models" / "deletion.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "delete_cached_model_response"
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_cached_model_response"
     )
 
     # The guards must not be called directly from the coroutine body; they belong
     # to the nested helper that is handed to the worker.
-    nested = {
-        node.name for node in ast.walk(fn)
-        if isinstance(node, ast.FunctionDef)
-    }
+    nested = {node.name for node in ast.walk(fn) if isinstance(node, ast.FunctionDef)}
     assert "_load_state_blocks_delete" in nested, (
         "the load-state guards are called inline again; get_inference_backend() "
         "then blocks the event loop for the remaining torch import"
@@ -702,7 +699,8 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
     path = _BACKEND / "hub" / "services" / "models" / "deletion.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     helper = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_load_state_blocks_delete"
     )
     bool_ops = [sub for sub in ast.walk(helper) if isinstance(sub, ast.BoolOp)]
@@ -712,19 +710,17 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
     )
 
     fn = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "delete_cached_model_response"
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_cached_model_response"
     )
     guarded = [
-        sub for sub in ast.walk(fn)
+        sub
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Try)
         and any("to_thread" in ast.dump(h) for h in [sub])
         and sub.handlers
     ]
     assert guarded, "the offloaded guard is no longer inside a try/except"
-    raises = [
-        sub for sub in ast.walk(guarded[0])
-        if isinstance(sub, ast.Raise)
-    ]
+    raises = [sub for sub in ast.walk(guarded[0]) if isinstance(sub, ast.Raise)]
     assert raises, "an unreadable load state no longer raises; delete would proceed"
