@@ -62,12 +62,22 @@ def test_get_preview_sharing(client):
     assert "default_enabled" in body
 
 
-def test_put_preview_sharing_disables(client):
+def test_put_preview_sharing_disables(client, monkeypatch):
     c, calls = client
+    stops = {"n": 0}
+
+    class _FakeShareLink:
+        async def stop(self):
+            stops["n"] += 1
+
+    monkeypatch.setattr(settings, "share_link", _FakeShareLink())
+
     r = c.put("/preview-sharing", json = {"enabled": False})
     assert r.status_code == 200
     assert r.json()["enabled"] is False
     assert calls["set"] is False
+    # Disabling also tears the public preview tunnel down.
+    assert stops["n"] == 1
 
 
 def test_put_preview_sharing_rejects_non_bool(client):
