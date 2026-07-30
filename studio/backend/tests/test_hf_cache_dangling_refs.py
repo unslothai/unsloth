@@ -1714,39 +1714,59 @@ def test_a_big_endian_build_does_not_vouch_for_a_torn_little_endian_quant(tmp_pa
     assert inventory_scan._completed_gguf_variants(snapshot) == set()
 
 
-def test_a_torn_quant_is_not_offered_under_a_snapshot_load_id(tmp_path, monkeypatch):
-    """The load id is an absolute snapshot path, and get_gguf_variants_response
-    short-circuits on is_local_path before the completed-subset trim that
-    list_gguf_variants_from_hf_cache applies, so the trim has to live at the
-    shared offer site."""
+def _local_offer(snapshot: Path) -> list:
+    """What GET /api/models/gguf-variants reports for a directory path, which is
+    the shape a snapshot load id takes."""
     import asyncio
 
     from hub.services.models import gguf_variants
 
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(str(snapshot), prefer_local_cache = True)
+    )
+    return sorted((v.quant, bool(v.downloaded)) for v in response.variants)
+
+
+def test_a_torn_quant_is_not_reported_downloaded_under_a_snapshot_load_id(tmp_path):
+    """The load id is an absolute snapshot path and get_gguf_variants_response
+    short-circuits on is_local_path, so the completeness check has to live at
+    that shared offer site. The torn quant stays listed to resume or delete; it
+    just is not offered as ready."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "Model-Q8_0.gguf").write_bytes(b"\0" * 64)
     (snapshot / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
-    response = asyncio.run(
-        gguf_variants.get_gguf_variants_response(str(snapshot), prefer_local_cache = True)
-    )
-    assert [(v.quant, v.downloaded) for v in response.variants] == [("Q8_0", True)]
+    assert _local_offer(snapshot) == [("Q4_K_M", False), ("Q8_0", True)]
+
+
+def test_a_big_endian_sibling_does_not_make_a_torn_quant_downloadable(tmp_path):
+    """End to end for the completion walk: the lister drops the big-endian build
+    and offers the torn little-endian file under the same label, so counting the
+    big-endian one as complete marked that file ready."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 64)
+    (snapshot / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
+    assert _local_offer(snapshot) == [("Q4_K_M", False)]
 
 
 def test_a_resume_only_folder_still_lists_when_nothing_is_complete(tmp_path):
-    """The trim keeps the untrimmed list when no quant is whole, so a folder
-    holding only a half-fetched download still shows up to resume or delete."""
-    import asyncio
-
-    from hub.services.models import gguf_variants
-
+    """A folder holding only a half-fetched download still shows up so it can be
+    resumed or deleted, rather than vanishing from the picker."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
-    response = asyncio.run(
-        gguf_variants.get_gguf_variants_response(str(snapshot), prefer_local_cache = True)
-    )
-    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    assert _local_offer(snapshot) == [("Q4_K_M", False)]
+
+
+def test_a_whole_folder_is_still_reported_downloaded(tmp_path):
+    """Negative control: completeness must not make a good folder look broken."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "Model-Q8_0.gguf").write_bytes(b"\0" * 64)
+    (snapshot / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
+    (snapshot / "Model-Q4_K_M-00002-of-00002.gguf").write_bytes(b"\0" * 16)
+    assert _local_offer(snapshot) == [("Q4_K_M", True), ("Q8_0", True)]
 
 
 def test_the_ignored_cache_entries_track_huggingface_hub(tmp_path):
