@@ -3446,9 +3446,8 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
 def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingProgress], None]:
     """UnslothTrainer callback that reports training progress to the parent.
 
-    A progress event goes out once there is a step or a loss to report; a status
-    event only while the status is non-empty, so the empty status the trainer
-    reports on every log leaves the parent's last real status standing.
+    Status events go out only while the status is non-empty, so the empty status the
+    trainer reports on every log leaves the parent's last real status standing.
     """
 
     def _on_progress(progress: TrainingProgress) -> None:
@@ -3487,15 +3486,15 @@ def _create_embedding_progress_callback(
 ):
     """TrainerCallback that reports embedding training progress to the parent.
 
-    ``should_stop`` is read on every callback so a stop signal arriving mid-run
-    is seen.
+    ``should_stop`` is polled in on_train_begin and on_step_end, so a stop signal
+    arriving mid-run is seen.
     """
     from transformers import TrainerCallback
 
     class _EmbeddingProgressCallback(TrainerCallback):
         def on_train_begin(self, args, state, control, **kwargs):
-            # Progress events carry an empty status, so without this the parent
-            # keeps showing "Starting embedding training..." for the whole run.
+            # Progress events carry an empty status, so without this the parent keeps
+            # showing "Starting embedding training..." for the whole run.
             if should_stop():
                 return
             _send_status(event_queue, "Training in progress...")

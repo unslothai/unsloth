@@ -3,13 +3,11 @@
 
 """Training progress callbacks must report an active status once training starts.
 
-Both training paths used to leave the parent process on the pre-train
-"Starting ..." status for the whole run, so /api/training/status and the
-progress card read "Starting training..." while the loss was already moving:
-the callbacks report an empty status on every log and the parent only
-overwrites a non-empty one. These tests drive the real callbacks, the real
-worker emit rule and the real parent handler. Fakes only; no GPU, no network,
-no model load.
+Both training paths used to leave the parent on the pre-train "Starting ..." status
+for the whole run, so /api/train/status and the progress card read "Starting
+training..." while the loss was already moving: the callbacks report an empty status
+on every log and the parent only overwrites a non-empty one. These tests drive the
+real callbacks, worker emit rule and parent handler. Fakes only; no GPU, no model.
 """
 
 from __future__ import annotations
@@ -28,9 +26,9 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# core/training/trainer.py imports unsloth and trl at module level (heavy, GPU
-# init). Stub the ones this machine does not have just long enough to import it,
-# then restore so this file never pollutes the shared session.
+# core/training/trainer.py imports unsloth and trl at module level (heavy, GPU init).
+# Stub whichever are missing just long enough to import it, then restore so this file
+# never pollutes the shared session.
 _STUBS = {
     "unsloth": ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"),
     "unsloth.chat_templates": ("get_chat_template",),
@@ -41,7 +39,7 @@ _TRAINER_PRE_IMPORTED = "core.training.trainer" in sys.modules
 
 
 def _stub_if_missing(name, attrs):
-    """Register a stub module for ``name`` unless the real package is installed."""
+    """Stub ``name`` unless the real package is installed."""
     if name in sys.modules:
         return
     try:
@@ -51,8 +49,7 @@ def _stub_if_missing(name, attrs):
         pass
     _STUBBED.append(name)
     module = types.ModuleType(name)
-    # A spec-less module makes core.import_guards.ensure_real_packages treat it
-    # as "no namespace shadow" and leave it alone.
+    # A spec-less module reads as "no namespace shadow" to ensure_real_packages.
     module.__spec__ = None
     for attr in attrs:
         setattr(module, attr, MagicMock())
@@ -76,9 +73,9 @@ from core.training.worker import (  # noqa: E402
 if not _TRAINER_PRE_IMPORTED:
     for _name in _STUBBED:
         sys.modules.pop(_name, None)
-    # Drop the stub-bound module (and its parent package, which still holds it
-    # as an attribute) so a later test re-imports it against the real packages;
-    # the UnslothTrainer class held above stays usable.
+    # Drop the stub-bound module and its parent package (which still holds it as an
+    # attribute) so a later test re-imports it against the real packages; the
+    # UnslothTrainer class held above stays usable.
     sys.modules.pop("core.training.trainer", None)
     sys.modules.pop("core.training", None)
 
@@ -117,7 +114,7 @@ def _drive(
         callback.on_step_end(None, state, control)
         if on_step is not None:
             on_step(step)
-    # Once at the end, as HuggingFace does: on_epoch_end is per epoch, not per step.
+    # Once at the end: HuggingFace calls on_epoch_end per epoch, not per step.
     callback.on_epoch_end(None, state, control)
     return state, control
 
@@ -129,8 +126,8 @@ def _drive(
 
 
 def _make_owner():
-    # __new__ dispatches to the MLX adapter on Apple hardware, and that adapter
-    # has no _create_progress_callback; go straight to the class under test.
+    # __new__ dispatches to the MLX adapter on Apple hardware, which has no
+    # _create_progress_callback; go straight to the class under test.
     owner = object.__new__(UnslothTrainer)
     UnslothTrainer.__init__(owner)
     owner._update_progress(is_training = True, total_steps = 4, status_message = "Starting training...")
@@ -147,8 +144,7 @@ def test_train_begin_reports_active_status():
 
 
 def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
-    # on_log deliberately blanks the child status: the parent keeps the last
-    # non-empty one, so a run of any length costs exactly one status event.
+    # The parent keeps the last non-empty status, so a run costs one status event.
     owner = _make_owner()
     reported: list[str] = []
     owner.add_progress_callback(lambda progress: reported.append(progress.status_message))
@@ -199,8 +195,7 @@ def test_stop_status_is_never_replaced_by_the_active_one(stop_status):
             owner._update_progress(status_message = stop_status)
 
     _, control = _drive(callback, steps = 2, on_step = _stop_after_first_step)
-    # A stop already requested when training starts must not be overwritten
-    # either (a resumed run re-enters on_train_begin).
+    # A resumed run re-enters on_train_begin; an already requested stop must survive.
     callback.on_train_begin(None, _state(), SimpleNamespace())
     for event in event_queue.events:
         backend._handle_event(event)
