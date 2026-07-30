@@ -871,9 +871,9 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
         )
     )
     assert out["counts"] == 1
-    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
-        "a total for a branch that has since been emptied must not reach the bar"
-    )
+    assert (out["contextUsage"] or {}).get(
+        "totalTokens"
+    ) == expected_total, "a total for a branch that has since been emptied must not reach the bar"
 
 
 @pytest.mark.parametrize(
@@ -911,9 +911,9 @@ def test_a_new_chat_count_is_dropped_once_its_first_run_starts(first_run_starts,
         )
     )
     assert out["counts"] == 1
-    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
-        "a bare-template total must not land on a New Chat that already has a turn"
-    )
+    assert (out["contextUsage"] or {}).get(
+        "totalTokens"
+    ) == expected_total, "a bare-template total must not land on a New Chat that already has a turn"
 
 
 def test_adopting_the_resident_gguf_reprices_the_open_thread():
