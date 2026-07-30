@@ -28,10 +28,8 @@ function isCompleteCachedRow(row: CachedInventoryRow): boolean {
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
   return {
     repo_id: row.repoId,
-    // The row is listed by repo id but loads by the id the backend pinned, which
-    // is a snapshot path whenever the repo's default ref does not reach a copy
-    // that loads. Dropping it here would send the picker back down the ref the
-    // cached listing already stepped around.
+    // Listed by repo id, loaded by the pinned id. Dropping it sends the picker
+    // back down the ref the cached listing stepped around.
     load_id: row.loadId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",

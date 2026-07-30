@@ -3162,9 +3162,8 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
-                            # The loader looks for the projector beside the file it loads, so a
-                            # pinned row is judged on that directory rather than on any revision
-                            # that happens to hold one.
+                            # The loader wants the projector beside the file it loads, so judge
+                            # the pinned directory rather than any revision holding one.
                             "has_vision": (
                                 _snapshot_has_gguf_projector(load_id)
                                 if load_id

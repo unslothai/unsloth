@@ -568,9 +568,8 @@ def repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
 def default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
     """Whether ``refs/main`` resolves to a snapshot whose every quant is short a shard.
 
-    Loading by repo id follows that ref, so a row whose default lands on a half split needs a
-    snapshot pinned even though the id resolves. False when the ref names no snapshot, which
-    ``repo_id_will_not_resolve`` owns, and when the snapshot offers no quant to judge.
+    Loading by repo id follows that ref, so such a row needs a snapshot pinned even though the
+    id resolves. A ref naming no snapshot belongs to ``repo_id_will_not_resolve``.
     """
     snapshot = default_ref_snapshot(repo_cache_dir)
     if snapshot is None:

@@ -76,7 +76,7 @@ import type {
 export type SelectedModelInput = {
   id: string;
   /** Sent as model_path in place of the id. The id stays the identity the UI
-   *  shows, dedupes and stores, so pinning a snapshot does not rename a model. */
+   *  shows, dedupes and stores, so a pin does not rename a model. */
   loadId?: string | null;
   isLora?: boolean;
   ggufVariant?: string;
