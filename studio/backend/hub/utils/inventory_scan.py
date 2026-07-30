@@ -797,7 +797,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         groups[kind].setdefault((str(path.parent), path.name[: match.start()], total), set()).add(
             index
         )
-    for kind in (("base", "adapter") if has_config else ("adapter", "base")):
+    for kind in ("base", "adapter") if has_config else ("adapter", "base"):
         if kind in whole:
             return False
         if groups[kind]:

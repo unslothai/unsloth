@@ -2140,9 +2140,12 @@ def _iter_hf_cache_snapshots_names(cache: Path) -> list[str]:
     return [s.name for s in _iter_hf_cache_snapshots("Org/Model", cache_dir = cache)]
 
 
-@pytest.mark.parametrize("ref_label, refs", [("dangling", {"main": UPSTREAM_HEAD}),
-                                             ("resolving", {"main": SNAPSHOT})])
-def test_a_stray_base_shard_does_not_veto_a_complete_adapter(ref_label, refs, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "ref_label, refs", [("dangling", {"main": UPSTREAM_HEAD}), ("resolving", {"main": SNAPSHOT})]
+)
+def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
+    ref_label, refs, tmp_path, monkeypatch
+):
     """A LoRA snapshot can carry an unrelated interrupted base family. The row
     classifies as an adapter, and the adapter is whole, so it loads; judging base
     first regardless of format let that stray shard make it uncheckable.
