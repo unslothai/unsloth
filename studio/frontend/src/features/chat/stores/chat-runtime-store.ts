@@ -1923,6 +1923,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveLastExternalCheckpoint(null);
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       params: {
         ...state.params,
         checkpoint: "",
