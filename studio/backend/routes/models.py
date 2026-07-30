@@ -3003,6 +3003,27 @@ def _repo_has_mmproj(repo_info) -> bool:
     )
 
 
+def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
+    """Whether the copy this row loads ships a projector beside it.
+
+    The loader opens the projector next to the file it loads, so a revision holding one the load
+    never reaches is not vision support. A pinned row is judged on its snapshot; an unpinned one
+    on wherever the repo id resolves, asked through the resolver the load itself uses. Falls back
+    to the repo wide scan only when nothing resolves.
+    """
+    if load_id:
+        return _snapshot_has_gguf_projector(load_id)
+    try:
+        from hub.utils.gguf import resolve_local_gguf_path
+
+        resolved = resolve_local_gguf_path(repo_info.repo_id, None)
+    except Exception:
+        resolved = None
+    if resolved:
+        return _snapshot_has_gguf_projector(str(Path(resolved).parent))
+    return _repo_has_mmproj(repo_info)
+
+
 def _iter_gguf_paths(root: Path):
     for path in root.rglob("*"):
         if path.is_file() and _is_gguf_filename(path.name):
@@ -3162,13 +3183,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
-                            # The loader wants the projector beside the file it loads, so judge
-                            # the pinned directory rather than any revision holding one.
-                            "has_vision": (
-                                _snapshot_has_gguf_projector(load_id)
-                                if load_id
-                                else _repo_has_mmproj(repo_info)
-                            ),
+                            "has_vision": _cached_gguf_row_has_vision(repo_info, load_id),
                         }
                         if load_id:
                             row["load_id"] = load_id

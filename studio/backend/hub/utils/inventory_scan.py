@@ -804,6 +804,23 @@ class _SnapshotPayload(NamedTuple):
     empty_whole: dict
 
 
+def _weight_shard_family(snapshot_dir: Path, path: Path, match) -> Optional[tuple]:
+    """The key grouping ``path`` with its siblings, or None when the numbering is nonsense.
+
+    The suffix is part of the key: a .safetensors shard and a .bin shard sharing a prefix and a
+    total are different sets, and merging them made two half sets look like one whole one.
+    """
+    index, total = int(match.group(1)), int(match.group(2))
+    if index <= 0 or total <= 0 or index > total:
+        return None
+    return (
+        path.parent.relative_to(snapshot_dir).as_posix(),
+        path.name[: match.start()],
+        total,
+        path.suffix.lower(),
+    )
+
+
 def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     """Classify *snapshot_dir* from its own contents, or None if it cannot be read.
 
@@ -861,10 +878,21 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             continue
         if empty:
             # The loader picks a name by existence, so a zero-byte weight is one it opens and cannot
-            # read. A numbered shard needs no note: it is simply absent from its family.
+            # read.
             empty_kind = _weight_family_kind(path.name)
-            if empty_kind is not None and _WEIGHT_SHARD_RE.search(path.name) is None:
+            empty_match = _WEIGHT_SHARD_RE.search(path.name)
+            if empty_kind is None:
+                continue
+            if empty_match is None:
                 empty_whole[empty_kind].add(path.suffix.lower())
+                continue
+            # A numbered shard is absent from its family rather than unreadable, but the family
+            # still has to be named: a snapshot whose every shard is empty would otherwise name
+            # none at all and read as one with nothing missing.
+            empty_family = _weight_shard_family(snapshot_dir, path, empty_match)
+            if empty_family is not None:
+                groups[empty_kind].setdefault(empty_family, set())
+                shard_names.setdefault(empty_family, set()).add(path.name)
             continue
         is_adapter = _is_adapter_weight_name(name)
         base_evidence = False
@@ -889,19 +917,10 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         if match is None:
             whole[kind].add(path.suffix.lower())
             continue
-        index = int(match.group(1))
-        total = int(match.group(2))
-        if index <= 0 or total <= 0 or index > total:
+        family = _weight_shard_family(snapshot_dir, path, match)
+        if family is None:
             continue
-        # The suffix is part of the family: a .safetensors shard and a .bin shard sharing a prefix
-        # and total are different sets, and merging them made two half sets look like one whole one.
-        family = (
-            path.parent.relative_to(snapshot_dir).as_posix(),
-            path.name[: match.start()],
-            total,
-            path.suffix.lower(),
-        )
-        groups[kind].setdefault(family, set()).add(index)
+        groups[kind].setdefault(family, set()).add(int(match.group(1)))
         shard_names.setdefault(family, set()).add(path.name)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
     # from_pretrained reads the shard map from the index and never globs, so shards without one are

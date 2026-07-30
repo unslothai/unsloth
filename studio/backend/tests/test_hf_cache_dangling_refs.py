@@ -1719,6 +1719,34 @@ def test_selection_passes_over_a_newer_snapshot_whose_weight_file_is_empty(
     assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
 
 
+def test_a_snapshot_whose_every_shard_is_empty_names_no_family_to_miss(tmp_path, monkeypatch):
+    """An empty numbered shard reads as absent from its family rather than unreadable, so a
+    snapshot holding nothing but one named no family at all and read as having nothing missing."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+                "model-00002-of-00002.safetensors": b"\0" * 256,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            },
+            NEWER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"",
+            },
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    _age(repo_dir / "snapshots" / OLDER, 600)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
+
+
 def test_a_whole_payload_under_a_resolving_ref_is_still_chattable(tmp_path, monkeypatch):
     """Negative control for the test above: same shape, but the pinned payload is whole."""
     repo_dir = _two_snapshot_repo(

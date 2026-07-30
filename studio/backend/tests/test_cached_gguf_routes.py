@@ -562,6 +562,64 @@ def test_vision_is_read_from_the_snapshot_the_row_pins(monkeypatch, tmp_path):
     assert row["has_vision"] is True
 
 
+def test_vision_is_read_from_the_snapshot_a_repo_id_load_resolves(monkeypatch, tmp_path):
+    """A row that pins nothing still loads from one snapshot, the one the resolver returns. A
+    projector in a revision that resolution never reaches is not vision support either."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Vision"
+    main, other = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
+    for path in (main, other):
+        path.mkdir(parents = True)
+    for shard in ("00001", "00002"):
+        (main / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
+    # Newest, and holds only the projector: nothing here for a load to land on.
+    (other / "mmproj-F16.gguf").write_bytes(b"\0" * 256)
+    os.utime(main, (1_000, 1_000))
+    os.utime(other, (2_000, 2_000))
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+
+    repo = _repo(
+        "Org/Vision",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("mmproj-F16.gguf", 256)], snapshot_path = other),
+            SimpleNamespace(
+                files = [
+                    _file("Model-Q4_K_M-00001-of-00002.gguf", 256),
+                    _file("Model-Q4_K_M-00002-of-00002.gguf", 256),
+                ],
+                snapshot_path = main,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [other, main])
+
+    def _row():
+        return {
+            c["repo_id"]: c
+            for c in asyncio.run(
+                models_route.list_cached_gguf(current_subject = "test-user")
+            )["cached"]
+        }["Org/Vision"]
+
+    row = _row()
+    assert "load_id" not in row
+    assert row["has_vision"] is False
+
+    # Control: the projector beside the quant that resolves is reachable.
+    (main / "mmproj-F16.gguf").write_bytes(b"\0" * 256)
+    row = _row()
+    assert row["has_vision"] is True
+
+
 def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch, tmp_path):
     """The lister and the load take the whole copy, so mtime order alone would read metadata out of
     a newer half download nothing loads."""
