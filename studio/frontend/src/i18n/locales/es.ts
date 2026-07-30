@@ -1004,6 +1004,8 @@ export const es = {
         "No se pudo verificar la configuración de este modelo. Comprueba la conexión o el token de Hugging Face y vuelve a intentarlo.",
       datasetUnverified:
         "No se pudo verificar si el conjunto de datos es compatible con este modelo. Comprueba la conexión o el token de Hugging Face; al iniciar el entrenamiento se volverá a intentar la comprobación.",
+      setupChanged:
+        "La configuración del entrenamiento cambió mientras se comprobaba. Revísala y vuelve a iniciar el entrenamiento.",
       uploadConfigTooltip: "Carga una configuración YAML guardada",
       saveConfigTooltip: "Descarga la configuración actual como YAML",
       resetConfigTooltip: "Restablece a los valores predeterminados del modelo",

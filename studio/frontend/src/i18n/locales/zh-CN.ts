@@ -1031,6 +1031,7 @@ export const zhCN = {
         "无法验证此模型的设置。请检查网络连接或 Hugging Face token，然后重试。",
       datasetUnverified:
         "无法验证数据集与此模型是否兼容。请检查网络连接或 Hugging Face token；开始训练时会重试检查。",
+      setupChanged: "检查期间，训练设置发生了变化。请确认设置后重新开始训练。",
       uploadConfigTooltip: "加载已保存的 YAML 配置",
       saveConfigTooltip: "将当前配置下载为 YAML",
       resetConfigTooltip: "重置为模型默认值",

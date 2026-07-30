@@ -1076,6 +1076,8 @@ export const ptBR = {
         "Não foi possível verificar os parâmetros deste modelo. Verifique sua conexão ou seu token do Hugging Face e tente novamente.",
       datasetUnverified:
         "Não foi possível verificar se o dataset é compatível com este modelo. Verifique sua conexão ou seu token do Hugging Face; o início do treinamento tentará verificar novamente.",
+      setupChanged:
+        "A configuração de treinamento mudou durante a verificação. Revise-a e inicie o treinamento novamente.",
       uploadConfigTooltip: "Carregar uma configuração YAML salva",
       saveConfigTooltip: "Baixar configuração atual como YAML",
       resetConfigTooltip: "Redefinir para os padrões do modelo",

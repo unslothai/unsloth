@@ -1009,6 +1009,8 @@ export const fr = {
         "Impossible de vérifier les paramètres de ce modèle. Vérifiez votre connexion ou votre token Hugging Face, puis réessayez.",
       datasetUnverified:
         "Impossible de vérifier si le jeu de données est compatible avec ce modèle. Vérifiez votre connexion ou votre token Hugging Face ; le démarrage de l'entraînement relancera la vérification.",
+      setupChanged:
+        "La configuration de l'entraînement a changé pendant sa vérification. Vérifiez-la, puis relancez l'entraînement.",
       uploadConfigTooltip: "Charger une configuration YAML enregistrée",
       saveConfigTooltip: "Télécharger la configuration actuelle au format YAML",
       resetConfigTooltip: "Réinitialiser aux valeurs par défaut du modèle",

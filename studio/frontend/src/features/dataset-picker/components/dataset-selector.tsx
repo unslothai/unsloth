@@ -14,6 +14,7 @@ import { usePickerState } from "@/components/resource-picker/use-picker-state";
 import {
   type CachedInventoryRow,
   hfApiToken,
+  looksLikeLocalPath,
   matchTokens,
   tokenizeQuery,
   useHfTokenStore,
@@ -40,6 +41,11 @@ import {
 } from "./dataset-selector-lists";
 
 const DATASET_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.datasetPickerTab";
+
+function explicitLocalDatasetPath(path: string): string {
+  const trimmed = path.trim();
+  return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;
+}
 
 const TRIGGER_BASE = cn(
   "hub-menu-trigger field-soft inline-flex h-9 w-full cursor-pointer select-none items-center gap-1.5 rounded-[12px] px-3 text-ui-12p5 text-muted-foreground transition-colors",
@@ -76,11 +82,7 @@ function hasExactDatasetMatch(
   return resolveExactDatasetDeviceItem(query, deviceItems).kind !== "none";
 }
 
-export function DatasetSelector({
-  triggerDataTour = "studio-dataset-picker",
-}: {
-  triggerDataTour?: string;
-}) {
+export function DatasetSelector() {
   const t = useT();
   const navigate = useNavigate();
   const dataset = useTrainingConfigStore((s) => s.dataset);
@@ -249,7 +251,7 @@ export function DatasetSelector({
     if (tab === "hub") {
       selectHubDataset(next);
     } else {
-      selectLocalDataset(next);
+      selectLocalDataset(explicitLocalDatasetPath(next));
     }
     closePicker();
   };
@@ -336,7 +338,6 @@ export function DatasetSelector({
       trigger={
         <button
           type="button"
-          data-tour={triggerDataTour}
           className={cn(TRIGGER_BASE, "justify-between")}
         >
           <span className="flex min-w-0 items-center gap-1.5">

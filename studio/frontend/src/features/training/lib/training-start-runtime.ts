@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { translate, type TranslationKey } from "@/i18n";
 import { resetTraining, stopTraining } from "../api/train-api";
 import { emitTrainingRunsChanged } from "../events";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import { syncTrainingRuntimeFromBackend } from "./sync-runtime";
 
 export const TRAINING_SETUP_CHANGED_ERROR =
-  "Training setup changed while it was being checked. Review it and start again.";
+  "studio.training.setupChanged" satisfies TranslationKey;
 
 export interface TrainingStartLease {
   resetGeneration: number;
@@ -41,7 +42,11 @@ export function releaseTrainingStart(
   }
   const runtime = useTrainingRuntimeStore.getState();
   if (error !== undefined) {
-    runtime.setStartError(error);
+    runtime.setStartError(
+      error === TRAINING_SETUP_CHANGED_ERROR
+        ? translate(TRAINING_SETUP_CHANGED_ERROR)
+        : error,
+    );
   }
   runtime.setStarting(false);
   return false;

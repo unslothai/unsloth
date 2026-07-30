@@ -972,6 +972,8 @@ export const ko = {
         "이 모델의 설정을 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인한 후 다시 시도하세요.",
       datasetUnverified:
         "데이터셋이 이 모델과 호환되는지 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인하세요. 학습을 시작하면 다시 확인합니다.",
+      setupChanged:
+        "확인하는 동안 학습 설정이 변경되었습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
       uploadConfigTooltip: "저장된 YAML 구성 불러오기",
       saveConfigTooltip: "현재 구성을 YAML로 다운로드",
       resetConfigTooltip: "모델 기본값으로 재설정",

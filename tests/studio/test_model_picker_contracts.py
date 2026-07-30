@@ -1486,7 +1486,7 @@ def test_training_model_lookups_preserve_platform_path_identity():
     device_pick = selector.split("function pickFreeformModel", 1)[1]
     device_pick = device_pick.split("function pickDeviceModel", 1)[0]
     assert "const key = normalizeModelIdentity(id);" in hub_pick
-    assert "const key = normalizeModelIdentity(id);" in device_pick
+    assert "const key = normalizeModelIdentity(localPath);" in device_pick
 
     identity = _read("features/hub/lib/model-identity.ts")
     normalizer = identity.split("export function normalizeModelIdentity", 1)[1]
@@ -1734,6 +1734,14 @@ def test_training_config_changes_clear_previous_start_error():
     assert "runtime.setStartError(null)" in source
 
 
+def test_training_setup_changed_error_uses_localization():
+    runtime = _read("features/training/lib/training-start-runtime.ts")
+    release = runtime.split("export function releaseTrainingStart", 1)[1]
+    assert '"studio.training.setupChanged" satisfies TranslationKey' in runtime
+    assert "translate(TRAINING_SETUP_CHANGED_ERROR)" in release
+    assert "Training setup changed while it was being checked." not in runtime
+
+
 def test_training_start_attempt_is_bound_to_checked_inputs():
     source = _read("features/training/lib/start-fresh-training-run.ts")
     assert "private expectedConfig: TrainingConfigStore;" in source
@@ -1763,6 +1771,14 @@ def test_freeform_device_model_keeps_local_path_intent():
     assert "const localPath = explicitLocalPath(id);" in freeform
     assert "pick(" in freeform
     assert "{ knownCached: false, localPath, modelFormat: null }" in freeform
+
+
+def test_freeform_device_dataset_keeps_local_path_intent():
+    selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    assert "return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;" in selector
+    commit = selector.split("const commitRaw", 1)[1]
+    commit = commit.split("const commitExactQuery", 1)[0]
+    assert "selectLocalDataset(explicitLocalDatasetPath(next));" in commit
 
 
 def test_dataset_hub_list_retains_the_active_hf_selection():

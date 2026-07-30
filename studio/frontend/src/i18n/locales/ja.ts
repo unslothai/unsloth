@@ -1005,6 +1005,8 @@ export const ja = {
         "このモデルの設定を確認できませんでした。接続または Hugging Face トークンを確認してから、再試行してください。",
       datasetUnverified:
         "データセットがこのモデルと互換性があるか確認できませんでした。接続または Hugging Face トークンを確認してください。トレーニング開始時にもう一度確認します。",
+      setupChanged:
+        "確認中にトレーニング設定が変更されました。設定を確認してから、トレーニングをもう一度開始してください。",
       uploadConfigTooltip: "保存された YAML 構成を読み込みます",
       saveConfigTooltip: "現在の構成を YAML としてダウンロードします",
       resetConfigTooltip: "モデルのデフォルト値にリセットします",

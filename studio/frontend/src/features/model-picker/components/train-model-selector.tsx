@@ -84,11 +84,7 @@ function explicitLocalPath(path: string): string {
   return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;
 }
 
-export function TrainModelSelector({
-  triggerDataTour = "studio-model-picker",
-}: {
-  triggerDataTour?: string;
-}) {
+export function TrainModelSelector() {
   const t = useT();
   const gpu = useGpuInfo();
   const {
@@ -552,7 +548,7 @@ export function TrainModelSelector({
       trigger={
         <button
           type="button"
-          data-tour={triggerDataTour}
+          data-tour="studio-model-picker"
           className={cn(
             TRAIN_PICKER_TRIGGER_CLASS,
             "w-full min-w-[180px] justify-between",

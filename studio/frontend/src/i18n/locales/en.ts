@@ -1419,6 +1419,8 @@ export const en = {
         "Couldn't verify this model's settings. Check your connection or Hugging Face token, then retry.",
       datasetUnverified:
         "Couldn't verify the dataset is compatible with this model. Check your connection or Hugging Face token — starting training will retry the check.",
+      setupChanged:
+        "Training setup changed while it was being checked. Review it and start again.",
       uploadConfigTooltip: "Load a saved YAML config",
       saveConfigTooltip: "Download current config as YAML",
       resetConfigTooltip: "Reset to model defaults",

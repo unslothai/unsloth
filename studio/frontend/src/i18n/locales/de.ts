@@ -1019,6 +1019,8 @@ export const de = {
         "Die Modelleinstellungen konnten nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token und versuchen Sie es erneut.",
       datasetUnverified:
         "Die Kompatibilität des Datensatzes mit diesem Modell konnte nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token. Beim Start des Trainings wird die Prüfung erneut versucht.",
+      setupChanged:
+        "Die Trainingseinstellungen haben sich während der Überprüfung geändert. Prüfen Sie sie und starten Sie das Training erneut.",
       uploadConfigTooltip: "Eine gespeicherte YAML-Konfiguration laden",
       saveConfigTooltip: "Aktuelle Konfiguration als YAML herunterladen",
       resetConfigTooltip: "Auf Modellstandardwerte zurücksetzen",
