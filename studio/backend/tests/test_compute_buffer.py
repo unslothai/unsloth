@@ -355,13 +355,11 @@ class TestContextBufferDSV4:
 
 class TestContextBufferLayerSplit:
     """``layer_split``: the per-device f16 (KQ-mask) rate steps up 4x once the model
-    spans more than one device under ``-sm layer``. Measured per device from
-    llama.cpp's own memory breakdown, dividing the compute column's ctx slope by
-    n_ctx and n_ubatch: exactly 2.00 B/tok/ubatch on 1 GPU and exactly 8.00 on 2, 3,
-    4, 5, 6 and 8 GPUs, across dense GQA, MoE and MLA models at ub 512 and 2048. It
-    is a step on "is split", not a ramp in device count."""
+    spans more than one device under ``-sm layer``. A step on "is split", not a ramp
+    in device count. ``_MEASURED`` holds the rates read off llama.cpp's own memory
+    breakdown (compute-column ctx slope / n_ctx / n_ubatch)."""
 
-    _RATE_SINGLE = 2.0  # B per context token per ubatch element, per device
+    _RATE_SINGLE = 2.0  # B/tok/ubatch, per device
     _RATE_SPLIT = 8.0
     # (model, n_gpus, n_ubatch, measured B/tok/ubatch/device)
     _MEASURED = [
@@ -382,7 +380,7 @@ class TestContextBufferLayerSplit:
     ]
 
     def test_default_is_single_device(self):
-        # Every existing caller keeps the single-device rate (the flag defaults off).
+        # Existing callers are unaffected: the flag defaults off.
         b = _backend(embd = 4096)
         assert b._compute_buffer_ctx_bytes(
             131072, cache_type_kv = "f16"
@@ -396,7 +394,7 @@ class TestContextBufferLayerSplit:
 
     @pytest.mark.parametrize("name,n_gpus,ub,measured", _MEASURED)
     def test_upper_bounds_measured_per_device_rate(self, name, n_gpus, ub, measured):
-        # Never under-reserve: the estimate is the measured rate x the 1.5 safety.
+        # Never under-reserve.
         b = _backend(embd = 4096)
         per_tok = (
             b._compute_buffer_ctx_bytes(
@@ -408,8 +406,7 @@ class TestContextBufferLayerSplit:
 
     @pytest.mark.parametrize("name,n_gpus,ub,measured", _MEASURED)
     def test_not_wildly_over_measured_per_device_rate(self, name, n_gpus, ub, measured):
-        # And keep the intended margin rather than inflating it: the split step is a
-        # correction, not extra headroom, so stay at the existing 1.5 safety factor.
+        # The step is a correction, not extra headroom: still the 1.5 safety factor.
         b = _backend(embd = 4096)
         per_tok = (
             b._compute_buffer_ctx_bytes(
@@ -421,8 +418,7 @@ class TestContextBufferLayerSplit:
         assert per_tok == pytest.approx(expected, rel = 1e-6)
 
     def test_pre_fix_split_reserve_was_short(self):
-        # Regression guard on the bug this fixes: without the step a split reserved
-        # 8/(2*1.5) = 2.67x too little, spending the whole safety margin and more.
+        # The bug: without the step a split reserved 8/(2*1.5) = 2.67x too little.
         b = _backend(embd = 4096)
         one = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16")
         measured = self._RATE_SPLIT * 512 * 1048576
@@ -432,8 +428,8 @@ class TestContextBufferLayerSplit:
         )
 
     def test_kimi_k3_1m_four_gpu_reserve(self):
-        # The case that surfaced it: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512.
-        # llama.cpp allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
+        # The reported case: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512. llama.cpp
+        # allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
         b = _backend(embd = 7168, mla = 576)
         gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) / (
             1024**3
@@ -442,16 +438,14 @@ class TestContextBufferLayerSplit:
 
     @pytest.mark.parametrize("ct", ["q8_0", "q4_0"])
     def test_quantized_rate_is_floored_not_scaled(self, ct):
-        # The quantized rates are single-GPU totals that already subsume the 1x mask,
-        # so a split floors them at the 4x mask rather than multiplying them.
+        # Quantized rates are single-GPU totals that already subsume the 1x mask.
         b = _backend(embd = 8192)  # 2.25 x 8192 clears the floor comfortably
         assert b._compute_buffer_ctx_bytes(
             131072, cache_type_kv = ct, layer_split = True
         ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = ct)
 
     def test_quantized_small_embd_takes_the_floor(self):
-        # Below n_embd ~2731 the quantized rate falls under the split mask cost, so
-        # the floor is what keeps a small model on many GPUs from under-reserving.
+        # Below n_embd ~2731 the quantized rate falls under the split mask cost.
         b = _backend(embd = 2048)
         floored = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0", layer_split = True)
         assert floored > b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0")
@@ -467,10 +461,9 @@ class TestContextBufferLayerSplit:
 
 
 class TestLayerSplitWiring:
-    """``load_model``'s ``_cc_bytes`` closure is where the fit learns the device
-    count, so it is the one place that can set ``layer_split``. Source-level because
-    the closure is not reachable without a real load; ``_fit_context_to_vram`` only
-    ever sees it as an opaque ``compute_ctx_bytes_fn``."""
+    """``_cc_bytes`` in ``load_model`` is where the fit learns the device count, so it
+    is the one place that can set ``layer_split``. Source-level because the closure is
+    unreachable without a real load."""
 
     def _cc_bytes_source(self):
         import inspect
@@ -489,17 +482,15 @@ class TestLayerSplitWiring:
         assert "layer_split = n_gpus > 1" in self._cc_bytes_source()
 
     def test_still_scales_by_device_count(self):
-        # The step is per device on top of the existing replication, not instead of
-        # it: n devices x the split rate. Dropping either halves the reserve.
+        # Per device on top of the replication, not instead of it: n x the split rate.
         assert "max(1, n_gpus) * self._compute_buffer_ctx_bytes" in self._cc_bytes_source()
 
 
 class TestPipelineParallelPredicate:
     """The 4x step is llama.cpp's pipeline parallelism (ggml n_copies == 4), which
-    llama-context.cpp declines when there are tensor overrides or KV offload is off.
-    Charging the step on such a launch would waste context for nothing, so the fit
-    has to detect them. Verified causally: on two GPUs, a -ot pattern matching no
-    tensor changes no placement but takes the measured rate from 8.00 to 2.00."""
+    llama-context.cpp declines under tensor overrides or with KV offload off; charging
+    it then would waste context. Causal check: on two GPUs a -ot pattern matching no
+    tensor changes no placement but takes the rate 8.00 -> 2.00."""
 
     def _off(
         self,
@@ -516,8 +507,7 @@ class TestPipelineParallelPredicate:
 
     @pytest.mark.parametrize("flag", ["-ot", "--override-tensor"])
     def test_any_tensor_override_disables(self, flag):
-        # Even a pattern that matches nothing: llama.cpp only checks the list is
-        # non-empty (has_tensor_overrides), which is exactly the causal experiment.
+        # Even a pattern matching nothing: has_tensor_overrides only checks non-empty.
         assert self._off([flag, "zzz_matches_nothing=CUDA0"]) is True
 
     @pytest.mark.parametrize("flag", ["-nkvo", "--no-kv-offload"])
@@ -542,8 +532,7 @@ class TestPipelineParallelPredicate:
         "flag", ["-otd", "--override-tensor-draft", "--spec-draft-override-tensor"]
     )
     def test_draft_override_does_not_disable(self, flag):
-        # -otd targets the speculative draft model, so it does not set the main
-        # model's tensor_buft_overrides and does not disable pipeline parallelism.
+        # -otd targets the draft model, not the main model's tensor_buft_overrides.
         assert self._off([flag, "exps=CPU"]) is False
 
     def test_wired_into_the_fit(self):
