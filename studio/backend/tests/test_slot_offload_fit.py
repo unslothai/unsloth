@@ -141,7 +141,6 @@ class TestSlotsThatFitOnGpu:
         assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 1000) == (None, True, 4)
 
     def test_split_step_does_not_touch_a_single_gpu_candidate(self):
-        # One card is not a split: the step must not cost it slots.
         assert _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576}, split_extra_mib = 500) == (
             _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576})
         )

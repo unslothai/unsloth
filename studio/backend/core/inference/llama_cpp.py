@@ -1718,10 +1718,9 @@ def _swa_full_from_args_or_env(
 def _kv_offload_from_args(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """Resolve llama.cpp's environment and last-wins KV-offload flags (default on).
-
-    llama.cpp parses LLAMA_ARG_KV_OFFLOAD first and argv second, and ``-kvo`` /
-    ``--kv-offload`` is the positive form, so a CLI re-enable beats a false env."""
+    """Resolve llama.cpp's environment and last-wins KV-offload flags (default on):
+    LLAMA_ARG_KV_OFFLOAD parses before argv, and ``-kvo`` / ``--kv-offload`` is the
+    positive form, so a CLI re-enable beats a false env."""
     enabled = True
     value = (os.environ if env is None else env).get("LLAMA_ARG_KV_OFFLOAD")
     if value in _LLAMA_ARG_FALSE_VALUES:
@@ -1752,18 +1751,17 @@ def _pipeline_parallel_disabled_by_args(
 ) -> bool:
     """Whether the launch turns OFF llama.cpp's pipeline parallelism, i.e. the 4x in
     ``_CTX_COMPUTE_SPLIT_MULT``. llama-context.cpp requires ``-sm layer``, KV offload
-    on and an empty tensor-override list (among other things); anything here takes the
-    multiplier back to 1x, so charging it anyway would waste context. Studio passes
-    none of it, but extra_args and the environment can.
+    on and an empty tensor-override list (among other things); anything here is back to
+    1x, and charging the multiplier anyway would waste context. Studio passes none of
+    it, but extra_args and the environment can.
 
-    ``-cmoe`` and ``-ncmoe`` count because both push into ``tensor_buft_overrides``
-    exactly like ``-ot`` (common/arg.cpp). ``-otd`` does not: it targets the draft
-    model. LLAMA_ARG_SPLIT_MODE is not read here -- the launch pops a non-layer
-    inherited value on the layer path, so it never reaches the child.
-
-    Over-reserving only costs context; under-reserving OOMs the split, so every
-    ambiguous input resolves to "still pipelined". ``n_layers`` is the GGUF block
-    count for the ``-ngl`` check below; None/0 means unknown."""
+    ``-cmoe`` / ``-ncmoe`` count: both push into ``tensor_buft_overrides`` exactly like
+    ``-ot`` (common/arg.cpp). ``-otd`` does not - it targets the draft model.
+    LLAMA_ARG_SPLIT_MODE is not read here: the launch pops a non-layer inherited value
+    on the layer path, so it never reaches the child. Ambiguous input resolves to
+    "still pipelined" - over-reserving only costs context, under-reserving OOMs the
+    split. ``n_layers`` is the GGUF block count for the ``-ngl`` check below; None/0
+    means unknown."""
     source_env = os.environ if env is None else env
     if source_env.get("LLAMA_ARG_OVERRIDE_TENSOR"):
         return True
@@ -1781,10 +1779,8 @@ def _pipeline_parallel_disabled_by_args(
         return True
     # Pipelining needs n_gpu_layers > n_layer_all, so a user -ngl (appended after
     # Studio's -ngl -1, last-wins) that cannot exceed the count loads a prefix and
-    # turns it off. Negative means all layers, and a value above the count still
-    # pipelines, so both keep the step. n_layers is Studio's block_count, which can
-    # undercount n_layer_all (MTP layers), so a value in between keeps the step:
-    # over-reserving costs context, under-reserving OOMs.
+    # turns it off. Negative (all layers) or above the count keeps the step, even
+    # in between: n_layers is block_count and can undercount n_layer_all (MTP layers).
     if n_layers:
         try:
             gpu_layers = parse_gpu_layers_override(extra_args)
@@ -1795,8 +1791,7 @@ def _pipeline_parallel_disabled_by_args(
     values = [str(raw) for raw in extra_args or ()]
     for i, raw in enumerate(values):
         flag = _flag_name(raw)
-        # Any -ot disables it even if the pattern matches nothing: llama.cpp only
-        # checks the override list is non-empty.
+        # Any -ot counts even if it matches nothing: the list need only be non-empty.
         if flag in {"-ot", "--override-tensor", "-cmoe", "--cpu-moe"}:
             return True
         if flag in {"-ncmoe", "--n-cpu-moe"}:
@@ -4439,15 +4434,14 @@ class LlamaCppBackend:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
         The device count comes out of the footprint, so the first pass must price the
-        compute buffer at the single-device rate -- but a layer split replicates a
-        BIGGER one per card (see ``_CTX_COMPUTE_SPLIT_MULT``). ``split_extra_bytes``
-        is that per-device step (0 when llama.cpp declines pipeline parallelism):
-        charge it and re-select once the count is known to be > 1. One retry is
-        exact, the step being count-independent. The bigger overhead can cut
-        ``_select_gpus``'s usable-card count to one, and a lone card is not a split,
-        so a retry landing below two devices is re-priced without the delta. Still
-        no fit returns (None, True) -> --fit on, i.e. CPU offload rather than a pin
-        that OOMs at launch."""
+        compute buffer at the single-device rate -- but a layer split replicates a BIGGER
+        one per card (see ``_CTX_COMPUTE_SPLIT_MULT``). ``split_extra_bytes`` is that
+        per-device step (0 when llama.cpp declines pipeline parallelism): charge it and
+        re-select once the count is known to be > 1, exact in one retry since the step is
+        count-independent. The bigger overhead can cut ``_select_gpus``'s usable-card
+        count to one, and a lone card is not a split, so a retry landing below two
+        devices is re-priced without the delta. Still no fit returns (None, True) ->
+        --fit on, i.e. CPU offload rather than a pin that OOMs at launch."""
         gpu_indices, use_fit = LlamaCppBackend._select_gpus(
             model_size_bytes,
             gpus,
@@ -4482,14 +4476,13 @@ class LlamaCppBackend:
 
     @staticmethod
     def _every_gpu_holds_reserve(usable_mib: Iterable[float], reserve_bytes: int) -> bool:
-        """Whether every card in a layer-split subset can hold the reserve it
-        replicates (flat per-device overhead + its own context-compute copy).
-
-        A pooled budget cannot see this: a roomy card's spare VRAM covers a nearly
-        full card's copy in the sum, and the small card OOMs at launch. Bites when
-        the subset loop cannot start at one GPU (``_auto_min_gpus`` >= 2, set by every
-        tensor -> layer downgrade); starting at one, the n-1 subset having failed
-        already bounds the smallest card from below by the reserve."""
+        """Whether every card in a layer-split subset can hold the reserve it replicates
+        (flat per-device overhead + its own context-compute copy). A pooled budget cannot
+        see this: in the sum a roomy card's spare VRAM covers a nearly full card's copy,
+        and the small card OOMs at launch. Bites when the subset loop cannot start at
+        one GPU (``_auto_min_gpus`` >= 2, set by every tensor -> layer downgrade);
+        starting at one, the failed n-1 subset already bounds the smallest card from
+        below by the reserve."""
         reserve_mib = reserve_bytes / (1024 * 1024)
         values = list(usable_mib)
         return bool(values) and all(usable >= reserve_mib for usable in values)
@@ -4941,11 +4934,10 @@ class LlamaCppBackend:
     # Per-device f16 ctx-linear rate steps 4x once the model spans >1 device under
     # `-sm layer`: pipeline parallelism sets the ggml scheduler's n_copies to
     # GGML_SCHED_MAX_COPIES == 4, and the [n_kv, n_ubatch] f16 KQ mask is a
-    # GGML_TENSOR_FLAG_INPUT, so 1 live copy becomes 4. Hence a step on "is split",
-    # not a ramp in device count: measured 2.00 B/tok/ubatch on 1 GPU and 8.00 on
-    # 2-8 GPUs, architecture-independent and --parallel-independent. Charging 1x on
-    # a split under-reserves 2.67x (= 8/(2*1.5)). llama.cpp declines pipeline
-    # parallelism in the cases _pipeline_parallel_disabled_by_args covers.
+    # GGML_TENSOR_FLAG_INPUT, so 1 live copy becomes 4. Hence a step on "is split", not
+    # a ramp in device count: measured 2.00 B/tok/ubatch on 1 GPU and 8.00 on 2-8 GPUs,
+    # architecture- and --parallel-independent. Charging 1x on a split under-reserves
+    # 2.67x (= 8/(2*1.5)). llama.cpp declines it in _pipeline_parallel_disabled_by_args.
     _CTX_COMPUTE_SPLIT_MULT = 4
     # DeepSeek-V4 (deepseek4): its lightning indexer + sparse attention reserve a large
     # context-scaling compute buffer the rates above miss (present even with an f16
@@ -5028,9 +5020,8 @@ class LlamaCppBackend:
             1,
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
-        # One KQ mask copy ([n_kv, n_ubatch] f16), n_embd-independent. Every rate
-        # below is a single-GPU total containing exactly one of these, so a split
-        # charges the extra copies on top.
+        # One KQ mask copy ([n_kv, n_ubatch] f16), n_embd-independent. Every rate below
+        # is a single-GPU total containing exactly one, so a split adds the extra copies.
         mask_rate = ub * 2 * self._CTX_COMPUTE_F16_MASK_SAFETY
         split_extra = (self._CTX_COMPUTE_SPLIT_MULT - 1) * mask_rate if layer_split else 0.0
         if getattr(self, "_architecture", None) == "deepseek4":
@@ -5072,9 +5063,8 @@ class LlamaCppBackend:
         else:
             # f16/bf16/f32: only the KQ mask.
             per_tok = mask_rate
-        # Only the mask goes 1x -> 4x; the dequant scratch does not. So ADD the extra
-        # copies. max() would treat them as alternatives and under-reserve the
-        # quantized path by the whole dequant scratch.
+        # Only the mask goes 1x -> 4x, not the dequant scratch, so ADD the extra copies:
+        # max() would under-reserve the quantized path by the whole dequant scratch.
         return int((per_tok + split_extra) * n_ctx)
 
     def _slots_that_fit_on_gpu(
@@ -8267,10 +8257,9 @@ class LlamaCppBackend:
                             )
                             # The compute buffer is replicated on every device in a
                             # layer split; fold it into the per-device reserve so a
-                            # multi-GPU pin sizes each card for its own copy. Priced at
-                            # the single-device rate because the count comes out of this
-                            # figure, then re-checked at the split rate once the count
-                            # is known (falling back to --fit on if it no longer fits).
+                            # multi-GPU pin sizes each card for its own copy. Priced
+                            # single-device (the count comes out of this figure), then
+                            # re-checked at the split rate, falling back to --fit on.
                             gpu_indices, use_fit = self._select_gpus_split_aware(
                                 requested_total,
                                 gpus,

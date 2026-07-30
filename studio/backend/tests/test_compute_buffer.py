@@ -355,10 +355,9 @@ class TestContextBufferDSV4:
 
 
 class TestContextBufferLayerSplit:
-    """``layer_split``: the per-device f16 (KQ-mask) rate steps up 4x once the model
-    spans more than one device under ``-sm layer``. A step on "is split", not a ramp
-    in device count. ``_MEASURED`` holds the rates read off llama.cpp's own memory
-    breakdown (compute-column ctx slope / n_ctx / n_ubatch)."""
+    """The per-device f16 (KQ-mask) rate steps 4x once the model spans >1 device under
+    ``-sm layer``: a step on "is split", not a ramp in device count. ``_MEASURED`` is
+    from llama.cpp's memory breakdown: compute-column ctx slope / n_ctx / n_ubatch."""
 
     _RATE_SINGLE = 2.0  # B/tok/ubatch, per device
     _RATE_SPLIT = 8.0
@@ -488,9 +487,8 @@ class TestContextBufferLayerSplit:
 
 
 class TestContextBufferInklingSplit:
-    """Inkling's own rates are single-device totals like the generic ones, and the
-    banded 8192 B/tok has only ~1.5x headroom over its 5.6 KiB/tok measurement -- too
-    little to absorb a split's extra KQ-mask copies."""
+    """Inkling's rates are single-device totals too, and the banded 8192 B/tok has only
+    ~1.5x headroom over its 5.6 KiB/tok measurement, too little for a split's masks."""
 
     _MEASURED_BANDED = 5734  # ~5.6 KiB/tok compute at ub 512 (see the constant)
     _CTX = 1048576
@@ -546,9 +544,8 @@ class TestContextBufferInklingSplit:
 
 
 class TestLayerSplitWiring:
-    """``_cc_bytes`` in ``load_model`` is where the fit learns the device count, so it
-    is the one place that can set ``layer_split``. Source-level because the closure is
-    unreachable without a real load."""
+    """``_cc_bytes`` in ``load_model`` learns the device count, so it is the one place
+    that can set ``layer_split``. Source-level: the closure needs a real load."""
 
     def _cc_bytes_source(self):
         import inspect
@@ -573,10 +570,9 @@ class TestLayerSplitWiring:
 
 class TestPipelineParallelPredicate:
     """The 4x step is llama.cpp's pipeline parallelism (ggml n_copies == 4), which
-    llama-context.cpp declines unless the split mode is layer, KV offload is on and
-    the tensor-override list is empty; charging it then would waste context. Causal
-    check: on two GPUs a -ot pattern matching no tensor changes no placement but takes
-    the rate 8.00 -> 2.00. Env is parsed before argv, so every toggle is last-wins."""
+    llama-context.cpp declines unless the split mode is layer, KV offload is on and the
+    tensor-override list is empty; charging it then wastes context. Causal check: on 2
+    GPUs a -ot matching nothing changes no placement yet takes the rate 8.00 -> 2.00."""
 
     def _off(
         self,
@@ -626,8 +622,7 @@ class TestPipelineParallelPredicate:
 
     @pytest.mark.parametrize("flag", ["-kvo", "--kv-offload"])
     def test_cli_kv_offload_reenable_beats_a_false_env(self, flag):
-        # The positive form exists, so this launch really does keep pipelining on:
-        # reserving 1x here would OOM the split.
+        # The positive form exists, so this launch pipelines: 1x here would OOM it.
         assert self._off([flag], env = {"LLAMA_ARG_KV_OFFLOAD": "0"}) is False
 
     def test_last_kv_offload_flag_wins(self):
@@ -663,9 +658,8 @@ class TestPipelineParallelPredicate:
         assert "elifgpusandself._can_estimate_kv()andeffective_ctx>0:" in compact
 
     def test_env_split_mode_is_ignored(self):
-        # load_model pops a non-layer inherited LLAMA_ARG_SPLIT_MODE on the layer
-        # path, so the child always runs -sm layer; honoring it here would reserve
-        # 1x for a launch that pipelines.
+        # load_model pops a non-layer inherited LLAMA_ARG_SPLIT_MODE on the layer path,
+        # so the child always runs -sm layer; honoring it would reserve 1x for a split.
         assert self._off([], env = {"LLAMA_ARG_SPLIT_MODE": "row"}) is False
 
     def test_layer_path_scrubs_a_non_layer_split_mode_env(self):
@@ -757,16 +751,14 @@ class TestPipelineParallelPredicate:
 
 
 class TestPerDeviceSplitReserve:
-    """The auto-context loop admits a GPU subset on the POOLED budget, but the
-    per-device reserve (flat layer overhead + this PR's enlarged context-compute
-    copy) is replicated on every card. A roomy card's spare VRAM covers a nearly
-    full card's copy in the sum, and the small card OOMs at launch.
-
-    Exposed when the loop cannot start at one GPU (``_auto_min_gpus >= 2``, set by
-    every tensor -> layer downgrade). Starting at one card, the pooled test already
-    charges n copies where the per-card test charges one, so a subset of size n is
-    only reached after n-1 failed, which bounds the smallest card from below by the
-    reserve -- the check is then provably redundant, homogeneous or not."""
+    """The auto-context loop admits a GPU subset on the POOLED budget, but the per-device
+    reserve (flat layer overhead + this PR's enlarged context-compute copy) is replicated
+    on every card: in the sum a roomy card's spare VRAM covers a nearly full card's copy,
+    and the small card OOMs at launch. Exposed when the loop cannot start at one GPU
+    (``_auto_min_gpus >= 2``, set by every tensor -> layer downgrade); starting at one,
+    the pooled test charges n copies where the per-card test charges one, so size n is
+    reached only after n-1 failed, which bounds the smallest card below by the reserve -
+    the check is then provably redundant, homogeneous or not."""
 
     _OH = LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB * MIB
     _UB = 2048
@@ -937,15 +929,13 @@ class TestPerDeviceSplitReserve:
 
 
 class TestSplitRateRecheckAfterSelection:
-    """``_select_gpus`` derives the device count FROM the footprint, so the paths that
-    call it can only price the context-compute buffer at the single-device rate. A
-    multi-GPU answer then has to be re-priced at the split rate before it is pinned
-    with ``use_fit = False``, or a high-context explicit request OOMs at launch.
-
-    Synthetic VRAM maps over the production helper: 24 GB cards at 0.97 (usable 23838
-    MiB each), ctx 1M at ub 512 f16 -> 1536 MiB of compute per device single-device,
-    6144 MiB split, so each card in a split owes 4608 MiB more than the first pass
-    charged it."""
+    """``_select_gpus`` derives the device count FROM the footprint, so its callers can
+    only price the context-compute buffer at the single-device rate. A multi-GPU answer
+    then has to be re-priced at the split rate before it is pinned with
+    ``use_fit = False``, or a high-context explicit request OOMs at launch. Synthetic
+    VRAM maps over the production helper: 24 GB cards at 0.97 (usable 23838 MiB each),
+    ctx 1M at ub 512 f16 -> 1536 MiB of compute per device single-device, 6144 MiB split,
+    so each card in a split owes 4608 MiB more than the first pass charged it."""
 
     _OH = LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB * MIB
     _UB = 512
@@ -1010,7 +1000,6 @@ class TestSplitRateRecheckAfterSelection:
         assert self._pin(40_000, 3) == ([0, 1, 2], False)
 
     def test_single_gpu_pin_is_untouched(self):
-        # The split rate must not cost a single-card load any context.
         assert self._pin(20_000, 2) == ([0], False)
         assert self._pin(20_000, 2, recheck = False) == ([0], False)
 
@@ -1077,8 +1066,7 @@ class TestSplitRateRecheckAfterSelection:
         # Explicit-context pin and the reduced-slot retry both pass the step.
         assert load.count("split_extra_bytes=_cc_split_extra(effective_ctx)") == 2
         assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
-        # The step rides the same pipelining gate as _cc_bytes, so it is 0 when
-        # llama.cpp declines the split.
+        # The step rides _cc_bytes' pipelining gate, so it is 0 when llama.cpp declines.
         assert "returnmax(0,_cc_bytes(ctx,2)//2-_cc_bytes(ctx))" in load
         slots = "".join(inspect.getsource(LlamaCppBackend._slots_that_fit_on_gpu).split())
         assert "self._select_gpus_split_aware(" in slots
