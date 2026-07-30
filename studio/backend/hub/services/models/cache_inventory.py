@@ -821,15 +821,17 @@ def _scan_cached_models() -> list[dict]:
                 )
                 # The payload flags are OR-ed over every revision, so a repo with
                 # config.json in one snapshot and the weights in another looks
-                # runnable while no single directory can serve it. With no
-                # self-contained snapshot AND no refs/main to land on, the row's
-                # load id resolves to nothing offline and reaches for the Hub
+                # runnable while no single directory can serve it. An empty set
+                # means exactly that: nothing on disk classifies as this format on
+                # its own, so the row cannot load offline and reaches for the Hub
                 # online, which is the behaviour this branch exists to stop.
-                if (
-                    not payload.payload_snapshots
-                    and identity.load_id == repo_id
-                    and not hf_cache_scan.default_ref_resolves_on_disk(repo_path)
-                ):
+                #
+                # Deliberately unqualified. Whether the load id is the repo id or
+                # a pinned path makes no difference, since a repo outside the
+                # active cache is always pinned to a path, and neither does a
+                # resolving refs/main: if the ref landed on a snapshot that could
+                # serve the payload, that snapshot would be in this set.
+                if not payload.payload_snapshots:
                     snapshot_partial = True
                 row = {
                     "repo_id": repo_id,

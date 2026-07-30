@@ -341,13 +341,15 @@ def test_a_resolvable_repo_still_loads_by_repo_id(tmp_path, monkeypatch):
 
 
 def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
+    """The pin only defers to refs/main when it names a directory that is
+    actually on disk; a dangling or absent ref has to fall through."""
     dangling = _build_repo(tmp_path, name = "models--Org--Dangling")
     resolved = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Resolved")
     detached = _build_repo(tmp_path, ref = None, name = "models--Org--Detached")
 
-    assert inventory_scan.default_ref_resolves_on_disk(dangling) is False
-    assert inventory_scan.default_ref_resolves_on_disk(resolved) is True
-    assert inventory_scan.default_ref_resolves_on_disk(detached) is False
+    assert inventory_scan.default_ref_snapshot(dangling) is None
+    assert inventory_scan.default_ref_snapshot(resolved) is not None
+    assert inventory_scan.default_ref_snapshot(detached) is None
 
 
 # --- the load id must name a snapshot that holds the advertised payload ------
@@ -1243,7 +1245,7 @@ def test_a_resolving_ref_is_not_judged_on_the_recovery_walk(tmp_path, monkeypatc
         ref = OLDER,
     )
 
-    assert inventory_scan.default_ref_resolves_on_disk(repo_dir) is True
+    assert inventory_scan.default_ref_snapshot(repo_dir) is not None
     rows = _autoload_rows(tmp_path, monkeypatch)
 
     # The ref resolves, so the load id stays the repo id and the row keeps the
@@ -1947,3 +1949,105 @@ def test_a_whole_repo_is_still_offered_by_repo_id_as_downloaded(tmp_path, monkey
     assert [(v.quant, bool(v.downloaded), bool(v.partial)) for v in response.variants] == [
         ("Q4_K_M", True, False)
     ]
+
+
+def _split_payload_rows(tmp_path, monkeypatch, *, where: str, refs: dict) -> list[dict]:
+    """A repo whose config.json and weights sit in DIFFERENT snapshots, so no
+    single directory can serve a load, placed in the active or in a legacy cache."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    active = tmp_path / "active"
+    legacy = tmp_path / "legacy"
+    active.mkdir()
+    legacy.mkdir()
+    _repo_with(
+        active if where == "active" else legacy,
+        snapshots = {
+            SNAPSHOT: {"config.json": b'{"model_type":"llama"}'},
+            OLDER: {"model.safetensors": b"\0" * 256},
+        },
+        refs = refs,
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        return cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+
+@pytest.mark.parametrize("where", ["active", "legacy"])
+@pytest.mark.parametrize(
+    "ref_label, refs",
+    [
+        ("dangling", {"main": UPSTREAM_HEAD}),
+        ("resolves-to-the-config-half", {"main": SNAPSHOT}),
+        ("resolves-to-the-weights-half", {"main": OLDER}),
+        ("no-refs", {}),
+    ],
+)
+def test_a_split_payload_is_partial_wherever_it_is_cached(
+    where, ref_label, refs, tmp_path, monkeypatch
+):
+    """The payload flags are OR-ed over revisions, so a repo holding config.json
+    in one snapshot and the weights in another reads as runnable while nothing on
+    disk can serve it.
+
+    Neither the cache it sits in nor the state of refs/main changes that. A repo
+    outside the active cache is always pinned to an absolute snapshot path, and a
+    resolving ref only ever lands on one of the two halves: if it named a
+    directory that could serve the payload, that directory would be a payload
+    snapshot and this would not be the empty case."""
+    rows = _split_payload_rows(tmp_path, monkeypatch, where = where, refs = refs)
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+@pytest.mark.parametrize("where", ["active", "legacy"])
+@pytest.mark.parametrize("ref_label, refs", [("dangling", {"main": UPSTREAM_HEAD}),
+                                             ("resolving", {"main": SNAPSHOT})])
+def test_a_self_contained_snapshot_is_not_made_partial_by_a_second_one(
+    where, ref_label, refs, tmp_path, monkeypatch
+):
+    """The negative control that matters most: the un-hiding this branch exists
+    for must survive. One snapshot holds a whole payload and a second holds only
+    weights, so a payload snapshot exists and the row stays chattable."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    active = tmp_path / "active"
+    legacy = tmp_path / "legacy"
+    active.mkdir()
+    legacy.mkdir()
+    _repo_with(
+        active if where == "active" else legacy,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+            },
+            OLDER: {"model.safetensors": b"\0" * 256},
+        },
+        refs = refs,
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True

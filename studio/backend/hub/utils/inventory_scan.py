@@ -411,15 +411,6 @@ def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
         return None
 
 
-def default_ref_resolves_on_disk(repo_dir: Path) -> bool:
-    """Whether ``refs/main`` names a snapshot that exists in *repo_dir*.
-
-    When it does not, ``from_pretrained(repo_id)`` fails offline and fetches
-    upstream HEAD online, so callers hand out the snapshot path instead.
-    """
-    return default_ref_snapshot(repo_dir) is not None
-
-
 def token_fingerprint(hf_token: Optional[str]) -> str:
     """16-char SHA256 prefix used as a cache-key qualifier for gated repos.
 
