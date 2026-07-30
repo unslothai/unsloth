@@ -108,7 +108,8 @@ def test_post_warm_work_honours_the_coordinated_warm_kill_switch():
     """
     body = _post_warm_body()
     guards = [
-        node for node in body.body
+        node
+        for node in body.body
         if isinstance(node, ast.If) and "DISABLE_ENV_VAR" in ast.unparse(node.test)
     ]
     assert guards, "the kill-switch guard is gone; the RAG warm would import torch anyway"
@@ -118,9 +119,11 @@ def test_post_warm_work_honours_the_coordinated_warm_kill_switch():
     assert any(isinstance(node, ast.Return) for node in guard.body)
 
     # Everything after the guard is what the switch actually disables.
-    after = body.body[body.body.index(guard) + 1:]
+    after = body.body[body.body.index(guard) + 1 :]
     protected = {
-        sub.func.id for stmt in after for sub in ast.walk(stmt)
+        sub.func.id
+        for stmt in after
+        for sub in ast.walk(stmt)
         if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
     }
     assert "_warm_rag_embedder" in protected, (

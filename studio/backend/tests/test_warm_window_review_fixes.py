@@ -158,15 +158,16 @@ def test_building_the_orchestrator_makes_no_outbound_request():
     # Scope to the class: this module defines more than one __init__, and picking
     # whichever ast.walk yields first made this assert a different constructor.
     cls = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef) and node.name == "InferenceOrchestrator"
     )
     init = next(
-        node for node in cls.body
-        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+        node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"
     )
     offenders = [
-        sub for sub in ast.walk(init)
+        sub
+        for sub in ast.walk(init)
         if isinstance(sub, ast.Attribute) and sub.attr == "_fetch_top_models"
     ]
     assert not offenders, (
@@ -182,11 +183,13 @@ def test_the_ranking_fetch_is_started_by_the_first_reader():
         (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
     )
     prop = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "default_models"
     )
     called = {
-        sub.func.attr for sub in ast.walk(prop)
+        sub.func.attr
+        for sub in ast.walk(prop)
         if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
     }
     assert "_start_top_models_fetch" in called
@@ -197,19 +200,18 @@ def test_the_ranking_fetch_honours_hf_hub_offline():
     src = (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_start_top_models_fetch"
     )
     # The name appears in the docstring explaining why the check is needed, so
     # match the executable form: a string constant "HF_HUB_OFFLINE" passed to a
     # call. A docstring is a bare Constant, never a Call argument.
     reads = [
-        sub for sub in ast.walk(fn)
+        sub
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Call)
-        and any(
-            isinstance(a, ast.Constant) and a.value == "HF_HUB_OFFLINE"
-            for a in sub.args
-        )
+        and any(isinstance(a, ast.Constant) and a.value == "HF_HUB_OFFLINE" for a in sub.args)
     ]
     assert reads, (
         "the lazy start does not read HF_HUB_OFFLINE, so an offline host still "
@@ -224,7 +226,8 @@ def _async_offloaded_names(path: Path, function: str) -> set[str]:
     """Names this async function hands to asyncio.to_thread."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == function
     )
     out: set[str] = set()
@@ -250,10 +253,7 @@ def test_the_openai_model_listing_reaches_the_singleton_off_loop(function):
     """
     path = _BACKEND / "routes" / "inference.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    names = {
-        node.name for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-    }
+    names = {node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)}
     if function not in names:
         pytest.skip(f"{function} is not an async handler in this tree")
     assert "_openai_model_objects" in _async_offloaded_names(path, function)
@@ -264,7 +264,8 @@ def test_the_model_config_capability_block_runs_off_loop():
     path = _BACKEND / "routes" / "models.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "get_model_config"
     )
     dumped = ast.dump(fn)
@@ -274,13 +275,11 @@ def test_the_model_config_capability_block_runs_off_loop():
     )
     # And the inline calls must be gone from the handler body proper.
     inline = [
-        sub for sub in ast.walk(fn)
-        if isinstance(sub, ast.Call)
-        and getattr(sub.func, "id", None) == "is_vision_model"
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call) and getattr(sub.func, "id", None) == "is_vision_model"
     ]
-    assert len(inline) == 1, (
-        "is_vision_model is called somewhere other than the offloaded helper"
-    )
+    assert len(inline) == 1, "is_vision_model is called somewhere other than the offloaded helper"
 
 
 # ------------------------------------------------------------- kill switch
@@ -295,10 +294,12 @@ def test_the_torch_kill_switch_leaves_mlx_selfheal_running():
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_post_warm_background_work"
     )
     body = fn.body
+
     def _index_of(predicate) -> int:
         for i, stmt in enumerate(body):
             if predicate(ast.dump(stmt)):
@@ -325,14 +326,16 @@ def test_the_purge_rechecks_before_touching_sys_modules():
     src = (_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "purge_partial_import"
     )
     # `package in sys.modules` is a Compare with an In op whose comparator is the
     # sys.modules attribute; matching the dumped text for "sys.modules" finds
     # nothing, because the dump spells it Attribute(..., attr='modules').
     checks = [
-        sub for sub in ast.walk(fn)
+        sub
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Compare)
         and any(isinstance(op, ast.In) for op in sub.ops)
         and any(
@@ -356,7 +359,11 @@ def test_the_purge_stops_when_the_parent_reappears(monkeypatch):
     fake = {"pkg.a": object(), "pkg.b": object(), "pkg.c": object()}
 
     class _Watcher(dict):
-        def pop(self, key, default = None):
+        def pop(
+            self,
+            key,
+            default = None,
+        ):
             popped.append(key)
             # A retry publishes the parent right after the first pop.
             if len(popped) == 1:
@@ -368,9 +375,7 @@ def test_the_purge_stops_when_the_parent_reappears(monkeypatch):
     monkeypatch.setattr(warmup, "_is_extension_module", lambda name: False)
 
     warmup.purge_partial_import("pkg")
-    assert len(popped) == 1, (
-        f"kept purging after the parent came back: popped {popped}"
-    )
+    assert len(popped) == 1, f"kept purging after the parent came back: popped {popped}"
 
 
 def test_the_purge_still_cleans_an_uncontested_failure(monkeypatch):
