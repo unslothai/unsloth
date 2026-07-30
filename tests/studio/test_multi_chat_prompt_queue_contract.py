@@ -248,7 +248,14 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
     assert "{ trackQueuedSettings: false }" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel()") >= 2
+    assert CHAT_ADAPTER.count(
+        "await resolveQueuedEmptyLocalModel(abortSignal)"
+    ) >= 2
+    assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
+    assert "const runSerializedAutoLoad = async" in CHAT_ADAPTER
+    assert "store.setModelLoading(true)" in CHAT_ADAPTER
+    assert "store.setModelLoading(false)" in CHAT_ADAPTER
+    assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await persistResolvedQueuedModel(params.checkpoint)") >= 2
     assert "notifyQueuedRunFailed();\n          throw error;" in CHAT_ADAPTER
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS

@@ -1119,7 +1119,7 @@ type ChatRuntimeStore = {
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (
     params: InferenceParams,
-    options?: { trackQueuedSettings?: boolean },
+    options?: { persist?: boolean; trackQueuedSettings?: boolean },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
@@ -1665,7 +1665,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(params, state.params);
-      if (state.settingsHydrated && hasKeys(changedParams)) {
+      if (
+        options?.persist !== false &&
+        state.settingsHydrated &&
+        hasKeys(changedParams)
+      ) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint

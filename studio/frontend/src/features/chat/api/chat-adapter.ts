@@ -1492,6 +1492,7 @@ type AutoLoadOptions = {
   skipAdoptServerModel?: boolean;
   preserveVisibleSettings?: boolean;
   captureResolvedRuntime?: (runtime: QueuedResolvedModelRuntime) => void;
+  abortSignal?: AbortSignal;
 };
 
 function applyAutoLoadRuntimeState(
@@ -1525,11 +1526,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
-  if (
-    !options?.skipAdoptServerModel &&
-    (await tryAdoptServerActiveModel())
-  ) {
-    return { loaded: true, blockedByTrustRemoteCode: false };
+  options?.abortSignal?.throwIfAborted();
+  if (!options?.skipAdoptServerModel) {
+    const adoptedServerModel = await tryAdoptServerActiveModel();
+    options?.abortSignal?.throwIfAborted();
+    if (adoptedServerModel) {
+      return { loaded: true, blockedByTrustRemoteCode: false };
+    }
   }
 
   const store = useChatRuntimeStore.getState();
@@ -1589,12 +1592,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
   }): Promise<boolean> {
+    options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
     });
+    options?.abortSignal?.throwIfAborted();
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
     if (
@@ -1723,6 +1728,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       return false;
     }
     loadAttempts += 1;
+    options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
       model_path: modelPath,
       hf_token: hfToken,
@@ -1751,6 +1757,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           }
         : {}),
     });
+    // Do not apply this load to the visible runtime after its queue was
+    // cancelled. We still await /load so the model lifecycle remains
+    // serialized before a foreground selection can begin.
+    options?.abortSignal?.throwIfAborted();
     applyAutoLoadRuntimeState(options, () => {
       // Only persist the global preference when the value came from the global
       // settings. A per-model config's choice must stay load-local, or autoloading
@@ -1781,7 +1791,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               ? loadResp.context_length ?? 131072
               : effectiveMaxSeqLength,
         },
-        { trackQueuedSettings: !options?.preserveVisibleSettings },
+        {
+          persist: !options?.preserveVisibleSettings,
+          trackQueuedSettings: !options?.preserveVisibleSettings,
+        },
       );
       const autoModel: ChatModelSummary = {
         id: loadedModelId,
@@ -1889,6 +1902,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       listCachedGguf().catch(() => []),
       listCachedModels().catch(() => []),
     ]);
+    options?.abortSignal?.throwIfAborted();
 
     if (lastLoaded) {
       if (lastLoaded.kind === "gguf") {
@@ -1925,6 +1939,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               }
             }
           } catch {
+            options?.abortSignal?.throwIfAborted();
             hadNonTrustFailure = true;
             skippedAutoLoadCandidates.add(
               autoLoadCandidateKey("gguf", repo.repo_id, lastLoaded.ggufVariant),
@@ -1949,6 +1964,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               return { loaded: true, blockedByTrustRemoteCode: false };
             }
           } catch {
+            options?.abortSignal?.throwIfAborted();
             hadNonTrustFailure = true;
             skippedAutoLoadCandidates.add(
               autoLoadCandidateKey("model", repo.repo_id),
@@ -1998,6 +2014,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             }
           }
         } catch {
+          options?.abortSignal?.throwIfAborted();
           hadNonTrustFailure = true;
           continue;
         }
@@ -2032,6 +2049,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
+          options?.abortSignal?.throwIfAborted();
           hadNonTrustFailure = true;
           continue;
         }
@@ -2079,6 +2097,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         return { loaded: false, blockedByTrustRemoteCode };
       }
       loadAttempts += 1;
+      options?.abortSignal?.throwIfAborted();
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
@@ -2104,6 +2123,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
       });
+      options?.abortSignal?.throwIfAborted();
       applyAutoLoadRuntimeState(options, () => {
         saveSpeculativeType(specSettings.speculativeType);
         persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
@@ -2123,7 +2143,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             ...store.params,
             maxTokens: loadResp.context_length ?? 131072,
           },
-          { trackQueuedSettings: !options?.preserveVisibleSettings },
+          {
+            persist: !options?.preserveVisibleSettings,
+            trackQueuedSettings: !options?.preserveVisibleSettings,
+          },
         );
         const defaultModel: ChatModelSummary = {
           id: "unsloth/Qwen3.5-4B-MTP-GGUF",
@@ -2173,6 +2196,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
+      options?.abortSignal?.throwIfAborted();
       toast.dismiss(toastId);
       hadNonTrustFailure = true;
       return {
@@ -2182,6 +2206,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       };
     }
   } catch {
+    options?.abortSignal?.throwIfAborted();
     toast.dismiss(toastId);
     hadNonTrustFailure = true;
     return {
@@ -2191,11 +2216,30 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   }
 }
 
-async function resolveQueuedEmptyLocalModel(): Promise<{
+async function resolveQueuedEmptyLocalModel(
+  abortSignal: AbortSignal,
+): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
   modelRuntime: QueuedResolvedModelRuntime | null;
 }> {
+  abortSignal.throwIfAborted();
+  if (useChatRuntimeStore.getState().modelLoading) {
+    await waitForModelReady(abortSignal);
+    abortSignal.throwIfAborted();
+  }
+  const runSerializedAutoLoad = async (options?: AutoLoadOptions) => {
+    const store = useChatRuntimeStore.getState();
+    store.setModelLoading(true);
+    try {
+      return await autoLoadSmallestModel({
+        ...options,
+        abortSignal,
+      });
+    } finally {
+      store.setModelLoading(false);
+    }
+  };
   const visibleState = useChatRuntimeStore.getState();
   if (isExternalModelId(visibleState.params.checkpoint)) {
     const status = await getInferenceStatus().catch(() => null);
@@ -2227,7 +2271,7 @@ async function resolveQueuedEmptyLocalModel(): Promise<{
     let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
     let modelRuntime: QueuedResolvedModelRuntime | null = null;
     try {
-      result = await autoLoadSmallestModel({
+      result = await runSerializedAutoLoad({
         skipAdoptServerModel: true,
         preserveVisibleSettings: true,
         captureResolvedRuntime: (runtime) => {
@@ -2263,7 +2307,7 @@ async function resolveQueuedEmptyLocalModel(): Promise<{
     return { ...result, modelRuntime };
   }
 
-  const result = await autoLoadSmallestModel();
+  const result = await runSerializedAutoLoad();
   return {
     ...result,
     modelRuntime: result.loaded
@@ -2348,7 +2392,7 @@ export function createOpenAIStreamAdapter(
             ReturnType<typeof resolveQueuedEmptyLocalModel>
           >;
           try {
-            resolution = await resolveQueuedEmptyLocalModel();
+            resolution = await resolveQueuedEmptyLocalModel(abortSignal);
           } catch (error) {
             notifyQueuedRunFailed();
             throw error;
@@ -2692,7 +2736,7 @@ export function createOpenAIStreamAdapter(
           ReturnType<typeof resolveQueuedEmptyLocalModel>
         >;
         try {
-          resolution = await resolveQueuedEmptyLocalModel();
+          resolution = await resolveQueuedEmptyLocalModel(abortSignal);
         } catch (error) {
           clearSelectedImageEditReference();
           notifyQueuedRunFailed();
