@@ -3667,6 +3667,36 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _installed_llama_gfx_archs() -> Optional[frozenset]:
+        """Concrete gfx archs the installed llama.cpp ROCm prebuilt was built
+        for, read from UNSLOTH_PREBUILT_INFO.json in the install dir
+        (mapped_targets, recorded at install time). Returns None when unknown
+        -- missing file, source build, or a non-ROCm bundle -- so callers fail
+        open and keep every device (#7624)."""
+        roots = []
+        custom = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
+        if custom:
+            roots.append(Path(custom))
+        roots.append(Path.home() / ".unsloth" / "llama.cpp")
+        for root in roots:
+            info = root / "UNSLOTH_PREBUILT_INFO.json"
+            try:
+                if not info.is_file():
+                    continue
+                data = json.loads(info.read_text(encoding = "utf-8"))
+            except Exception as e:
+                logger.debug(f"Could not read {info}: {e}")
+                return None
+            targets = data.get("mapped_targets")
+            if not isinstance(targets, list):
+                return None
+            archs = frozenset(
+                str(t).split(":")[0].strip().lower() for t in targets if str(t).strip()
+            )
+            return archs or None
+        return None
+
+    @staticmethod
     def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
         """Query free memory per GPU. Returns ``(gpu_index, free_mib)`` sorted by
         index; empty if no supported GPU is reachable. Thin wrapper over
@@ -3793,6 +3823,14 @@ class LlamaCppBackend:
             # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
             # with the nvidia-smi path.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            # Gate devices on the installed prebuilt's built-arch list so the
+            # free-memory rank can't pick a GPU the binary has no kernels for
+            # (#7624: an iGPU reporting shared RAM outranks the dGPU and
+            # llama-server dies with "device kernel image is invalid"). None =
+            # unknown coverage (source build / non-ROCm) -> keep every device.
+            supported_archs = None
+            if getattr(torch.version, "hip", None) is not None:
+                supported_archs = LlamaCppBackend._installed_llama_gfx_archs()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -3801,6 +3839,27 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
+                if supported_archs is not None:
+                    try:
+                        _arch = (
+                            getattr(
+                                torch.cuda.get_device_properties(ordinal),
+                                "gcnArchName",
+                                "",
+                            )
+                            or ""
+                        )
+                    except Exception:
+                        _arch = ""
+                    _base = _arch.split(":")[0].strip().lower()
+                    # Unknown arch fails open; only skip a device the prebuilt
+                    # demonstrably cannot run on.
+                    if _base and _base not in supported_archs:
+                        logger.warning(
+                            f"Skipping GPU {idx} ({_base}): installed llama.cpp "
+                            f"prebuilt only covers {sorted(supported_archs)}"
+                        )
+                        continue
                 gpus.append((idx, free_bytes // (1024 * 1024), total_bytes // (1024 * 1024)))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
