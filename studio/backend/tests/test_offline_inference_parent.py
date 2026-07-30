@@ -207,7 +207,7 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
 
         src = Path(_BACKEND_DIR, "core", "training", "worker.py").read_text(encoding = "utf-8")
         m = re.search(
-            r'if\s+"HF_HUB_OFFLINE"\s+not\s+in\s+os\.environ\s*:.*?'
+            r'if\s+"HF_HUB_OFFLINE"\s+not\s+in\s+os\.environ.*?'
             r"print\([^)]*HF_HUB_OFFLINE=1[^)]*\)",
             src,
             flags = re.DOTALL,
@@ -262,7 +262,9 @@ class TestInferenceWorkerProbesForItself:
             encoding = "utf-8",
         )
         start = src.index("# Offline auto-detect")
-        return src[start : start + 1800]
+        # To the end of the block, not a fixed slice: a gate added ahead of it would
+        # otherwise push the tail out of the window and pass vacuously.
+        return src[start : src.index("\n    import warnings", start)]
 
     def test_the_probe_exists_and_runs_before_activation(self):
         import pathlib
@@ -278,7 +280,7 @@ class TestInferenceWorkerProbesForItself:
 
     def test_a_user_set_flag_is_never_overridden(self):
         block = self._block()
-        assert 'if "HF_HUB_OFFLINE" not in os.environ:' in block
+        assert 'if "HF_HUB_OFFLINE" not in os.environ' in block
 
     def test_lifetime_flags_use_the_fail_open_verdict(self):
         """Same reasoning as the training worker: these last the whole process, so an
@@ -299,3 +301,78 @@ class TestInferenceWorkerProbesForItself:
         """An inference worker loads no dataset; the training worker's flag is its own."""
         block = self._block()
         assert "HF_DATASETS_OFFLINE" not in block
+
+
+class TestWorkerProbesOnlyWhenTheHubIsNeeded:
+    """A filesystem-only job never reaches the Hub, so the probe is pure latency: this
+    was DNS-only on main for training, and absent entirely for inference."""
+
+    def _load(self, relpath, name):
+        import importlib.util
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location(name, backend_root / relpath)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_training_gate_classifies_each_shape(self, tmp_path):
+        w = self._load("core/training/worker.py", "training_worker_gate_probe")
+        local = str(tmp_path)
+
+        assert w._training_job_is_local({"model_name": local}) is True
+        assert w._training_job_is_local({"model_name": local, "hf_dataset": ""}) is True
+        # A remote dataset needs the Hub even with a local model.
+        assert w._training_job_is_local(
+            {"model_name": local, "hf_dataset": "org/ds"}
+        ) is False
+        assert w._training_job_is_local({"model_name": "org/model"}) is False
+        # Fail closed on anything unresolvable.
+        assert w._training_job_is_local({}) is False
+        assert w._training_job_is_local({"model_name": None}) is False
+
+    def test_inference_gate_classifies_each_shape(self, tmp_path):
+        w = self._load("core/inference/worker.py", "inference_worker_gate_probe")
+        local = str(tmp_path)
+
+        assert w._hub_targets_are_local(local) is True
+        assert w._hub_targets_are_local(local, None) is True
+        assert w._hub_targets_are_local(local, "org/base") is False
+        assert w._hub_targets_are_local("org/model") is False
+        assert w._hub_targets_are_local(None) is True
+        assert w._hub_targets_are_local(123) is False
+
+    def test_inference_gate_reads_a_local_adapter_base_from_disk(self, tmp_path):
+        """A local adapter pointing at a REMOTE base still needs the probe, and the base
+        is readable without touching the network."""
+        import json
+
+        w = self._load("core/inference/worker.py", "inference_worker_gate_adapter")
+        (tmp_path / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": "org/base"}), encoding = "utf-8",
+        )
+        base = w._recorded_local_adapter_base(str(tmp_path))
+        assert base == "org/base"
+        assert w._hub_targets_are_local(str(tmp_path), base) is False
+
+    def test_inference_gate_handles_a_missing_adapter_config(self, tmp_path):
+        w = self._load("core/inference/worker.py", "inference_worker_gate_noadapter")
+        assert w._recorded_local_adapter_base(str(tmp_path)) is None
+        assert w._recorded_local_adapter_base("org/model") is None
+
+    def test_both_probes_sit_behind_the_gate(self):
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        inf = (backend_root / "core" / "inference" / "worker.py").read_text(
+            encoding = "utf-8",
+        )
+        trn = (backend_root / "core" / "training" / "worker.py").read_text(
+            encoding = "utf-8",
+        )
+        assert "not _hub_targets_are_local(" in inf
+        assert "not _training_job_is_local(config)" in trn
+        # The user's own flag still wins in both.
+        assert inf.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1
+        assert trn.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1

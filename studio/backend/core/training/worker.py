@@ -2327,6 +2327,26 @@ def run_mlx_training_process(
         )
 
 
+
+def _training_job_is_local(config) -> bool:
+    """True when neither the model nor the dataset needs the Hub, so the probe is wasted.
+
+    Fail closed: anything unresolvable counts as remote, since skipping a needed probe
+    costs the retry backoff the probe exists to avoid.
+    """
+    try:
+        from utils.paths import is_local_path
+    except Exception:
+        return False
+    if config.get("hf_dataset"):
+        return False
+    model = config.get("model_name")
+    try:
+        return bool(model) and is_local_path(model)
+    except Exception:
+        return False
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -2356,7 +2376,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
 
     # Offline auto-detect: skip ~25s of HF retries per call when the hub is unreachable.
-    if "HF_HUB_OFFLINE" not in os.environ:
+    # Skipped for a filesystem-only job: a local checkpoint with a local dataset never
+    # reaches the Hub, and main's check here was DNS-only and returned at once, so probing
+    # unconditionally would add seconds to every such startup.
+    if "HF_HUB_OFFLINE" not in os.environ and not _training_job_is_local(config):
         _offline = False
         _network_offline = False
         try:
