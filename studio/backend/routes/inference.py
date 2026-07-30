@@ -14779,6 +14779,21 @@ async def chat_count_tokens(
                 ),
             )
 
+            # The GGUF tool path strips leaked markup from replayed history before
+            # rendering; without the same strip the count prices text it removes.
+            _count_auto_heal = (
+                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+            )
+            _count_history_gate = _display_tool_name_gate(tools_to_use)
+            openai_messages = [dict(msg) for msg in openai_messages]
+            for _msg in openai_messages:
+                if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                    _msg["content"] = _strip_tool_xml_for_display(
+                        _msg["content"],
+                        auto_heal_tool_calls = _count_auto_heal,
+                        enabled_tool_names = _count_history_gate,
+                    ).strip()
+
     # Render in the mode the next completion asks for. llama-server merges the load-time
     # --chat-template-kwargs under whatever a request omits, so sending nothing here
     # prices the template as the model was LOADED rather than as it is about to be used.

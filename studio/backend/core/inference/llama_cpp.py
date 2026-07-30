@@ -13269,9 +13269,9 @@ class LlamaCppBackend:
 
         Non-strict callers keep the historical best-effort behavior and receive
         0 when a count cannot be determined. Strict callers (public count_tokens
-        endpoints) get an exception instead of a successful-looking zero when
-        tokenizer/template calls fail or a multimodal prompt would fall back to a
-        text-only approximation.
+        endpoints) get an exception instead of a successful-looking number when
+        the tokenizer fails or the chat template cannot be rendered, since the
+        text-only fallback is an approximation and not a count.
 
         ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller
         pricing a request that renders the template in a non-default reasoning
@@ -13281,26 +13281,6 @@ class LlamaCppBackend:
             if strict:
                 raise RuntimeError("llama-server is not loaded")
             return 0
-
-        def _has_non_text_content(content) -> bool:
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, str):
-                        continue
-                    if not isinstance(block, dict):
-                        return True
-                    if isinstance(block.get("text"), str):
-                        continue
-                    return True
-            return False
-
-        def _has_non_text_prompt_parts() -> bool:
-            if _has_non_text_content(system):
-                return True
-            for msg in messages or []:
-                if isinstance(msg, dict) and _has_non_text_content(msg.get("content", "")):
-                    return True
-            return False
 
         def _block_text(content) -> str:
             if isinstance(content, str):
@@ -13372,10 +13352,10 @@ class LlamaCppBackend:
                 except Exception:
                     apply_template_failed = True
 
-                if strict and apply_template_failed and _has_non_text_prompt_parts():
-                    raise RuntimeError(
-                        "cannot fall back to text-only token counting for multimodal messages"
-                    )
+                # The fallback drops role markers, special tokens and tool schemas (~30% of a
+                # six-turn two-tool prompt), so a strict caller errors rather than undercount.
+                if strict and apply_template_failed:
+                    raise RuntimeError("llama-server could not render the chat template")
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a
                 # serialized form of the tools so they still contribute to the

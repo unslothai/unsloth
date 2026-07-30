@@ -108,6 +108,11 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   return chain.reverse();
 }
 
+/** Identity of the branch a count priced: another turn moves its length or its last id. */
+function branchSignature(messages: readonly ThreadMessage[]): string {
+  return `${messages.length}:${messages.at(-1)?.id ?? ""}`;
+}
+
 /** The branch the mounted runtime is showing for the thread the store calls active. */
 type ActiveBranchReader = () => readonly ThreadMessage[] | null;
 
@@ -173,8 +178,11 @@ export async function refreshContextUsage(options?: {
         : null;
 
     let runMessages: readonly ThreadMessage[];
+    // Re-read before publishing, so a turn sent while this count was in flight drops it.
+    let countedBranch: string | null = null;
     if (liveBranch && liveBranch.length > 0) {
       runMessages = liveBranch;
+      countedBranch = branchSignature(liveBranch);
     } else {
       const records = threadId ? await listStoredChatMessages(threadId) : [];
       if (stale()) return;
@@ -232,6 +240,18 @@ export async function refreshContextUsage(options?: {
     }
     if (useChatRuntimeStore.getState().contextUsage !== usageBeforeCount) {
       return;
+    }
+    // The snapshot above only sees a completion that WROTE usage. A run stopped before
+    // emitting any leaves it untouched, so the branch is the only witness for a turn added.
+    if (countedBranch != null) {
+      const current = readActiveBranch?.();
+      if (
+        current != null &&
+        current.length > 0 &&
+        branchSignature(current) !== countedBranch
+      ) {
+        return;
+      }
     }
 
     useChatRuntimeStore.getState().setContextUsage({

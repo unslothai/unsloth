@@ -1556,6 +1556,10 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
     )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
+    )
 
 
 class ToolConfirmRequest(BaseModel):

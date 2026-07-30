@@ -1412,6 +1412,7 @@ export async function buildLocalTokenCountExtras(
     mcpEnabledForChat,
     ragEnabled,
     ragSource,
+    autoHealToolCalls,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1432,6 +1433,8 @@ export async function buildLocalTokenCountExtras(
 
   return {
     enable_tools: true,
+    // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
+    auto_heal_tool_calls: autoHealToolCalls,
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),

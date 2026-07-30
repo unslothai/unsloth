@@ -3262,6 +3262,58 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     )
 
 
+# A leaked tool call in a replayed assistant turn, plus a documented example naming a tool
+# that is NOT enabled (prose the strip's gate keeps, in the prompt and in the count).
+_LEAKED_TOOL_HISTORY = [
+    {"role": "user", "content": "weather?"},
+    {
+        "role": "assistant",
+        "content": 'sunny <tool_call>{"name": "web_search", "arguments": {"q": "weather"}}'
+        "</tool_call> and call it as offline_tool[ARGS]{}",
+    },
+    {"role": "user", "content": "and tomorrow?"},
+]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expect_markup"),
+    [
+        # Auto-Heal on (the default) is the shape the GGUF tool path strips before it
+        # renders, so counting the raw markup reports a prompt larger than the one sent.
+        pytest.param({}, False, id = "auto_heal_default_on"),
+        pytest.param({"auto_heal_tool_calls": True}, False, id = "auto_heal_on"),
+        # Off leaves the markup in the real prompt, so the count has to keep it as well.
+        pytest.param({"auto_heal_tool_calls": False}, True, id = "auto_heal_off"),
+    ],
+)
+def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expect_markup):
+    """The GGUF tool path strips stale tool-call XML out of replayed assistant turns before
+    rendering the prompt, so a count that keeps it prices text the next completion removes
+    and reports a tool-enabled chat as closer to its window than it is."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+
+    async def _select(_payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    payload = _count_request(
+        _LEAKED_TOOL_HISTORY,
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        **fields,
+    )
+    assert _counted_body(payload)["input_tokens"] == 99
+    assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
+    assert len(assistant) == 1
+    content = str(assistant[0].get("content", ""))
+    assert ("<tool_call>" in content) is expect_markup, (
+        "the count must render the same replayed history the completion does"
+    )
+    assert "offline_tool[ARGS]" in content, (
+        "an inactive tool name is prose in the real prompt, so the count keeps it too"
+    )
+
+
 _PASSTHROUGH_CATALOG = [
     {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
 ]
@@ -3662,6 +3714,76 @@ def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
         )
         == expected_tokens
     )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # A minja template that cannot render this history (strict role alternation, an
+        # unsupported filter), or a build without the endpoint at all.
+        pytest.param("status", id = "apply_template_rejects"),
+        # The template call times out while the tokenizer answers.
+        pytest.param("raise", id = "apply_template_unreachable"),
+    ],
+)
+def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure):
+    """/apply-template failing on a TEXT-ONLY prompt used to fall through to concatenating
+    message text, which drops every role marker, special token and tool schema (~30% of a
+    six-turn two-tool prompt). Strict callers publish the number they get -- on the context
+    bar, and from /v1/messages/count_tokens -- so it has to be an error, not an estimate."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                if failure == "raise":
+                    raise RuntimeError("timed out")
+                return _FakeResponse({"error": "template error"}, status_code = 500)
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    messages = [{"role": "user", "content": "hi there"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    with pytest.raises(RuntimeError):
+        _CountBackend().count_chat_tokens(messages, None, tools, strict = True)
+    # Non-strict callers (the completion paths' own usage numbers) keep the best-effort
+    # approximation they have always had.
+    assert _CountBackend().count_chat_tokens(messages, None, tools) > 0
 
 
 def test_audio_generate_is_reload_only(monkeypatch):

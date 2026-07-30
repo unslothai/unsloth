@@ -133,6 +133,8 @@ export const world: any = {
   // so that { value: undefined } means "the reply omits input_tokens" rather than "no
   // override", which a bare undefined cannot express.
   countedTokensOverride: undefined as { value: any } | undefined,
+  // Holds the count in flight, so a test can move the world while it is awaiting.
+  countGate: null as Promise<void> | null,
 };
 
 const state: any = {
@@ -217,6 +219,7 @@ function buildLocalTokenCountReasoning(): Record<string, unknown> {
 // omits it, as an older backend would.
 async function countChatInputTokens(payload: any): Promise<any> {
   world.countedMessages.push(payload.messages);
+  if (world.countGate) await world.countGate;
   return {
     input_tokens:
       world.countedTokensOverride === undefined
@@ -694,6 +697,74 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     ) == expected_total, "nor the per-thread cache setActiveThreadId restores from"
     if expected_total is not None:
         assert out["cached"] is not None, "the recount must reach the per-thread cache"
+
+
+@pytest.mark.parametrize(
+    ("send_a_turn", "expected_total"),
+    [
+        # The user sends while the count is in flight and stops the answer before it emits
+        # usage, so contextUsage never moves and the snapshot guard cannot see the turn.
+        pytest.param(True, None, id = "a_turn_arrives_mid_count"),
+        # Control: the branch the count priced is still the one on screen.
+        pytest.param(False, 62, id = "branch_unchanged"),
+    ],
+)
+def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total):
+    """The recount publishes for the branch it priced. A run that starts after the branch is
+    fixed and is stopped (or fails) before it writes usage leaves contextUsage reference-equal
+    to the snapshot, so the total lands anyway -- short by the turn just sent, on a bar
+    nothing recounts again until the next completion."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage,
+              seed,
+              setActiveBranchReader,
+              snapshot,
+              world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            const live = [
+              {{ id: "m1", role: "user", createdAt: new Date(1), content: [{{ type: "text", text: "hi" }}] }},
+              {{ id: "m2", role: "assistant", createdAt: new Date(2), content: [{{ type: "text", text: "yo" }}] }},
+            ];
+            setActiveBranchReader(() => live.slice());
+            seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            if ({str(send_a_turn).lower()}) {{
+              // Sent, then stopped before the first token: no usage is ever written.
+              live.push({{
+                id: "m3",
+                role: "user",
+                createdAt: new Date(3),
+                content: [{{ type: "text", text: "a very long pasted document" }}],
+              }});
+            }}
+            release();
+            await pending;
+
+            const after = snapshot();
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              sent: world.countedMessages.at(-1) ?? [],
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert len(out["sent"]) == 2, "the count priced the branch as it stood"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a total for a branch that has since gained a turn must not reach the bar"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == expected_total
 
 
 def test_adopting_the_resident_gguf_reprices_the_open_thread():
