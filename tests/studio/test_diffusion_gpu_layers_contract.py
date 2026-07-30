@@ -408,12 +408,11 @@ def test_response_models_expose_the_requested_split():
     )
     tree = ast.parse(models_src)
     for name in ("LoadResponse", "InferenceStatusResponse"):
-        cls = next(
-            n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name
-        )
+        cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name)
         fields = {
-            t.target.id for t in cls.body if isinstance(t, ast.AnnAssign)
-            and isinstance(t.target, ast.Name)
+            t.target.id
+            for t in cls.body
+            if isinstance(t, ast.AnnAssign) and isinstance(t.target, ast.Name)
         }
         assert "diffusion_requested_ngl" in fields, f"{name} must report the ask"
 
@@ -432,8 +431,7 @@ def test_every_diffusion_response_also_reports_the_requested_split():
         if "is_diffusion" not in kwargs or "is_gguf" not in kwargs:
             continue
         if not any(
-            isinstance(kw.value, ast.Attribute)
-            and kw.value.attr == "is_diffusion"
+            isinstance(kw.value, ast.Attribute) and kw.value.attr == "is_diffusion"
             for kw in node.keywords
             if kw.arg == "is_diffusion"
         ):
