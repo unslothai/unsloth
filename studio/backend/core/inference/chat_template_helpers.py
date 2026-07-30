@@ -652,9 +652,7 @@ _SCHEMA_KEYED_IDENTIFIERS = frozenset({"properties", "patternProperties", "$defs
 # schema forces the model to satisfy the rewritten regex or echo the rewritten default,
 # and the MCP server then validates the original and rejects the call. This is the case
 # the "[ARGS]" comment above already anticipated.
-_SCHEMA_VALUED_IDENTIFIERS = frozenset(
-    {"enum", "const", "required", "pattern", "default"}
-)
+_SCHEMA_VALUED_IDENTIFIERS = frozenset({"enum", "const", "required", "pattern", "default"})
 
 
 def _unsafe_schema_identifier(value):
