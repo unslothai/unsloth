@@ -438,7 +438,11 @@ def list_partial_gguf_variants_from_state(
     return variants, has_vision
 
 
-def iter_snapshots_preferring_whole(repo_id: str, gguf_variant: Optional[str], root = None):
+def iter_snapshots_preferring_whole(
+    repo_id: str,
+    gguf_variant: Optional[str],
+    root = None,
+):
     """Cache snapshots newest first, but every one holding *gguf_variant* whole ahead of any holding
     it short a shard.
 
