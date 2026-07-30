@@ -98,10 +98,7 @@ def test_a_slow_failure_travels_in_the_body(route):
         return await _collect(await route._tunnel_safe_json(slow_boom(), label = "t"))
 
     body = json.loads(b"".join(asyncio.run(run())))
-    assert body["_deferred_error"] == {
-        "status_code": 500,
-        "detail": "llama-server died",
-    }
+    assert body["_deferred_error"] == {"status_code": 500, "detail": "llama-server died"}
 
 
 def test_an_unexpected_slow_failure_becomes_a_500(route):
