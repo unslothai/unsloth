@@ -1812,6 +1812,38 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
         ),
         pytest.param(
             {
+                "config.json": b'{"model_type":"llama"}',
+                "model.ckpt": b"\0" * 256,
+                "adapter_model.bin": b"\0" * 128,
+            },
+            False,
+            id = "a-whole-ckpt-payload-beside-a-stray-adapter-file",
+        ),
+        pytest.param(
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "diffusion_pytorch_model.safetensors": b"\0" * 256,
+                "adapter_model.bin": b"\0" * 128,
+            },
+            False,
+            id = "a-diffusion-payload-beside-a-stray-adapter-file",
+        ),
+        pytest.param(
+            {"config.json": b'{"model_type":"llama"}', "adapter_model.bin": b"\0" * 128},
+            True,
+            id = "an-adapter-file-standing-in-for-base-weights-that-are-not-here",
+        ),
+        pytest.param(
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "optimizer.bin": b"\0" * 256,
+                "adapter_model.bin": b"\0" * 128,
+            },
+            True,
+            id = "a-training-artefact-is-not-a-payload-either",
+        ),
+        pytest.param(
+            {
                 "adapter_config.json": b'{"peft_type":"LORA"}',
                 "adapter_model.safetensors": b"\0" * 256,
             },

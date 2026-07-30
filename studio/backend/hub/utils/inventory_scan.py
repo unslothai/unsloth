@@ -781,6 +781,8 @@ class _SnapshotPayload(NamedTuple):
     unreadable_config_formats: frozenset
     # Shard families no loader can read even with every numbered file present.
     unloadable_families: frozenset
+    # Kinds whose payload is here but names no family this walk groups.
+    ungrouped: frozenset
 
 
 def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
@@ -811,6 +813,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     groups: dict[str, dict[tuple[str, str, int, str], set[int]]] = {"base": {}, "adapter": {}}
     whole: dict[str, set[str]] = {"base": set(), "adapter": set()}
     shard_names: dict[tuple[str, str, int, str], set[str]] = {}
+    ungrouped: set[str] = set()
     unreadable: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
@@ -839,16 +842,23 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         if empty:
             continue
         is_adapter = _is_adapter_weight_name(name)
+        base_evidence = False
         if is_adapter:
             flags["has_adapter_weights"] = True
         elif name.endswith(".safetensors"):
             flags["has_safetensors"] = True
+            base_evidence = True
             if _is_transformers_safetensors_weight_name(name):
                 flags["has_transformers_safetensors"] = True
         if _is_checkpoint_weight_name(name):
             flags["has_checkpoint_weights"] = True
+            base_evidence = not is_adapter
         kind = _weight_family_kind(path.name)
         if kind is None:
+            # Weights the classifier counted that this walk cannot group: a .ckpt, or a diffusion
+            # prefix. Absence of a family is not absence of a payload, so record that one is here.
+            if base_evidence:
+                ungrouped.add("base")
             continue
         match = _WEIGHT_SHARD_RE.search(path.name)
         if match is None:
@@ -882,7 +892,9 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     # peft resolves only the singular adapter_model.* and has no shard path, so a numbered adapter
     # set is unloadable however complete it looks.
     unloadable |= frozenset(groups["adapter"])
-    return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable), unloadable)
+    return _SnapshotPayload(
+        model_format, groups, whole, frozenset(unreadable), unloadable, frozenset(ungrouped)
+    )
 
 
 def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> bool:
@@ -947,8 +959,10 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         for suffix in (".safetensors", ".bin"):
             if suffix in payload.whole[kind]:
                 # Only the row's own kind proves it loads: a lone adapter_model.bin reads as
-                # checkpoint-like and would stand in for a row with no base weights.
-                return kind != wanted
+                # checkpoint-like and would stand in for a row with no base weights. It vetoes
+                # nothing when the row's own payload is here but names no family, as a .ckpt or a
+                # diffusion prefix does, since then the weights it would stand in for do exist.
+                return kind != wanted and wanted not in payload.ungrouped
             families = {
                 family: indices
                 for family, indices in payload.groups[kind].items()
