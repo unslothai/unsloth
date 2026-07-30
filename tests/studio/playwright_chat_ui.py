@@ -335,6 +335,57 @@ def exercise_floating_monitor_geometry(page):
             and box["y"] + box["height"] <= surface["height"] - inset + tolerance
         )
 
+    def _panel_state():
+        return monitor.evaluate("""node => {
+            const content = node.querySelector('[data-testid=floating-monitor-content]');
+            const text = content ? content.innerText : "";
+            const totals = Array.from(text.matchAll(/\\/\\s*([\\d.]+)\\s*GiB/g))
+                .map(m => Number(m[1]));
+            return {
+                height: node.getBoundingClientRect().height,
+                minHeight: Number.parseFloat(node.style.minHeight) || 0,
+                rows: content ? content.children.length : 0,
+                live: totals.length > 0 && totals.every(v => v > 0),
+            };
+        }""")
+
+    def wait_until_rows_settled():
+        """Hold until the live rows have landed and the panel has re-laid-out.
+
+        Every assertion below compares against a baseline captured once, but the
+        rows come from /api/system, which the page fetches after mount: a freshly
+        mounted monitor grows when RAM (and VRAM) arrive. Baselining mid-arrival
+        makes some later step fail against the pre-arrival number, and which step
+        that is just depends on when the response lands -- observed as "content
+        shrink" against a warm backend and "blocked height" against a cold one,
+        from the same stale baseline.
+
+        Settled means: totals are real (not the pre-fetch zeros), and the
+        rendered box agrees with the resolved min-height, twice in a row. Best
+        effort -- on a host where /api/system never answers this returns whatever
+        it last saw rather than failing a geometry check on a data problem.
+        """
+        deadline = time.time() + 20
+        stable = 0
+        previous = None
+        while time.time() < deadline:
+            state = _panel_state()
+            settled = (
+                state["live"]
+                and state["rows"] > 0
+                and abs(state["height"] - state["minHeight"]) <= 0.5
+            )
+            if settled and state == previous:
+                stable += 1
+                if stable >= 2:
+                    return state
+            else:
+                stable = 0
+            previous = state
+            page.wait_for_timeout(150)
+        return _panel_state()
+
+    wait_until_rows_settled()
     initial_box = monitor_box("initial placement")
     expect_close(
         initial_box["x"] + initial_box["width"],
