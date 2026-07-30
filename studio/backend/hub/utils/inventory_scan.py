@@ -590,10 +590,9 @@ def _repo_signal_applies_to_snapshot(
     absent from disk, so no snapshot inherits it, else an interrupted update is charged to the
     previous complete payload. That excuses only a snapshot that can serve the row.
 
-    Keyed on ``refs/main`` alone, unlike the recovery guard, which admits a repo over a leftover ref
-    of any name. Where ``refs/main`` resolves, the row loads by id and the manifest still describes
-    what that load reads, so a stale tag elsewhere must not suppress it: a truncated unsharded
-    payload has no other tell, and the contents check cannot see a short file.
+    Keyed on ``refs/main`` alone, unlike the recovery guard, which admits any leftover ref: where
+    ``refs/main`` resolves the row loads by id and the manifest still describes what that load
+    reads, so a stale tag elsewhere must not suppress it.
     """
     if repo_cache_dir is None or snapshot_dir is None:
         return True
@@ -683,12 +682,10 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     # Keyed on quant, then on the shard family (directory, prefix, total), the same grouping
     # _snapshot_lacks_a_complete_weight_family uses. One quant label can cover several families.
     split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
-    # The family the lister offers and the loader then loads: both take the lexicographically
-    # first file under the label. Judging that one family is what keeps this honest in both
-    # directions. A torn sibling nothing selects must not veto a loadable quant, and a whole
-    # sibling must not vouch for a torn family that does get selected. Sorted for that reason.
-    # None means a file naming no total, i.e. a family of one; _UNJUDGEABLE_FAMILY is a
-    # nonsensical shard spec, never loadable.
+    # Judge only the family the lister offers and the loader loads: both take the lexicographically
+    # first file under the label, hence the sort. A torn sibling nothing selects must not veto a
+    # loadable quant, nor a whole sibling vouch for the torn family that is selected. None means a
+    # file naming no total (a family of one); _UNJUDGEABLE_FAMILY is a nonsensical shard spec.
     selected: dict[str, object] = {}
     try:
         paths = sorted(snapshot_dir.rglob("*"))
@@ -722,8 +719,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
             path.name[: split.start()],
             total,
         )
-        # Every shard is recorded, not just the first: the rest of the selected family
-        # sorts after the shard that selected it.
+        # Record every shard: the rest of the selected family sorts after the one that selected it.
         split_groups.setdefault(quant, {}).setdefault(family, set()).add(index)
         selected.setdefault(quant, family)
     complete: set[str] = set()
@@ -767,11 +763,10 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
     """Whether the payload *snapshot_dir* carries is short a shard.
 
     ``from_pretrained`` loads one family, so a whole safetensors set beside an interrupted ``.bin``
-    one still serves the row. Only the family the row's format names is judged, and nothing stands
-    in for it. Which that is follows _classify_non_gguf_model_format: both base formats require a
-    config.json, so without one the snapshot can only be an adapter and a stray base shard must not
-    veto it. Shard groups key on (dir, prefix, total) since a snapshot may ship several sets; a file
-    naming no total is a whole family.
+    one still serves the row. Only the family the row's format names is judged, per
+    _classify_non_gguf_model_format: both base formats need a config.json, so without one the
+    snapshot can only be an adapter and a stray base shard must not veto it. Shard groups key on
+    (dir, prefix, total) since a snapshot may ship several sets; a file naming no total is whole.
     """
     groups: dict[str, dict[tuple[str, str, int], set[int]]] = {"base": {}, "adapter": {}}
     whole: set[str] = set()
@@ -849,12 +844,11 @@ def _recovered_snapshot_cannot_serve(
 def recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
     """Whether a recovered repo is one a caller that can only say ``repo_id`` must skip.
 
-    The Hub inventory carries ``partial`` and a ``load_id`` that can name a snapshot path, so it
-    describes these rows honestly. The compatibility ``/api/models/cached-models`` schema has
-    neither field, so an unusable recovery there reads as a plain cached model: a torn snapshot
-    looks ready, and one whose ``refs/main`` does not resolve cannot be loaded by id at all,
-    failing offline and refetching online. False for every repo upstream already returns, so this
-    only withholds rows this recovery added.
+    The Hub inventory carries ``partial`` and a ``load_id``, so it describes these rows honestly.
+    The compatibility ``/api/models/cached-models`` schema has neither, so an unusable recovery
+    there reads as a plain cached model: a torn snapshot looks ready, and one whose ``refs/main``
+    does not resolve cannot be loaded by id at all. False for every repo upstream already returns,
+    so this only withholds rows this recovery added.
     """
     if not isinstance(repo_info, _RecoveredRepoInfo):
         return False

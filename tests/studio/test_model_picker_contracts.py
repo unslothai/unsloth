@@ -842,9 +842,8 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
     assert "hf_token: preparedToken.token" in autoload
-    # Declining the token still aborts the candidate, and the throw carries the
-    # cancellation marker so the sweep stops instead of falling through to the
-    # Hub download and reopening the same dialog.
+    # The throw carries the cancellation marker, so the sweep stops instead of falling through to
+    # the Hub download and reopening the same dialog.
     assert 'new Error("Model load cancelled.")' in autoload
     assert "unslothUserCancelled: true" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" in autoload
@@ -1206,18 +1205,17 @@ def test_vulkan_inference_devices_are_the_pickable_set():
 
 
 def test_chat_autoload_records_a_terminal_validation_failure():
-    """canAutoLoad runs validateModel, which prepares the token too, so a dismissed
-    dialog or a dead backend throws there rather than from loadModel. The sweep's
-    parameterless catches would drop it and still reach the Hub download, reopening
-    the same prompt, so the preflight boundary records the two terminal markers.
-    An ordinary validation failure stays per-candidate and the sweep continues."""
+    """canAutoLoad runs validateModel, which prepares the token, so a dismissed dialog or a dead
+    backend throws there rather than from loadModel and the sweep's bare catches would still reach
+    the Hub download. Hence the two terminal markers are recorded at the preflight boundary; an
+    ordinary validation failure stays per-candidate and the sweep continues."""
     adapter = _read("features/chat/api/chat-adapter.ts")
     preflight = adapter.split("async function canAutoLoadRecordingTerminalFailures", 1)[1]
     preflight = preflight.split("async function loadAutoLoadCandidate", 1)[0]
     assert "unslothTransportFailure === true" in preflight
     assert "unslothUserCancelled === true" in preflight
     assert "noteLoadFailure(label, error)" in preflight
-    # Rethrown, so the candidate still fails and the caller's control flow is unchanged.
+    # Rethrown, so the candidate still fails and control flow is unchanged.
     assert "throw error;" in preflight
     # The candidate preflight goes through it rather than calling canAutoLoad raw.
     autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]

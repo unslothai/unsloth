@@ -1894,10 +1894,9 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
     """Order snapshots by mtime, then by resolved path.
 
-    Mirrors hub.utils.hf_cache_state.snapshot_selection_key (utils cannot import
-    hub). Must change in lockstep: mtime alone is not a total order, and if the
-    two sides break a tie differently the inventory row advertises one revision
-    while the load reads the other.
+    Mirrors hub.utils.hf_cache_state.snapshot_selection_key (utils cannot import hub) and must
+    change in lockstep: mtime alone is not a total order, so breaking a tie differently would let
+    the inventory row advertise one revision while the load reads the other.
     """
     try:
         mtime = snapshot.stat().st_mtime

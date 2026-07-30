@@ -3190,9 +3190,8 @@ async def list_cached_models(
                     # custom Whisper checkpoints, not just curated repo ids.
                     if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                         continue
-                    # This response carries neither partial nor a load id, so a recovered repo
-                    # that only loads from a snapshot path, or is short a shard, cannot be
-                    # described here honestly. The Hub inventory still lists it.
+                    # No partial or load id here, so a recovered repo that only loads by snapshot
+                    # path, or is short a shard, would read as ready. The Hub inventory lists it.
                     if _recovered_repo_is_unusable_by_repo_id(repo_info):
                         continue
                     if _repo_has_gguf_files(repo_info):

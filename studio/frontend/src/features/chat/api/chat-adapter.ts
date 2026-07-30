@@ -1581,11 +1581,9 @@ async function autoLoadSmallestModel(): Promise<{
       return await canAutoLoad(payload);
     } catch (error) {
       // validateModel prepares the token too, so a dismissed dialog or a dead
-      // backend surfaces here, before the loadModel catch below ever runs. The
-      // sweep's parameterless catches would drop it and go on to the Hub
-      // download, reopening the same dialog. Only the two terminal markers are
-      // recorded; anything else stays this candidate's problem and the sweep
-      // moves to the next one.
+      // backend surfaces here, not from loadModel below, and the sweep's bare
+      // catches would drop it and go on to the Hub download. Only the terminal
+      // markers are recorded; anything else stays this candidate's problem.
       const marker = error as {
         unslothTransportFailure?: boolean;
         unslothUserCancelled?: boolean;
@@ -1651,9 +1649,8 @@ async function autoLoadSmallestModel(): Promise<{
       // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        // Tagged and recorded like the two cancels inside loadModel. This one is
-        // raised before it, so the catch around that call never sees it, and the
-        // sweep would carry on to the Hub download and reopen the same dialog.
+        // Raised before loadModel, so its catch never sees it; tagged and
+        // recorded like the cancels inside it so the sweep stops here.
         const cancelled = Object.assign(new Error("Model load cancelled."), {
           unslothUserCancelled: true,
         });

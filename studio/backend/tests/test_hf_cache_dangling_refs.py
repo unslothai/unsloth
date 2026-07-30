@@ -2022,10 +2022,9 @@ def _snapshot_with(tmp_path, files: dict) -> Path:
 
 
 def test_a_torn_sibling_family_does_not_veto_the_quant_that_loads(tmp_path):
-    """Two file families can share one quant label. The lister offers the
-    lexicographically first file and the loader loads that family alone, so a
-    whole a-Q4_K_M.gguf is what a Q4_K_M request resolves to; the torn z- set
-    beside it is never selected and must not make the label unavailable."""
+    """Two families can share one quant label. The lister offers the lexicographically first file
+    and the loader loads that family alone, so the torn z- set beside a whole a-Q4_K_M.gguf is
+    never selected and must not make the label unavailable."""
     snapshot = _snapshot_with(
         tmp_path,
         {"a-Q4_K_M.gguf": 64, "z-Q4_K_M-00001-of-00002.gguf": 16},
@@ -2035,9 +2034,8 @@ def test_a_torn_sibling_family_does_not_veto_the_quant_that_loads(tmp_path):
 
 
 def test_a_whole_sibling_family_does_not_vouch_for_the_torn_one_that_loads(tmp_path):
-    """The same rule in the other direction, which is why this keys on the
-    selected family rather than on any complete family. Here the torn set sorts
-    first, so that is what the loader picks and the label cannot be offered."""
+    """The other direction, which is why this keys on the selected family rather than on any
+    complete one: the torn set sorts first, so that is what the loader picks."""
     snapshot = _snapshot_with(
         tmp_path,
         {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M.gguf": 64},
@@ -2047,8 +2045,8 @@ def test_a_whole_sibling_family_does_not_vouch_for_the_torn_one_that_loads(tmp_p
 
 
 def test_the_selected_family_is_judged_on_its_own_shards(tmp_path):
-    """A complete split set selected ahead of a torn sibling stays complete: the
-    later family's missing shard belongs to a family nothing reads."""
+    """A complete split set selected ahead of a torn sibling stays complete: the missing shard
+    belongs to a family nothing reads."""
     snapshot = _snapshot_with(
         tmp_path,
         {
@@ -2070,17 +2068,16 @@ def test_two_torn_families_under_one_label_stay_incomplete(tmp_path):
 
 
 def test_a_nonsensical_shard_spec_is_never_complete(tmp_path):
-    """A shard numbered past its own total cannot be loaded, and an empty index
-    set must not read as a satisfied range."""
+    """A shard numbered past its own total cannot be loaded, and an empty index set must not read
+    as a satisfied range."""
     snapshot = _snapshot_with(tmp_path, {"Model-Q4_K_M-00003-of-00002.gguf": 16})
     assert inventory_scan._completed_gguf_variants(snapshot) == set()
 
 
 def test_the_loader_and_the_inventory_break_an_mtime_tie_the_same_way(tmp_path):
-    """Two snapshots can carry the same mtime, and mtime alone is not a total
-    order. The inventory pins by (mtime, resolved path); the loader's own walk
-    sorted on mtime and let filesystem order settle the rest, so the row could
-    advertise one revision while /load read weights from the other."""
+    """Two snapshots can carry the same mtime, and mtime alone is not a total order. The inventory
+    pins by (mtime, resolved path); the loader's walk let filesystem order settle the rest, so the
+    row could advertise one revision while /load read weights from the other."""
     import os
 
     from hub.utils.hf_cache_state import latest_snapshot_dir
@@ -2106,8 +2103,8 @@ def test_the_loader_and_the_inventory_break_an_mtime_tie_the_same_way(tmp_path):
 
 
 def test_the_two_snapshot_orderings_agree_on_every_permutation(tmp_path):
-    """The keys must be one ordering, not merely agree on the winner: a caller
-    that takes the second-newest has to see the same sequence."""
+    """The keys must be one ordering, not merely agree on the winner: a caller taking the
+    second-newest has to see the same sequence."""
     import os
 
     from hub.utils.hf_cache_state import snapshot_selection_key
@@ -2146,12 +2143,10 @@ def _iter_hf_cache_snapshots_names(cache: Path) -> list[str]:
 def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
     ref_label, refs, tmp_path, monkeypatch
 ):
-    """A LoRA snapshot can carry an unrelated interrupted base family. The row
-    classifies as an adapter, and the adapter is whole, so it loads; judging base
-    first regardless of format let that stray shard make it uncheckable.
-
-    Both formats that would put base first need a config.json, so its absence is
-    what says this snapshot can only be an adapter."""
+    """A LoRA snapshot can carry an unrelated interrupted base family. The row classifies as an
+    adapter and the adapter is whole, so it loads; judging base first regardless of format let
+    that stray shard veto it. Both formats that would put base first need a config.json, so its
+    absence is what says this snapshot can only be an adapter."""
     _repo_with(
         tmp_path,
         snapshots = {
@@ -2183,8 +2178,7 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
             },
             True,
         ),
-        # No config.json, so the row is the adapter, and the adapter is torn. A
-        # stray whole base family cannot stand in for it either.
+        # No config.json, so the row is the torn adapter, and a whole base family cannot stand in.
         (
             {
                 "adapter_config.json": b"{}",
@@ -2197,8 +2191,7 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
     ],
 )
 def test_the_judged_weight_family_follows_the_row_format(files, cannot_serve, tmp_path):
-    """Both directions of the precedence, so the fix cannot be read as
-    "an adapter always rescues the snapshot"."""
+    """Both directions, so the fix cannot be read as "an adapter always rescues the snapshot"."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     for name, payload in files.items():
@@ -2207,8 +2200,8 @@ def test_the_judged_weight_family_follows_the_row_format(files, cannot_serve, tm
 
 
 def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
-    """GET /api/models/cached-models, the compatibility route. Its schema has no
-    partial and no load_id, so it can only describe a repo that loads by id."""
+    """GET /api/models/cached-models. Its schema has no partial and no load_id, so it can only
+    describe a repo that loads by id."""
     import asyncio
     from types import SimpleNamespace
 
@@ -2240,10 +2233,9 @@ def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
 def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
     snapshot_files, tmp_path, monkeypatch
 ):
-    """Un-hiding a repo must not smuggle it into a response that cannot say what
-    is wrong with it. That route reports neither partial nor a load id, so a torn
-    recovery reads as a plain cached model and a whole one is offered under a repo
-    id that does not resolve, which fails offline and refetches online."""
+    """Un-hiding a repo must not smuggle it into a response that cannot say what is wrong with it:
+    with neither partial nor a load id, a torn recovery reads as a plain cached model and a whole
+    one is offered under a repo id that does not resolve."""
     _repo_with(tmp_path, snapshots = {SNAPSHOT: snapshot_files}, refs = {"main": UPSTREAM_HEAD})
     assert _compat_cached_models(tmp_path, monkeypatch) == []
     # The Hub inventory still lists it, with the fields to describe it.
@@ -2251,8 +2243,8 @@ def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
 
 
 def test_the_compatibility_route_still_lists_what_upstream_returns(tmp_path, monkeypatch):
-    """The control that bounds the gate: a repo whose refs/main resolves is one
-    upstream already returned, so it is unaffected."""
+    """The control that bounds the gate: a repo whose refs/main resolves is one upstream already
+    returned, so it is unaffected."""
     _repo_with(
         tmp_path,
         snapshots = {SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256}},
@@ -2275,13 +2267,12 @@ def test_a_recovery_whose_default_ref_resolves_is_still_listed(tmp_path, monkeyp
 @pytest.mark.parametrize(
     "refs, on_disk, partial",
     [
-        # The case this fixes: refs/main resolves, so the row loads by id and the
-        # manifest describes exactly what that load reads. An unrelated stale ref
-        # must not suppress it, and a truncated unsharded file has no other tell.
+        # The case this fixes: refs/main resolves, so the row loads by id and the manifest
+        # describes what that load reads. A stale ref elsewhere must not suppress it.
         ({"main": SNAPSHOT, "stale": UPSTREAM_HEAD}, 13, True),
         ({"main": SNAPSHOT}, 13, True),
-        # refs/main itself dangling is the exemption: that attempt is pinned to a
-        # revision absent from disk, so this snapshot did not produce the manifest.
+        # refs/main dangling is the exemption: that attempt is pinned to a revision absent from
+        # disk, so this snapshot did not produce the manifest.
         ({"main": UPSTREAM_HEAD}, 13, False),
         # Negative control: a stale ref must not flag a snapshot that matches.
         ({"main": SNAPSHOT, "stale": UPSTREAM_HEAD}, 999, False),
@@ -2291,10 +2282,10 @@ def test_a_recovery_whose_default_ref_resolves_is_still_listed(tmp_path, monkeyp
 def test_a_stale_ref_does_not_suppress_the_manifest_on_the_loaded_snapshot(
     refs, on_disk, partial, tmp_path
 ):
-    """Repo-wide signals are excused only when the load target itself is absent.
-    Keying that on any dangling ref let a leftover tag hide a manifest mismatch on
-    the very snapshot refs/main resolves to, so a size-truncated download went out
-    ready. The recovery guard still keys on any ref; only attribution narrowed."""
+    """Repo-wide signals are excused only when the load target itself is absent. Keying that on any
+    dangling ref let a leftover tag hide a manifest mismatch on the very snapshot refs/main
+    resolves to, so a truncated download went out ready. Only attribution narrowed; the recovery
+    guard still keys on any ref."""
     from hub.utils import download_manifest
 
     repo = _repo_with(

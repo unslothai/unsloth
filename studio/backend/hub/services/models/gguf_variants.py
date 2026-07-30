@@ -655,8 +655,7 @@ async def get_gguf_variants_response(
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete = cached
-                # The lister leaves its offer untrimmed when no snapshot holds a whole quant, so pass
-                # the completed set: those rows stay listed for management but are not ready.
+                # Same reason as the local_only branch above.
                 return _local_response(repo_id, variants, has_vision, complete)
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
