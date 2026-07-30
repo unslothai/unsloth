@@ -57,12 +57,11 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if an HF offline env var is truthy (canonical strip+lower parse); gates the urllib fetches below.
+    """True if an HF offline env var is truthy; gates the urllib fetches below.
 
-    An open force_hf_offline window counts too. During a spawn the guard briefly restores
-    the user's own offline values into os.environ so the child inherits their intent, and
-    these fetches read os.environ, so an env-only check would send the very request the
-    guard is holding back.
+    An open force_hf_offline window counts too: during a spawn the guard briefly restores
+    the user's values into os.environ, and an env-only check would then send the very
+    request the guard is holding back.
     """
     try:
         from utils.utils import force_hf_offline_active
@@ -79,25 +78,22 @@ def _env_offline() -> bool:
 def _hf_raw_url(model_name: str, filename: str) -> str:
     """Raw model metadata URL for the configured Hub endpoint.
 
-    /resolve, not /raw: hf_hub_url builds {endpoint}/{repo}/resolve/{rev}/{file}, and a
-    Hub-compatible mirror implements that download route while /raw is a huggingface.co
-    web route it need not serve. Both return the same bytes on huggingface.co itself
-    (/resolve redirects to the resolve-cache, which urllib follows), so this only widens
-    where the reads work. Small JSON, never LFS, so no pointer-vs-content difference.
+    /resolve, not /raw: that is what hf_hub_url builds, and a mirror implements the
+    download route while /raw is a huggingface.co web route it need not serve. Both return
+    the same bytes on huggingface.co, so this only widens where the reads work. Small JSON,
+    never LFS, so no pointer-vs-content difference.
     """
     from utils.utils import hf_endpoint_url
     return f"{hf_endpoint_url().rstrip('/')}/{model_name}/resolve/main/{filename}"
 
 
 def _hf_proxy_opener(url: str):
-    """Opener pinned to the Hub client's proxy choice for *url*, or None to use the default.
+    """Opener pinned to the Hub client's proxy choice for *url*, or None for the default.
 
-    The default opener ignores ALL_PROXY (``getproxies`` reports an ``all`` key, but
-    ``ProxyHandler`` only ever dispatches ``<scheme>_open``) and applies urllib's own
-    NO_PROXY rules, which do not understand the CIDR / host:port entries requests honours.
-    Without this, the reachability probe and the metadata reads below disagree about
-    whether egress goes through the proxy. Returns None for a socks proxy: urllib cannot
-    speak it, so there is nothing better to offer than the default opener.
+    The default opener ignores ALL_PROXY (``getproxies`` reports an ``all`` key but
+    ``ProxyHandler`` only dispatches ``<scheme>_open``) and applies urllib's NO_PROXY rules,
+    which miss the CIDR / host:port entries requests honours, so the probe and the reads
+    below would disagree about egress. None for a socks proxy: urllib cannot speak it.
     """
     import urllib.parse
     import urllib.request

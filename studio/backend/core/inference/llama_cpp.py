@@ -561,10 +561,9 @@ def _hf_env_offline() -> bool:
 def _hf_unreachable() -> bool:
     """True when the Hub can't be reached: dead DNS, or DNS that resolves with no egress.
 
-    DNS alone misses the common offline shapes (WAN down behind a live router, captive
-    portal, stale DNS cache), leaving every hub call to burn its full retry backoff.
-    The DNS shortcut is skipped when a proxy is configured, since the proxy resolves the
-    hub host and local DNS then says nothing about reachability.
+    DNS alone misses the common shapes (WAN down behind a live router, captive portal,
+    stale cache), leaving every hub call to burn its retry backoff. The DNS shortcut stands
+    down when a proxy is configured, since the proxy resolves the host.
     """
     try:
         from utils.utils import hf_dns_dead, hf_unreachable
@@ -580,10 +579,9 @@ def _hf_offline_if_unreachable():
     """Force HF offline for this block only when the Hub is unreachable; restores on exit
     so a transient hiccup can't quarantine the process. No-op if the USER set the env var.
 
-    Env vars alone do not take effect mid-process (huggingface_hub and transformers read
-    their offline constants at import), so this holds a refcounted force_hf_offline
-    window. Overlapping requests each take their own reference: no-opping because another
-    guard already set HF_HUB_OFFLINE would let that guard's exit restore the network
+    Env vars alone are too late mid-process (the offline constants are read at import), so
+    this holds a refcounted force_hf_offline window. Overlapping requests each take their
+    own reference: no-opping would let another guard's exit restore the network
     mid-operation and drop this request back onto the retry path.
     """
     try:
@@ -616,11 +614,8 @@ def _hf_offline_if_unreachable():
 
 
 def _hf_offline_if_unreachable_for(model_name):
-    """Guard, but only for remote repo ids.
-
-    A local path is served from the filesystem and never reaches the hub, so probing
-    would add seconds per request and prevent no retry.
-    """
+    """Guard, but only for remote repo ids: a local path is served from disk and never
+    reaches the hub, so probing would add seconds per request and prevent no retry."""
     try:
         from utils.paths import is_local_path
         if isinstance(model_name, str) and is_local_path(model_name):

@@ -26,14 +26,11 @@ _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 def hf_env_offline() -> bool:
-    """True when HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE requests offline mode.
+    """True when HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE asks for offline mode.
 
-    Also honors TRANSFORMERS_OFFLINE (hub honors only HF_HUB_OFFLINE) since users set it
-    to keep transformers loads local.
-
-    An open force_hf_offline window counts even when the env momentarily disagrees:
-    hf_environment_restored_for_spawn puts the user's values back while multiprocessing
-    snapshots os.environ, and an env-only check on another thread would read "online".
+    TRANSFORMERS_OFFLINE counts too (the hub reads only HF_HUB_OFFLINE), as does an open
+    force_hf_offline window: hf_environment_restored_for_spawn briefly puts the user's
+    values back, and an env-only check on another thread would then read "online".
     """
     if force_hf_offline_active():
         return True
@@ -61,10 +58,9 @@ def hf_endpoint_host() -> str:
 def _stdlib_proxy_for_url(url: str) -> Optional[str]:
     """requests' proxy selection rebuilt on the stdlib, for installs without requests.
 
-    huggingface_hub 1.x moved to httpx and dropped requests, so importing requests.utils
-    raises there and we would report "no proxy" on a machine that has one. That disables
-    the stand-down in hf_dns_dead and forces a working proxy-only machine offline.
-    getproxies covers the same sources, incl. macOS sysconf and the Windows registry.
+    huggingface_hub 1.x dropped requests, so importing requests.utils raises there and we
+    would report "no proxy" on a machine that has one, forcing a working proxy-only setup
+    offline. getproxies covers the same sources, incl. macOS sysconf and the Windows registry.
     """
     from urllib.parse import urlparse
     from urllib.request import getproxies, proxy_bypass
@@ -108,9 +104,8 @@ def hf_proxy_for_endpoint(endpoint: Optional[str] = None) -> Optional[str]:
 def hf_proxy_usable_by_urllib(proxy: Optional[str]) -> bool:
     """True when urllib can route through this proxy.
 
-    urllib speaks only http/https. A socks5:// proxy (VPN or bastion egress) resolves
-    correctly above but urlopen then raises "unknown url type", which reads as no egress
-    even though the Hub client reaches the hub through it.
+    urllib speaks only http/https, so a socks5:// proxy makes urlopen raise "unknown url
+    type", which reads as no egress even though the Hub client reaches the hub through it.
     """
     if not proxy:
         return True
@@ -121,28 +116,22 @@ def hf_proxy_usable_by_urllib(proxy: Optional[str]) -> bool:
 
 
 def hf_proxy_configured() -> bool:
-    """True when egress to the endpoint goes through a proxy.
-
-    The proxy resolves the hub host, so local DNS proves nothing about reachability and
-    must not be used to declare the hub offline.
-    """
+    """True when egress goes through a proxy: it resolves the hub host, so local DNS
+    proves nothing about reachability and must not declare the hub offline."""
     return hf_proxy_for_endpoint() is not None
 
 
 def dns_host_dead(host: str, timeout: float = 2.0) -> bool:
-    """True only when host definitively does not resolve. Runs on a daemon thread so a
-    wedged resolver cannot block past the deadline and so socket.setdefaulttimeout is
-    left alone.
+    """True only when host definitively does not resolve. Daemon thread, so a wedged
+    resolver cannot block past the deadline and socket.setdefaulttimeout is left alone.
 
-    Uses getaddrinfo, not gethostbyname: the latter is IPv4-only and would call an
-    AAAA-only mirror or an IPv6 literal dead.
+    getaddrinfo, not gethostbyname: the latter is IPv4-only and would call an AAAA-only
+    mirror or an IPv6 literal dead.
 
-    A missed deadline is inconclusive, not dead: slow-but-working DNS (cold cache,
-    DNSSEC, a resolver reached over a fresh VPN) resolves past 2s, and this is the
-    shortcut that skips the fail-open reachability probe, so calling it dead would take
-    a working machine offline for a whole training job. A truly wedged resolver is still
-    caught: the caller's HEAD probe hangs on the same lookup and its own deadline
-    returns unreachable.
+    A missed deadline is inconclusive, not dead. Slow-but-working DNS (cold cache, DNSSEC,
+    a fresh VPN) resolves past 2s, and this shortcut skips the fail-open probe, so calling
+    it dead would strand a working machine for a whole job. A truly wedged resolver is
+    still caught: the caller's HEAD probe hangs on the same lookup and times out.
     """
     result: list = [None]
 
@@ -181,9 +170,8 @@ def hf_connect_target(endpoint: Optional[str] = None):
 def hf_tcp_reachable(timeout: float = 3.0, endpoint: Optional[str] = None) -> bool:
     """True when a TCP connection to the hub (or its proxy) can be established.
 
-    Separates "no egress" from "slow to answer": a loaded server still completes the
-    handshake promptly, whereas a blackholed route times out. A refused connection also
-    counts as reachable, since something answered.
+    Separates "no egress" from "slow to answer": a loaded server still handshakes promptly,
+    a blackholed route times out. A refusal counts as reachable, since something answered.
     """
     import socket as _socket
 
@@ -202,11 +190,10 @@ def hf_tcp_reachable(timeout: float = 3.0, endpoint: Optional[str] = None) -> bo
 
 
 def hf_dns_dead(timeout: float = 2.0) -> bool:
-    """Fast offline shortcut: the endpoint's host does not resolve and no proxy is in play.
+    """Fast offline shortcut: the endpoint's host does not resolve and no proxy applies.
 
-    Returns False whenever a proxy is configured, so proxy-only setups fall through to the
-    real reachability probe instead of being wrongly declared offline.
-    """
+    False whenever a proxy is configured, so proxy-only setups fall through to the real
+    reachability probe instead of being wrongly declared offline."""
     if hf_proxy_configured():
         return False
     return dns_host_dead(hf_endpoint_host(), timeout)
@@ -246,12 +233,11 @@ def reset_hf_reachability_cache() -> None:
 def hf_unreachable(timeout: int = 3) -> bool:
     """True when the HF endpoint is unreachable, memoised for _HF_REACHABILITY_TTL_S.
 
-    Resolving DNS does not mean the Hub is reachable: a router that is up with the WAN
-    down, a captive portal or a stale DNS cache all answer lookups while every request
-    then burns huggingface_hub's retry backoff. This is the bounded, proxy-aware probe
-    the export path already uses; disable it with UNSLOTH_OFFLINE_PROBE=0.
-
-    Fails open: an unavailable probe reports reachable, so the load decides as it does today.
+    DNS resolving does not mean the Hub is reachable: a live router with the WAN down, a
+    captive portal or a stale DNS cache all answer lookups while every request then burns
+    huggingface_hub's retry backoff. Bounded and proxy-aware, as the export path already
+    does; UNSLOTH_OFFLINE_PROBE=0 disables it. Fails open, so an unavailable probe reports
+    reachable and the load decides as it does today.
     """
     if hf_probe_disabled():
         return False
@@ -317,14 +303,12 @@ _OFFLINE_CONSTANTS = (
 def force_hf_offline_active() -> bool:
     """True while a force_hf_offline window is open anywhere in this process.
 
-    Lets a concurrent caller tell our own forced offline apart from one the user set, so
-    it can hold its own reference instead of no-opping and losing offline when the first
-    window exits.
+    Lets a concurrent caller tell our forced offline apart from one the user set, so it
+    takes its own reference instead of no-opping and losing offline when the first exits.
 
-    Read without the lock: hf_environment_restored_for_spawn holds it across
-    Process.start(), and an offline check that blocked for that window would stall the
-    operation the guard protects. The int read is atomic and the depth is only raised
-    after env and constants are already offline.
+    Lock-free: hf_environment_restored_for_spawn holds the lock across Process.start(), and
+    blocking for that window would stall the operation the guard protects. The int read is
+    atomic and the depth rises only after env and constants are already offline.
     """
     return _force_offline_depth > 0
 
@@ -358,12 +342,10 @@ def hf_environment_for_spawn() -> dict[str, str]:
 
 
 def hf_environment_scrubbed(base) -> dict[str, str]:
-    """Copy an environment mapping with our scoped offline values replaced by the
-    user's own intent.
+    """Copy an env mapping with our scoped offline values replaced by the user's intent.
 
     A caller that captured os.environ itself would otherwise hand a child the
-    HF_HUB_OFFLINE=1 we set for one operation; the child reads that as user intent and
-    stays cache-only for its whole life.
+    HF_HUB_OFFLINE=1 we set for one operation, and the child would stay cache-only for life.
     """
     with _force_offline_lock:
         environment = dict(base)
@@ -397,11 +379,9 @@ def hf_environment_restored_for_spawn():
 def force_hf_offline():
     """Force HF offline for this block, in-process.
 
-    Setting the env vars is not enough once the process is running: huggingface_hub and
-    transformers read their offline constants at import, and hub sessions cache a
-    non-offline adapter. Flip the constants too and rebuild the sessions, so hub calls
-    fail fast instead of retrying. Everything is restored on exit.
-    """
+    Env vars alone are too late once running: huggingface_hub and transformers read their
+    offline constants at import and sessions cache a non-offline adapter. Flip the constants
+    and rebuild the sessions so hub calls fail fast. All restored on exit."""
     global _force_offline_depth, _force_offline_saved, _force_offline_saved_env
     import importlib
 

@@ -5746,7 +5746,7 @@ async def _load_model_impl(
             from utils.transformers_version import latest_tier_active_for
             if await asyncio.to_thread(
                 _offline_guarded,
-                (model_identifier, config.identifier),
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
                 latest_tier_active_for,
                 config.identifier,
                 request.hf_token,
@@ -5762,7 +5762,7 @@ async def _load_model_impl(
         # frees the resident model. Off-loop and guarded: the guard does sync HF work.
         await asyncio.to_thread(
             _offline_guarded,
-            (model_identifier, config.identifier),
+            (model_identifier, config.identifier, getattr(config, "base_model", None)),
             _guard_chat_load_against_training,
             config,
             model_identifier = model_identifier,
@@ -6294,32 +6294,33 @@ async def _load_model_impl(
 
 
 def _any_remote(targets) -> bool:
-    """True unless every target is a local filesystem path. Unknown counts as remote:
-    guarding a local read costs one memoised verdict, missing a remote one costs the
-    retry backoff this exists to avoid."""
+    """True unless every target is a local path. Falsy entries are skipped (no base to
+    read); anything unresolvable counts as remote, since guarding a local read costs one
+    memoised verdict while missing a remote one costs the retry backoff."""
     from utils.paths import is_local_path
 
     for target in (targets,) if isinstance(targets, str) else targets or ():
+        if not target:
+            continue  # no base is not an unknown base: nothing to read, nothing to guard
         try:
             if not (isinstance(target, str) and is_local_path(target)):
                 return True
         except Exception:
-            return True
+            return True  # unresolvable: guard, since missing a remote read costs the backoff
     return False
 
 
 def _offline_guarded(targets, fn, /, *args, **kwargs):
     """Run one blocking preflight inside the same forced-offline window as config
-    resolution. Resolving the config is not the only remote read on these paths: the
-    upgrade / trust-remote-code / sizing preflights each fetch raw metadata, so without
-    this they burn the retry backoff the guard exists to skip. The verdict is memoised,
-    so reusing it costs no extra probe. Call from a worker thread: the guard is
-    process-global and blocks for the probe on a cold verdict.
+    resolution. The config is not the only remote read here: the upgrade, trust-remote-code
+    and sizing preflights each fetch raw metadata, and would otherwise burn the retry
+    backoff the guard exists to skip. The verdict is memoised, so this costs no extra
+    probe. Call from a worker thread: the guard is process-global and blocks on a cold
+    verdict.
 
-    ``targets`` is what this call actually reads: a repo id, a local path, or several.
-    Keyed on the read, not on the outer request, because a LOCAL adapter path can resolve
-    to a REMOTE base and the base is what gets fetched. Both params are positional-only so
-    a wrapped call's own model_identifier kwarg cannot collide."""
+    ``targets`` is what this call actually READS, not the outer request, because a local
+    adapter can resolve to a remote base and the base is what gets fetched. Positional-only,
+    so a wrapped call's own model_identifier kwarg cannot collide."""
     from contextlib import nullcontext
 
     # The module-level symbol, not a fresh import: route tests patch
@@ -6541,7 +6542,7 @@ async def validate_model(
             )
             if _install_only_upgrade or await asyncio.to_thread(
                 _offline_guarded,
-                (model_identifier, config.identifier),
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
                 latest_tier_active_for,
                 config.identifier,
                 request.hf_token,
@@ -6554,7 +6555,7 @@ async def validate_model(
             # Off-loop and guarded: the guard does sync nvidia-smi / HF work.
             await asyncio.to_thread(
                 _offline_guarded,
-                (model_identifier, config.identifier),
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
                 _guard_chat_load_against_training,
                 config,
                 model_identifier = model_identifier,

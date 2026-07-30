@@ -2812,8 +2812,13 @@ class TestGuardIsKeyedOnWhatIsRead:
             assert any_remote(("/local/adapter", "org/base")) is True
             assert any_remote(("/local/a", "/local/b")) is False
             assert any_remote(None) is False
-            assert any_remote((None,)) is True  # unknown counts as remote
             assert any_remote(()) is False
+            # A falsy entry means there is no base to read, not an unknown one: a local
+            # model whose config carries base_model=None must not pay the probe.
+            assert any_remote((None,)) is False
+            assert any_remote(("/local/adapter", None)) is False
+            assert any_remote(("/local/adapter", "", "org/base")) is True
+            assert any_remote((123,)) is True  # unresolvable: guard anyway
         finally:
             if saved is None:
                 del sys.modules["utils.paths"]
@@ -3158,3 +3163,45 @@ class TestLocalGgufWithoutABaseSkipsTheProbe:
         """Why the check is needed: a null target is classified remote, not local."""
         from utils.paths import is_local_path
         assert is_local_path(None or "") is False
+
+
+class TestLocalLoraRemoteBaseIsInTheGuardTargets:
+    """A local LoRA's adapter_config points at a remote base. latest_tier_active_for and
+    the training guard resolve that base internally, so both local paths passed alone
+    would select a null context while the base's metadata is fetched."""
+
+    def test_every_config_keyed_guard_passes_the_base(self):
+        import ast
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
+        tree = ast.parse(src)
+
+        checked = 0
+        bad = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "to_thread"):
+                continue
+            if not node.args or getattr(node.args[0], "id", None) != "_offline_guarded":
+                continue
+            targets = node.args[1]
+            if not isinstance(targets, ast.Tuple):
+                continue
+            names = []
+            for el in targets.elts:
+                if isinstance(el, ast.Attribute):
+                    names.append(f"{getattr(el.value, 'id', '?')}.{el.attr}")
+                elif isinstance(el, ast.Call):
+                    names.append(getattr(el.func, "id", "?"))
+                else:
+                    names.append(getattr(el, "id", "?"))
+            # A tuple keyed on the resolved config must also carry its base.
+            if "config.identifier" in names:
+                checked += 1
+                if not any(n == "getattr" for n in names):
+                    bad.append((node.lineno, names))
+        assert checked >= 4, f"expected the four config-keyed guards, saw {checked}"
+        assert bad == [], f"guard target tuple omits the resolved base: {bad}"

@@ -51,13 +51,12 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if an HF offline env var is truthy (canonical strip+lower parse, on/true/yes/1).
+    """True if an HF offline env var is truthy (strip+lower, on/true/yes/1).
 
-    Also true inside an open force_hf_offline window, even when the env momentarily
-    disagrees: hf_environment_restored_for_spawn puts the user's values back for the whole
-    Process.start() window, and this gates detect_audio_type's raw requests.get, which the
-    patched hub constant does not cover. Function-local import to avoid an import cycle;
-    the env parse stays as the fallback.
+    An open force_hf_offline window counts even when the env momentarily disagrees: the
+    spawn window restores the user's values, and this gates detect_audio_type's raw
+    requests.get, which the patched hub constant does not cover. Function-local import
+    avoids a cycle; the env parse is the fallback.
     """
     try:
         from utils.utils import hf_env_offline
@@ -74,10 +73,9 @@ def _env_offline() -> bool:
 def _offline_while_reading(target: Optional[str]):
     """Force offline while dereferencing a REMOTE model reached from a LOCAL one.
 
-    A local LoRA or GGUF is served from disk, so the load guard stands down for it, but its
-    base can be a hub repo and the lookups below fetch that base's metadata. Without this a
-    "local" load resumes the retry backoff the guard exists to skip. The guard no-ops on a
-    local target and refcounts when one is already open, so wrapping unconditionally is safe.
+    The load guard stands down for a local LoRA or GGUF, but its base can be a hub repo and
+    the lookups below fetch that base, so a "local" load would resume the retry backoff.
+    No-ops on a local target and refcounts when a window is already open.
     """
     try:
         from core.inference.llama_cpp import _hf_offline_if_unreachable_for
