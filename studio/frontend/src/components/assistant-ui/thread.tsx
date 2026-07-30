@@ -2122,6 +2122,7 @@ const Composer: FC<{
       return null;
     };
     const pendingSettingsIds = new Set<number>();
+    let cancelled = false;
     const discardOldestPendingSettings = () => {
       const settingsId = pendingSettingsIds.values().next().value;
       if (settingsId === undefined) {
@@ -2167,6 +2168,9 @@ const Composer: FC<{
           const { remoteId } = await runtime.threads
             .getItemById(state.id)
             .initialize();
+          if (cancelled || !pendingSettingsIds.has(settingsId)) {
+            return;
+          }
           addQueuedChatRunSettingsThreadIds(settingsId, [
             ...getQueueThreadIds(),
             remoteId,
@@ -2180,6 +2184,7 @@ const Composer: FC<{
       },
       complete: discardOldestPendingSettings,
       cancel: () => {
+        cancelled = true;
         for (const settingsId of pendingSettingsIds) {
           discardQueuedChatRunSettings(settingsId);
         }

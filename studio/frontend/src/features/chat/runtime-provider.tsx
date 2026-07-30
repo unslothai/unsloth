@@ -1360,9 +1360,7 @@ function ThreadAutoSwitch({
     if (!isLoading && mainThreadId !== threadId) {
       // Saved chats keep running in the background, but a temporary chat is
       // unreachable after this switch and must not retain an active queue.
-      if (useChatRuntimeStore.getState().incognito) {
-        requestTemporaryPromptQueueStop();
-      }
+      requestTemporaryPromptQueueStop();
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&
@@ -1397,10 +1395,9 @@ function ThreadNewChatSwitch({
       return;
     }
     // Saved chats keep running in the background. A temporary chat is never
-    // persisted, so abandoning it must also discard its otherwise unreachable queue.
-    if (useChatRuntimeStore.getState().incognito) {
-      requestTemporaryPromptQueueStop();
-    }
+    // persisted, so abandoning it must also discard its otherwise unreachable
+    // queue. Queue provenance remains reliable even if incognito was cleared first.
+    requestTemporaryPromptQueueStop();
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();

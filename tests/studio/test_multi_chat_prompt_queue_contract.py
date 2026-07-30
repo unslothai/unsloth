@@ -91,10 +91,8 @@ def test_saved_queues_survive_navigation_but_abandoned_temporary_queues_stop():
         "function ActiveThreadSync(",
     )
     assert "requestPromptQueueStop" not in saved_switch
-    assert "useChatRuntimeStore.getState().incognito" in saved_switch
     assert "requestTemporaryPromptQueueStop()" in saved_switch
     assert "switchToThread(threadId)" in saved_switch
-    assert "useChatRuntimeStore.getState().incognito" in temporary_switch
     assert "requestTemporaryPromptQueueStop()" in temporary_switch
     assert "switchToNewThread()" in temporary_switch
 
@@ -145,6 +143,12 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "registerQueuedChatRunSettings(" in target
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
+    assert "let cancelled = false" in target
+    assert "if (cancelled || !pendingSettingsIds.has(settingsId))" in target
+    assert target.index(
+        "if (cancelled || !pendingSettingsIds.has(settingsId))"
+    ) < target.index("await thread.append(")
+    assert "cancelled = true" in target
     assert "consumeQueuedChatRunSettings(resolvedThreadId)" in CHAT_ADAPTER
     assert '"deepResearchEnabled"' in QUEUED_SETTINGS
     assert '"supportsReasoning"' in QUEUED_SETTINGS
