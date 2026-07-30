@@ -2595,19 +2595,12 @@ export function ChatPage({
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
-      if (
-        isSameLoadedModel &&
-        !meta?.forceReload &&
-        !store.modelLoading &&
-        !store.loadingModelPick
-      ) {
-        return;
-      }
+      const hadPublishedLocalLoad = Boolean(
+        store.modelLoading || store.loadingModelPick,
+      );
       if (meta?.source === "external" || isExternalModelId(value)) {
         const selectionIntentId = invalidatePendingModelSelection();
-        const hadLocalLoad = Boolean(
-          store.modelLoading || store.loadingModelPick,
-        );
+        const hadLocalLoad = hadPublishedLocalLoad;
         if (hadLocalLoad) {
           const stopped = await cancelLoadingForReplacement(selectionIntentId);
           if (!isModelSelectionIntentCurrent(selectionIntentId)) {
@@ -2805,7 +2798,9 @@ export function ChatPage({
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
-          forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
+          forceReload:
+            meta?.forceReload ??
+            (isSameLoadedModel && hadPublishedLocalLoad ? true : undefined),
         };
         await stageOrLoad(selection);
       })();

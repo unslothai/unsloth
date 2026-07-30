@@ -319,7 +319,8 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
-    ...(status.is_gguf
+    ...(status.is_gguf &&
+    (!hydratingExistingModel || options.readoptingSameModel)
       ? {}
       : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,

@@ -327,6 +327,29 @@ def test_external_intent_restores_config_after_stale_status_check():
     assert "restorePreviousConfig();" in stale
 
 
+def test_model_change_clears_a_stale_native_path_lease():
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    native_lease = status.split(
+        "activeNativePathToken: null, activeNativePathExpiresAtMs: null",
+        1,
+    )[0]
+    assert "status.is_gguf &&" in native_lease
+    assert "(!hydratingExistingModel || options.readoptingSameModel)" in native_lease
+
+
+def test_chat_page_forwards_resident_reselection_to_intent_owner():
+    page = _read("features/chat/chat-page.tsx")
+    handler = page.split("const handleCheckpointChange = useCallback(", 1)[1]
+    handler = handler.split("const handleReloadActiveModel", 1)[0]
+    same_model_prefix = handler.split(
+        'if (meta?.source === "external" || isExternalModelId(value)) {',
+        1,
+    )[0]
+    assert "if (\n        isSameLoadedModel" not in same_model_prefix
+    assert "const hadPublishedLocalLoad = Boolean(" in handler
+    assert "isSameLoadedModel && hadPublishedLocalLoad ? true : undefined" in handler
+
+
 def test_native_rollback_rechecks_cancellation_after_token_lease():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     rollback = runtime.split(
@@ -371,9 +394,11 @@ def test_superseded_preflight_restores_the_staged_config():
 
 def test_reselecting_hosted_checkpoint_still_cancels_a_local_load():
     page = _read("features/chat/chat-page.tsx")
-    same_model = page.split("isSameLoadedModel &&", 1)[1].split("return;", 1)[0]
-    assert "!store.modelLoading" in same_model
-    assert "!store.loadingModelPick" in same_model
+    handler = page.split("const handleCheckpointChange = useCallback(", 1)[1]
+    handler = handler.split("const handleReloadActiveModel", 1)[0]
+    assert "const hadPublishedLocalLoad = Boolean(" in handler
+    assert "const hadLocalLoad = hadPublishedLocalLoad;" in handler
+    assert "if (hadLocalLoad)" in handler
 
 
 def test_hosted_selection_restores_cancelled_local_config():
