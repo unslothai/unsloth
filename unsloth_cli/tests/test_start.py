@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shlex
+import signal
 import sys
 import time
 import urllib.error
@@ -1459,6 +1461,25 @@ def test_launch_native_posix_child_gets_current_pwd(fake_studio, monkeypatch, tm
     assert captured["command"][0] == "/usr/local/bin/opencode"
     if os.name != "nt":
         assert captured["env"]["PWD"] == os.getcwd()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX exec signal semantics")
+def test_launch_leaves_child_able_to_handle_sigint(monkeypatch, tmp_path):
+    # SIG_IGN here reached the agent too, so hermes could never be interrupted.
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import signal, sys\n"
+        "sys.exit(17 if signal.getsignal(signal.SIGINT) == signal.SIG_IGN else 0)\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: sys.executable)
+    monkeypatch.setattr(start, "_augment_path_with_install_dirs", lambda: None)
+    before = signal.getsignal(signal.SIGINT)
+
+    code = start._launch([sys.executable, str(probe)], {}, install_hint = "n/a")
+
+    assert code == 0, "child saw SIG_IGN and could never be interrupted"
+    assert signal.getsignal(signal.SIGINT) is before
 
 
 def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):
@@ -3224,6 +3245,117 @@ def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
     progress_url = next(url for method, url, _ in calls if "gguf-download-progress" in url)
     assert "variant=UD-Q4_K_XL" in progress_url
     assert f"expected_bytes={4 * 1024**3}" in progress_url
+
+
+# ── A load slower than the proxy timer (routes/inference.py _tunnel_safe_json) ──
+#
+# /api/inference/load pads its body so a proxy cannot time a slow load out, committing
+# the 200 before the load finishes. A failure after that travels only in the body, as
+# `_deferred_error`, so `_http_json` must raise on it or a late OOM reads as success.
+
+_DEFERRED_OOM = {
+    "_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"},
+}
+
+
+def _padded(body: dict) -> io.BytesIO:
+    """A padded response body: keepalive spaces, then the JSON payload."""
+    return io.BytesIO(b"   " + json.dumps(body).encode())
+
+
+def test_http_json_reads_a_padded_success(monkeypatch):
+    """Leading pad bytes are legal JSON, so a slow success is unchanged."""
+    monkeypatch.setattr(
+        start, "urlopen_no_redirect", lambda request, timeout: _padded({"status": "loaded"})
+    )
+    assert start._http_json("POST", f"{BASE}/api/inference/load", "sk-test") == {"status": "loaded"}
+
+
+def test_http_json_raises_a_deferred_error_as_an_http_error(monkeypatch):
+    monkeypatch.setattr(
+        start, "urlopen_no_redirect", lambda request, timeout: _padded(_DEFERRED_OOM)
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        start._http_json("POST", f"{BASE}/api/inference/load", "sk-test")
+    # The same class every caller already handles for an early HTTP failure.
+    assert excinfo.value.code == 507
+    assert "CUDA out of memory" in str(excinfo.value)
+
+
+def test_http_json_deferred_error_fails_like_an_http_failure(monkeypatch, capsys):
+    """With `error` set, a late failure exits 1 with the server's detail, as an early 507
+    does, via the same _fail path."""
+    monkeypatch.setattr(
+        start, "urlopen_no_redirect", lambda request, timeout: _padded(_DEFERRED_OOM)
+    )
+    with pytest.raises(typer.Exit) as excinfo:
+        start._http_json(
+            "POST",
+            f"{BASE}/api/inference/load",
+            "sk-test",
+            error = "Model load failed",
+        )
+    assert excinfo.value.exit_code == 1
+    # _http_error_detail reads the raised error's body, so the detail survives.
+    assert "Model load failed: CUDA out of memory" in capsys.readouterr().err
+
+
+def test_load_model_with_progress_fails_on_a_deferred_error(monkeypatch):
+    """The real /load caller: a late failure must not be returned as a result."""
+
+    def urlopen(request, timeout):
+        if request.full_url.endswith("/api/inference/load"):
+            return _padded(_DEFERRED_OOM)
+        # Progress polling is best-effort; 404 it so the display just disables.
+        raise urllib.error.HTTPError(request.full_url, 404, "not found", None, None)
+
+    monkeypatch.setattr(start, "urlopen_no_redirect", urlopen)
+    monkeypatch.setattr(start, "_DOWNLOAD_POLL_INTERVAL_S", 0.001)
+    with pytest.raises(typer.Exit) as excinfo:
+        start._load_model_with_progress(
+            BASE,
+            "sk-test",
+            "owner/model-GGUF",
+            start.LoadOptions(),
+            {"model_path": "owner/model-GGUF"},
+        )
+    assert excinfo.value.exit_code == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "what"),
+    [
+        (b"", "an empty body"),
+        (b"   ", "pad bytes only"),
+        (b'  {"status": "loa', "a payload cut in half"),
+    ],
+)
+def test_load_model_with_progress_rejects_a_truncated_padded_body(monkeypatch, body, what):
+    """A proxy that gives up mid-pad leaves a 200 the load never finished under.
+
+    Measured: one byte at t=90s, silence, killed ~125s later, a 200 with an EMPTY body.
+    `_http_json` decodes a blank body as `{}`, so without the check this returned a
+    successful-looking result and the agent connected to whatever was still resident.
+    """
+
+    def urlopen(request, timeout):
+        if request.full_url.endswith("/api/inference/load"):
+            return io.BytesIO(body)
+        # Progress polling is best-effort; 404 it so the display just disables.
+        raise urllib.error.HTTPError(request.full_url, 404, "not found", None, None)
+
+    monkeypatch.setattr(start, "urlopen_no_redirect", urlopen)
+    monkeypatch.setattr(start, "_DOWNLOAD_POLL_INTERVAL_S", 0.001)
+    with pytest.raises(RuntimeError) as excinfo:
+        start._load_model_with_progress(
+            BASE,
+            "sk-test",
+            "owner/model-GGUF",
+            start.LoadOptions(),
+            {"model_path": "owner/model-GGUF"},
+        )
+    assert "did not report completion" in str(excinfo.value), what
+    assert "/api/inference/load" in str(excinfo.value)
 
 
 def test_download_progress_ignores_fully_cached_bytes(capsys):
