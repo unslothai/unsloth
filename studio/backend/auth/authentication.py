@@ -156,8 +156,7 @@ def reload_secret() -> None:
 
 
 def _resolve_credentials(
-    credentials: Optional[HTTPAuthorizationCredentials],
-    x_api_key: Optional[str],
+    credentials: Optional[HTTPAuthorizationCredentials], x_api_key: Optional[str]
 ) -> HTTPAuthorizationCredentials:
     if credentials is not None:
         return credentials
