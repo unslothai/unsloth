@@ -87,6 +87,7 @@ import {
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import { downloadModelWithManager } from "./managed-model-download-bridge";
+import { createSingleFlight } from "./single-flight";
 import {
   extractDeltaText,
   hasUnclosedThinkTag,
@@ -1385,6 +1386,11 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const DEFAULT_AUTO_LOAD_MODEL_ID = "unsloth/Qwen3.5-4B-MTP-GGUF";
 const DEFAULT_AUTO_LOAD_GGUF_VARIANT = "UD-Q4_K_XL";
+type DefaultAutoLoadOutcome = {
+  loaded: boolean;
+  loadedDefault: boolean;
+};
+const defaultAutoLoadFlight = createSingleFlight<DefaultAutoLoadOutcome>();
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -2146,98 +2152,133 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
         return { loaded: false, blockedByTrustRemoteCode };
       }
 
-      updateAutoLoadToast(
-        "Starting model…",
-        "Download complete. Loading Qwen3.5-4B-MTP into memory.",
+      abortSignal.throwIfAborted();
+      const defaultLoadOutcome = await defaultAutoLoadFlight.run(
+        abortSignal,
+        async () => {
+          const runtimeBeforeDefaultLoad = useChatRuntimeStore.getState();
+          if (
+            runtimeBeforeDefaultLoad.params.checkpoint ||
+            runtimeBeforeDefaultLoad.modelLoading
+          ) {
+            if (runtimeBeforeDefaultLoad.modelLoading) {
+              await waitForModelReady();
+            }
+            return {
+              loaded: Boolean(
+                useChatRuntimeStore.getState().params.checkpoint,
+              ),
+              loadedDefault: false,
+            };
+          }
+
+          runtimeBeforeDefaultLoad.setModelLoading(true);
+          try {
+            updateAutoLoadToast(
+              "Starting model…",
+              "Download complete. Loading Qwen3.5-4B-MTP into memory.",
+            );
+            loadAttempts += 1;
+            const loadResp = await loadModel({
+              model_path: DEFAULT_AUTO_LOAD_MODEL_ID,
+              hf_token: defaultHfToken,
+              // Model default under both modes: Auto layers + no pin means
+              // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
+              // preflight above sends the same).
+              max_seq_length: 0,
+              load_in_4bit: true,
+              is_lora: false,
+              gguf_variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
+              trust_remote_code: defaultTrustRemoteCode,
+              speculative_type: defaultSpecSettings.speculativeType,
+              spec_draft_n_max: defaultSpecSettings.specDraftNMax,
+              // GPU Memory mode is a standing preference, so honor it on auto-load.
+              // The layer/MoE/split knobs and the context pin are per-model: the live
+              // store may hold edits drafted for a staged pick, and a fresh default
+              // model has no remembered settings, so those stay at their defaults like
+              // the cached-candidate path. The GPU pick deliberately differs (it's the
+              // picker's current on-screen selection, which the canAutoLoad preflight
+              // above already committed to).
+              gpu_memory_mode: defaultGpuMemoryMode,
+              gpu_layers: GPU_LAYERS_AUTO,
+              n_cpu_moe: 0,
+              gpu_ids: defaultGpuIds ?? undefined,
+            });
+            saveSpeculativeType(defaultSpecSettings.speculativeType);
+            persistGpuMemoryModeOnLoad(loadResp, defaultGpuMemoryMode);
+            useChatRuntimeStore
+              .getState()
+              .setCheckpoint(
+                DEFAULT_AUTO_LOAD_MODEL_ID,
+                DEFAULT_AUTO_LOAD_GGUF_VARIANT,
+              );
+            const store = useChatRuntimeStore.getState();
+            store.setModelRequiresTrustRemoteCode(
+              loadResp.requires_trust_remote_code ?? false,
+            );
+            store.setParams({
+              ...store.params,
+              maxTokens: loadResp.context_length ?? 131072,
+            });
+            const defaultModel: ChatModelSummary = {
+              id: DEFAULT_AUTO_LOAD_MODEL_ID,
+              name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
+              isVision: loadResp.is_vision ?? false,
+              isLora: false,
+              isGguf: true,
+            };
+            if (!store.models.some((m) => m.id === DEFAULT_AUTO_LOAD_MODEL_ID)) {
+              store.setModels([...store.models, defaultModel]);
+            }
+            useChatRuntimeStore.setState({
+              ggufContextLength: loadResp.context_length ?? 131072,
+              ggufMaxContextLength:
+                loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+              supportsReasoning: loadResp.supports_reasoning ?? false,
+              reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+              reasoningEnabled: loadResp.supports_reasoning ?? false,
+              ...reasoningCapsFromLoad(loadResp),
+              supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+              supportsTools: loadResp.supports_tools ?? false,
+              ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+              kvCacheDtype: loadResp.cache_type_kv ?? null,
+              loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+              // The request above omits n_parallel: a staged override left from a
+              // preset would read as applied and be re-sent by the next Apply.
+              nParallel: null,
+              loadedNParallel: null,
+              tensorParallel: loadResp.tensor_parallel ?? false,
+              loadedTensorParallel: loadResp.tensor_parallel ?? false,
+              ...loadedGpuMemoryFields(loadResp),
+              // Drives the GPU Memory controls' diffusion gate; set alongside the
+              // GPU fields on every load path so the gate can't read stale.
+              loadedIsDiffusion: loadResp.is_diffusion ?? false,
+              defaultChatTemplate: loadResp.chat_template ?? null,
+              chatTemplateOverride: null,
+              loadedIsMultimodal: isMultimodalResponse(loadResp),
+              activeModelIsLocal: loadResp.is_local_model ?? false,
+              ...resolveLoadedSpeculativeSettings(loadResp),
+            });
+            recordLastLocalModelLoad({
+              id: DEFAULT_AUTO_LOAD_MODEL_ID,
+              kind: "gguf",
+              ggufVariant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
+            });
+            return { loaded: true, loadedDefault: true };
+          } finally {
+            useChatRuntimeStore.getState().setModelLoading(false);
+          }
+        },
       );
-      loadAttempts += 1;
-      const loadResp = await loadModel({
-        model_path: DEFAULT_AUTO_LOAD_MODEL_ID,
-        hf_token: defaultHfToken,
-        // Model default under both modes: Auto layers + no pin means
-        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
-        // preflight above sends the same).
-        max_seq_length: 0,
-        load_in_4bit: true,
-        is_lora: false,
-        gguf_variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
-        trust_remote_code: defaultTrustRemoteCode,
-        speculative_type: defaultSpecSettings.speculativeType,
-        spec_draft_n_max: defaultSpecSettings.specDraftNMax,
-        // GPU Memory mode is a standing preference, so honor it on auto-load.
-        // The layer/MoE/split knobs and the context pin are per-model: the live
-        // store may hold edits drafted for a staged pick, and a fresh default
-        // model has no remembered settings, so those stay at their defaults like
-        // the cached-candidate path. The GPU pick deliberately differs (it's the
-        // picker's current on-screen selection, which the canAutoLoad preflight
-        // above already committed to).
-        gpu_memory_mode: defaultGpuMemoryMode,
-        gpu_layers: GPU_LAYERS_AUTO,
-        n_cpu_moe: 0,
-        gpu_ids: defaultGpuIds ?? undefined,
-      });
-      saveSpeculativeType(defaultSpecSettings.speculativeType);
-      persistGpuMemoryModeOnLoad(loadResp, defaultGpuMemoryMode);
-      useChatRuntimeStore
-        .getState()
-        .setCheckpoint(
-          DEFAULT_AUTO_LOAD_MODEL_ID,
-          DEFAULT_AUTO_LOAD_GGUF_VARIANT,
-        );
-      const store = useChatRuntimeStore.getState();
-      store.setModelRequiresTrustRemoteCode(
-        loadResp.requires_trust_remote_code ?? false,
-      );
-      store.setParams({
-        ...store.params,
-        maxTokens: loadResp.context_length ?? 131072,
-      });
-      const defaultModel: ChatModelSummary = {
-        id: DEFAULT_AUTO_LOAD_MODEL_ID,
-        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
-        isVision: loadResp.is_vision ?? false,
-        isLora: false,
-        isGguf: true,
-      };
-      if (!store.models.some((m) => m.id === DEFAULT_AUTO_LOAD_MODEL_ID)) {
-        store.setModels([...store.models, defaultModel]);
+      if (defaultLoadOutcome.loadedDefault) {
+        showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
+      } else {
+        toast.dismiss(toastId);
       }
-      useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength:
-          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        ...reasoningCapsFromLoad(loadResp),
-        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
-        supportsTools: loadResp.supports_tools ?? false,
-        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        // The request above omits n_parallel: a staged override left from a
-        // preset would read as applied and be re-sent by the next Apply.
-        nParallel: null,
-        loadedNParallel: null,
-        tensorParallel: loadResp.tensor_parallel ?? false,
-        loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFields(loadResp),
-        // Drives the GPU Memory controls' diffusion gate; set alongside the
-        // GPU fields on every load path so the gate can't read stale.
-        loadedIsDiffusion: loadResp.is_diffusion ?? false,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedIsMultimodal: isMultimodalResponse(loadResp),
-        activeModelIsLocal: loadResp.is_local_model ?? false,
-        ...resolveLoadedSpeculativeSettings(loadResp),
-      });
-      recordLastLocalModelLoad({
-        id: DEFAULT_AUTO_LOAD_MODEL_ID,
-        kind: "gguf",
-        ggufVariant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
-      });
-      showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
-      return { loaded: true, blockedByTrustRemoteCode: false };
+      return {
+        loaded: defaultLoadOutcome.loaded,
+        blockedByTrustRemoteCode: false,
+      };
     } catch (error) {
       toast.dismiss(toastId);
       if (abortSignal.aborted) throw error;

@@ -1266,3 +1266,21 @@ def test_download_manager_cancel_resolves_after_cancelling_state_exits():
     assert 'job.state !== "cancelling"' in helper
     assert "live.epoch !== epoch" in helper
     assert "useDownloadManagerStore.subscribe(finish)" in helper
+
+
+def test_first_chat_default_autoload_claims_one_abort_safe_load():
+    """The final non-abortable load is claimed only after the last abort check."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    final_phase = src.split("if (!placementStable)", 1)[1]
+    final_phase = final_phase.split("} catch (error)", 1)[0]
+
+    abort_check = final_phase.index("abortSignal.throwIfAborted();")
+    flight_claim = final_phase.index("defaultAutoLoadFlight.run(")
+    load_claim = final_phase.index("setModelLoading(true);")
+    load_call = final_phase.index("const loadResp = await loadModel")
+    persisted = final_phase.index("recordLastLocalModelLoad({")
+    release = final_phase.index("setModelLoading(false);")
+
+    assert abort_check < flight_claim < load_claim < load_call
+    assert load_call < persisted < release
+    assert "await waitForModelReady();" in final_phase
