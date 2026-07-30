@@ -52,8 +52,8 @@ export interface DownloadStartResult {
   state: DownloadStartState;
   accepted: boolean;
   generation?: number;
-  // Older backends omit this additive ownership signal. Treat omission as a
-  // fresh start so mixed-version desktop updates preserve existing behavior.
+  // Older backends omit this additive ownership signal. Callers that make
+  // ownership-sensitive decisions must treat omission as non-ownership.
   created?: boolean;
 }
 

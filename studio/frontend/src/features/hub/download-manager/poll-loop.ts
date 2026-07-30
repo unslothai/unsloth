@@ -76,6 +76,10 @@ import {
   teardownRuntime,
 } from "./runtime-registry";
 import { getTransportMode } from "./transport-preference";
+import {
+  type JobStartOwnership,
+  ownershipFromStartResult,
+} from "./start-ownership";
 
 function notify(
   job: ManagedDownload,
@@ -587,8 +591,6 @@ function reissueDroppedStartCancel(
   }).catch(() => {});
 }
 
-export type JobStartOwnership = "started" | "existing" | "inactive";
-
 export async function startJob(
   req: DownloadRequest,
   opts: {
@@ -682,7 +684,6 @@ export async function startJob(
   });
 
   if (!opts.adopt) {
-    let ownership: JobStartOwnership = "started";
     let result;
     try {
       result = await apiStart(req, mode === TRANSPORT.XET, hfToken);
@@ -706,7 +707,7 @@ export async function startJob(
     if (Number.isSafeInteger(result.generation)) {
       patchJob(key, { serverGeneration: result.generation });
     }
-    if (result.created === false) ownership = "existing";
+    const ownership = ownershipFromStartResult(result);
     beginPolling(key, rt);
     return ownership;
   }
