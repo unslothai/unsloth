@@ -157,8 +157,14 @@ class _Canonicalise(ast.NodeTransformer):
 
     def visit_BinOp(self, node):
         self.generic_visit(node)
-        if self.relax_inversion and isinstance(node.op, ast.Sub) and "value=1.0" in ast.dump(node.left):
-            return ast.BinOp(left = ast.Name(id = "_ONE", ctx = ast.Load()), op = ast.Sub(), right = node.right)
+        if (
+            self.relax_inversion
+            and isinstance(node.op, ast.Sub)
+            and "value=1.0" in ast.dump(node.left)
+        ):
+            return ast.BinOp(
+                left = ast.Name(id = "_ONE", ctx = ast.Load()), op = ast.Sub(), right = node.right
+            )
         return node
 
 
@@ -176,13 +182,17 @@ def _inline_single_use(body):
             ):
                 continue
             name = stmt.targets[0].id
-            rest = out[i + 1:]
+            rest = out[i + 1 :]
             reads = sum(
-                1 for s in rest for n in ast.walk(s)
+                1
+                for s in rest
+                for n in ast.walk(s)
                 if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
             )
             writes = sum(
-                1 for s in rest for n in ast.walk(s)
+                1
+                for s in rest
+                for n in ast.walk(s)
                 if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
             )
             if reads != 1 or writes:
@@ -236,7 +246,7 @@ def _symbols(source, relax_device, relax_inversion):
 def test_vendored_module_has_not_drifted_from_upstream():
     upstream_src = _upstream_source()
     version = _transformers_version()
-    relax_device = version < (5, 0)     # xpu gate forward-ported from 5.x
+    relax_device = version < (5, 0)  # xpu gate forward-ported from 5.x
     relax_inversion = version < (4, 53)  # 0-dim inversion forward-ported from 4.53.0
 
     upstream = _symbols(upstream_src, relax_device, relax_inversion)
