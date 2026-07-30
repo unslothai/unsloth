@@ -47,9 +47,14 @@ version = {attr = "unsloth.models._utils.__version__"}
 [tool.setuptools]
 include-package-data = true
 
+[tool.setuptools.cmdclass]
+# Snapshots CHANGELOG.md into studio/ so every build path ships it.
+build_py = "_changelog_build.build_py"
+
 [tool.setuptools.package-data]
 unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
+    "CHANGELOG.md",
     "*.sh",
     "*.ps1",
     "*.bat",
@@ -107,7 +112,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.7.6",
+    "unsloth_zoo>=2026.7.7",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -128,18 +133,23 @@ huggingfacenotorch = [
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
 # Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
+# torchcodec publishes no sdist and only manylinux_2_28_x86_64, macosx_*_arm64
+# and win_amd64 wheels, so Linux aarch64, Windows ARM64 and Intel Mac have
+# nothing to resolve and pip fails the whole install rather than skipping audio.
+# Gate on the platforms that have a wheel, matching
+# PLATFORM_LACKS_TORCHCODEC_WHEEL in studio/install_python_stack.py.
 audio-torch210 = [
-    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10'",
+    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch290 = [
-    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10'",
+    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch280 = [
-    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9'",
+    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.7.6",
+    "unsloth_zoo>=2026.7.7",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -627,7 +637,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.7.6",
+    "unsloth_zoo>=2026.7.7",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -1257,8 +1267,11 @@ intel = [
 ]
 amd = [
     "unsloth[huggingfacenotorch]",
-    "bitsandbytes>=0.49.1 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
-    "bitsandbytes>=0.49.1 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    # 4-bit decode is unreliable on ROCm before 0.50.0, the first PyPI release
+    # carrying the full path: blocksize/warp decoupling (bnb #1887), fused SIMT
+    # GEMM on RDNA (#1979), RDNA3/4 workgroup fix (#2012).
+    "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+    "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 rocm702-torch280 = [
     "unsloth[amd]",

@@ -27,10 +27,18 @@ export const fr = {
     product: "Unsloth Studio",
     accountMenu: "Menu du compte de {name}",
     updateAvailable: "Mise à jour disponible",
+    resize: {
+      collapse: "Cliquez pour réduire",
+      expand: "Cliquez pour développer",
+      drag: "Faites glisser pour redimensionner",
+    },
     aria: {
       home: "Accueil Unsloth",
       closeSidebar: "Fermer la barre latérale",
       openSidebar: "Ouvrir la barre latérale",
+      resizeSidebar: "Redimensionner ou réduire la barre latérale",
+      resizeRunSettings: "Redimensionner ou fermer les paramètres d'exécution",
+      openRunSettings: "Ouvrir les paramètres d'exécution",
       chatOptions: "Options de discussion",
       runOptions: "Options d'exécution",
     },
@@ -325,6 +333,8 @@ export const fr = {
         diskUsage: "{used} utilisé / {total}",
         diskFree: "{free} libre",
         modelsFolder: "Dossier des modèles",
+        modelsFolderKeywords:
+          "modeles modèles dossier repertoire répertoire chemin emplacement telechargements téléchargements cache stockage disque lecteur deplacer déplacer changer models folder path hugging face",
         modelsFolderDescription: "Emplacement de stockage des modèles téléchargés.",
         openAction: "Ouvrir",
         copyAction: "Copier le chemin",
@@ -464,7 +474,7 @@ export const fr = {
       codingAgentsHint:
         "Lancez un agent de codage sur ce serveur. Il utilise le modèle chargé ; un serveur local génère automatiquement une clé API, un serveur distant l'inclut dans la commande.",
       codingAgentsSwap:
-        "Remplacez claude par codex, openclaw, opencode, hermes ou pi.",
+        "Remplacez claude par codex, openclaw, opencode ou hermes.",
       codingAgentDetected: "Installé sur cette machine",
       codingAgentsDetectedHint: "Détecté sur cette machine : {agents}.",
       relativeNever: "jamais",

@@ -30,6 +30,7 @@ PYPI_SUCCESS_TTL_SECONDS = 12 * 60 * 60
 PYPI_FAILURE_TTL_SECONDS = 60 * 60
 RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog"
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_UPDATE_CHECK"
+FAKE_UPDATE_ENV_VAR = "UNSLOTH_STUDIO_FAKE_UPDATE"
 
 LOCAL_INSTALL_SOURCES = {"editable", "local_path", "vcs", "local_repo"}
 
@@ -107,11 +108,32 @@ def get_studio_install_source_status(current_version: str) -> dict[str, Any]:
     )
 
 
+def _is_version(value: str) -> bool:
+    try:
+        Version(value)
+    except InvalidVersion:
+        return False
+    return True
+
+
 def get_studio_update_status(current_version: str) -> dict[str, Any]:
     """Return public, read-only update status for the web UI."""
     install_source = detect_install_source()
+    disabled = os.environ.get(DISABLE_ENV_VAR) == "1"
 
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
+    # Dev-only: the popup is PyPI-install-only, so fake a version to review it
+    # from a checkout. The documented opt-out still wins.
+    forced_version = os.environ.get(FAKE_UPDATE_ENV_VAR, "").strip()
+    if forced_version and not disabled and _is_version(forced_version):
+        return _status_response(
+            current_version = current_version,
+            latest_version = forced_version,
+            install_source = "pypi",
+            update_available = True,
+            can_show_web_notification = True,
+        )
+
+    if disabled:
         return _status_response(
             current_version = current_version,
             latest_version = None,

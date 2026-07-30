@@ -27,10 +27,18 @@ export const ptBR = {
     product: "Unsloth Studio",
     accountMenu: "Menu de conta {name}",
     updateAvailable: "Atualização disponível",
+    resize: {
+      collapse: "Clique para recolher",
+      expand: "Clique para expandir",
+      drag: "Arraste para redimensionar",
+    },
     aria: {
       home: "Início do Unsloth",
       closeSidebar: "Fechar barra lateral",
       openSidebar: "Abrir barra lateral",
+      resizeSidebar: "Redimensionar ou recolher a barra lateral",
+      resizeRunSettings: "Redimensionar ou fechar as configurações de execução",
+      openRunSettings: "Abrir as configurações de execução",
       chatOptions: "Opções de chat",
       runOptions: "Opções de execução",
     },
@@ -417,6 +425,8 @@ export const ptBR = {
         diskUsage: "{used} usados / {total}",
         diskFree: "{free} livres",
         modelsFolder: "Pasta de modelos",
+        modelsFolderKeywords:
+          "modelos pasta diretorio diretório caminho local localizacao localização downloads baixar cache armazenamento disco unidade mover alterar models folder path hugging face",
         modelsFolderDescription: "Onde os modelos baixados são armazenados.",
         openAction: "Abrir",
         copyAction: "Copiar caminho",
@@ -552,7 +562,7 @@ export const ptBR = {
       codingAgents: "Agentes de código",
       codingAgentsHint:
         "Inicie um agente de código conectado a este servidor. Ele usa o modelo carregado; um servidor local gera uma chave de API automaticamente, um remoto a inclui no comando.",
-      codingAgentsSwap: "Troque claude por codex, openclaw, opencode, hermes ou pi.",
+      codingAgentsSwap: "Troque claude por codex, openclaw, opencode ou hermes.",
       codingAgentDetected: "Instalado nesta máquina",
       codingAgentsDetectedHint: "Detectado nesta máquina: {agents}.",
       relativeNever: "nunca",

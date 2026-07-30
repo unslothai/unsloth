@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Sequence
 import typer
 
 from unsloth_cli import _studio_deps
@@ -483,9 +483,12 @@ def _write_auth_secret(path: Path, secret: str) -> None:
             os.chmod(tmp_path, 0o600)
         except OSError:
             pass
-        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        # newline pins LF: text mode writes CRLF on Windows, and `$(cat ...)`
+        # strips the LF but leaves the CR glued to the credential.
+        with os.fdopen(fd, "w", encoding = "utf-8", newline = "\n") as f:
             fd = -1
-            f.write(secret)
+            # Newline so `cat` doesn't run it into the shell prompt; readers strip.
+            f.write(secret + "\n")
         os.replace(tmp_path, path)
     except Exception:
         if fd >= 0:
@@ -502,6 +505,8 @@ def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
     auth_dir.mkdir(parents = True, exist_ok = True)
     conn = sqlite3.connect(auth_dir / "auth.db")
+    # A live server writes this DB while the CLI runs; the default lock wait is zero.
+    conn.execute("PRAGMA busy_timeout=5000")
     # Mirror backend storage.get_connection: this path can create auth/ and
     # auth.db (the pre-exposure gate writes here first), and sqlite3.connect
     # makes the DB 0644 under a 022 umask. Keep both private.
@@ -529,7 +534,8 @@ def _connect_auth_db() -> sqlite3.Connection:
             token_hash TEXT NOT NULL,
             username TEXT NOT NULL,
             expires_at TEXT NOT NULL,
-            is_desktop INTEGER NOT NULL DEFAULT 0
+            is_desktop INTEGER NOT NULL DEFAULT 0,
+            secret_gen TEXT
         );
         """
     )
@@ -564,6 +570,8 @@ def _connect_auth_db() -> sqlite3.Connection:
     refresh_columns = {row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
+    if "secret_gen" not in refresh_columns:
+        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN secret_gen TEXT")
     conn.commit()
     return conn
 
@@ -697,12 +705,30 @@ def _bootstrap_deadline_active() -> bool:
         return True
 
 
-def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
+def _generate_reset_password() -> str:
+    """Readable 4-word passphrase; the user has to type this one back in."""
+    try:
+        import diceware
+        return diceware.get_passphrase(
+            options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
+        )
+    except Exception:
+        return secrets.token_urlsafe(24)
+
+
+def _cli_update_password(
+    conn: sqlite3.Connection,
+    username: str,
+    new_password: str,
+    *,
+    revoke_api_keys: bool = False,
+) -> None:
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
-    revoke refresh tokens (PR #6651 finding), and drop the desktop secret. File
-    cleanup happens after commit; a failed unlink must not roll the change back.
+    revoke refresh tokens (PR #6651 finding), drop the desktop secret, and (for a
+    reset) the API keys the old credential could have minted. File cleanup happens
+    after commit; a failed unlink must not roll the change back.
     """
     password_salt, password_hash = _hash_password(new_password)
     with conn:
@@ -719,6 +745,8 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             "DELETE FROM app_secrets WHERE key IN (?, ?)",
             (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
         )
+        if revoke_api_keys:
+            conn.execute("DELETE FROM api_keys")
     for stale in (BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE):
         stale_path = STUDIO_HOME / "auth" / stale
         try:
@@ -728,8 +756,8 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             # change back. But a locked-yet-writable file (Windows AV, read-only
             # auth dir) must be truncated: otherwise its stale plaintext survives
             # and generate_bootstrap_password() would re-validate this revoked
-            # credential after a later reset-password deletes auth.db. Mirrors
-            # backend clear_bootstrap_password().
+            # credential if auth.db is ever recreated. Mirrors backend
+            # clear_bootstrap_password().
             try:
                 stale_path.write_text("", encoding = "utf-8")
                 cleared = True
@@ -787,8 +815,8 @@ def _apply_supplied_password_before_launch(supplied_password: "str | None") -> N
         if not row[2]:
             typer.echo(
                 "Error: an Unsloth admin password is already set; --password only sets "
-                "the initial password. Run `unsloth studio reset-password` first "
-                "(or change it in the UI).",
+                "the initial password. Change it in the UI, or run `unsloth studio "
+                "reset-password` for a new one.",
                 err = True,
             )
             raise typer.Exit(1)
@@ -1263,7 +1291,8 @@ def studio_default(
         max = _PARALLEL_MAX,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            "(Parallel Slots) override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -1880,7 +1909,8 @@ def run(
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
+            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Studio "
+            "run settings (Parallel Slots) can override it per load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -2235,6 +2265,9 @@ def run(
         # Headless serving prints its own URL/API-key banner; the Tauri-only
         # TAURI_PORT line would corrupt that machine-parseable output.
         emit_tauri_port = False,
+        # We read the bound port back below, so a fallback past another Studio is
+        # safe here and keeps side-by-side model runs working.
+        abort_if_own_studio = False,
     )
     # Forward the frontend validated before the gate (in-venv path).
     if resolved_frontend is not None:
@@ -2394,6 +2427,7 @@ def run(
 # ── unsloth studio stop ───────────────────────────────────────────────
 
 _PID_FILE = STUDIO_HOME / "studio.pid"
+PID_FILE_GLOB = "studio-*.pid"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -2423,58 +2457,210 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-@studio_app.command()
-def stop():
-    """Stop a running Unsloth Studio server.
+def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from PID file contents."""
+    lines = text.splitlines()
+    if not lines or not lines[0].strip().isdigit():
+        return None
+    try:
+        # isdigit() is not enough: "²".isdigit() is True but int() rejects it.
+        pid = int(lines[0].strip())
+    except ValueError:
+        return None
+    # kill(0) signals our whole process group; kill(1) is init. Never either.
+    if pid < 2:
+        return None
+    created = None
+    if len(lines) > 1:
+        try:
+            created = float(lines[1].strip())
+        except ValueError:
+            created = None
+    return pid, created
 
-    Reads the PID from ~/.unsloth/studio/studio.pid and sends SIGTERM
-    (or TerminateProcess on Windows) to shut it down gracefully.
+
+def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from a PID file."""
+    try:
+        text = path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return _parse_pid_record(text)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Drop a record without letting one bad file end the loop.
+
+    An undeletable record must not stop us reaching the other servers -- that is
+    the orphan this command exists to prevent.
     """
+    try:
+        path.unlink(missing_ok = True)
+    except OSError as e:
+        typer.echo(f"Could not remove PID file {path.name}: {e}", err = True)
+
+
+def _report_unreadable(paths: "list[Path]") -> None:
+    """Say which servers we could not reach, since `stop` is about to exit 1."""
+    names = ", ".join(sorted(p.name for p in paths))
+    typer.echo(
+        f"Could not read {len(paths)} PID file(s): {names}. A server recorded "
+        f"there may still be running; re-run with permission to read "
+        f"{STUDIO_HOME} to stop it.",
+        err = True,
+    )
+
+
+def _pid_file_entries(
+    unreadable: "list[Path] | None" = None,
+) -> "list[tuple[int, list[float | None], list[Path]]]":
+    """(pid, create_times, files) per recorded server, including the legacy studio.pid.
+
+    Paths that could not be read are appended to `unreadable` when given, so the
+    caller can tell "nothing is running" apart from "something is running and we
+    could not see it".
+
+    Grouped by PID: a server writes both its per-port file and studio.pid, and
+    signalling twice would hit the SIG_DFL the first SIGTERM installs, hard-killing
+    it mid-shutdown. Every recorded time is kept -- a stale file and a live server
+    can share a PID, and the stale one must not veto the live one.
+    """
+    by_pid: "dict[int, tuple[list[float | None], list[Path]]]" = {}
+    try:
+        paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
+    except OSError:
+        paths = [_PID_FILE]
+    seen = set()
+    for path in paths:
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # Unreadable is not the same as invalid. A root-owned record, or one
+            # caught mid-write, still belongs to a live server, and deleting it
+            # strands that server -- the bug this command exists to fix.
+            typer.echo(f"Cannot read PID file {path.name}: {e}", err = True)
+            if unreadable is not None:
+                unreadable.append(path)
+            continue
+        record = _parse_pid_record(text)
+        if record is None:
+            typer.echo(f"Ignoring invalid PID file {path.name}")
+            _unlink_quietly(path)
+            continue
+        pid, created = record
+        created_times, files = by_pid.setdefault(pid, ([], []))
+        created_times.append(created)
+        files.append(path)
+    return [(pid, times, files) for pid, (times, files) in by_pid.items()]
+
+
+def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
+    """False only when a recorded start time proves this PID is a different process.
+
+    Any recorded time matching is enough -- a stale record must not veto a live
+    server that reused the PID. Records with no time at all (a legacy studio.pid,
+    or a server started without psutil) cannot be checked, so they are trusted:
+    the old `stop` signalled with no checks at all, and skipping a live server is
+    the orphan bug this exists to fix.
+
+    An untimed record sitting *alongside* a timed one carries no information, so
+    it must not cancel the timed one either. Every current server writes both a
+    timed per-port record and an untimed studio.pid, so letting the untimed half
+    win made this check inert exactly where it matters and let `stop` SIGTERM an
+    unrelated process that had inherited the PID.
+    """
+    known = [c for c in created_times if c is not None]
+    if not known:
+        return True
+    try:
+        import psutil
+        actual = psutil.Process(pid).create_time()
+    except Exception:
+        return True
+    return any(abs(actual - c) < 1.0 for c in known)
+
+
+def _signal_stop(pid: int) -> "str | None":
+    """SIGTERM (or taskkill) the pid. Returns an error string, or None on success."""
     import signal as _signal
 
-    if not _PID_FILE.is_file():
-        typer.echo("No running Unsloth server found (no PID file).")
-        raise typer.Exit(0)
-
-    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
-    if not pid_text.isdigit():
-        typer.echo(f"Invalid PID file contents: {pid_text}")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(1)
-
-    pid = int(pid_text)
-
-    # Check if still alive (os.kill(pid, 0) is invalid on Windows -- see _pid_alive).
-    if not _pid_alive(pid):
-        typer.echo(f"Unsloth server (PID {pid}) is not running. Cleaning up stale PID file.")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(0)
-
-    # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
+    if pid < 2:
+        return f"refusing to signal PID {pid}"
     try:
         if sys.platform == "win32":
             # /T also stops llama-server children, which otherwise keep GPU and port.
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check = True)
         else:
             os.kill(pid, _signal.SIGTERM)
-        typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
     except ProcessLookupError:
-        typer.echo(f"Unsloth server (PID {pid}) already exited.")
-        _PID_FILE.unlink(missing_ok = True)
-        raise typer.Exit(0)
+        return None
     except Exception as e:
-        typer.echo(f"Failed to stop Unsloth server (PID {pid}): {e}", err = True)
-        raise typer.Exit(1)
+        return str(e)
+    return None
 
-    # Wait briefly for the process to exit and clean up.
+
+@studio_app.command()
+def stop():
+    """Stop every running Unsloth Studio server for this STUDIO_HOME.
+
+    The port fallback can leave more than one running, so stop them all.
+    """
+    unreadable: "list[Path]" = []
+    entries = _pid_file_entries(unreadable)
+    if not entries:
+        if unreadable:
+            # Reporting success here would be a lie: the records we could not
+            # read are kept, and the servers behind them are still serving.
+            _report_unreadable(unreadable)
+            raise typer.Exit(1)
+        typer.echo("No running Unsloth server found (no PID file).")
+        raise typer.Exit(0)
+
+    signalled, failed = [], []
+    for pid, created_times, paths in entries:
+        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created_times):
+            for path in paths:
+                _unlink_quietly(path)
+            continue
+        error = _signal_stop(pid)
+        if error is not None:
+            failed.append((pid, error))
+            typer.echo(f"Failed to stop Unsloth server (PID {pid}): {error}", err = True)
+            continue
+        typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
+        signalled.append((pid, paths))
+
+    if not signalled and not failed:
+        if unreadable:
+            _report_unreadable(unreadable)
+            raise typer.Exit(1)
+        typer.echo("No running Unsloth server found (cleaned up stale PID files).")
+        raise typer.Exit(0)
+
+    pending = list(signalled)
     for _ in range(10):
+        if not pending:
+            break
         time.sleep(0.5)
-        if not _pid_alive(pid):
-            _PID_FILE.unlink(missing_ok = True)
-            typer.echo("Unsloth server stopped.")
-            raise typer.Exit(0)
+        for entry in list(pending):
+            pid, paths = entry
+            if not _pid_alive(pid):
+                for path in paths:
+                    _unlink_quietly(path)
+                pending.remove(entry)
 
-    typer.echo("Unsloth server is shutting down (may take a few seconds).")
+    stopped = len(signalled) - len(pending)
+    if stopped:
+        typer.echo(f"Unsloth server{'s' if stopped > 1 else ''} stopped ({stopped}).")
+    for pid, _paths in pending:
+        typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
+    if unreadable:
+        _report_unreadable(unreadable)
+    if failed or unreadable:
+        raise typer.Exit(1)
 
 
 # ── unsloth studio setup / update ─────────────────────────────────────
@@ -2888,59 +3074,33 @@ def provision_desktop_auth():
 def reset_password():
     """Reset the Unsloth admin password.
 
-    Deletes the auth database so that a fresh admin account with a new
-    random password is created on the next server start.  The Unsloth
-    server must be restarted after running this command.
+    Rotates the credential in place: a running Unsloth accepts the new password on
+    its next request, so there is nothing to restart. Shared /p preview links are
+    not revoked -- rotate those in Settings if the old password leaked.
     """
-    auth_dir = STUDIO_HOME / "auth"
-    db_file = auth_dir / "auth.db"
-    stale_files = [
-        auth_dir / BOOTSTRAP_PASSWORD_FILE,
-        auth_dir / DESKTOP_SECRET_FILE,
-    ]
-    had_db = db_file.exists()
-
-    # Delete auth.db FIRST and prove it is gone before touching the seeded
-    # credential files. If it cannot be removed (a running Unsloth or Windows
-    # holds it open, or a read-only auth dir), abort with the credential files
-    # untouched: deleting them while an un-resettable DB (must_change_password=1)
-    # survives would lock a forgotten-password reset out of any recovery
-    # credential. Failing here leaves a consistent, still-recoverable state.
+    new_password = _generate_reset_password()
     try:
-        db_file.unlink(missing_ok = True)
-    except OSError as exc:
+        conn = _connect_auth_db()
+    except (OSError, sqlite3.Error) as exc:
         typer.echo(
-            f"Error: could not delete the auth database ({exc}). Stop any running "
-            "Unsloth and retry; no credential files were changed.",
+            f"Error: could not open the auth database ({exc}). Check that "
+            f"{STUDIO_HOME / 'auth'} is writable; if auth.db itself is unreadable, stop "
+            "Unsloth, delete it, and start again to re-seed.",
             err = True,
         )
         raise typer.Exit(1)
 
-    # The DB is gone, so the next start re-seeds. Invalidate the seeded plaintext
-    # credential files so that re-seed generates a FRESH password instead of
-    # reusing a stale one: unlink only ignores FileNotFoundError, so a
-    # locked/undeletable file (Windows AV, read-only dir) would otherwise survive
-    # and generate_bootstrap_password() would read it back and re-validate the
-    # credential this reset revoked. Truncate on unlink failure; if a file can be
-    # neither removed nor truncated, fail closed -- the DB is already gone, so a
-    # surviving plaintext would be reused, and the user must remove it manually.
-    for path in stale_files:
-        try:
-            path.unlink(missing_ok = True)
-        except OSError:
-            try:
-                path.write_text("", encoding = "utf-8")
-            except OSError as exc:
-                typer.echo(
-                    f"Error: could not remove or clear {path.name} ({exc}); delete "
-                    "it manually before restarting Unsloth or the old password may "
-                    "be reused.",
-                    err = True,
-                )
-                raise typer.Exit(1)
+    try:
+        _ensure_cli_default_admin(conn)
+        _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True)
+    except (OSError, sqlite3.Error) as exc:
+        typer.echo(f"Error: could not reset the password ({exc}).", err = True)
+        raise typer.Exit(1)
+    finally:
+        conn.close()
 
-    if not had_db:
-        typer.echo("No auth database found -- nothing to reset.")
-        raise typer.Exit(0)
-
-    typer.echo("Auth database deleted. Restart Unsloth Studio to get a new password.")
+    typer.echo(f"New password for '{DEFAULT_ADMIN_USERNAME}': {new_password}")
+    typer.echo(
+        "Sessions and API keys revoked. A running Unsloth takes it on the next request, "
+        "though repeated failed logins can hold the rate limit shut for up to a minute."
+    )

@@ -27,10 +27,18 @@ export const ar = {
     product: "Unsloth Studio",
     accountMenu: "قائمة حساب {name}",
     updateAvailable: "يتوفر تحديث",
+    resize: {
+      collapse: "انقر للطي",
+      expand: "انقر للتوسيع",
+      drag: "اسحب لتغيير الحجم",
+    },
     aria: {
       home: "الصفحة الرئيسية لـ Unsloth",
       closeSidebar: "إغلاق الشريط الجانبي",
       openSidebar: "فتح الشريط الجانبي",
+      resizeSidebar: "تغيير حجم الشريط الجانبي أو طيه",
+      resizeRunSettings: "تغيير حجم إعدادات التشغيل أو إغلاقها",
+      openRunSettings: "فتح إعدادات التشغيل",
       chatOptions: "خيارات المحادثة",
       runOptions: "خيارات التدريب",
     },
@@ -317,6 +325,8 @@ export const ar = {
         diskUsage: "{used} مستخدم / {total}",
         diskFree: "{free} متاح",
         modelsFolder: "مجلد النماذج",
+        modelsFolderKeywords:
+          "النماذج مجلد دليل مسار موقع تنزيلات التنزيل ذاكرة التخزين المؤقت تخزين قرص محرك نقل تغيير models folder path hugging face",
         modelsFolderDescription: "المكان الذي تُخزَّن فيه النماذج المُنزَّلة.",
         openAction: "فتح",
         copyAction: "نسخ المسار",
@@ -451,7 +461,7 @@ export const ar = {
       codingAgents: "وكلاء البرمجة",
       codingAgentsHint:
         "شغّل وكيل برمجة مقابل هذا الخادم. يستخدم النموذج المُحمَّل؛ الخادم المحلي يُنشئ مفتاح API تلقائيًا، والخادم البعيد يُضمّنه في الأمر.",
-      codingAgentsSwap: "استبدل claude بـ codex أو openclaw أو opencode أو hermes أو pi.",
+      codingAgentsSwap: "استبدل claude بـ codex أو openclaw أو opencode أو hermes.",
       codingAgentDetected: "مثبّت على هذا الجهاز",
       codingAgentsDetectedHint: "تم اكتشافه على هذا الجهاز: {agents}.",
       relativeNever: "أبدًا",

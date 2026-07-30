@@ -77,8 +77,7 @@ validate_extra_args = _lsa.validate_extra_args
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
         # Soft-managed: user flags last-wins over Unsloth's auto-set version.
-        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
-        # count would desync); use `unsloth studio run --parallel N` instead.
+        # --parallel / -np / --n-parallel are hard-denied; use Parallel Slots.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],
@@ -94,6 +93,9 @@ validate_extra_args = _lsa.validate_extra_args
         ["-fit", "off"],
         ["--fit", "on"],
         ["--fit-ctx", "8192"],
+        # Memory placement flags (soft-managed; shadowed on inherit)
+        ["--mlock"],
+        ["--no-mmap", "--mlock"],
     ],
 )
 def test_pass_through_allowed(args):
@@ -128,7 +130,7 @@ def test_non_flag_token_passes_through():
 @pytest.mark.parametrize(
     "denied",
     [
-        # Parallel slots -- owned by the typer --parallel flag.
+        # Parallel slots -- owned by typer --parallel and LoadRequest.n_parallel.
         "-np",
         "--parallel",
         "--n-parallel",
@@ -201,9 +203,8 @@ def test_denylist_rejects_all_aliases(denied):
 @pytest.mark.parametrize(
     "args,offending",
     [
-        # Pass-through --parallel would last-wins-override the real slot
-        # count while Unsloth's KV-cache fit + llama_parallel_slots stay at
-        # the typer value -- plan vs. process disagree.
+        # Pass-through --parallel would last-wins-override the real slot count
+        # while the KV-cache fit and slot bookkeeping stay at the resolved value.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
         (["--n-parallel", "16"], "--n-parallel"),
@@ -213,7 +214,7 @@ def test_denylist_rejects_all_aliases(denied):
         # `["-np8"]` must still resolve to managed.
         (["-np8"], "-np"),
         (["-np64"], "-np"),
-        # Out-of-range values that would bypass the typer 1..64 guard.
+        # Out-of-range values that would bypass the PARALLEL_MIN/MAX bounds.
         (["--parallel", "999"], "--parallel"),
         (["-np", "0"], "-np"),
         (["-np999"], "-np"),
@@ -300,7 +301,7 @@ def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--api-key") is True
     assert is_managed_flag("-m") is True
     assert is_managed_flag("--model") is True
-    # Parallel slots owned by the typer --parallel flag.
+    # Parallel slots owned by typer --parallel and LoadRequest.n_parallel.
     assert is_managed_flag("--parallel") is True
     assert is_managed_flag("--n-parallel") is True
     assert is_managed_flag("-np") is True
@@ -321,6 +322,9 @@ def test_is_managed_flag_false_for_pass_through():
     assert is_managed_flag("--flash-attn") is False
     assert is_managed_flag("-ngl") is False
     assert is_managed_flag("--threads") is False
+    # Memory placement flags are pass-through (shadowed on inherit only).
+    assert is_managed_flag("--mlock") is False
+    assert is_managed_flag("--no-mmap") is False
 
 
 # ── strip_shadowing_flags ─────────────────────────────────────────────
@@ -383,6 +387,34 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
         strip_spec = False,
     )
     assert out == ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_device_by_default():
+    # --device is pass-through by default (users may pin when Unsloth auto-selects).
+    out = strip_shadowing_flags(
+        ["--device", "Vulkan1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+    assert out == ["--device", "Vulkan1", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_drops_device_when_requested():
+    # strip_device drops device placement flags when gpu_ids owns placement.
+    for flag in ("--device", "-dev", "--main-gpu", "-mg"):
+        out = strip_shadowing_flags(
+            [flag, "Vulkan1", "--top-k", "20"],
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_device = True,
+        )
+        assert out == ["--top-k", "20"], flag
 
 
 def test_strip_shadowing_flags_drops_mtp_flags_when_requested():

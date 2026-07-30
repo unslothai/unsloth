@@ -27,10 +27,18 @@ export const hi = {
     product: "Unsloth Studio",
     accountMenu: "{name} खाता मेनू",
     updateAvailable: "अपडेट उपलब्ध है",
+    resize: {
+      collapse: "छोटा करने के लिए क्लिक करें",
+      expand: "विस्तार के लिए क्लिक करें",
+      drag: "आकार बदलने के लिए खींचें",
+    },
     aria: {
       home: "Unsloth होम",
       closeSidebar: "साइडबार बंद करें",
       openSidebar: "साइडबार खोलें",
+      resizeSidebar: "साइडबार का आकार बदलें या छोटा करें",
+      resizeRunSettings: "रन सेटिंग्स का आकार बदलें या बंद करें",
+      openRunSettings: "रन सेटिंग्स खोलें",
       chatOptions: "चैट विकल्प",
       runOptions: "रन विकल्प",
     },
@@ -316,6 +324,8 @@ export const hi = {
         diskUsage: "{used} उपयोग में / {total}",
         diskFree: "{free} खाली",
         modelsFolder: "मॉडल फ़ोल्डर",
+        modelsFolderKeywords:
+          "मॉडल फ़ोल्डर फोल्डर निर्देशिका पथ स्थान डाउनलोड कैश संग्रहण डिस्क ड्राइव स्थानांतरित बदलें models folder path hugging face",
         modelsFolderDescription: "जहां डाउनलोड किए गए मॉडल संग्रहीत होते हैं।",
         openAction: "खोलें",
         copyAction: "पथ कॉपी करें",
@@ -449,7 +459,7 @@ export const hi = {
       codingAgents: "कोडिंग एजेंट",
       codingAgentsHint:
         "इस सर्वर के विरुद्ध एक कोडिंग एजेंट लॉन्च करें। यह लोड किए गए मॉडल का उपयोग करता है; एक स्थानीय सर्वर स्वचालित रूप से API key बनाता है, एक रिमोट सर्वर इसे कमांड में शामिल करता है।",
-      codingAgentsSwap: "claude को codex, openclaw, opencode, hermes, या pi से बदलें।",
+      codingAgentsSwap: "claude को codex, openclaw, opencode, या hermes से बदलें।",
       codingAgentDetected: "इस मशीन पर इंस्टॉल है",
       codingAgentsDetectedHint: "इस मशीन पर पाया गया: {agents}।",
       relativeNever: "कभी नहीं",

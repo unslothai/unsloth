@@ -426,8 +426,8 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
 }
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
-# (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
-# AMD GPU. Drop the pin once bnb 0.50+ ships on PyPI.
+# (bnb #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every AMD GPU;
+# PyPI 0.50.0 is the first release with the fix, so the fallback below is safe.
 _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
     "x86_64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
@@ -448,7 +448,8 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "bitsandbytes-1.33.7.preview-py3-none-win_amd64.whl"
     ),
 }
-_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.49.1"
+# Keep in step with the amd extra in pyproject.toml and the install.sh fallback.
+_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.50.0"
 
 
 def _bnb_rocm_prerelease_url() -> str | None:
@@ -458,6 +459,16 @@ def _bnb_rocm_prerelease_url() -> str | None:
     arch = platform.machine().lower()
     arch = {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch)
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
+
+
+def _bnb_rocm_arch_has_binary() -> bool:
+    """False on aarch64: bitsandbytes ships no ROCm kernels there at any version.
+    The PyPI 0.50.0 and continuous-release_main aarch64 wheels both carry only
+    libbitsandbytes_cpu.so plus CUDA variants, so neither install path gives
+    aarch64 a 4-bit backend and neither message may claim one.
+    """
+    arch = platform.machine().lower()
+    return {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch) != "aarch64"
 
 
 def _amd_smi_env() -> dict[str, str] | None:
@@ -1243,29 +1254,46 @@ _rocm_windows_torch_installed: bool = False
 
 
 def _install_bnb_windows_rocm() -> bool:
-    """Install the AMD Windows BNB prerelease wheel. Returns True on success.
+    """Install AMD Windows BNB, pre-release wheel first. Returns True on success.
 
-    The continuous-release wheel is intentionally mismatched: the filename
-    encodes 1.33.7.preview (parsed as 1.33.7rc0 by PEP 440) while the wheel
-    metadata reports 0.50.0.dev0. uv rejects this filename/metadata mismatch,
-    and bypassing it with UV_SKIP_WHEEL_FILENAME_CHECK still leaves uv mangling
-    the bitsandbytes install. Per the AMD install guide
-    (https://unsloth.ai/docs/get-started/install/amd/amd-hackathon) the wheel
-    must be installed with plain pip, not uv, so we force pip (force_pip=True);
-    plain pip performs no wheel filename/metadata check.
+    The wheel's filename version (1.33.7.preview, PEP 440 1.33.7rc0) does not
+    match its metadata (0.50.x.dev0). uv rejects the mismatch and still mangles
+    the install under UV_SKIP_WHEEL_FILENAME_CHECK, so force plain pip, which
+    performs no such check. Per the AMD install guide
+    (https://unsloth.ai/docs/get-started/install/amd/amd-hackathon).
+
+    When that URL is blocked, fall back to PyPI. Its win_amd64 wheel ships
+    libbitsandbytes_rocm{714,72}.dll from 0.50.0 on, so the fallback is a real
+    ROCm build; before 0.50.0 it was CUDA-only, which is why there was none.
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
-    if _bnb_win_url is None:
-        return False
-    _ok = pip_install_try(
-        "bitsandbytes (AMD Windows, pre-release main)",
-        "--force-reinstall",
-        "--no-cache-dir",
-        "--no-deps",
-        _bnb_win_url,
-        constrain = False,
-        force_pip = True,
-    )
+    _ok = False
+    if _bnb_win_url is not None:
+        _ok = pip_install_try(
+            "bitsandbytes (AMD Windows, pre-release main)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-deps",
+            _bnb_win_url,
+            constrain = False,
+            force_pip = True,
+        )
+        if not _ok:
+            print(
+                _red(
+                    "   bnb pre-release install failed; falling back to PyPI "
+                    f"{_BNB_ROCM_PYPI_FALLBACK}, which carries the ROCm 4-bit fix"
+                )
+            )
+    if not _ok:
+        _ok = pip_install_try(
+            "bitsandbytes (AMD Windows)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-deps",
+            _BNB_ROCM_PYPI_FALLBACK,
+            constrain = False,
+        )
     if not _ok:
         return False
     # Detect the actual ROCm DLL suffix in the wheel and set BNB_ROCM_VERSION so bnb
@@ -1755,8 +1783,8 @@ def _ensure_rocm_torch() -> None:
             pass
         if _torch_ok:
             _rocm_windows_torch_installed = True
-            # ROCm torch is already installed, but the AMD Windows BNB wheel is still
-            # needed (the PyPI bitsandbytes ships only CUDA DLLs, fails on ROCm).
+            # ROCm torch is already installed, but bnb still needs the ROCm build
+            # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
             return
         # torch was wiped between runs; fall through to the full install path
@@ -1834,12 +1862,12 @@ def _ensure_rocm_torch() -> None:
         # separate dependency -- a BNB install failure must NOT roll back the
         # torch ROCm install.
         _rocm_windows_torch_installed = True
-        # Always install AMD Windows bitsandbytes -- the PyPI wheel ships only
-        # CUDA DLLs and fails on ROCm. Install even when torch was already a
-        # ROCm build so `studio update` repairs a broken bnb.
+        # Always install AMD Windows bitsandbytes, even when torch was already a
+        # ROCm build, so `studio update` repairs a broken bnb.
         if not _install_bnb_windows_rocm():
             print(
-                "   Warning: AMD Windows bitsandbytes install failed; "
+                "   Warning: AMD Windows bitsandbytes install failed "
+                "(pre-release and PyPI); "
                 "ROCm torch is installed but bitsandbytes may need manual install"
             )
         return
@@ -2170,10 +2198,13 @@ def _ensure_rocm_torch() -> None:
                 force_pip = True,
             )
             if not _bnb_installed:
+                _fallback_note = (
+                    ", which carries the ROCm 4-bit fix" if _bnb_rocm_arch_has_binary() else ""
+                )
                 print(
                     _red(
                         "   bnb pre-release install failed; falling back to PyPI "
-                        "(4-bit decode will be broken on ROCm)"
+                        f"{_BNB_ROCM_PYPI_FALLBACK}{_fallback_note}"
                     )
                 )
         if not _bnb_installed:
@@ -2184,6 +2215,14 @@ def _ensure_rocm_torch() -> None:
                 "--no-deps",
                 _BNB_ROCM_PYPI_FALLBACK,
                 constrain = False,
+            )
+        if not _bnb_rocm_arch_has_binary():
+            print(
+                _red(
+                    "   aarch64: bitsandbytes ships no ROCm kernels on this arch; "
+                    "4-bit QLoRA needs a source build -- "
+                    "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                )
             )
 
 
@@ -2751,6 +2790,9 @@ def pip_install_try(
         env = _install_env_for_cmd(cmd),
     )
     if result.returncode == 0:
+        # As pip_install below: `nobuild` only catches a build that reaches the log.
+        if VERBOSE and result.stdout:
+            print(_redact_install_output(result.stdout))
         return True
     if VERBOSE and result.stdout:
         # pip/uv echo index URLs (credentials included) in failure output.
@@ -2806,6 +2848,14 @@ def pip_install(
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
+                # Echo success under UNSLOTH_VERBOSE, as install.sh's run_install_cmd
+                # does. Without it the dependency phase never reached the log that
+                # clean-machine-assert.sh's `nobuild` greps for uv's
+                # "Building <pkg>==<ver>", so a source build here -- the studio.txt
+                # install, where sdist-only dependencies show up -- reported
+                # "built: none" and stayed green. Redacted: uv echoes credentialed URLs.
+                if VERBOSE and result.stdout:
+                    print(_redact_install_output(result.stdout))
                 return
             print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
@@ -2851,6 +2901,30 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 
 
 # -- Main install sequence ---------------------------------------------
+
+
+def _has_working_git() -> bool:
+    """Match install.sh's _has_working_git: on PATH *and* actually runnable.
+
+    A present-but-broken git (a bare xcrun shim) counts as missing there too. Testing
+    only shutil.which disagreed, so the installer promised to skip the git+https triton
+    requirement and then tried to fetch it anyway.
+    """
+    exe = shutil.which("git")
+    if exe is None:
+        return False
+    try:
+        return (
+            subprocess.run(
+                [exe, "--version"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 30,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def install_python_stack() -> int:
@@ -3158,17 +3232,22 @@ def install_python_stack() -> int:
             _torchao_spec,
         )
 
-    # 5. Triton kernels (no-deps, from source). Skip on Windows and macOS
-    #    (no support).
+    # 5. Triton kernels (no-deps, from source). Skipped on Windows/macOS (no support)
+    #    and without git (the requirement is a git+https URL); a training speedup
+    #    only, so warn rather than fail the install.
     if not IS_WINDOWS and not IS_MACOS:
-        _progress("triton kernels")
-        pip_install(
-            "Installing triton kernels",
-            "--no-deps",
-            "--no-cache-dir",
-            req = REQ_ROOT / "triton-kernels.txt",
-            constrain = False,
-        )
+        if not _has_working_git():
+            _progress("triton kernels (skipped, no git)")
+            _safe_print("   no working git -- skipping triton kernels (training speedup only)")
+        else:
+            _progress("triton kernels")
+            pip_install(
+                "Installing triton kernels",
+                "--no-deps",
+                "--no-cache-dir",
+                req = REQ_ROOT / "triton-kernels.txt",
+                constrain = False,
+            )
 
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
