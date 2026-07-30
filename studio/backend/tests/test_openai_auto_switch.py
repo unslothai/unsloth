@@ -5728,3 +5728,70 @@ def test_override_payload_rejects_booleans_for_numeric_fields():
     assert ok.tensor_parallel is True
     assert ok.remove is True
     assert ok.fill_absent_fields is True
+
+
+# ── codex round: the alias retirement has to be atomic with the write ──
+
+
+def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkeypatch):
+    """A save writes its target key, then reads the map back to retire the other spelling
+    of the same cached repo, in a second transaction. This route is a plain `def`, so
+    FastAPI runs it in a threadpool: two clients saving one quant, one by repo id and one
+    by the snapshot path an upgraded install still holds, can both write before either
+    cleanup runs and then retire each other's row. Both calls return 200 and nothing is
+    stored. Whichever runs second must retire the first instead."""
+    import threading
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    repo = "unsloth/Qwen3-8B-GGUF:Q4_K_M"
+    snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123:Q4_K_M"
+
+    ready = threading.Barrier(2)
+    written = threading.Barrier(2)
+    write_lock = threading.Lock()
+    wrote = set()
+    real_set = settings_route.set_model_override
+
+    def _set_then_sync(model_id, *args, **kwargs):
+        # One write is one transaction in production (BEGIN IMMEDIATE), so keep the fake
+        # store's read-modify-write atomic too: only the gap between writes is on trial.
+        with write_lock:
+            result = real_set(model_id, *args, **kwargs)
+        ident = threading.get_ident()
+        if ident not in wrote:
+            wrote.add(ident)
+            try:
+                # Hold each save just after it stored its own key, so neither looks for
+                # aliases until both are there. Broken instead when the two are serialized:
+                # the second saver cannot reach this while the first is still inside.
+                written.wait(timeout = 1.0)
+            except threading.BrokenBarrierError:
+                pass
+        return result
+
+    monkeypatch.setattr(settings_route, "set_model_override", _set_then_sync)
+
+    failures = []
+
+    def _save(model_id, max_seq_length):
+        try:
+            ready.wait(timeout = 10.0)
+            _put(model_id, max_seq_length = max_seq_length)
+        except BaseException as exc:  # noqa: BLE001 - re-reported below
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target = _save, args = (repo, 8192)),
+        threading.Thread(target = _save, args = (snapshot, 4096)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30.0)
+        assert not thread.is_alive()
+    assert not failures, failures
+
+    stored = settings.get_model_overrides()
+    assert list(stored) in ([repo], [snapshot]), stored
+    assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)

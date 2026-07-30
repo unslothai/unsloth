@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import functools
 import re
+import threading
 from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
@@ -463,7 +465,33 @@ def _fill_target_id(target_id: str) -> str:
     return target_id
 
 
+# One override write at a time. A save stores its target key and then reads the map back to
+# retire the other spelling of the same cached repo, and a remove clears up to four keys, each
+# its own transaction: atomic on their own, but not as a sequence. This route is a plain `def`,
+# so FastAPI runs it in a threadpool, and two clients saving one quant under both spellings (the
+# repo id the picker sends and the snapshot path an upgraded install still holds) could each
+# write before either cleanup ran and then retire the other's row, leaving no override at all
+# from two saves that both returned 200. Serialize the whole handler instead: overrides are
+# written by a settings edit, never on a hot path, and the server runs one process.
+_override_write_lock = threading.Lock()
+
+
+def _serialized_override_write(func):
+    """Run ``func`` under _override_write_lock, keeping the handler body as it reads.
+
+    functools.wraps carries __wrapped__, which inspect.signature follows, so FastAPI still
+    sees the endpoint's own parameters and dependencies.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _override_write_lock:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
