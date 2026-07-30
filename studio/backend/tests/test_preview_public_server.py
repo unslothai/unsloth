@@ -386,6 +386,64 @@ def test_ensure_unbinds_the_listener_when_the_tunnel_fails(monkeypatch, link):
     assert link.current(_FakeApp()) is None
 
 
+def test_ensure_waits_out_a_starting_studio_tunnel(monkeypatch, link):
+    # Uvicorn serves before a --cloudflare launch finishes its startup tunnel;
+    # ensure must wait for that outcome, not race it for the shared slot.
+    fake = _FakeListener()
+    monkeypatch.setattr(psl, "listener", fake)
+    monkeypatch.setattr(
+        psl, "start_preview_tunnel", lambda port: pytest.fail("must not race the startup tunnel")
+    )
+
+    class _State:
+        def __init__(self):
+            self.cloudflare_url = None
+            self._polls = 0
+
+        @property
+        def cloudflare_tunnel_pending(self):
+            self._polls += 1
+            if self._polls >= 2:
+                self.cloudflare_url = "https://studio.trycloudflare.com"
+                return False
+            return True
+
+    app = _types.SimpleNamespace(state = _State())
+    assert asyncio.run(link.ensure(app)) == "https://studio.trycloudflare.com"
+    assert fake.started == 0
+
+
+def test_ensure_gives_up_when_the_studio_tunnel_never_settles(monkeypatch, link):
+    monkeypatch.setattr(psl, "_STUDIO_TUNNEL_WAIT_SECONDS", 0.0)
+    app = _FakeApp()
+    app.state.cloudflare_tunnel_pending = True
+    with pytest.raises(psl.PreviewLinkUnavailable):
+        asyncio.run(link.ensure(app))
+
+
+def test_ensure_rechecks_the_kill_switch_after_tunnel_setup(monkeypatch, link):
+    # An admin can disable sharing while the tunnel is still coming up; the
+    # queued disable cannot see this tunnel, so ensure must undo it itself.
+    fake = _FakeListener()
+    monkeypatch.setattr(psl, "listener", fake)
+    state = {"on": True}
+    monkeypatch.setattr(psl, "get_preview_sharing_enabled", lambda: state["on"])
+    stopped = []
+    monkeypatch.setattr(psl, "stop_tunnel_if_url", lambda url: (stopped.append(url), True)[1])
+
+    def _start(port):
+        state["on"] = False
+        return "https://preview.trycloudflare.com"
+
+    monkeypatch.setattr(psl, "start_preview_tunnel", _start)
+
+    with pytest.raises(psl.PreviewSharingDisabled):
+        asyncio.run(link.ensure(_FakeApp()))
+
+    assert stopped == ["https://preview.trycloudflare.com"]
+    assert fake.stopped == 1
+
+
 def test_stop_tears_down_tunnel_and_listener(monkeypatch, link):
     fake = _FakeListener()
     monkeypatch.setattr(psl, "listener", fake)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import time
 from typing import Optional
 
 from loggers import get_logger
@@ -18,6 +19,11 @@ from preview_public_server import listener
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 
 logger = get_logger(__name__)
+
+_DISABLED_MESSAGE = "Public preview links are turned off in Settings."
+# Upper bound on waiting out a --cloudflare launch's startup tunnel; its
+# start_studio_tunnel call finishes well within this.
+_STUDIO_TUNNEL_WAIT_SECONDS = 120.0
 
 
 class PreviewSharingDisabled(RuntimeError):
@@ -45,7 +51,17 @@ class PreviewShareLink:
             # Under the lock so a create queued behind a disable fails instead
             # of resurrecting the tunnel that disable just tore down.
             if not get_preview_sharing_enabled():
-                raise PreviewSharingDisabled("Public preview links are turned off in Settings.")
+                raise PreviewSharingDisabled(_DISABLED_MESSAGE)
+            # A --cloudflare launch may still be bringing its startup tunnel up
+            # (uvicorn serves before it finishes); wait for its outcome instead
+            # of racing it for the shared tunnel slot.
+            deadline = time.monotonic() + _STUDIO_TUNNEL_WAIT_SECONDS
+            while getattr(app.state, "cloudflare_tunnel_pending", False):
+                if time.monotonic() >= deadline:
+                    raise PreviewLinkUnavailable(
+                        "The studio's public address is still starting. Try again shortly."
+                    )
+                await asyncio.sleep(0.5)
             studio_url = getattr(app.state, "cloudflare_url", None)
             if studio_url:
                 return studio_url
@@ -65,6 +81,12 @@ class PreviewShareLink:
                     "Could not open a public preview tunnel. Check the network "
                     "connection and try again."
                 )
+            if not get_preview_sharing_enabled():
+                # Disabled while the tunnel was coming up; the queued disable
+                # cannot see this tunnel yet, so undo it here.
+                await asyncio.to_thread(stop_tunnel_if_url, url)
+                await listener.stop()
+                raise PreviewSharingDisabled(_DISABLED_MESSAGE)
             self._url = url
             # Backstop for an exit that bypasses _graceful_shutdown (run.py
             # registers the same for startup tunnels). Idempotent.

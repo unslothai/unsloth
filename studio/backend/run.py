@@ -2073,6 +2073,9 @@ def run_server(
     _cloudflare_requested = _cloudflare_enabled
 
     if _cloudflare_enabled:
+        # Uvicorn is already serving: the pending flag stops the preview share
+        # link from racing this startup tunnel for the shared slot.
+        app.state.cloudflare_tunnel_pending = True
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
 
@@ -2083,6 +2086,8 @@ def run_server(
             atexit.register(stop_studio_tunnel)
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
+        finally:
+            app.state.cloudflare_tunnel_pending = False
 
     # --secure fails closed: no tunnel means no public link, so exit rather than
     # silently fall back to a raw port.
