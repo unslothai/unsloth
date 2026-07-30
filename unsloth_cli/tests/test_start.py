@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import sys
 import time
 import urllib.error
@@ -1459,6 +1460,25 @@ def test_launch_native_posix_child_gets_current_pwd(fake_studio, monkeypatch, tm
     assert captured["command"][0] == "/usr/local/bin/opencode"
     if os.name != "nt":
         assert captured["env"]["PWD"] == os.getcwd()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX exec signal semantics")
+def test_launch_leaves_child_able_to_handle_sigint(monkeypatch, tmp_path):
+    # SIG_IGN here reached the agent too, so hermes could never be interrupted.
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import signal, sys\n"
+        "sys.exit(17 if signal.getsignal(signal.SIGINT) == signal.SIG_IGN else 0)\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: sys.executable)
+    monkeypatch.setattr(start, "_augment_path_with_install_dirs", lambda: None)
+    before = signal.getsignal(signal.SIGINT)
+
+    code = start._launch([sys.executable, str(probe)], {}, install_hint = "n/a")
+
+    assert code == 0, "child saw SIG_IGN and could never be interrupted"
+    assert signal.getsignal(signal.SIGINT) is before
 
 
 def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):
