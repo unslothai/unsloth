@@ -1082,6 +1082,7 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeThreadEpoch: number;
   activeProjectId: string | null;
   /**
    * Temporary / incognito chat toggle. When on, the active conversation
@@ -1582,6 +1583,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeThreadEpoch: 0,
   activeProjectId: null,
   incognito: false,
   settingsPanelOpen: false,
@@ -1883,6 +1885,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveThreadId: (activeThreadId) =>
     set((state) => ({
       activeThreadId,
+      activeThreadEpoch: state.activeThreadEpoch + 1,
       contextUsage: activeThreadId
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null,

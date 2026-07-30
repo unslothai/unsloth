@@ -229,6 +229,7 @@ type PromptQueueTarget = {
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   temporary: boolean;
+  consumeDeepResearch: () => void;
 };
 
 type PromptQueueItem = {
@@ -247,6 +248,7 @@ type PromptQueueRun = {
   prevStoreRunning: boolean;
   waitingForTargetIdle: boolean;
   retryTimer: ReturnType<typeof setTimeout> | null;
+  deepResearchConsumed: boolean;
 };
 
 const PROMPT_QUEUE_INDEXING_RETRY_MS = 500;
@@ -365,6 +367,16 @@ function handleQueuedPromptAppendFailure(
   scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
 }
 
+function consumePromptQueueDeepResearch(run: PromptQueueRun) {
+  if (run.deepResearchConsumed) {
+    return;
+  }
+  run.deepResearchConsumed = true;
+  for (const item of run.items) {
+    item.target.consumeDeepResearch();
+  }
+}
+
 function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   item.dispatched = true;
   promptQueueActiveRunIds.add(run.id);
@@ -372,9 +384,13 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   try {
     const result = item.target.append(item.prompt);
     if (result && typeof result.catch === "function") {
-      void result.catch((error) => {
-        handleQueuedPromptAppendFailure(run, item, error);
-      });
+      void result
+        .then(() => consumePromptQueueDeepResearch(run))
+        .catch((error) => {
+          handleQueuedPromptAppendFailure(run, item, error);
+        });
+    } else {
+      consumePromptQueueDeepResearch(run);
     }
   } catch (error) {
     handleQueuedPromptAppendFailure(run, item, error);
@@ -964,6 +980,9 @@ function startPromptQueue(
 
   const existingRun = findPromptQueueRunByTarget(target);
   if (existingRun) {
+    if (existingRun.deepResearchConsumed) {
+      target.consumeDeepResearch();
+    }
     existingRun.items.push(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
@@ -984,6 +1003,7 @@ function startPromptQueue(
     prevStoreRunning: shouldWaitForCurrentRun,
     waitingForTargetIdle: false,
     retryTimer: null,
+    deepResearchConsumed: false,
   };
   promptQueueRuns.set(run.id, run);
   promptQueueRunOrder.push(run.id);
@@ -2220,7 +2240,6 @@ const Composer: FC<{
           // Calling append synchronously accepts the user turn; its promise
           // follows the whole provider run. Do not turn a later paid/streaming
           // failure into an automatic duplicate dispatch.
-          runSettingsAtQueueStart.deepResearchEnabled = false;
           if (
             appendResult &&
             typeof (appendResult as Promise<void>).catch === "function"
@@ -2250,6 +2269,9 @@ const Composer: FC<{
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       temporary: incognitoAtQueueStart,
+      consumeDeepResearch: () => {
+        runSettingsAtQueueStart.deepResearchEnabled = false;
+      },
     };
   }, [aui, referenceThreadId]);
 

@@ -169,6 +169,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "runSettingsAtQueueStart.deepResearchEnabled = false"
     )
     assert "void (appendResult as Promise<void>).catch(() => undefined)" in target
+    assert "function consumePromptQueueDeepResearch(run: PromptQueueRun)" in THREAD
+    assert ".then(() => consumePromptQueueDeepResearch(run))" in THREAD
+    assert "if (existingRun.deepResearchConsumed)" in THREAD
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
     assert "await updateStoredChatThread(remoteId" in target
@@ -220,11 +223,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "liveRuntime.supportsTools" in auto_load_merge
     assert "liveRuntime.supportsReasoning" in auto_load_merge
     assert "liveRuntime.ggufContextLength" in auto_load_merge
-    assert "queuedRunSettings && isExternalModelId(liveCheckpoint)" in CHAT_ADAPTER
+    assert "isExternalModelId(visibleState.params.checkpoint)" in CHAT_ADAPTER
     assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
     assert "skipAdoptServerModel: true" in CHAT_ADAPTER
     assert "snapshotQueuedChatRunSettings(" in CHAT_ADAPTER
     assert "...visibleExternalSettings" in CHAT_ADAPTER
+    assert "visibleState.activeThreadEpoch" in CHAT_ADAPTER
+    assert "activeThreadEpoch ===" in CHAT_ADAPTER
+    assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel()") >= 2
+    assert CHAT_ADAPTER.count("modelId: params.checkpoint") >= 2
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "return pendingSettings[index].settings" in QUEUED_SETTINGS

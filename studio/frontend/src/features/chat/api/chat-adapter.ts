@@ -2114,6 +2114,101 @@ async function autoLoadSmallestModel(options?: {
   }
 }
 
+type QueuedResolvedModelRuntime = {
+  checkpoint: string;
+  supportsTools: boolean;
+  supportsReasoning: boolean;
+  reasoningAlwaysOn: boolean;
+  reasoningStyle: ReturnType<typeof reasoningCapsFromLoad>["reasoningStyle"];
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: ReturnType<
+    typeof reasoningCapsFromLoad
+  >["reasoningEffortLevels"];
+  supportsPreserveThinking: boolean;
+  ggufContextLength: number | null;
+};
+
+function queuedResolvedModelFromStore(
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+): QueuedResolvedModelRuntime {
+  return {
+    checkpoint: state.params.checkpoint,
+    supportsTools: state.supportsTools,
+    supportsReasoning: state.supportsReasoning,
+    reasoningAlwaysOn: state.reasoningAlwaysOn,
+    reasoningStyle: state.reasoningStyle,
+    supportsReasoningOff: state.supportsReasoningOff,
+    reasoningEffortLevels: state.reasoningEffortLevels,
+    supportsPreserveThinking: state.supportsPreserveThinking,
+    ggufContextLength: state.ggufContextLength,
+  };
+}
+
+async function resolveQueuedEmptyLocalModel(): Promise<{
+  loaded: boolean;
+  blockedByTrustRemoteCode: boolean;
+  modelRuntime: QueuedResolvedModelRuntime | null;
+}> {
+  const visibleState = useChatRuntimeStore.getState();
+  if (isExternalModelId(visibleState.params.checkpoint)) {
+    const status = await getInferenceStatus().catch(() => null);
+    const checkpoint = status ? resolveInferenceCheckpointId(status) : null;
+    if (status && checkpoint) {
+      return {
+        loaded: true,
+        blockedByTrustRemoteCode: false,
+        modelRuntime: {
+          checkpoint,
+          supportsTools: status.supports_tools ?? false,
+          supportsReasoning: status.supports_reasoning ?? false,
+          reasoningAlwaysOn: status.reasoning_always_on ?? false,
+          ...reasoningCapsFromLoad(status),
+          supportsPreserveThinking:
+            status.supports_preserve_thinking ?? false,
+          ggufContextLength: status.is_gguf
+            ? (status.context_length ?? null)
+            : null,
+        },
+      };
+    }
+
+    const visibleExternalSettings =
+      snapshotQueuedChatRunSettings(visibleState);
+    const visibleThreadEpoch = visibleState.activeThreadEpoch;
+    let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
+    let modelRuntime: QueuedResolvedModelRuntime | null = null;
+    try {
+      result = await autoLoadSmallestModel({
+        skipAdoptServerModel: true,
+      });
+      if (result.loaded) {
+        modelRuntime = queuedResolvedModelFromStore(
+          useChatRuntimeStore.getState(),
+        );
+      }
+    } finally {
+      if (
+        useChatRuntimeStore.getState().activeThreadEpoch ===
+        visibleThreadEpoch
+      ) {
+        useChatRuntimeStore.setState({
+          ...visibleExternalSettings,
+          params: { ...visibleExternalSettings.params },
+        });
+      }
+    }
+    return { ...result, modelRuntime };
+  }
+
+  const result = await autoLoadSmallestModel();
+  return {
+    ...result,
+    modelRuntime: result.loaded
+      ? queuedResolvedModelFromStore(useChatRuntimeStore.getState())
+      : null,
+  };
+}
+
 export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
@@ -2132,6 +2227,7 @@ export function createOpenAIStreamAdapter(
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
       const queuedRunSettings =
         consumeQueuedChatRunSettings(resolvedThreadId);
+      let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
       const notifyQueuedRunFailed = () => {
         // A queued dispatch can fail validation before runningByThreadId turns
         // on. Remove only that chat's queue; unrelated queues keep running.
@@ -2168,23 +2264,24 @@ export function createOpenAIStreamAdapter(
             throw error;
           }
         }
-        if (!useChatRuntimeStore.getState().params.checkpoint) {
-          let loaded: boolean;
-          let blockedByTrustRemoteCode: boolean;
+        if (!runtime.params.checkpoint) {
+          let resolution: Awaited<
+            ReturnType<typeof resolveQueuedEmptyLocalModel>
+          >;
           try {
-            ({ loaded, blockedByTrustRemoteCode } =
-              await autoLoadSmallestModel());
+            resolution = await resolveQueuedEmptyLocalModel();
           } catch (error) {
             notifyQueuedRunFailed();
             throw error;
           }
-          if (!loaded) {
+          queuedEmptyModelRuntime = resolution.modelRuntime;
+          if (!resolution.loaded) {
             toast.error(
-              blockedByTrustRemoteCode
+              resolution.blockedByTrustRemoteCode
                 ? "This model needs custom code approval"
                 : "No model loaded",
               {
-                description: blockedByTrustRemoteCode
+                description: resolution.blockedByTrustRemoteCode
                   ? "Select it from the top bar to review and approve its custom code, or pick another model."
                   : "Pick a model in the top bar, then retry.",
               },
@@ -2195,13 +2292,43 @@ export function createOpenAIStreamAdapter(
         }
         const liveRuntime = useChatRuntimeStore.getState();
         runtime = queuedRunSettings
-          ? {
-              ...liveRuntime,
-              ...queuedRunSettings,
-              params: queuedRunSettings.params.checkpoint
-                ? queuedRunSettings.params
-                : liveRuntime.params,
-            }
+          ? queuedRunSettings.params.checkpoint
+            ? { ...liveRuntime, ...queuedRunSettings }
+            : {
+                ...liveRuntime,
+                ...queuedRunSettings,
+                params: {
+                  ...queuedRunSettings.params,
+                  checkpoint:
+                    queuedEmptyModelRuntime?.checkpoint ??
+                    liveRuntime.params.checkpoint,
+                },
+                supportsTools:
+                  queuedEmptyModelRuntime?.supportsTools ??
+                  liveRuntime.supportsTools,
+                supportsReasoning:
+                  queuedEmptyModelRuntime?.supportsReasoning ??
+                  liveRuntime.supportsReasoning,
+                reasoningAlwaysOn:
+                  queuedEmptyModelRuntime?.reasoningAlwaysOn ??
+                  liveRuntime.reasoningAlwaysOn,
+                reasoningStyle:
+                  queuedEmptyModelRuntime?.reasoningStyle ??
+                  liveRuntime.reasoningStyle,
+                supportsReasoningOff:
+                  queuedEmptyModelRuntime?.supportsReasoningOff ??
+                  liveRuntime.supportsReasoningOff,
+                reasoningEffortLevels:
+                  queuedEmptyModelRuntime?.reasoningEffortLevels ??
+                  liveRuntime.reasoningEffortLevels,
+                supportsPreserveThinking:
+                  queuedEmptyModelRuntime?.supportsPreserveThinking ??
+                  liveRuntime.supportsPreserveThinking,
+                ggufContextLength:
+                  queuedEmptyModelRuntime !== null
+                    ? queuedEmptyModelRuntime.ggufContextLength
+                    : liveRuntime.ggufContextLength,
+              }
           : liveRuntime;
         if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
@@ -2215,6 +2342,16 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
+        if (
+          queuedRunSettings &&
+          !queuedRunSettings.params.checkpoint &&
+          resolvedThreadId &&
+          params.checkpoint
+        ) {
+          await updateStoredChatThread(resolvedThreadId, {
+            modelId: params.checkpoint,
+          });
+        }
         const model = params.checkpoint.trim();
         if (!model || parseExternalModelId(model)) {
           throw new Error("Deep research requires a selected local model.");
@@ -2480,98 +2617,25 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      let queuedEmptyModelRuntime: {
-        checkpoint: string;
-        supportsTools: boolean;
-        supportsReasoning: boolean;
-        reasoningAlwaysOn: boolean;
-        reasoningStyle: ReturnType<typeof reasoningCapsFromLoad>["reasoningStyle"];
-        supportsReasoningOff: boolean;
-        reasoningEffortLevels: ReturnType<
-          typeof reasoningCapsFromLoad
-        >["reasoningEffortLevels"];
-        supportsPreserveThinking: boolean;
-        ggufContextLength: number | null;
-      } | null = null;
       if (!runtime.params.checkpoint) {
-        // Prefer a model already loaded by the CLI/API before auto-loading.
-        let loaded: boolean;
-        let blockedByTrustRemoteCode: boolean;
-        const liveCheckpoint =
-          useChatRuntimeStore.getState().params.checkpoint;
-        if (queuedRunSettings && isExternalModelId(liveCheckpoint)) {
-          const visibleExternalSettings = snapshotQueuedChatRunSettings(
-            useChatRuntimeStore.getState(),
-          );
-          const status = await getInferenceStatus().catch(() => null);
-          const checkpoint = status
-            ? resolveInferenceCheckpointId(status)
-            : null;
-          if (status && checkpoint) {
-            const reasoningCaps = reasoningCapsFromLoad(status);
-            queuedEmptyModelRuntime = {
-              checkpoint,
-              supportsTools: status.supports_tools ?? false,
-              supportsReasoning: status.supports_reasoning ?? false,
-              reasoningAlwaysOn: status.reasoning_always_on ?? false,
-              ...reasoningCaps,
-              supportsPreserveThinking:
-                status.supports_preserve_thinking ?? false,
-              ggufContextLength: status.is_gguf
-                ? (status.context_length ?? null)
-                : null,
-            };
-          }
-          if (queuedEmptyModelRuntime !== null) {
-            loaded = true;
-            blockedByTrustRemoteCode = false;
-          } else {
-            try {
-              ({ loaded, blockedByTrustRemoteCode } =
-                await autoLoadSmallestModel({
-                  skipAdoptServerModel: true,
-                }));
-              if (loaded) {
-                const loadedRuntime = useChatRuntimeStore.getState();
-                queuedEmptyModelRuntime = {
-                  checkpoint: loadedRuntime.params.checkpoint,
-                  supportsTools: loadedRuntime.supportsTools,
-                  supportsReasoning: loadedRuntime.supportsReasoning,
-                  reasoningAlwaysOn: loadedRuntime.reasoningAlwaysOn,
-                  reasoningStyle: loadedRuntime.reasoningStyle,
-                  supportsReasoningOff:
-                    loadedRuntime.supportsReasoningOff,
-                  reasoningEffortLevels:
-                    loadedRuntime.reasoningEffortLevels,
-                  supportsPreserveThinking:
-                    loadedRuntime.supportsPreserveThinking,
-                  ggufContextLength: loadedRuntime.ggufContextLength,
-                };
-              }
-            } finally {
-              useChatRuntimeStore.setState({
-                ...visibleExternalSettings,
-                params: { ...visibleExternalSettings.params },
-              });
-            }
-          }
-        } else {
-          try {
-            ({ loaded, blockedByTrustRemoteCode } =
-              await autoLoadSmallestModel());
-          } catch (error) {
-            clearSelectedImageEditReference();
-            notifyQueuedRunFailed();
-            throw error;
-          }
+        let resolution: Awaited<
+          ReturnType<typeof resolveQueuedEmptyLocalModel>
+        >;
+        try {
+          resolution = await resolveQueuedEmptyLocalModel();
+        } catch (error) {
+          clearSelectedImageEditReference();
+          notifyQueuedRunFailed();
+          throw error;
         }
-        if (!loaded) {
+        queuedEmptyModelRuntime = resolution.modelRuntime;
+        if (!resolution.loaded) {
           toast.error(
-            blockedByTrustRemoteCode
+            resolution.blockedByTrustRemoteCode
               ? "This model needs custom code approval"
               : "No model loaded",
             {
-              description: blockedByTrustRemoteCode
+              description: resolution.blockedByTrustRemoteCode
                 ? "Select it from the top bar to review and approve its custom code, or pick another model."
                 : "Pick a model in the top bar, then retry.",
             },
@@ -2624,6 +2688,16 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
+      if (
+        queuedRunSettings &&
+        !queuedRunSettings.params.checkpoint &&
+        resolvedThreadId &&
+        params.checkpoint
+      ) {
+        await updateStoredChatThread(resolvedThreadId, {
+          modelId: params.checkpoint,
+        });
+      }
       const {
         supportsTools,
         toolsEnabled,
