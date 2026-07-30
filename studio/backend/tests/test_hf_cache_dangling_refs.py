@@ -2168,13 +2168,36 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
 @pytest.mark.parametrize(
     "files, cannot_serve",
     [
-        # config.json makes this a base row, and nothing stands in for its shards.
+        # Classifies safetensors, since a real transformers safetensors file beside a config.json
+        # outranks the adapter, so the torn base decides and the whole adapter cannot stand in.
+        (
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "adapter_config.json": b"{}",
+                "adapter_model.safetensors": b"\0" * 64,
+            },
+            True,
+        ),
+        # Same two configs, but the only real weights are the adapter's, so this classifies adapter
+        # and loads. A config.json alone does not make a snapshot a base row.
         (
             {
                 "config.json": b"{}",
                 "pytorch_model-00001-of-00002.bin": b"\0" * 64,
                 "adapter_config.json": b"{}",
                 "adapter_model.safetensors": b"\0" * 64,
+            },
+            False,
+        ),
+        # A config.json that exists but is empty still classifies by name, and nothing can parse it.
+        ({"config.json": b"", "model.safetensors": b"\0" * 256}, True),
+        # Mixed extensions never form one family: two half sets are not one whole set.
+        (
+            {
+                "config.json": b"{}",
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.bin": b"\0" * 64,
             },
             True,
         ),
@@ -2306,3 +2329,88 @@ def test_a_stale_ref_does_not_suppress_the_manifest_on_the_loaded_snapshot(
         inventory_scan.is_snapshot_partial("model", "Org/Model", repo, snapshot_dir = snapshot)
         is partial
     )
+
+
+def test_the_compatibility_route_withholds_a_half_payload_landing(tmp_path, monkeypatch):
+    """Weights pool across revisions, so a repo can look runnable while the snapshot refs/main
+    lands on holds only the config. That directory is what an id-only caller loads, so it has to
+    classify on its own: the shard check says nothing about a snapshot carrying no weights."""
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"config.json": b"{}"}, OLDER: {"model.safetensors": b"\0" * 256}},
+        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+    )
+    assert _compat_cached_models(tmp_path, monkeypatch) == []
+
+
+def test_the_compatibility_route_lists_a_self_contained_landing(tmp_path, monkeypatch):
+    """Control for the above: the same shape with the config and the weights together in the
+    snapshot refs/main names is loadable by id and stays listed."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256},
+            OLDER: {"model.safetensors": b"\0" * 256},
+        },
+        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+    )
+    assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]
+
+
+def test_an_adapter_beside_a_config_json_is_still_an_adapter(tmp_path, monkeypatch):
+    """A LoRA snapshot legitimately ships the base model's config.json next to
+    adapter_config.json. Reading the config alone as "this is a base row" made a whole adapter
+    unusable whenever an unrelated torn base shard sat beside it."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model.safetensors": b"\0" * 128,
+                "pytorch_model-00001-of-00002.bin": b"\0" * 64,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["model_format"] == "adapter"
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    "files, partial",
+    [
+        # Neither transformers family is whole; merging them made one look complete.
+        (
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.bin": b"\0" * 64,
+            },
+            True,
+        ),
+        # Control: one family whole in its own extension still loads.
+        (
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+            },
+            False,
+        ),
+        # A zero-byte config.json fails to parse, whole weights or not.
+        ({"config.json": b"", "model.safetensors": b"\0" * 256}, True),
+    ],
+    ids = ["shards-split-across-extensions", "one-whole-family", "empty-config"],
+)
+def test_a_recovered_snapshot_that_cannot_load_is_not_chattable(
+    files, partial, tmp_path, monkeypatch
+):
+    """Three ways a recovered snapshot passes a shard count yet cannot be loaded."""
+    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is partial
+    assert rows[0]["capabilities"]["can_chat"] is not partial

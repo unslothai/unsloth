@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 from loggers import get_logger
 
@@ -759,30 +759,78 @@ def _weight_family_kind(name: str) -> Optional[str]:
     return None
 
 
-def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
-    """Whether the payload *snapshot_dir* carries is short a shard.
+class _SnapshotPayload(NamedTuple):
+    """What one snapshot directory can load on its own."""
 
-    ``from_pretrained`` loads one family, so a whole safetensors set beside an interrupted ``.bin``
-    one still serves the row. Only the family the row's format names is judged, per
-    _classify_non_gguf_model_format: both base formats need a config.json, so without one the
-    snapshot can only be an adapter and a stray base shard must not veto it. Shard groups key on
-    (dir, prefix, total) since a snapshot may ship several sets; a file naming no total is whole.
+    model_format: Optional[str]
+    # Shard families per kind, keyed on (dir, prefix, total, suffix).
+    groups: dict
+    # Kinds holding a file that names no total, i.e. a family of one.
+    whole: set
+    # A config.json that exists but is empty. from_pretrained fails parsing it.
+    config_is_unreadable: bool
+
+
+def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
+    """Classify *snapshot_dir* from its own contents, or None if it cannot be read.
+
+    Untrusted, matching ``_repo_non_gguf_model_payload``'s per-revision pass: a directory serves a
+    load only if it holds the config its format needs. Presence is by filename, as the payload
+    builder decides it, so an empty config still classifies and is reported separately.
     """
-    groups: dict[str, dict[tuple[str, str, int], set[int]]] = {"base": {}, "adapter": {}}
+    from hub.services.models.common import (
+        _classify_non_gguf_model_format,
+        _is_adapter_weight_name,
+        _is_checkpoint_weight_name,
+        _is_transformers_safetensors_weight_name,
+    )
+
+    flags = dict.fromkeys(
+        (
+            "has_config",
+            "has_adapter_config",
+            "has_adapter_weights",
+            "has_safetensors",
+            "has_transformers_safetensors",
+            "has_checkpoint_weights",
+        ),
+        False,
+    )
+    groups: dict[str, dict[tuple[str, str, int, str], set[int]]] = {"base": {}, "adapter": {}}
     whole: set[str] = set()
-    has_config = False
+    config_is_unreadable = False
     try:
         paths = list(snapshot_dir.rglob("*"))
     except OSError:
-        return False
+        return None
     for path in paths:
         try:
-            if not path.is_file() or path.stat().st_size <= 0:
+            if not path.is_file():
                 continue
+            empty = path.stat().st_size <= 0
         except OSError:
             continue
-        if path.name.lower() == "config.json":
-            has_config = True
+        name = path.name.lower()
+        if is_gguf_filename(name):
+            continue
+        if name == "config.json":
+            flags["has_config"] = True
+            config_is_unreadable = config_is_unreadable or empty
+            continue
+        if name == "adapter_config.json":
+            flags["has_adapter_config"] = True
+            continue
+        if empty:
+            continue
+        is_adapter = _is_adapter_weight_name(name)
+        if is_adapter:
+            flags["has_adapter_weights"] = True
+        elif name.endswith(".safetensors"):
+            flags["has_safetensors"] = True
+            if _is_transformers_safetensors_weight_name(name):
+                flags["has_transformers_safetensors"] = True
+        if _is_checkpoint_weight_name(name):
+            flags["has_checkpoint_weights"] = True
         kind = _weight_family_kind(path.name)
         if kind is None:
             continue
@@ -794,16 +842,42 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         total = int(match.group(2))
         if index <= 0 or total <= 0 or index > total:
             continue
-        groups[kind].setdefault((str(path.parent), path.name[: match.start()], total), set()).add(
-            index
+        # The suffix is part of the family: a .safetensors shard and a .bin shard sharing a prefix
+        # and total belong to different sets, and merging them made two half sets look like one
+        # whole one.
+        family = (
+            path.parent.relative_to(snapshot_dir).as_posix(),
+            path.name[: match.start()],
+            total,
+            path.suffix.lower(),
         )
-    for kind in ("base", "adapter") if has_config else ("adapter", "base"):
-        if kind in whole:
+        groups[kind].setdefault(family, set()).add(index)
+    model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
+    return _SnapshotPayload(model_format, groups, whole, config_is_unreadable)
+
+
+def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
+    """Whether the payload *snapshot_dir* carries is short a shard.
+
+    ``from_pretrained`` loads one family, so a whole safetensors set beside an interrupted ``.bin``
+    one still serves the row. Only the family the classified format names is judged, since a
+    snapshot can hold both a config.json and an adapter_config.json and still be an adapter, so the
+    config alone does not say which family the load reads.
+    """
+    payload = _snapshot_payload(snapshot_dir)
+    if payload is None:
+        return False
+    # Recognised by filename, so it classifies, but nothing can parse it.
+    if payload.config_is_unreadable and payload.model_format in ("safetensors", "checkpoint"):
+        return True
+    order = ("adapter", "base") if payload.model_format == "adapter" else ("base", "adapter")
+    for kind in order:
+        if kind in payload.whole:
             return False
-        if groups[kind]:
+        if payload.groups[kind]:
             return all(
-                indices != set(range(1, total + 1))
-                for (_dir, _prefix, total), indices in groups[kind].items()
+                indices != set(range(1, family[2] + 1))
+                for family, indices in payload.groups[kind].items()
             )
     return False
 
@@ -859,7 +933,15 @@ def recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
     landing = default_ref_snapshot(repo_path)
     if landing is None:
         return True
-    return _snapshot_cannot_serve_its_payload(landing)
+    if _snapshot_cannot_serve_its_payload(landing):
+        return True
+    # Weights pool across revisions, so the repo can look runnable while the directory refs/main
+    # lands on holds only half of it. That is what an id-only caller would load, so it has to
+    # classify on its own; the shard check above says nothing about a snapshot with no weights.
+    if _offered_gguf_quants(landing):
+        return False
+    payload = _snapshot_payload(landing)
+    return payload is None or payload.model_format is None
 
 
 def snapshot_variants_all_complete(snapshot: str) -> bool:
