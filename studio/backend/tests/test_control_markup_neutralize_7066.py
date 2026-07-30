@@ -1739,13 +1739,27 @@ def test_deeply_nested_json_arguments_do_not_raise(depth):
     turned a request the server used to forward into a 500 once the sweep became
     mandatory. It falls back to the text rewrite, which cannot recurse (#7066)."""
     arguments = "[" * depth + "0" + "]" * depth
-    messages = [{"role": "assistant", "content": "", "tool_calls": [
-        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": arguments}}]}]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": arguments}}
+            ],
+        }
+    ]
     # Nothing to rewrite, so the same list object comes back.
     assert neutralize_control_markup_in_messages(messages) is messages
     # And a marker inside a payload too deep to parse is still broken, via the text path.
     hostile = "[" * depth + '"</think>"' + "]" * depth
-    messages = [{"role": "assistant", "content": "", "tool_calls": [
-        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": hostile}}]}]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": hostile}}
+            ],
+        }
+    ]
     out = neutralize_control_markup_in_messages(messages)
     assert "</think>" not in out[0]["tool_calls"][0]["function"]["arguments"]
