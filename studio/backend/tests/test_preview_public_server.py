@@ -206,6 +206,27 @@ def test_listener_still_requires_a_capability_token(app):
     assert statuses["/p/demorun?k=not-a-valid-token"] == 404
 
 
+def test_listener_rejects_unsupported_methods(app):
+    # A 405 before the token check would reveal which routes exist; the gate
+    # answers the same generic 404 instead.
+    token = preview_token.sign_preview_ref("demorun")
+
+    async def _run():
+        listener = pps.PublicPreviewListener()
+        port = await listener.start(app)
+        try:
+            async with httpx.AsyncClient(base_url = f"http://127.0.0.1:{port}") as client:
+                put = await client.put(f"/p/demorun?k={token}")
+                delete = await client.delete("/p/demorun/v1/models")
+                options = await client.options(f"/p/demorun?k={token}")
+        finally:
+            await listener.stop()
+        return put, delete, options
+
+    put, delete, options = asyncio.run(_run())
+    assert put.status_code == delete.status_code == options.status_code == 404
+
+
 def test_health_marker_matches_the_tunnel_probe(app):
     # start_preview_tunnel only advertises a URL when this exact marker answers.
     import cloudflare_tunnel as ct
@@ -410,6 +431,33 @@ def test_ensure_waits_out_a_starting_studio_tunnel(monkeypatch, link):
 
     app = _types.SimpleNamespace(state = _State())
     assert asyncio.run(link.ensure(app)) == "https://studio.trycloudflare.com"
+    assert fake.started == 0
+
+
+def test_ensure_rechecks_the_kill_switch_after_waiting(monkeypatch, link):
+    # A disable persists the setting before queuing behind ensure's lock; a
+    # waiting create must fail, not return the freshly published studio URL.
+    fake = _FakeListener()
+    monkeypatch.setattr(psl, "listener", fake)
+    state = {"on": True}
+    monkeypatch.setattr(psl, "get_preview_sharing_enabled", lambda: state["on"])
+
+    class _State:
+        def __init__(self):
+            self.cloudflare_url = "https://studio.trycloudflare.com"
+            self._polls = 0
+
+        @property
+        def cloudflare_tunnel_pending(self):
+            self._polls += 1
+            if self._polls >= 2:
+                state["on"] = False
+                return False
+            return True
+
+    app = _types.SimpleNamespace(state = _State())
+    with pytest.raises(psl.PreviewSharingDisabled):
+        asyncio.run(link.ensure(app))
     assert fake.started == 0
 
 

@@ -21,6 +21,11 @@ logger = get_logger(__name__)
 # Bare /p (the JWT-authenticated listing route) is deliberately excluded.
 _PREVIEW_PATH_PREFIX = "/p/"
 
+# The preview surface only serves GET/HEAD pages and POST chat completions.
+# Anything else 404s at the gate: FastAPI would answer 405 before the token
+# check runs, which leaks which routes exist.
+_ALLOWED_METHODS = {"GET", "HEAD", "POST"}
+
 # Tunnel-readiness probe, answered by the gate itself on a path outside /p so
 # it can never shadow a run page (runs live under /p/{run}).
 _PREVIEW_HEALTH_PATH = "/_preview_health"
@@ -77,10 +82,15 @@ class PreviewOnlyGate:
             await send({"type": "websocket.close", "code": 1008})
             return
         path = scope.get("path", "")
-        if scope_type == "http" and path == _PREVIEW_HEALTH_PATH:
+        method = scope.get("method", "").upper()
+        if scope_type == "http" and method in ("GET", "HEAD") and path == _PREVIEW_HEALTH_PATH:
             await _send_json(send, 200, _PREVIEW_HEALTH_BODY)
             return
-        if scope_type != "http" or not is_public_preview_path(path):
+        if (
+            scope_type != "http"
+            or method not in _ALLOWED_METHODS
+            or not is_public_preview_path(path)
+        ):
             await _send_json(send, 404, _NOT_FOUND_BODY)
             return
         await self.app(scope, receive, send)

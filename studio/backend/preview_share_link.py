@@ -56,12 +56,18 @@ class PreviewShareLink:
             # (uvicorn serves before it finishes); wait for its outcome instead
             # of racing it for the shared tunnel slot.
             deadline = time.monotonic() + _STUDIO_TUNNEL_WAIT_SECONDS
+            waited = False
             while getattr(app.state, "cloudflare_tunnel_pending", False):
                 if time.monotonic() >= deadline:
                     raise PreviewLinkUnavailable(
                         "The studio's public address is still starting. Try again shortly."
                     )
+                waited = True
                 await asyncio.sleep(0.5)
+            # The kill switch may have flipped while we waited; a disable
+            # persists the setting before it can queue behind this lock.
+            if waited and not get_preview_sharing_enabled():
+                raise PreviewSharingDisabled(_DISABLED_MESSAGE)
             studio_url = getattr(app.state, "cloudflare_url", None)
             if studio_url:
                 return studio_url
