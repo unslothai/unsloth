@@ -1060,6 +1060,13 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
+            // A queue can be created while the preliminary unload is pending.
+            // Stop a second time at the final boundary so no prompt captured
+            // against the outgoing checkpoint survives into the new backend.
+            const latePromptQueueThreadIds = getLocalPromptQueueThreadIds();
+            if (latePromptQueueThreadIds.length > 0) {
+              requestPromptQueueStop(latePromptQueueThreadIds);
+            }
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,

@@ -2050,6 +2050,7 @@ const Composer: FC<{
   const [indexingActive, setIndexingActive] = useState(false);
   const indexingActiveRef = useRef(false);
   const promptQueueTargetMountedRef = useRef(true);
+  const promptQueueStartPendingRef = useRef(false);
   useEffect(() => {
     promptQueueTargetMountedRef.current = true;
     return () => {
@@ -2243,6 +2244,10 @@ const Composer: FC<{
       waitForCurrentRun = false,
       onStarted?: () => void,
     ) => {
+      if (promptQueueStartPendingRef.current) {
+        return false;
+      }
+      promptQueueStartPendingRef.current = true;
       void createPromptQueueTarget()
         .then((target) => {
           if (target) {
@@ -2255,7 +2260,11 @@ const Composer: FC<{
             description:
               error instanceof Error ? error.message : "Please try again.",
           });
+        })
+        .finally(() => {
+          promptQueueStartPendingRef.current = false;
         });
+      return true;
     },
     [createPromptQueueTarget],
   );

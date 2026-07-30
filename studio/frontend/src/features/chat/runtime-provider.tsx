@@ -1430,28 +1430,44 @@ function ActiveThreadSync({
 function CancelRegistrar(): ReactElement | null {
   const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const remoteThreadId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
 
   useEffect(() => {
     if (!mainThreadId) return;
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    const threadIds = Array.from(
+      new Set([mainThreadId, remoteThreadId].filter((id): id is string => Boolean(id))),
+    );
     const cancel = () => {
-      try {
-        runtime?.threads.getById(mainThreadId).cancelRun();
-      } catch {
-        // Run may have already ended between the caller's read and this call.
+      for (const threadId of threadIds) {
+        try {
+          runtime?.threads.getById(threadId).cancelRun();
+          return;
+        } catch {
+          // Try the other alias; the run may also have ended between reads.
+        }
       }
     };
-    useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
+    for (const threadId of threadIds) {
+      useChatRuntimeStore.getState().registerThreadCancel(threadId, cancel);
+    }
     return () => {
       const store = useChatRuntimeStore.getState();
       let thread = null;
-      try {
-        thread = runtime?.threads.getById(mainThreadId) ?? null;
-      } catch {
-        // The runtime already discarded this thread, so its handle is stale.
+      for (const threadId of threadIds) {
+        try {
+          thread = runtime?.threads.getById(threadId) ?? null;
+          if (thread) break;
+        } catch {
+          // Try the other alias.
+        }
       }
       if (!thread?.getState().isRunning) {
-        store.clearThreadCancel(mainThreadId, cancel);
+        for (const threadId of threadIds) {
+          store.clearThreadCancel(threadId, cancel);
+        }
         return;
       }
       // assistant-ui enters its running state before adapter preflight turns
@@ -1462,13 +1478,15 @@ function CancelRegistrar(): ReactElement | null {
         if (thread.getState().isRunning) {
           return;
         }
-        useChatRuntimeStore
-          .getState()
-          .clearThreadCancel(mainThreadId, cancel);
+        for (const threadId of threadIds) {
+          useChatRuntimeStore
+            .getState()
+            .clearThreadCancel(threadId, cancel);
+        }
         unsubscribe();
       });
     };
-  }, [aui, mainThreadId]);
+  }, [aui, mainThreadId, remoteThreadId]);
 
   return null;
 }

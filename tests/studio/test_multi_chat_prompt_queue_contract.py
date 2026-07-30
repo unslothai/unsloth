@@ -119,9 +119,11 @@ def test_saved_queues_survive_navigation_but_abandoned_temporary_queues_stop():
     )
     assert "thread?.getState().isRunning" in cancel_registrar
     assert "unsubscribe = thread.subscribe(" in cancel_registrar
-    assert "clearThreadCancel(mainThreadId, cancel)" in cancel_registrar
-    assert cancel_registrar.index("thread.subscribe(") < cancel_registrar.index(
-        ".clearThreadCancel(mainThreadId, cancel);\n        unsubscribe();"
+    assert "threadListItem.remoteId" in cancel_registrar
+    assert "registerThreadCancel(threadId, cancel)" in cancel_registrar
+    assert "clearThreadCancel(threadId, cancel)" in cancel_registrar
+    assert cancel_registrar.index("thread.subscribe(") < cancel_registrar.rindex(
+        "clearThreadCancel(threadId, cancel)"
     )
     assert "state.cancelByThreadId[threadId] !== cancel" in CHAT_RUNTIME_STORE
 
@@ -137,6 +139,9 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "if (liveThreadIsRunning || livePromptQueueActive)" in submit
     assert "startHydratedPromptQueue(" in submit
     assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
+    assert "promptQueueStartPendingRef.current" in THREAD
+    assert "promptQueueStartPendingRef.current = true" in THREAD
+    assert ".finally(() =>" in THREAD
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
     assert "tryReservePreStreamRun" not in submit
@@ -223,6 +228,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "promptQueueThreadIds" in MODEL_RUNTIME
     assert "const promptQueueThreadIds = getLocalPromptQueueThreadIds()" in MODEL_RUNTIME
     assert "requestPromptQueueStop(promptQueueThreadIds)" in MODEL_RUNTIME
+    assert "const latePromptQueueThreadIds = getLocalPromptQueueThreadIds()" in MODEL_RUNTIME
+    assert "requestPromptQueueStop(latePromptQueueThreadIds)" in MODEL_RUNTIME
+    assert MODEL_RUNTIME.index(
+        "requestPromptQueueStop(latePromptQueueThreadIds)"
+    ) < MODEL_RUNTIME.index("const loadResponse = await loadModel(")
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
     assert ".slice(Math.max(run.index, 0))" in THREAD
     assert ".some((item) => item.target.usesLocalModel)" in THREAD
