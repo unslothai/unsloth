@@ -2068,8 +2068,23 @@ const Composer: FC<{
   const createPromptQueueTarget = useCallback(async (): Promise<PromptQueueTarget | null> => {
     const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
     const initialState = aui.threadListItem().getState();
+    const initialRunningThreadIds = [
+      initialState.id,
+      initialState.remoteId,
+      referenceThreadId,
+    ].filter((id): id is string => Boolean(id));
+    const initialDocumentThreadId =
+      initialState.remoteId ?? referenceThreadId ?? null;
     await useChatRuntimeStore.getState().hydratePersistedSettings();
     if (!promptQueueTargetMountedRef.current) {
+      return null;
+    }
+    const currentState = aui.threadListItem().getState();
+    if (
+      !compactIds([currentState.id, currentState.remoteId]).some((id) =>
+        initialRunningThreadIds.includes(id),
+      )
+    ) {
       return null;
     }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
@@ -2079,13 +2094,6 @@ const Composer: FC<{
       chatStateAtQueueStart.ragSource.type === "thread";
     const runSettingsAtQueueStart =
       snapshotQueuedChatRunSettings(chatStateAtQueueStart);
-    const initialRunningThreadIds = [
-      initialState.id,
-      initialState.remoteId,
-      referenceThreadId,
-    ].filter((id): id is string => Boolean(id));
-    const initialDocumentThreadId =
-      initialState.remoteId ?? referenceThreadId ?? null;
     const getThreadListItemState = () => {
       const runtime =
         assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
@@ -2167,6 +2175,7 @@ const Composer: FC<{
           if (!runtime || !state) {
             throw new Error("Prompt queue thread item is unavailable");
           }
+          const shouldCorrectPersistedModel = !state.remoteId;
           // A fresh chat receives its remote id during initialization. Await it
           // before append so the adapter can match the queued settings using
           // unstable_threadId on its first invocation.
@@ -2180,14 +2189,16 @@ const Composer: FC<{
             ...getQueueThreadIds(),
             remoteId,
           ]);
-          // initialize() persists a fresh thread using the live global model.
-          // Correct that metadata to the model captured for this queued run
-          // before any later navigation or compatibility check can observe it.
-          await updateStoredChatThread(remoteId, {
-            modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
-          });
-          if (cancelled || !pendingSettingsIds.has(settingsId)) {
-            return;
+          if (shouldCorrectPersistedModel) {
+            // initialize() persists a fresh thread using the live global model.
+            // Correct that metadata to the model captured for this queued run
+            // before any later navigation or compatibility check can observe it.
+            await updateStoredChatThread(remoteId, {
+              modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+            });
+            if (cancelled || !pendingSettingsIds.has(settingsId)) {
+              return;
+            }
           }
           // Initialization can replace a fresh thread's local id with a remote
           // id. Refresh queue aliases before the run begins so stop dialogs

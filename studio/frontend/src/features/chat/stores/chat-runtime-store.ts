@@ -1147,7 +1147,7 @@ type ChatRuntimeStore = {
      */
   runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
-  clearThreadCancel: (threadId: string) => void;
+  clearThreadCancel: (threadId: string, cancel?: () => void) => void;
   registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
   clearThreadServerCancel: (threadId: string, cancel?: () => void) => void;
   setAutoTitle: (enabled: boolean) => void;
@@ -1782,9 +1782,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next[threadId] = cancel;
       return { cancelByThreadId: next };
     }),
-  clearThreadCancel: (threadId) =>
+  clearThreadCancel: (threadId, cancel) =>
     set((state) => {
       if (!(threadId in state.cancelByThreadId)) return state;
+      if (cancel && state.cancelByThreadId[threadId] !== cancel) return state;
       const next = { ...state.cancelByThreadId };
       delete next[threadId];
       return { cancelByThreadId: next };

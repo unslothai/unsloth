@@ -1451,7 +1451,7 @@ function CancelRegistrar(): ReactElement | null {
         // The runtime already discarded this thread, so its handle is stale.
       }
       if (!thread?.getState().isRunning) {
-        store.clearThreadCancel(mainThreadId);
+        store.clearThreadCancel(mainThreadId, cancel);
         return;
       }
       // assistant-ui enters its running state before adapter preflight turns
@@ -1462,7 +1462,9 @@ function CancelRegistrar(): ReactElement | null {
         if (thread.getState().isRunning) {
           return;
         }
-        useChatRuntimeStore.getState().clearThreadCancel(mainThreadId);
+        useChatRuntimeStore
+          .getState()
+          .clearThreadCancel(mainThreadId, cancel);
         unsubscribe();
       });
     };

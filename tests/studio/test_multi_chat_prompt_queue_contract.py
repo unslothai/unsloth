@@ -18,6 +18,9 @@ CONFIRM_MODEL_SWAP = (FRONTEND / "features/chat/utils/confirm-stop-running-chats
     encoding = "utf-8"
 )
 RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(encoding = "utf-8")
+CHAT_RUNTIME_STORE = (FRONTEND / "features/chat/stores/chat-runtime-store.ts").read_text(
+    encoding = "utf-8"
+)
 CHAT_PAGE = (FRONTEND / "features/chat/chat-page.tsx").read_text(encoding = "utf-8")
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
@@ -113,9 +116,11 @@ def test_saved_queues_survive_navigation_but_abandoned_temporary_queues_stop():
     )
     assert "thread?.getState().isRunning" in cancel_registrar
     assert "unsubscribe = thread.subscribe(" in cancel_registrar
+    assert "clearThreadCancel(mainThreadId, cancel)" in cancel_registrar
     assert cancel_registrar.index("thread.subscribe(") < cancel_registrar.index(
-        "clearThreadCancel(mainThreadId);\n        unsubscribe();"
+        ".clearThreadCancel(mainThreadId, cancel);\n        unsubscribe();"
     )
+    assert "state.cancelByThreadId[threadId] !== cancel" in CHAT_RUNTIME_STORE
 
 
 def test_composer_only_queues_behind_the_current_chat():
@@ -144,11 +149,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "await useChatRuntimeStore.getState().hydratePersistedSettings()"
     ) < target.index("snapshotQueuedChatRunSettings(chatStateAtQueueStart)")
     assert "if (!promptQueueTargetMountedRef.current)" in target
+    assert "const currentState = aui.threadListItem().getState()" in target
+    assert "initialRunningThreadIds.includes(id)" in target
     assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
     assert "registerQueuedChatRunSettings(" in target
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
     assert "await updateStoredChatThread(remoteId" in target
+    assert "const shouldCorrectPersistedModel = !state.remoteId" in target
+    assert "if (shouldCorrectPersistedModel)" in target
     assert 'modelId: runSettingsAtQueueStart.params.checkpoint ?? ""' in target
     assert target.index("await updateStoredChatThread(remoteId") < target.index(
         "await thread.append("
