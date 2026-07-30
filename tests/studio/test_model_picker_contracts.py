@@ -29,15 +29,13 @@ def _read(rel: str) -> str:
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
-    # Explicit, as _read is: without it Windows decodes as cp1252 and any non-ASCII
-    # byte in the file under test raises UnicodeDecodeError instead of asserting.
     return path.read_text(encoding = "utf-8")
 
 
 def test_models_api_sends_token_via_header_not_query():
-    """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF token
-    through hubTokenHeader, never as a ?hf_token= query param (which leaks the
-    credential into server/proxy access logs)."""
+    """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
+    token through hubTokenHeader, never as a ?hf_token= query param (which leaks
+    the credential into server/proxy access logs)."""
     src = _read("features/training/api/models-api.ts")
     assert src.count("hubTokenHeader(") >= 3
     assert "hf_token=" not in src
@@ -51,27 +49,27 @@ def test_model_metadata_probe_never_puts_token_in_query():
 
 
 def test_model_config_page_floors_the_context_ceiling():
-    """The model's native max-context must be FLOORED to the step grid, never rounded up
-    (rounding up can offer/persist a length above the model's real ceiling and break
-    loading)."""
+    """The model's native max-context must be FLOORED to the step grid, never
+    rounded up (rounding up can offer/persist a length above the model's real
+    ceiling and break loading)."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" in src
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
 def test_compare_load_clears_stale_native_lease():
-    """A compare-pane load never comes from the desktop file picker, so it must clear any
-    prior picked file's lease token + expiry, otherwise a reload can send a stale lease
-    for the now-active model."""
+    """A compare-pane load never comes from the desktop file picker, so it must
+    clear any prior picked file's lease token + expiry, otherwise a reload can
+    send a stale lease for the now-active model."""
     src = _read("features/chat/shared-composer.tsx")
     assert "activeNativePathToken: null" in src
     assert "activeNativePathExpiresAtMs: null" in src
 
 
 def test_autoload_records_backend_loaded_model_identity():
-    """An inactive-cache inventory row loads by local path, so startup autoload must key
-    both the active checkpoint and its summary by the backend's loaded model identity
-    instead of the catalog repo id."""
+    """An inactive-cache inventory row loads by local path, so startup autoload
+    must key both the active checkpoint and its summary by the backend's loaded
+    model identity instead of the catalog repo id."""
     src = _read("features/chat/api/chat-adapter.ts")
     autoload = src.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("\n  try {", 1)[0]
@@ -82,8 +80,8 @@ def test_autoload_records_backend_loaded_model_identity():
 
 
 def test_chat_autoload_toast_is_persistent_and_dismissible():
-    """Send-triggered autoload stays visible until it settles but remains dismissible,
-    matching the explicit model-loading toast's lifetime."""
+    """Send-triggered autoload stays visible until it settles but remains
+    dismissible, matching the explicit model-loading toast's lifetime."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
     auto_load = auto_load.split("export function createOpenAIStreamAdapter", 1)[0]
@@ -109,8 +107,8 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
 
 
 def test_recipe_model_load_toast_is_persistent_and_dismissible():
-    """Recipe model loading uses the same dismissible persistent lifecycle as chat loading
-    because both call the non-abortable loadModel API."""
+    """Recipe model loading uses the same dismissible persistent lifecycle as
+    chat loading because both call the non-abortable loadModel API."""
     src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
     model_load = src.split("async function loadLocalModelSelection", 1)[1]
     model_load = model_load.split("function getLocalModelLoadPlanForPayload", 1)[0]
@@ -133,9 +131,9 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
 
 
 def test_rollback_restores_native_lease_expiry_with_token():
-    """A failed model switch that rolls back to a previously loaded picked GGUF must
-    restore the lease expiry paired with the token, never the token alone (which would
-    look non-expiring and skip the expiry guard)."""
+    """A failed model switch that rolls back to a previously loaded picked GGUF
+    must restore the lease expiry paired with the token, never the token alone
+    (which would look non-expiring and skip the expiry guard)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
     assert re.search(
@@ -144,17 +142,17 @@ def test_rollback_restores_native_lease_expiry_with_token():
 
 
 def test_default_caches_keyed_on_inventory_version():
-    """The chat-template and max-position caches must key on the inventory version so a
-    model update in the same session invalidates the cached value instead of showing the
-    stale revision."""
+    """The chat-template and max-position caches must key on the inventory
+    version so a model update in the same session invalidates the cached value
+    instead of showing the stale revision."""
     src = _read("features/model-picker/hooks/use-model-defaults.ts")
     # Both cache keys (template + max-position) end with the inventory version.
     assert src.count("${inventoryVersion}") >= 2
 
 
 def test_hidden_infra_model_needles_present():
-    """The frontend static needle list must keep hiding the RAG embedder and the llama.cpp
-    validation probe."""
+    """The frontend static needle list must keep hiding the RAG embedder and the
+    llama.cpp validation probe."""
     src = _read("features/hub/lib/hidden-models.ts")
     assert '"bge-small-en-v1.5"' in src
     assert '"ggml-org/models"' in src
@@ -162,9 +160,9 @@ def test_hidden_infra_model_needles_present():
 
 
 def test_hidden_models_dynamic_exact_ids_wired():
-    """The configured embedder arrives from /api/hub/hidden-models as exact repo ids; a
-    substring needle would let a generic basename like "model" hide unrelated chat
-    models."""
+    """The configured embedder arrives from /api/hub/hidden-models as exact
+    repo ids; a substring needle would let a generic basename like "model"
+    hide unrelated chat models."""
     src = _read("features/hub/lib/hidden-models.ts")
     assert "toLowerStrings(data.exact_ids)" in src
     assert "dynamicExactIds.includes(lower)" in src
@@ -178,9 +176,9 @@ def test_hidden_model_matchers_refresh_with_inventory_version():
 
 
 def test_diffusion_capability_labeled_image_generation():
-    """The diffusion capability detects image GENERATORS (FLUX, SDXL, text-to-image tags);
-    labeling it "Image to text" showed generators when users asked for captioning
-    models."""
+    """The diffusion capability detects image GENERATORS (FLUX, SDXL,
+    text-to-image tags); labeling it "Image to text" showed generators when
+    users asked for captioning models."""
     for rel in (
         "features/hub/lib/model-capabilities.ts",
         "features/hub/lib/model-type-filter.ts",
@@ -247,8 +245,8 @@ def test_deferred_gpu_pick_keeps_its_index_namespace():
 
 
 def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
-    """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep [0, 1] as
-    the editable pool so a later reload can grow back onto GPU 1."""
+    """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep
+    [0, 1] as the editable pool so a later reload can grow back onto GPU 1."""
     types = _read("features/chat/types/api.ts")
     assert types.count("requested_gpu_ids?: number[] | null") >= 2
 
@@ -352,9 +350,9 @@ def test_model_default_hooks_do_not_reset_state_in_effect():
 
 
 def test_variant_expander_refreshes_after_delete():
-    """Deleting a downloaded quant from an expanded repo that still has other cached quants
-    must bump the expander refresh key, or the deleted quant stays shown as downloaded
-    and clickable and tries to reload the removed file."""
+    """Deleting a downloaded quant from an expanded repo that still has other
+    cached quants must bump the expander refresh key, or the deleted quant stays
+    shown as downloaded and clickable and tries to reload the removed file."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     del_confirm = re.search(
         r"await onDeleteVariant\(v\.quant\);.*?setRefreshKey\(\(key\) => key \+ 1\)",
@@ -373,8 +371,8 @@ def test_local_picker_rows_require_chat_capability():
 
 
 def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
-    """The content-sized section tabs and fixed-width dropdowns must reflow, while an
-    oversized tab group must shrink labels but preserve its icons."""
+    """The content-sized section tabs and fixed-width dropdowns must reflow,
+    while an oversized tab group must shrink labels but preserve its icons."""
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert '"flex flex-wrap items-center gap-2"' in picker
     assert 'hasConnected ? "-mr-4" : "-mr-2"' in picker
@@ -405,9 +403,10 @@ def test_native_picked_gguf_template_read_through_lease():
 
 
 def test_model_load_guard_is_cross_instance():
-    """The in-flight load guard must consult the shared store pick (not only the per-hook
-    ref) and ejectModel must refuse while any instance is loading: three live
-    useChatModelRuntime instances exist (chat page, hub page, hub gear dialog)."""
+    """The in-flight load guard must consult the shared store pick (not only the
+    per-hook ref) and ejectModel must refuse while any instance is loading:
+    three live useChatModelRuntime instances exist (chat page, hub page, hub
+    gear dialog)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "useChatRuntimeStore.getState().loadingModelPick" in src
     assert "clearLoadingModelPick" in src
@@ -439,8 +438,8 @@ def test_pinned_validation_uses_cached_local_variant_listing():
 
 
 def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
-    """Autoload must probe the exact cache row it will load, including rows retained from a
-    previously selected Hugging Face cache."""
+    """Autoload must probe the exact cache row it will load, including rows
+    retained from a previously selected Hugging Face cache."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
     assert auto_load.count("preferLocalCache: true") >= 2
@@ -454,8 +453,8 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
 
 
 def test_cache_location_update_invalidates_frontend_inventory():
-    """A successful cache switch must refresh both inventory rows and cached GGUF variant
-    results before any stale active-cache identity can be reused."""
+    """A successful cache switch must refresh both inventory rows and cached
+    GGUF variant results before any stale active-cache identity can be reused."""
     src = _read("features/settings/api/hugging-face-cache.ts")
     update_fn = src.split("export async function updateHuggingFaceCacheSettings", 1)[1]
     assert "bumpInventoryVersion();" in update_fn
@@ -463,17 +462,18 @@ def test_cache_location_update_invalidates_frontend_inventory():
 
 
 def test_downloaded_list_offsets_virtual_rows():
-    """The On Device virtualized list sits below the Pinned block in the same scroll
-    element, so it must pass its measured offset as scrollMargin or rows past the
-    overscan render blank."""
+    """The On Device virtualized list sits below the Pinned block in the same
+    scroll element, so it must pass its measured offset as scrollMargin or rows
+    past the overscan render blank."""
     src = _read("features/hub/catalog/models-catalog-lists.tsx")
     assert "scrollMargin={scrollMargin}" in src
 
 
 def test_local_gguf_diagnostics_gate_on_broad_is_gguf():
-    """The MTP fallback note and the context/VRAM warning must gate on the broad isGguf
-    (variant, loaded gguf context, or .gguf suffix), not the variant-only isLoadedGguf,
-    so direct-file and custom-folder GGUF loads keep those diagnostics."""
+    """The MTP fallback note and the context/VRAM warning must gate on the broad
+    isGguf (variant, loaded gguf context, or .gguf suffix), not the variant-only
+    isLoadedGguf, so direct-file and custom-folder GGUF loads keep those
+    diagnostics."""
     src = _read("features/chat/chat-settings-sheet.tsx")
     spec = re.search(r"const showSpecFallback =.*?;", src, re.S)
     vram = re.search(r"const showContextVramWarning =.*?;", src, re.S)
@@ -537,9 +537,9 @@ def test_local_mtp_warning_uses_backend_source_metadata():
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
-    """An already-loaded auto-fit GGUF saved with Manual fixed GPU layers must pin the
-    shown context, so a later fresh load keeps the fitted placement instead of sending
-    native/0 and recreating the OOM."""
+    """An already-loaded auto-fit GGUF saved with Manual fixed GPU layers must
+    pin the shown context, so a later fresh load keeps the fitted placement
+    instead of sending native/0 and recreating the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const pinFixedLayerContext =" in src
     assert 'loadableConfig.gpuMemoryMode === "manual"' in src
@@ -570,9 +570,9 @@ def test_blur_cache_cleared_on_every_settled_render():
 
 
 def test_auto_defaults_not_persisted_as_overrides():
-    """Auto GPU memory mode and Auto/default speculative type are follow-global defaults;
-    normalization must not persist them as per-model overrides, else a model stops
-    following later changes to the global preference."""
+    """Auto GPU memory mode and Auto/default speculative type are follow-global
+    defaults; normalization must not persist them as per-model overrides, else a
+    model stops following later changes to the global preference."""
     src = _read("features/model-picker/model-config/per-model-config.ts")
     assert 'if (partial.gpuMemoryMode === "manual") {' in src
     assert 'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"' not in src
@@ -581,18 +581,18 @@ def test_auto_defaults_not_persisted_as_overrides():
 
 
 def test_compare_pane_context_from_own_config_only():
-    """A compare pane's context comes from its own config only (a saved pin, else null for
-    Auto/native); it must not inherit the active model's shared snapshot, which
-    resolveFitMaxSeqLength would treat as an explicit pin (VRAM/OOM)."""
+    """A compare pane's context comes from its own config only (a saved pin, else
+    null for Auto/native); it must not inherit the active model's shared snapshot,
+    which resolveFitMaxSeqLength would treat as an explicit pin (VRAM/OOM)."""
     src = _read("features/chat/shared-composer.tsx")
     assert "const effectiveCustomContextLength = ownConfig.customContextLength;" in src
     assert "compareLoadKnobs.customContextLength" not in src
 
 
 def test_reset_max_seq_length_falls_back_to_app_default():
-    """After Reset clears maxSeqLength (null), a non-GGUF active model's shown max sequence
-    length must fall back to the app default, never the loaded runtime snapshot, or a
-    remembered/active override can never be cleared."""
+    """After Reset clears maxSeqLength (null), a non-GGUF active model's shown
+    max sequence length must fall back to the app default, never the loaded
+    runtime snapshot, or a remembered/active override can never be cleared."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     # The null fallback resolves to the app-default constant, not a runtime value.
     assert "clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength)" in src
@@ -601,9 +601,9 @@ def test_reset_max_seq_length_falls_back_to_app_default():
 
 
 def test_reset_persists_null_max_length_and_substitutes_only_for_load():
-    """The persisted per-model record must keep config.maxSeqLength (null after Reset) so
-    isDefaultConfig can clear a remembered override; the concrete fallback is
-    substituted only into the load request, not the saved record."""
+    """The persisted per-model record must keep config.maxSeqLength (null after
+    Reset) so isDefaultConfig can clear a remembered override; the concrete
+    fallback is substituted only into the load request, not the saved record."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
@@ -616,8 +616,8 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
 
 
 def test_initial_load_uses_staged_config_payload():
-    """Run-settings Load must pass the staged config through to /load even when React has
-    not flushed NumericValueInput blur commits into the store yet."""
+    """Run-settings Load must pass the staged config through to /load even when
+    React has not flushed NumericValueInput blur commits into the store yet."""
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "const pendingLoadConfig =" in runtime
     assert "pendingLoadConfig?.kvCacheDtype" in runtime
@@ -706,9 +706,9 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
 
 
 def test_compare_pane_non_gguf_falls_back_to_app_default():
-    """A non-GGUF compare pane with no saved maxSeqLength must fall back to the shared app
-    default, not the active model's runtime snapshot; otherwise an unconfigured pane
-    inherits a saved 128K neighbor's context and can OOM."""
+    """A non-GGUF compare pane with no saved maxSeqLength must fall back to the
+    shared app default, not the active model's runtime snapshot; otherwise an
+    unconfigured pane inherits a saved 128K neighbor's context and can OOM."""
     per_model = _read("features/model-picker/model-config/per-model-config.ts")
     assert "export const DEFAULT_MAX_SEQ_LENGTH = 4096;" in per_model
     barrel = _read("features/model-picker/index.ts")
@@ -727,8 +727,8 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
 
 def test_default_gpu_mode_clears_manual_knobs():
     """Switching GPU Memory back to Default must clear the Manual-only knobs
-    (gpuLayers/nCpuMoe/selectedGpuIds); otherwise a remembered config keeps stale pins
-    that a later load re-applies when the global preference is Manual."""
+    (gpuLayers/nCpuMoe/selectedGpuIds); otherwise a remembered config keeps stale
+    pins that a later load re-applies when the global preference is Manual."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert 'gpuMemoryMode: "auto",' in src
     assert "gpuLayers: undefined," in src
@@ -958,12 +958,10 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
     monitor = " ".join(_read("features/api-monitor/components/saved-model-settings.tsx").split())
     assert "if (override.n_parallel) {" in monitor
 
-    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
+    route = _read_backend("routes/settings.py")
     assert "n_parallel: Optional[int] = Field(" in route
     assert "n_parallel = payload.n_parallel," in route
-    store = (WORKDIR / "studio" / "backend" / "utils" / "openai_auto_switch_settings.py").read_text(
-        encoding = "utf-8"
-    )
+    store = _read_backend("utils/openai_auto_switch_settings.py")
     assert 'entry["n_parallel"] = n_parallel' in store
     # GGUF-only, like the picker: a safetensors load has no llama-server slots.
     gguf_block = store.split("    if is_gguf:", 1)[1]
@@ -1201,12 +1199,11 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     # A bare file name: no separator, and the .gguf the resolver's keys never carry.
     assert "const NATIVE_FILE_LABEL_RE = /^[^/\\\\]+\\.gguf$/i;" in identity
 
-    backend = WORKDIR / "studio" / "backend"
-    inference = (backend / "routes" / "inference.py").read_text(encoding = "utf-8")
+    inference = _read_backend("routes/inference.py")
     assert (
         "model_identifier = None if _native_grant_backed else _model_id" in inference
     ), "why the checkpoint is only a display name"
-    models = (backend / "routes" / "models.py").read_text(encoding = "utf-8")
+    models = _read_backend("routes/models.py")
     assert "display_name = gguf_file.stem," in models, "why the name is never an index key"
 
 
@@ -1226,7 +1223,7 @@ def test_evicted_local_configs_drop_their_server_overrides():
         "...(config === null && !options?.keepLaunchFlags ? { llama_extra_args: [] } : {}),"
         in api.replace("// biome-ignore lint/style/useNamingConvention: API schema ", "")
     )
-    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
+    route = _read_backend("routes/settings.py")
     assert 'requested_extra_args = stored.get("llama_extra_args")' in route, "the rule this mirrors"
 
     # Eviction reports what it dropped as model id + variant, not the normalized storage key.
@@ -1257,9 +1254,7 @@ def test_monitor_stats_exclude_model_lifecycle_rows():
     assert "total: requests," in src
     assert "total: entries.length" not in src
 
-    backend = (WORKDIR / "studio" / "backend" / "core" / "inference" / "api_monitor.py").read_text(
-        encoding = "utf-8"
-    )
+    backend = _read_backend("core/inference/api_monitor.py")
     assert 'entry.kind != "lifecycle"' in backend, "the rule this mirrors"
 
 
@@ -1347,9 +1342,7 @@ def test_ollama_models_are_not_advertised_as_api_loadable():
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
     assert "row.source !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
     assert "apiLoadable:" in hub
-    backend = (
-        WORKDIR / "studio" / "backend" / "core" / "inference" / "local_model_resolver.py"
-    ).read_text(encoding = "utf-8")
+    backend = _read_backend("core/inference/local_model_resolver.py")
     assert (
         "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend
     ), "the rule this mirrors"
@@ -1380,9 +1373,7 @@ def test_cached_repo_settings_are_keyed_by_the_repo_id():
     assert 'const configId = row.kind === "cache" ? row.repoId : id;' in hub
     assert hub.count("configId,") >= 2
 
-    backend = (
-        WORKDIR / "studio" / "backend" / "hub" / "tests" / "test_model_services.py"
-    ).read_text(encoding = "utf-8")
+    backend = _read_backend("hub/tests/test_model_services.py")
     assert 'fields["load_id"] == str(snapshot)' in backend, "the rule this mirrors"
 
 
@@ -1404,22 +1395,16 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     assert "const split = splitQuantSuffix(key);" in migrate
     assert 'key.lastIndexOf(":")' not in migrate, "the unconditional split is gone"
 
-    backend = (
-        WORKDIR / "studio" / "backend" / "utils" / "openai_auto_switch_settings.py"
-    ).read_text(encoding = "utf-8")
+    backend = _read_backend("utils/openai_auto_switch_settings.py")
     assert "def split_quant_suffix(" in backend, "the rule this mirrors"
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
     assert "extract_quant_label(filename).casefold()" in backend, "the label rule"
     # Both sides accept the same quant vocabulary; the regex lives with the loader.
-    quants = (WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
-        encoding = "utf-8"
-    )
+    quants = _read_backend("core/inference/llama_cpp.py")
     for token in ("MXFP", "IQ", "TQ", "BF16", "F16", "F32"):
         assert token in quants and token in identity, token
     # The .gguf label helpers are ported too, or the two sides label a filename apart.
-    gguf = (WORKDIR / "studio" / "backend" / "hub" / "utils" / "gguf.py").read_text(
-        encoding = "utf-8"
-    )
+    gguf = _read_backend("hub/utils/gguf.py")
     assert "def extract_quant_label(" in gguf and "def _gguf_stem(" in gguf
     assert "function ggufQuantLabel(" in identity and "function ggufStem(" in identity
     assert "_GGUF_SPLIT_SUFFIX_RE" in gguf and "GGUF_SPLIT_SUFFIX" in identity
@@ -1468,9 +1453,7 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
 
     identity = _read("features/hub/lib/model-identity.ts")
     assert 'new Set([".studio_links", "ollama_links"])' in identity
-    resolver = (
-        WORKDIR / "studio" / "backend" / "core" / "inference" / "local_model_resolver.py"
-    ).read_text(encoding = "utf-8")
+    resolver = _read_backend("core/inference/local_model_resolver.py")
     assert 'seg in (".studio_links", "ollama_links")' in resolver, "the rule this mirrors"
 
 
@@ -1496,14 +1479,14 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
     # Ordinary saves must stay unconditional, or a settings edit would never land.
     assert "syncModelOverride" in api and "fill_absent_fields: true" in api
 
-    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
+    route = _read_backend("routes/settings.py")
     assert "fill_absent_fields: bool = False" in route, "the rule this mirrors"
     assert "fill_absent_fields = payload.fill_absent_fields," in route
     # A write mode must not leak into saved fields, or model_id-only removal stops working.
     assert '"remove", "fill_absent_fields"' in route
 
     # The merge is the server's, in the write's transaction: a client-side one reopens the race.
-    db = (WORKDIR / "studio" / "backend" / "storage" / "studio_db.py").read_text(encoding = "utf-8")
+    db = _read_backend("storage/studio_db.py")
     assert "merged = {**entry_value, **stored}" in db
     assert "BEGIN IMMEDIATE" in db
 
@@ -1531,9 +1514,7 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     assert "models--" in identity and "snapshots" in identity
     # Only a namespaced repo id names one model, so a bare stem must never stand in for it.
     assert 'return publicId.includes("/") && modelIdsMatch(active, publicId);' in identity
-    backend = (WORKDIR / "studio" / "backend" / "core" / "inference" / "model_ids.py").read_text(
-        encoding = "utf-8"
-    )
+    backend = _read_backend("core/inference/model_ids.py")
     assert "def public_model_id(" in backend, "the rule this mirrors"
 
 
@@ -1598,9 +1579,7 @@ def test_a_standalone_gguf_has_one_settings_key():
     helper = " ".join(_read("features/hub/inventory/settings-identity.ts").split())
     assert 'row.kind === "local" && row.path.toLowerCase().endsWith(".gguf")' in helper
 
-    common = (
-        WORKDIR / "studio" / "backend" / "hub" / "services" / "models" / "common.py"
-    ).read_text(encoding = "utf-8")
+    common = _read_backend("hub/services/models/common.py")
     # The rule this mirrors: a variant is derived only for a single scanned file.
     assert "extract_quant_label(gguf_files[0].name)" in common
     assert "if scan_path.is_file() and len(gguf_files) == 1" in common
@@ -1618,9 +1597,7 @@ def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
         "(settingsTargetIsStandaloneFile || ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant))"
         in hub
     )
-    backend = (WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
-        encoding = "utf-8"
-    )
+    backend = _read_backend("core/inference/llama_cpp.py")
     assert (
         "self._hf_variant = _extract_quant_label(gguf_path)" in backend
     ), "the derived label this accounts for"
@@ -1650,9 +1627,7 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
 
     # The precedence that makes the bare path the one that wins.
-    route = (WORKDIR / "studio" / "backend" / "routes" / "inference.py").read_text(
-        encoding = "utf-8",
-    )
+    route = _read_backend("routes/inference.py")
     assert 'f"{target_id}:{file_variant}" if file_variant else None,' in route
     bare = route.index("\n                            target_id,\n")
     labelled = route.index('f"{target_id}:{file_variant}"')
@@ -1697,9 +1672,7 @@ def test_a_local_quant_folder_resolves_its_variants_by_path():
     card = " ".join(_read("features/hub/catalog/local-on-device-card.tsx").split())
     assert "repoId: modelId, hfToken, preferLocalCache: true, localPath: localGgufPath," in card
     # The backend scans a path in the repo_id position before the validation that would 400.
-    variants = (
-        WORKDIR / "studio" / "backend" / "hub" / "services" / "models" / "gguf_variants.py"
-    ).read_text(encoding = "utf-8")
+    variants = _read_backend("hub/services/models/gguf_variants.py")
     scan = variants.split("if is_local_path(repo_id):", 1)
     assert len(scan) == 2, "the local-path branch this leans on"
     assert "_is_valid_repo_id(repo_id)" in scan[1], "the branch has to come first"
