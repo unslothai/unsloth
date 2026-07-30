@@ -3018,7 +3018,6 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
         return False
     try:
         from hub.utils.gguf import iter_snapshots_preferring_whole, list_local_gguf_variants
-
         for snapshot in iter_snapshots_preferring_whole(repo_info.repo_id, None):
             variants, has_vision = list_local_gguf_variants(str(snapshot))
             if variants:
