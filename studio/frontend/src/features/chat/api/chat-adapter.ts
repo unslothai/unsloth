@@ -2027,6 +2027,20 @@ async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
       }
 
       abortSignal.throwIfAborted();
+      const runtimeAfterDownload = useChatRuntimeStore.getState();
+      if (
+        runtimeAfterDownload.params.checkpoint ||
+        runtimeAfterDownload.modelLoading
+      ) {
+        toast.dismiss(toastId);
+        if (runtimeAfterDownload.modelLoading) {
+          await waitForModelReady(abortSignal);
+        }
+        return {
+          loaded: Boolean(useChatRuntimeStore.getState().params.checkpoint),
+          blockedByTrustRemoteCode: false,
+        };
+      }
       updateAutoLoadToast(
         "Starting model…",
         "Download complete. Loading Qwen3.5-4B-MTP into memory.",

@@ -106,6 +106,32 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "duration: Infinity" in explicit_load
 
 
+def test_first_chat_default_autoload_yields_to_an_explicit_model_load():
+    """A user pick made during the managed download owns the next load.
+
+    The fallback must re-read runtime state after that long await, wait for an
+    in-flight explicit load to settle, and never start its default load from the
+    stale pre-download snapshot.
+    """
+    src = _read("features/chat/api/chat-adapter.ts")
+    manager_call = "const downloadResult = await downloadModelWithManager"
+    after_download = src.split(manager_call, 1)[1]
+    default_load = "const loadResp = await loadModel"
+    before_default_load = after_download.split(default_load, 1)[0]
+    compact = " ".join(before_default_load.split())
+
+    state_refresh = "const runtimeAfterDownload = useChatRuntimeStore.getState();"
+    assert state_refresh in compact
+    state_guard = (
+        "runtimeAfterDownload.params.checkpoint || "
+        "runtimeAfterDownload.modelLoading"
+    )
+    assert state_guard in compact
+    assert "await waitForModelReady(abortSignal);" in before_default_load
+    result_guard = "Boolean(useChatRuntimeStore.getState().params.checkpoint)"
+    assert result_guard in compact
+
+
 def test_recipe_model_load_toast_is_persistent_and_dismissible():
     """Recipe model loading uses the same dismissible persistent lifecycle as
     chat loading because both call the non-abortable loadModel API."""
