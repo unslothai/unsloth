@@ -1162,6 +1162,18 @@ class TestPyYamlDeserialization:
         _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
         assert _python_is_potentially_unsafe(code)
 
+    def test_dynamic_executor_alias_analysis_bounds_long_reverse_chain(self):
+        aliases = [f"runner_{index} = runner_{index + 1}" for index in range(65)]
+        code = "\n".join(
+            [
+                *aliases,
+                "runner_65 = exec",
+                'runner_0("import yaml\\nyaml.unsafe_load(payload)")',
+            ]
+        )
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+        assert _python_is_potentially_unsafe(code)
+
     @pytest.mark.parametrize(
         "code",
         [

@@ -10112,12 +10112,14 @@ def _check_signal_escape_patterns(code: str):
                 return node.id in aliases
             return isinstance(node, ast.Attribute) and node.attr in attribute_aliases
 
-        changed = True
-        while changed:
+        assignments = [
+            candidate
+            for candidate in ast.walk(tree)
+            if isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        ]
+        for _ in range(min(64, len(assignments) + 1)):
             changed = False
-            for candidate in ast.walk(tree):
-                if not isinstance(candidate, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-                    continue
+            for candidate in assignments:
                 targets = (
                     candidate.targets if isinstance(candidate, ast.Assign) else (candidate.target,)
                 )
