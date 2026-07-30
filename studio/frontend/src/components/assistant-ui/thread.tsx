@@ -2134,6 +2134,12 @@ const Composer: FC<{
       }
       return null;
     };
+    const isTargetCurrentThread = () => {
+      const state = aui.threadListItem().getState();
+      return compactIds([state.id, state.remoteId]).some((id) =>
+        initialRunningThreadIds.includes(id),
+      );
+    };
     const pendingSettingsIds = new Set<number>();
     let cancelled = false;
     const discardOldestPendingSettings = () => {
@@ -2221,7 +2227,9 @@ const Composer: FC<{
         getThreadRuntime()?.cancelRun();
       },
       isIndexing: () =>
-        promptQueueTargetMountedRef.current && indexingActiveRef.current,
+        promptQueueTargetMountedRef.current &&
+        isTargetCurrentThread() &&
+        indexingActiveRef.current,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
@@ -2230,11 +2238,16 @@ const Composer: FC<{
   }, [aui, referenceThreadId]);
 
   const startHydratedPromptQueue = useCallback(
-    (items: string[], waitForCurrentRun = false) => {
+    (
+      items: string[],
+      waitForCurrentRun = false,
+      onStarted?: () => void,
+    ) => {
       void createPromptQueueTarget()
         .then((target) => {
           if (target) {
             startPromptQueue(items, target, waitForCurrentRun);
+            onStarted?.();
           }
         })
         .catch((error) => {
@@ -2387,11 +2400,19 @@ const Composer: FC<{
           return;
         }
         const queuedPrompt = composerText.trim();
-        flushResourcesSync(() => {
-          aui.composer().setText("");
-        });
-        clearStoredDraft();
-        startHydratedPromptQueue([queuedPrompt], liveThreadIsRunning);
+        startHydratedPromptQueue(
+          [queuedPrompt],
+          liveThreadIsRunning,
+          () => {
+            if (aui.composer().getState().text.trim() !== queuedPrompt) {
+              return;
+            }
+            flushResourcesSync(() => {
+              aui.composer().setText("");
+            });
+            clearStoredDraft();
+          },
+        );
         return;
       }
 
@@ -2588,11 +2609,21 @@ const Composer: FC<{
                 if (queuedPrompt.length === 0) {
                   return;
                 }
-                flushResourcesSync(() => {
-                  aui.composer().setText("");
-                });
-                clearStoredDraft();
-                startHydratedPromptQueue([queuedPrompt], true);
+                startHydratedPromptQueue(
+                  [queuedPrompt],
+                  true,
+                  () => {
+                    if (
+                      aui.composer().getState().text.trim() !== queuedPrompt
+                    ) {
+                      return;
+                    }
+                    flushResourcesSync(() => {
+                      aui.composer().setText("");
+                    });
+                    clearStoredDraft();
+                  },
+                );
               }}
               // ComposerPrimitive.Send handles clicks itself rather than
               // submitting the form, so run the complete queue/capacity path.

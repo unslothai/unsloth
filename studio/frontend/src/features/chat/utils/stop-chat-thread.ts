@@ -15,10 +15,13 @@ export function stopChatThread(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
   const { runningByThreadId, cancelByThreadId, serverCancelByThreadId } =
     useChatRuntimeStore.getState();
-  if (!runningByThreadId[threadId]) return false;
+  const cancel = cancelByThreadId[threadId];
+  const serverCancels = serverCancelByThreadId[threadId] ?? [];
+  if (!runningByThreadId[threadId] && !cancel && serverCancels.length === 0) {
+    return false;
+  }
   let stopped = false;
   try {
-    const cancel = cancelByThreadId[threadId];
     if (cancel) {
       cancel();
       stopped = true;
@@ -27,7 +30,7 @@ export function stopChatThread(threadId: string | null | undefined): boolean {
     // The run may have ended between the read above and this call.
   }
   // Also after cancelRun(): a proxy that swallows the fetch abort leaves the backend decoding.
-  for (const serverCancel of serverCancelByThreadId[threadId] ?? []) {
+  for (const serverCancel of serverCancels) {
     try {
       serverCancel();
       stopped = true;

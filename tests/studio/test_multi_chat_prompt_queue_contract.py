@@ -32,6 +32,9 @@ SIDEBAR_ITEMS = (FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts").rea
     encoding = "utf-8"
 )
 CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_text(encoding = "utf-8")
+STOP_CHAT_THREAD = (FRONTEND / "features/chat/utils/stop-chat-thread.ts").read_text(
+    encoding = "utf-8"
+)
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -133,6 +136,7 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "usePromptQueueUI.getState()" in submit
     assert "if (liveThreadIsRunning || livePromptQueueActive)" in submit
     assert "startHydratedPromptQueue(" in submit
+    assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
     assert "tryReservePreStreamRun" not in submit
@@ -173,6 +177,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "await thread.append("
     )
     assert "cancelled = true" in target
+    assert "isTargetCurrentThread() &&" in target
     assert "consumeQueuedChatRunSettings(resolvedThreadId)" in CHAT_ADAPTER
     assert '"deepResearchEnabled"' in QUEUED_SETTINGS
     assert '"supportsReasoning"' in QUEUED_SETTINGS
@@ -192,7 +197,16 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "const liveRuntime = useChatRuntimeStore.getState()" in research
     assert "...queuedRunSettings" in research
-    assert "params: queuedRunSettings.params.checkpoint" in research
+    auto_load_merge = _between(
+        CHAT_ADAPTER,
+        "// Re-read store after auto-load / model-ready wait.",
+        "const { params } = runtime",
+    )
+    assert "...queuedRunSettings.params" in auto_load_merge
+    assert "checkpoint: liveRuntime.params.checkpoint" in auto_load_merge
+    assert "supportsTools: liveRuntime.supportsTools" in auto_load_merge
+    assert "supportsReasoning: liveRuntime.supportsReasoning" in auto_load_merge
+    assert "ggufContextLength: liveRuntime.ggufContextLength" in auto_load_merge
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "return pendingSettings[index].settings" in QUEUED_SETTINGS
@@ -216,8 +230,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "temporary: incognitoAtQueueStart" in THREAD
     assert "temporary: promptQueueRunIsTemporary(run)" in THREAD
     assert "entry.temporary" in QUEUE_BOUNDARY
-    assert "params: queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
-    assert ": liveRuntime.params" in CHAT_ADAPTER
+    assert "queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
+    assert "!runningByThreadId[threadId] && !cancel" in STOP_CHAT_THREAD
+    assert "serverCancels.length === 0" in STOP_CHAT_THREAD
     assert (
         "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
         in CHAT_ADAPTER
