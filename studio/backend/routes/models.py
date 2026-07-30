@@ -3015,7 +3015,6 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
         return _snapshot_has_gguf_projector(load_id)
     try:
         from hub.utils.gguf import resolve_local_gguf_path
-
         resolved = resolve_local_gguf_path(repo_info.repo_id, None)
     except Exception:
         resolved = None

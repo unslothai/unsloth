@@ -600,14 +600,16 @@ def test_vision_is_read_from_the_snapshot_a_repo_id_load_resolves(monkeypatch, t
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [other, main])
+    monkeypatch.setattr(
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [other, main]
+    )
 
     def _row():
         return {
             c["repo_id"]: c
-            for c in asyncio.run(
-                models_route.list_cached_gguf(current_subject = "test-user")
-            )["cached"]
+            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+                "cached"
+            ]
         }["Org/Vision"]
 
     row = _row()
