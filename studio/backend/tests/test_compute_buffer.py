@@ -782,6 +782,7 @@ class TestPerDeviceSplitReserve:
         native_ctx,
         min_gpus = 2,
         enforce = True,
+        cap = True,
     ):
         """Mirror of load_model's auto-context subset loop over the production fit
         and reserve helpers. Returns (gpu_indices, chosen_ctx)."""
@@ -811,11 +812,20 @@ class TestPerDeviceSplitReserve:
             )
             if (ms + b._estimate_kv_cache_bytes(capped) + cc(capped)) / MIB > pool:
                 continue
+            usable_mib = [usable(g) for g in subset]
+            reserve_at = lambda c, n = n: (self._OH if n > 1 else 0) + cc(c, n) // n
             if enforce and not LlamaCppBackend._every_gpu_holds_reserve(
-                (usable(g) for g in subset),
-                (self._OH if n > 1 else 0) + cc(capped) // n,
+                usable_mib, reserve_at(capped)
             ):
-                continue
+                if not cap:
+                    continue
+                capped = LlamaCppBackend._cap_ctx_to_per_device_reserve(
+                    capped, usable_mib, reserve_at
+                )
+                if capped <= 0:
+                    continue
+                if (ms + b._estimate_kv_cache_bytes(capped) + cc(capped)) / MIB > pool:
+                    continue
             return sorted(idx for idx, _ in subset), capped
         return None, 0
 
@@ -886,10 +896,13 @@ class TestPerDeviceSplitReserve:
         card1_usable = 2_500 - 0.03 * 24_576
         assert card1_usable < reserve_mib  # would OOM card 1 at load
 
-    def test_subset_is_rejected_when_a_card_cannot_hold_its_reserve(self):
+    def test_subset_is_capped_not_rejected_when_a_card_cannot_hold_its_reserve(self):
+        # 1762.72 MiB usable on card 1 holds 31488, not the pooled 262144. Rejecting
+        # the subset instead drops auto to the 4096 fallback for no reason.
         b = self._fit_backend()
         gpus, totals = self._HETEROGENEOUS
-        assert self._drive(b, gpus, totals, 20_480, 262144) == (None, 0)
+        assert self._drive(b, gpus, totals, 20_480, 262144, cap = False) == (None, 0)
+        assert self._drive(b, gpus, totals, 20_480, 262144) == ([0, 1], 31_488)
 
     def test_homogeneous_gpus_are_unaffected(self):
         b = self._fit_backend()
@@ -923,9 +936,106 @@ class TestPerDeviceSplitReserve:
         # Native-context loop and the reduced-to-4096 fallback below it.
         assert compact.count("ifnotself._every_gpu_holds_reserve(") == 2
         # Gated on the chosen context, and only reachable after the pooled test.
-        assert compact.count("(_gpu_usable(g,pin_fraction)forginsubset),") == 2
-        assert "+_cc_sub(capped)//n_gpus," in compact
+        assert "_usable_mib=[_gpu_usable(g,pin_fraction)forginsubset]" in compact
+        assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact
+        assert "+_cc_bytes(c,n)//n)" in compact
         assert "+_cc_bytes(effective_ctx,n_gpus)//n_gpus," in compact
+        # The cap runs only on gate failure, and the pooled price is redone after it.
+        assert (
+            compact.count(
+                "capped=self._cap_ctx_to_per_device_reserve("
+                "capped,_usable_mib,_reserve_at)ifcapped<=0:continue"
+            )
+            == 1
+        )
+        assert "kv=_kv_bytes(capped)footprint_mib=(_ms+kv+_mtp_bytes(capped)" in compact
+
+
+class TestPerDeviceReserveCap:
+    """Rejecting a subset outright costs context the smallest card could have held.
+    Reuses the gate class's fixtures; the cap only changes what "reject" means."""
+
+    _OH = TestPerDeviceSplitReserve._OH
+    _UB = TestPerDeviceSplitReserve._UB
+    _HETEROGENEOUS = TestPerDeviceSplitReserve._HETEROGENEOUS
+    _HOMOGENEOUS = TestPerDeviceSplitReserve._HOMOGENEOUS
+    _fit_backend = TestPerDeviceSplitReserve._fit_backend
+    _drive = TestPerDeviceSplitReserve._drive
+
+    def test_cap_is_exact_at_the_256_boundary(self):
+        b = self._fit_backend()
+        usable = 2_500 - 0.03 * 24_576  # 1762.72 MiB
+        reserve = lambda c: (
+            self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True)
+        ) / MIB
+        assert reserve(31_488) == 1762.0 <= usable
+        assert reserve(31_744) == 1768.0 > usable
+
+    def test_capped_context_still_fits_the_pooled_budget(self):
+        b = self._fit_backend()
+        gpus, totals = self._HETEROGENEOUS
+        idx, ctx = self._drive(b, gpus, totals, 20_480, 262144)
+        assert idx == [0, 1] and ctx == 31_488
+        pool = sum(g[1] - 0.03 * totals[g[0]] for g in gpus)
+        cc = 2 * b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = True)
+        footprint = (20_480 * MIB + self._OH + b._estimate_kv_cache_bytes(ctx) + cc) / MIB
+        assert footprint <= pool
+
+    def test_homogeneous_gpus_are_unaffected_by_the_cap(self):
+        b = self._fit_backend()
+        gpus, totals = self._HOMOGENEOUS
+        assert self._drive(b, gpus, totals, 20_480, 262144) == ([0, 1], 262144)
+
+    def test_cap_floors_at_4096_and_still_rejects_below_it(self):
+        # usable 1118.72 < reserve(4096) == 1120.0: nothing to salvage.
+        b = self._fit_backend()
+        assert self._drive(b, [(0, 40_000), (1, 1_856)], {0: 49_152, 1: 24_576},
+                           20_480, 262144) == (None, 0)
+
+    def test_cap_keeps_a_card_that_holds_exactly_4096(self):
+        b = self._fit_backend()
+        assert self._drive(b, [(0, 40_000), (1, 1_858)], {0: 49_152, 1: 24_576},
+                           20_480, 262144) == ([0, 1], 4096)
+
+    def test_flat_arch_term_is_not_rate_inverted(self):
+        # deepseek4 carries a flat indexer term, so inverting the per-token rate
+        # answers 43341, whose reserve is 6048 MiB on a 4000 MiB card.
+        b = _backend(embd = 7168, arch = "deepseek4")
+        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(
+            c, 512, "q8_0", layer_split = True
+        )
+        cap = LlamaCppBackend._cap_ctx_to_per_device_reserve(200_000, [4000.0], reserve)
+        assert cap == 13_312
+        assert reserve(cap) / MIB <= 4000.0 < reserve(cap + 256) / MIB
+        assert reserve(43_341) / MIB > 4000.0
+
+    def test_flat_arch_below_the_floor_is_infeasible(self):
+        b = _backend(embd = 7168, arch = "deepseek4")
+        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(
+            c, 512, "q8_0", layer_split = True
+        )
+        assert LlamaCppBackend._cap_ctx_to_per_device_reserve(200_000, [2500.0], reserve) == 0
+
+    @pytest.mark.parametrize("model_mib", [8_192, 16_384, 20_480, 30_720])
+    def test_capping_never_loses_to_continuing_with_more_gpus(self, model_mib):
+        # A third small card cannot rescue the subset: it stays in the ranking, so
+        # the reserve there is no smaller. Capping at 2 beats falling through.
+        b = self._fit_backend()
+        gpus = [(0, 40_000), (1, 2_500), (2, 2_400)]
+        totals = {0: 49_152, 1: 24_576, 2: 24_576}
+        assert self._drive(b, gpus, totals, model_mib, 262144, cap = False) == (None, 0)
+        idx, ctx = self._drive(b, gpus, totals, model_mib, 262144)
+        assert idx == [0, 1] and ctx == 31_488
+
+    def test_helper_edges(self):
+        cap = LlamaCppBackend._cap_ctx_to_per_device_reserve
+        assert cap(262144, [], lambda c: 0) == 0
+        assert cap(1024, [4000.0], lambda c: 0) == 0  # ctx below the 4096 floor
+        assert cap(262144, [4000.0], lambda c: 0) == 262144  # free reserve, no cap
+        linear = lambda c: c * 16384  # 16 KiB per ctx token, so 2000 MiB buys 128000
+        best = cap(262144, [2000.0], linear)
+        assert best == 128_000 and best % 256 == 0
+        assert linear(best) / MIB <= 2000.0 < linear(best + 256) / MIB
 
 
 class TestSplitRateRecheckAfterSelection:

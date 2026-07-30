@@ -4487,6 +4487,40 @@ class LlamaCppBackend:
         values = list(usable_mib)
         return bool(values) and all(usable >= reserve_mib for usable in values)
 
+    @staticmethod
+    def _cap_ctx_to_per_device_reserve(
+        ctx: int,
+        usable_mib: Iterable[float],
+        reserve_bytes_fn: Callable[[int], int],
+        min_ctx: int = 4096,
+    ) -> int:
+        """Largest context in [``min_ctx``, ``ctx``] whose replicated per-device reserve
+        still fits the SMALLEST card of a layer-split subset; 0 when even ``min_ctx``
+        does not. The reserve shrinks with the context, so a subset
+        ``_every_gpu_holds_reserve`` turns down at the pooled context usually serves a
+        lower one: 40000 + 2500 MiB free holds 31488, where rejecting it outright drops
+        auto context to 4096.
+
+        Bisects the reserve rather than inverting a rate. It is monotone in context on
+        every branch but proportional on only some (deepseek4 carries a flat indexer
+        term), so a closed form over-estimates those: on a 4000 MiB card it answers
+        43341, whose reserve is 6048 MiB, OOMing the card this exists to protect. The
+        MiB comparison mirrors ``_every_gpu_holds_reserve``, so that gate accepts what
+        this returns."""
+        values = list(usable_mib)
+        if not values or ctx < min_ctx:
+            return 0
+        smallest = min(values)
+        lo, hi, best = min_ctx, ctx, 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if reserve_bytes_fn(mid) / (1024 * 1024) <= smallest:
+                best, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        best = (best // 256) * 256  # same alignment _fit_context_to_vram uses
+        return best if best >= min_ctx else 0
+
     # ── KV cache VRAM estimation ─────────────────────────────────────
 
     def _can_estimate_kv(self) -> bool:
@@ -8326,12 +8360,35 @@ class LlamaCppBackend:
                                 # Pooling admits a subset whose per-device reserve
                                 # does not fit the smallest card, which then OOMs at
                                 # launch; only knowable once `capped` is chosen.
+                                _usable_mib = [_gpu_usable(g, pin_fraction) for g in subset]
+                                _reserve_at = lambda c, n = n_gpus: (
+                                    (_pipeline_overhead_bytes if n > 1 else 0)
+                                    + _cc_bytes(c, n) // n
+                                )
                                 if not self._every_gpu_holds_reserve(
-                                    (_gpu_usable(g, pin_fraction) for g in subset),
-                                    (_pipeline_overhead_bytes if n_gpus > 1 else 0)
-                                    + _cc_sub(capped) // n_gpus,
+                                    _usable_mib, _reserve_at(capped)
                                 ):
-                                    continue
+                                    # The reserve shrinks with the context, so keep the
+                                    # largest one the smallest card does hold instead of
+                                    # losing the subset to the 4096 drop below. Costs no
+                                    # context: subsets are prefixes of a usable-descending
+                                    # ranking and the reserve is the same function of
+                                    # context for every n > 1, so a later subset that
+                                    # clears the gate clears it no higher than this cap.
+                                    capped = self._cap_ctx_to_per_device_reserve(
+                                        capped, _usable_mib, _reserve_at
+                                    )
+                                    if capped <= 0:
+                                        continue
+                                    # Pooled terms only shrink with the context, so this
+                                    # cannot newly fail; re-price rather than lean on that
+                                    # across the KV and MTP branches.
+                                    kv = _kv_bytes(capped)
+                                    footprint_mib = (
+                                        _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
+                                    ) / (1024 * 1024)
+                                    if footprint_mib > pool_budget:
+                                        continue
                                 effective_ctx = capped
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
