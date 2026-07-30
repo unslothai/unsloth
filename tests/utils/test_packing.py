@@ -177,9 +177,7 @@ def test_configure_padding_free():
 
 def _hybrid_config_model():
     # Qwen3.5 / Qwen3-Next style: explicit linear_attention layer schedule.
-    return SimpleNamespace(
-        config = _FakeConfig(layer_types = ["linear_attention", "full_attention"])
-    )
+    return SimpleNamespace(config = _FakeConfig(layer_types = ["linear_attention", "full_attention"]))
 
 
 def _gemma3_model():
