@@ -649,3 +649,82 @@ def test_detection_wait_requires_a_device_not_just_the_event():
         f"the poll loop must require a device, or a torn event-set/DEVICE-None "
         f"state is reported as detected and nothing re-detects"
     )
+
+
+# ------------------------------------------------- cached-model delete guard
+
+
+def test_the_delete_guard_runs_off_the_event_loop():
+    """Both load-state guards must go to a worker, in one hop.
+
+    _inference_backend_blocks_delete() is sync and reaches
+    get_inference_backend(), whose cold build waits on hardware detection. Inline
+    in the coroutine, an authed DELETE /api/models/delete-cached arriving during
+    the warm held the event-loop thread for the rest of the torch import.
+    """
+    path = _BACKEND / "hub" / "services" / "models" / "deletion.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "delete_cached_model_response"
+    )
+
+    # The guards must not be called directly from the coroutine body; they belong
+    # to the nested helper that is handed to the worker.
+    nested = {
+        node.name for node in ast.walk(fn)
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert "_load_state_blocks_delete" in nested, (
+        "the load-state guards are called inline again; get_inference_backend() "
+        "then blocks the event loop for the remaining torch import"
+    )
+
+    offloaded = set()
+    for sub in ast.walk(fn):
+        if (
+            isinstance(sub, ast.Call)
+            and getattr(sub.func, "attr", None) == "to_thread"
+            and sub.args
+        ):
+            offloaded.add(getattr(sub.args[0], "id", None))
+    assert "_load_state_blocks_delete" in offloaded
+
+
+def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
+    """The offload must not change what the guard decides.
+
+    The `or` matters: when a GGUF model is loaded the first guard answers and the
+    second never runs. And an unreadable load state must still raise rather than
+    fall through to unlinking weights under a live process.
+    """
+    path = _BACKEND / "hub" / "services" / "models" / "deletion.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    helper = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_load_state_blocks_delete"
+    )
+    bool_ops = [sub for sub in ast.walk(helper) if isinstance(sub, ast.BoolOp)]
+    assert bool_ops and isinstance(bool_ops[0].op, ast.Or), (
+        "the guard no longer short-circuits; the inference lookup would run even "
+        "when llama.cpp has already answered"
+    )
+
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "delete_cached_model_response"
+    )
+    guarded = [
+        sub for sub in ast.walk(fn)
+        if isinstance(sub, ast.Try)
+        and any("to_thread" in ast.dump(h) for h in [sub])
+        and sub.handlers
+    ]
+    assert guarded, "the offloaded guard is no longer inside a try/except"
+    raises = [
+        sub for sub in ast.walk(guarded[0])
+        if isinstance(sub, ast.Raise)
+    ]
+    assert raises, "an unreadable load state no longer raises; delete would proceed"
