@@ -29,7 +29,13 @@ class _StatusBackend:
     validates for real instead of being handed a mock.
     """
 
-    def __init__(self, model_identifier, *, native_grant_backed = None, display_label = None):
+    def __init__(
+        self,
+        model_identifier,
+        *,
+        native_grant_backed = None,
+        display_label = None,
+    ):
         self.model_identifier = model_identifier
         self.is_loaded = True
         if native_grant_backed is not None:
