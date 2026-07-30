@@ -783,6 +783,38 @@ def run_inference_process(
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
+    # Offline auto-detect, as the training and export workers already do. The parent's
+    # guard is scoped, so child_env deliberately scrubs it rather than turning a
+    # per-request flag into a lifetime one; without a probe of its own this worker would
+    # then walk back into the retry paths the parent already ruled out, in
+    # _remote_lora_base and in tier activation below. Runs before any HF import, so env
+    # alone is enough.
+    if "HF_HUB_OFFLINE" not in os.environ:
+        try:
+            _ensure_backend_on_path()
+            from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
+
+            _offline = hf_env_offline()
+            if not _offline:
+                _offline = hf_dns_dead()
+            if not _offline and not hf_probe_disabled():
+                from utils.transformers_version import hf_endpoint_unreachable
+
+                # Lifetime flags, so only a definite no-egress answer counts: a momentary
+                # 502 or a slow proxy must not strand the worker offline.
+                _offline = hf_endpoint_unreachable(
+                    gateway_errors_offline = False,
+                    proxy_timeouts_offline = False,
+                )
+            if _offline:
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+                logger.warning(
+                    "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 for this worker."
+                )
+        except Exception:
+            pass  # fail open: the load decides as it does today
+
     import warnings
     from loggers.config import LogConfig
 

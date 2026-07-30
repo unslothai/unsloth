@@ -247,3 +247,55 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
             "concurrent sockets would inherit the probe timeout"
         )
         assert "Thread" in src and "daemon" in src, "shared DNS probe must run on a daemon thread"
+
+
+class TestInferenceWorkerProbesForItself:
+    """child_env deliberately scrubs the parent's scoped offline flag, so the inference
+    worker needs its own probe like the training and export workers, or it walks back
+    into the retry paths the parent already ruled out."""
+
+    def _block(self):
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "core" / "inference" / "worker.py").read_text(
+            encoding = "utf-8",
+        )
+        start = src.index("# Offline auto-detect")
+        return src[start:start + 1800]
+
+    def test_the_probe_exists_and_runs_before_activation(self):
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "core" / "inference" / "worker.py").read_text(
+            encoding = "utf-8",
+        )
+        probe = src.index("# Offline auto-detect")
+        # Both HF-reading steps the parent's verdict was meant to cover.
+        assert probe < src.index("_remote_lora_base(model_name")
+        assert probe < src.index("_activate_transformers_version(_base")
+
+    def test_a_user_set_flag_is_never_overridden(self):
+        block = self._block()
+        assert 'if "HF_HUB_OFFLINE" not in os.environ:' in block
+
+    def test_lifetime_flags_use_the_fail_open_verdict(self):
+        """Same reasoning as the training worker: these last the whole process, so an
+        ambiguous answer must not strand it offline."""
+        block = self._block()
+        assert "gateway_errors_offline = False" in block
+        assert "proxy_timeouts_offline = False" in block
+
+    def test_probe_opt_out_is_honoured(self):
+        block = self._block()
+        assert "hf_probe_disabled()" in block
+
+    def test_it_fails_open(self):
+        block = self._block()
+        assert "except Exception:" in block
+
+    def test_it_does_not_force_datasets_offline(self):
+        """An inference worker loads no dataset; the training worker's flag is its own."""
+        block = self._block()
+        assert "HF_DATASETS_OFFLINE" not in block
