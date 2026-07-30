@@ -108,9 +108,19 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   return chain.reverse();
 }
 
-/** Identity of the branch a count priced: another turn moves its length or its last id. */
+/**
+ * Identity of the branch a count priced. Text length is in it because a run streaming into
+ * a turn that already exists grows its content without moving the count or the last id, and
+ * that partial is what a mid-stream count measured.
+ */
 function branchSignature(messages: readonly ThreadMessage[]): string {
-  return `${messages.length}:${messages.at(-1)?.id ?? ""}`;
+  let chars = 0;
+  for (const message of messages) {
+    for (const part of message.content as readonly { text?: unknown }[]) {
+      if (typeof part?.text === "string") chars += part.text.length;
+    }
+  }
+  return `${messages.length}:${messages.at(-1)?.id ?? ""}:${chars}`;
 }
 
 /** The branch the mounted runtime is showing for the thread the store calls active. */
@@ -234,25 +244,19 @@ export async function refreshContextUsage(options?: {
     if (useChatRuntimeStore.getState().contextUsage !== usageBeforeCount) {
       return;
     }
-    // A run streaming into an existing turn grows its content without moving the branch
-    // length or its last id, so the signature below cannot see it; that partial is what
-    // this count priced. The run writes its own usage when it lands, and leaves the bar
-    // alone if it is stopped, so declining here never loses a number.
-    if (
-      capturedThreadId != null &&
-      useChatRuntimeStore.getState().runningByThreadId[capturedThreadId]
-    ) {
+    // A run writes its own usage when it lands and leaves the bar alone if it is stopped, so
+    // declining while one is live never loses a number. A first turn has no thread id yet and
+    // files under "__default", which is the only witness for the New Chat case below.
+    if (useChatRuntimeStore.getState().runningByThreadId[capturedThreadId ?? "__default"]) {
       return;
     }
-    // The snapshot above only sees a completion that WROTE usage. A run stopped before
-    // emitting any leaves it untouched, so the branch is the only witness for a turn added.
+    // The usage snapshot above only sees a completion that WROTE usage, so a run stopped or
+    // failed before emitting any leaves it equal; the branch is then the only witness. An
+    // empty current branch counts as a mismatch: deleting the sole exchange mid-count would
+    // otherwise leave the old conversation's total on the emptied thread.
     if (countedBranch != null) {
       const current = readActiveBranch?.();
-      if (
-        current != null &&
-        current.length > 0 &&
-        branchSignature(current) !== countedBranch
-      ) {
+      if (current != null && branchSignature(current) !== countedBranch) {
         return;
       }
     }

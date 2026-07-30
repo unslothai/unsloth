@@ -763,11 +763,18 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
 
 
 @pytest.mark.parametrize(
-    ("running", "expected_total"),
-    [(True, None), (False, 62)],
-    ids = ["streaming_into_an_existing_turn", "not_running"],
+    ("running", "grew", "expected_total"),
+    [
+        # Caught while the run is still live.
+        (True, True, None),
+        # Stopped before the count returned, so runningByThreadId is already false and the
+        # usage snapshot is still equal: only the content makes the branch look different.
+        (False, True, None),
+        (False, False, 62),
+    ],
+    ids = ["still_streaming", "stopped_before_publish", "idle_and_unchanged"],
 )
-def test_a_count_taken_while_the_thread_is_running_is_dropped(running, expected_total):
+def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, expected_total):
     """A run streaming into a turn that already exists grows its content without moving the
     branch length or its last id, so the branch signature cannot see it and the partial is
     what got priced. The run writes its own usage when it lands, so declining loses nothing."""
@@ -799,8 +806,10 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, expected_
             world.countGate = new Promise((resolve) => {{ release = resolve; }});
             const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
             await new Promise((resolve) => setTimeout(resolve, 20));
-            // Same id, same length: only the streamed content grew.
-            live[1].content = [{{ type: "text", text: "yo" + " and a great deal more" }}];
+            if ({str(grew).lower()}) {{
+              // Same id, same length: only the streamed content grew.
+              live[1].content = [{{ type: "text", text: "yo" + " and a great deal more" }}];
+            }}
             release();
             await pending;
 
@@ -814,8 +823,96 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, expected_
     assert out["counts"] == 1, "the count is still attempted"
     assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
         "a partial mid-stream total must not reach the bar"
-        if running
-        else "an idle thread must still publish"
+        if expected_total is None
+        else "an idle, unchanged thread must still publish"
+    )
+
+
+@pytest.mark.parametrize(
+    ("empties", "expected_total"),
+    [(True, None), (False, 62)],
+    ids = ["sole_exchange_deleted", "branch_kept"],
+)
+def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_total):
+    """Deleting the only exchange while a count is in flight does not touch contextUsage, so
+    the old conversation's total would land on the now-empty thread."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage,
+              seed,
+              setActiveBranchReader,
+              snapshot,
+              world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            let live = [
+              {{ id: "m1", role: "user", createdAt: new Date(1), content: [{{ type: "text", text: "hi" }}] }},
+              {{ id: "m2", role: "assistant", createdAt: new Date(2), content: [{{ type: "text", text: "yo" }}] }},
+            ];
+            setActiveBranchReader(() => live.slice());
+            seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            if ({str(empties).lower()}) live = [];
+            release();
+            await pending;
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a total for a branch that has since been emptied must not reach the bar"
+    )
+
+
+@pytest.mark.parametrize(
+    ("first_run_starts", "expected_total"),
+    [(True, None), (False, 12)],
+    ids = ["first_turn_sent_mid_count", "still_empty"],
+)
+def test_a_new_chat_count_is_dropped_once_its_first_run_starts(first_run_starts, expected_total):
+    """A New Chat count captures a null thread id, so it has no branch to compare and the
+    active-thread check stays null until initialize() assigns one. A first turn files its run
+    under "__default", which is the only witness that the bare-template total is now stale."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ refreshContextUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{ activeThreadId: null, contextUsage: null, contextUsageByThreadId: {{}} }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const pending = refreshContextUsage({{ afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            if ({str(first_run_starts).lower()}) {{
+              seed({{ runningByThreadId: {{ __default: true }} }});
+            }}
+            release();
+            await pending;
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a bare-template total must not land on a New Chat that already has a turn"
     )
 
 
