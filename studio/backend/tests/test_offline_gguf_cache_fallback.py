@@ -921,6 +921,18 @@ class _DnsState:
         self._mp.setattr(socket, "getaddrinfo", self._real_addr)
 
 
+@pytest.fixture(autouse = True)
+def _drop_reachability_memo():
+    """_hf_unreachable reuses a fresh verdict before re-running the DNS shortcut, so a
+    verdict left by a neighbouring test would short-circuit this one's stubs. Process-global
+    state, so clear it either side rather than relying on collection order."""
+    from utils.utils import reset_hf_reachability_cache
+
+    reset_hf_reachability_cache()
+    yield
+    reset_hf_reachability_cache()
+
+
 @pytest.fixture
 def dns(monkeypatch):
     return _DnsState(monkeypatch)
