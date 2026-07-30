@@ -1917,23 +1917,17 @@ def test_picker_capabilities_survive_model_config_probe_failures():
     vision_probe = api.split("export async function checkVisionModel", 1)[1].split(
         "export async function checkEmbeddingModel", 1
     )[0]
-    loader = store.split(
-        "const loadAndApplyModelDefaults = (modelName: string) =>", 1
-    )[1]
-    failure = loader.split(".catch((error) =>", 1)[1].split(
-        "const runDatasetCheck =", 1
-    )[0]
+    loader = store.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1]
+    failure = loader.split(".catch((error) =>", 1)[1].split("const runDatasetCheck =", 1)[0]
 
     assert "...options," in selector
     assert "...inferredFlags," in selector
     assert 'options?.isVision ?? effectiveModelType === "vision"' in store
     assert 'options?.isAudio ?? effectiveModelType === "audio"' in store
-    assert (
-        'options?.isEmbedding ?? effectiveModelType === "embeddings"' in store
-    )
-    non_persisted = store.split(
-        "const NON_PERSISTED_STATE_KEYS", 1
-    )[1].split("function partializePersistedState", 1)[0]
+    assert 'options?.isEmbedding ?? effectiveModelType === "embeddings"' in store
+    non_persisted = store.split("const NON_PERSISTED_STATE_KEYS", 1)[1].split(
+        "function partializePersistedState", 1
+    )[0]
     assert '"isEmbeddingModel"' not in non_persisted
     assert "inferTrainingModelTypeFromFlags({" in failure
     assert "isAudio: state.isAudioModel," in failure
@@ -1956,9 +1950,9 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
     background_check = store.split("const runDatasetCheck =", 1)[1].split(
         "const recheckSelectedDatasetForStreamingMode", 1
     )[0]
-    streaming_setter = store.split(
-        "setDatasetStreaming: (datasetStreaming) =>", 1
-    )[1].split("setDatasetSliceStart:", 1)[0]
+    streaming_setter = store.split("setDatasetStreaming: (datasetStreaming) =>", 1)[1].split(
+        "setDatasetSliceStart:", 1
+    )[0]
 
     assert "!config.datasetStreaming" in check
     assert "preferLocalCache ? config.datasetLocalPath : null" in check
@@ -1968,9 +1962,9 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
     assert "recheckSelectedDatasetForStreamingMode(true)" in streaming_setter
     assert "setDatasetStreaming(false)" in modality
     assert "attempt.cancel(TRAINING_SETUP_CHANGED_ERROR)" in modality
-    cache_setter = store.split(
-        "setSelectedDatasetCacheReference: (dataset, localPath) =>", 1
-    )[1].split("ensureModelDefaultsLoaded:", 1)[0]
+    cache_setter = store.split("setSelectedDatasetCacheReference: (dataset, localPath) =>", 1)[
+        1
+    ].split("ensureModelDefaultsLoaded:", 1)[0]
     assert "const cacheReferenceChanged =" in cache_setter
     assert "cacheReferenceChanged && !state.datasetStreaming" in cache_setter
     assert "recheckSelectedDatasetForStreamingMode(false)" in cache_setter
@@ -1979,9 +1973,7 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
 def test_embedding_payload_survives_legacy_persisted_state():
     mapper = _read("features/training/api/mappers.ts")
 
-    assert (
-        'config.isEmbeddingModel || config.modelType === "embeddings"' in mapper
-    )
+    assert 'config.isEmbeddingModel || config.modelType === "embeddings"' in mapper
 
 
 def test_picker_shell_handles_ime_focus_and_short_viewports():
@@ -2028,9 +2020,9 @@ def test_selected_cache_references_flow_into_metadata_requests():
 
     assert 'params.set("prefer_local_cache", "true")' in model_api
     assert 'params.set("local_path", options.localPath)' in model_api
-    loader = store.split(
-        "const loadAndApplyModelDefaults = (modelName: string) =>", 1
-    )[1].split("const runDatasetCheck =", 1)[0]
+    loader = store.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1].split(
+        "const runDatasetCheck =", 1
+    )[0]
     assert "requestedKnownCached" in loader
     assert "requestedLocalPath" in loader
     assert "requestMatchesSelection()" in loader
@@ -2047,9 +2039,9 @@ def test_selected_cache_references_flow_into_metadata_requests():
 
 def test_partial_local_datasets_are_not_selectable():
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
-    device_items = selector.split(
-        "const deviceItems = useMemo<DatasetDeviceItem[]>", 1
-    )[1].split("const pickerView =", 1)[0]
+    device_items = selector.split("const deviceItems = useMemo<DatasetDeviceItem[]>", 1)[1].split(
+        "const pickerView =", 1
+    )[0]
 
     assert device_items.count(".filter((d) => !d.partial)") == 2
 

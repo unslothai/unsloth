@@ -1094,9 +1094,7 @@ def _detect_audio_from_tokenizer(
                 snapshots_dir = repo_dir / "snapshots"
                 if snapshots_dir.is_dir():
                     roots.extend(
-                        snapshot
-                        for snapshot in snapshots_dir.iterdir()
-                        if snapshot.is_dir()
+                        snapshot for snapshot in snapshots_dir.iterdir() if snapshot.is_dir()
                     )
 
         for root in roots:

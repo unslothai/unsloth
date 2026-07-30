@@ -785,9 +785,7 @@ def test_reset_route_without_body_uses_unscoped_reset():
     route = _load_route_module("training_route_unscoped_reset")
     calls: list[str | None] = []
     backend = SimpleNamespace(
-        reset_training_state = lambda expected_job_id = None: (
-            calls.append(expected_job_id) or "ok"
-        )
+        reset_training_state = lambda expected_job_id = None: (calls.append(expected_job_id) or "ok")
     )
 
     with (

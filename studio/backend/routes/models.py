@@ -1853,16 +1853,10 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
         snapshot = Path(snapshot_path).resolve(strict = True)
         snapshots_dir = snapshot.parent.resolve(strict = True)
         repo_dir = snapshots_dir.parent.resolve(strict = True)
-        if (
-            not snapshot.is_dir()
-            or snapshots_dir.name != "snapshots"
-            or not repo_dir.is_dir()
-        ):
+        if not snapshot.is_dir() or snapshots_dir.name != "snapshots" or not repo_dir.is_dir():
             return None
         blobs_dir = repo_dir / "blobs"
-        resolved_blobs_dir = (
-            blobs_dir.resolve(strict = True) if blobs_dir.is_dir() else None
-        )
+        resolved_blobs_dir = blobs_dir.resolve(strict = True) if blobs_dir.is_dir() else None
     except (OSError, RuntimeError, ValueError):
         return None
 
@@ -1901,9 +1895,7 @@ def _get_snapshot_model_size_bytes(snapshot_path: str) -> Optional[int]:
 
 
 def _model_config_inspection_target(
-    model_name: str,
-    prefer_local_cache: bool,
-    local_path: Optional[str],
+    model_name: str, prefer_local_cache: bool, local_path: Optional[str]
 ) -> str:
     if not prefer_local_cache or is_local_path(model_name):
         return model_name

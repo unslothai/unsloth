@@ -251,12 +251,8 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 )
                 if isinstance(upstream_status, int) and 500 <= upstream_status < 600:
                     status_code = upstream_status
-            transient_status = (
-                status_code in (408, 429)
-                or (
-                    isinstance(status_code, int)
-                    and 500 <= status_code < 600
-                )
+            transient_status = status_code in (408, 429) or (
+                isinstance(status_code, int) and 500 <= status_code < 600
             )
             if status_code in (401, 403):
                 raise HTTPException(
@@ -274,9 +270,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 if status_code == 429:
                     raise HTTPException(
                         status_code = 429,
-                        detail = (
-                            "Hugging Face model verification is rate-limited. Retry shortly."
-                        ),
+                        detail = ("Hugging Face model verification is rate-limited. Retry shortly."),
                     ) from error
             elif status_code is not None:
                 raise HTTPException(
@@ -1120,8 +1114,7 @@ async def stop_training(
 
 @router.post("/reset")
 async def reset_training(
-    body: Optional[TrainingResetRequest] = None,
-    current_subject: str = Depends(get_current_subject),
+    body: Optional[TrainingResetRequest] = None, current_subject: str = Depends(get_current_subject)
 ):
     """Reset training state so the user can return to configuration."""
     try:

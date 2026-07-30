@@ -36,7 +36,11 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         calls["load_model_defaults"] = model_name
         return {}
 
-    def _record_vision(model_name, hf_token = None, local_files_only = False):
+    def _record_vision(
+        model_name,
+        hf_token = None,
+        local_files_only = False,
+    ):
         calls["is_vision_model"] = model_name
         return False
 
@@ -44,11 +48,19 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         calls["is_embedding_model"] = model_name
         return False
 
-    def _record_audio(model_name, hf_token = None, local_files_only = False):
+    def _record_audio(
+        model_name,
+        hf_token = None,
+        local_files_only = False,
+    ):
         calls["detect_audio_type"] = model_name
         return None
 
-    def _record_from_identifier(cls, model_name, hf_token = None):
+    def _record_from_identifier(
+        cls,
+        model_name,
+        hf_token = None,
+    ):
         calls["from_identifier"] = model_name
         return _DummyModelConfig()
 
@@ -93,9 +105,7 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     ["tokenizer_config.json", "LLM/tokenizer_config.json"],
 )
 def test_get_model_config_inspects_selected_cache_snapshot(
-    tokenizer_relative_path,
-    tmp_path,
-    monkeypatch,
+    tokenizer_relative_path, tmp_path, monkeypatch
 ):
     calls: dict[str, object] = {}
     cache_root = tmp_path / "hub"
@@ -160,7 +170,11 @@ def test_get_model_config_inspects_selected_cache_snapshot(
         calls["load_model_defaults"] = model_name
         return {}
 
-    def _record_vision(model_name, hf_token = None, local_files_only = False):
+    def _record_vision(
+        model_name,
+        hf_token = None,
+        local_files_only = False,
+    ):
         calls["is_vision_model"] = (model_name, local_files_only)
         return True
 
@@ -168,7 +182,11 @@ def test_get_model_config_inspects_selected_cache_snapshot(
         calls["is_embedding_model"] = model_name
         return False
 
-    def _record_from_identifier(cls, model_name, hf_token = None):
+    def _record_from_identifier(
+        cls,
+        model_name,
+        hf_token = None,
+    ):
         calls["from_identifier"] = model_name
         return _DummyModelConfig()
 
@@ -229,11 +247,7 @@ def test_get_model_config_inspects_selected_cache_snapshot(
 
 
 @pytest.mark.parametrize("path_kind", ["missing", "mismatched"])
-def test_get_model_config_rejects_invalid_selected_cache_path(
-    path_kind,
-    tmp_path,
-    monkeypatch,
-):
+def test_get_model_config_rejects_invalid_selected_cache_path(path_kind, tmp_path, monkeypatch):
     cache_root = tmp_path / "hub"
     cache_root.mkdir()
     if path_kind == "mismatched":
