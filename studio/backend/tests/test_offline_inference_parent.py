@@ -324,9 +324,7 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
         assert w._training_job_is_local({"model_name": local}) is True
         assert w._training_job_is_local({"model_name": local, "hf_dataset": ""}) is True
         # A remote dataset needs the Hub even with a local model.
-        assert w._training_job_is_local(
-            {"model_name": local, "hf_dataset": "org/ds"}
-        ) is False
+        assert w._training_job_is_local({"model_name": local, "hf_dataset": "org/ds"}) is False
         assert w._training_job_is_local({"model_name": "org/model"}) is False
         # Fail closed on anything unresolvable.
         assert w._training_job_is_local({}) is False
@@ -350,7 +348,8 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
 
         w = self._load("core/inference/worker.py", "inference_worker_gate_adapter")
         (tmp_path / "adapter_config.json").write_text(
-            json.dumps({"base_model_name_or_path": "org/base"}), encoding = "utf-8",
+            json.dumps({"base_model_name_or_path": "org/base"}),
+            encoding = "utf-8",
         )
         base = w._recorded_local_adapter_base(str(tmp_path))
         assert base == "org/base"

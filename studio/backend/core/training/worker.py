@@ -2327,7 +2327,6 @@ def run_mlx_training_process(
         )
 
 
-
 def _training_job_is_local(config) -> bool:
     """True when neither the model nor the dataset needs the Hub, so the probe is wasted.
 

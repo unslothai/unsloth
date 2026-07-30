@@ -49,9 +49,9 @@ def _recorded_local_adapter_base(model_name) -> "str | None":
         cfg = Path(model_name) / "adapter_config.json"
         if not cfg.is_file():
             return None
-        return _json.loads(cfg.read_text(encoding = "utf-8-sig")).get(
-            "base_model_name_or_path"
-        ) or None
+        return (
+            _json.loads(cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path") or None
+        )
     except Exception:
         return None
 
@@ -832,9 +832,7 @@ def run_inference_process(
     # spend seconds before a load that has no Hub dependency.
     _probe_model = config["model_name"]
     _probe_base = _recorded_local_adapter_base(_probe_model)
-    if "HF_HUB_OFFLINE" not in os.environ and not _hub_targets_are_local(
-        _probe_model, _probe_base
-    ):
+    if "HF_HUB_OFFLINE" not in os.environ and not _hub_targets_are_local(_probe_model, _probe_base):
         try:
             _ensure_backend_on_path()
             from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
