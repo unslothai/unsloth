@@ -1358,6 +1358,11 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
+      // Saved chats keep running in the background, but a temporary chat is
+      // unreachable after this switch and must not retain an active queue.
+      if (useChatRuntimeStore.getState().incognito) {
+        requestTemporaryPromptQueueStop();
+      }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&

@@ -221,6 +221,7 @@ type PromptQueueTarget = {
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
   append: (prompt: string) => void | Promise<void>;
+  complete: () => void;
   cancel: () => void;
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
@@ -348,6 +349,7 @@ function handleQueuedPromptAppendFailure(
   if (!isActivePromptQueueItem(run, item, run.generation)) {
     return;
   }
+  item.target.complete();
   item.dispatched = false;
   promptQueueActiveRunIds.delete(run.id);
   syncPromptQueueUI();
@@ -836,6 +838,7 @@ function isPromptQueueRunTargetRunning(
 function advancePromptQueue(run: PromptQueueRun) {
   clearPromptQueueRetryTimer(run);
   promptQueueActiveRunIds.delete(run.id);
+  getActivePromptQueueItem(run)?.target.complete();
   const nextIndex = run.index + 1;
   if (nextIndex >= run.items.length) {
     deletePromptQueueRun(run);
@@ -2118,6 +2121,14 @@ const Composer: FC<{
       return null;
     };
     const pendingSettingsIds = new Set<number>();
+    const discardOldestPendingSettings = () => {
+      const settingsId = pendingSettingsIds.values().next().value;
+      if (settingsId === undefined) {
+        return;
+      }
+      pendingSettingsIds.delete(settingsId);
+      discardQueuedChatRunSettings(settingsId);
+    };
     return {
       getDocumentThreadId: () => {
         const state = getThreadListItemState();
@@ -2150,6 +2161,7 @@ const Composer: FC<{
           throw error;
         }
       },
+      complete: discardOldestPendingSettings,
       cancel: () => {
         for (const settingsId of pendingSettingsIds) {
           discardQueuedChatRunSettings(settingsId);

@@ -113,5 +113,8 @@ export function consumeQueuedChatRunSettings(
   if (index < 0) {
     return null;
   }
-  return pendingSettings.splice(index, 1)[0].settings;
+  // Tool calls can invoke the adapter multiple times for one assistant run.
+  // Keep the snapshot available until the owning prompt queue observes that
+  // the whole run is idle, then discard it through its registration id.
+  return pendingSettings[index].settings;
 }

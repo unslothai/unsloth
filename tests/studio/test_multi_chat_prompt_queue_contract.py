@@ -79,7 +79,7 @@ def test_each_chat_queue_stays_sequential_and_targets_its_background_runtime():
     assert "schedulePromptQueueTargetStatePoll(run)" in append
 
 
-def test_switching_or_starting_a_chat_does_not_stop_an_existing_queue():
+def test_saved_queues_survive_navigation_but_abandoned_temporary_queues_stop():
     saved_switch = _between(
         RUNTIME_PROVIDER,
         "function ThreadAutoSwitch(",
@@ -91,6 +91,8 @@ def test_switching_or_starting_a_chat_does_not_stop_an_existing_queue():
         "function ActiveThreadSync(",
     )
     assert "requestPromptQueueStop" not in saved_switch
+    assert "useChatRuntimeStore.getState().incognito" in saved_switch
+    assert "requestTemporaryPromptQueueStop()" in saved_switch
     assert "switchToThread(threadId)" in saved_switch
     assert "useChatRuntimeStore.getState().incognito" in temporary_switch
     assert "requestTemporaryPromptQueueStop()" in temporary_switch
@@ -153,6 +155,10 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "params: queuedRunSettings.params.checkpoint" in research
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
+    assert "return pendingSettings[index].settings" in QUEUED_SETTINGS
+    assert "pendingSettings.splice(index, 1)[0].settings" not in QUEUED_SETTINGS
+    assert "complete: discardOldestPendingSettings" in target
+    assert "getActivePromptQueueItem(run)?.target.complete()" in THREAD
     assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
@@ -176,6 +182,12 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         in CHAT_ADAPTER
     )
     assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
+    assert ".setThreadContextUsage(usageThreadKey, usage)" in CHAT_ADAPTER
+    assert (
+        "usageThreadIsVisible &&\n"
+        "            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint"
+        in CHAT_ADAPTER
+    )
 
 
 def test_stop_delete_archive_and_clear_are_thread_scoped():

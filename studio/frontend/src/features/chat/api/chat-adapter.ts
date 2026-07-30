@@ -4480,8 +4480,7 @@ export function createOpenAIStreamAdapter(
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
-          typeof meta.usage.total_tokens === "number" &&
-          useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+          typeof meta.usage.total_tokens === "number"
         ) {
           const usage = {
             promptTokens: meta.usage.prompt_tokens,
@@ -4497,7 +4496,10 @@ export function createOpenAIStreamAdapter(
               .getState()
               .setThreadContextUsage(usageThreadKey, usage);
           }
-          if (usageThreadIsVisible) {
+          if (
+            usageThreadIsVisible &&
+            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+          ) {
             useChatRuntimeStore.getState().setContextUsage(usage);
           }
         }
