@@ -162,7 +162,6 @@ def slow_load(route, monkeypatch):
 
 def _load_request(model_path = "unsloth/Kimi-K3-GGUF"):
     from models.inference import LoadRequest
-
     return LoadRequest(model_path = model_path)
 
 

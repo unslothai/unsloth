@@ -5473,11 +5473,7 @@ async def load_model(
     )
 
 
-async def load_model_gated(
-    request: LoadRequest,
-    fastapi_request: Request,
-    current_subject: str,
-):
+async def load_model_gated(request: LoadRequest, fastapi_request: Request, current_subject: str):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, never the route: the route's

@@ -3249,9 +3249,7 @@ def test_http_json_reads_a_padded_success(monkeypatch):
     monkeypatch.setattr(
         start, "urlopen_no_redirect", lambda request, timeout: _padded({"status": "loaded"})
     )
-    assert start._http_json("POST", f"{BASE}/api/inference/load", "sk-test") == {
-        "status": "loaded"
-    }
+    assert start._http_json("POST", f"{BASE}/api/inference/load", "sk-test") == {"status": "loaded"}
 
 
 def test_http_json_raises_a_deferred_error_as_an_http_error(monkeypatch):
