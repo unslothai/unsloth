@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   GPU_LAYERS_AUTO,
   resolveComparePlacement,
+  recoverDroppedDiffusionSplit,
   resolveStagedDiffusionClassification,
   shouldPinDiffusionPlacement,
 } from "../src/features/chat/lib/gpu-placement.ts";
@@ -187,4 +188,39 @@ test("the unknown verdict re-probes and reaches diffusion-safe placement", () =>
     resolveComparePlacement({}, shared, shouldPinDiffusionPlacement(true, handedOn, true)),
     { gpuMemoryMode: "auto", gpuLayers: GPU_LAYERS_AUTO },
   );
+});
+
+// -- a dropped split must survive a browser refresh --
+//
+// A shim without --ngl runs Auto and the backend keeps the ask in
+// diffusion_requested_ngl. In-memory state carries it across a reload, but a
+// refresh starts the store at Auto, so the response has to carry it back or the
+// next Apply sends manual/-1 and the post-upgrade retry has nothing to apply.
+
+test("an auto diffusion response recovers the standing ask", () => {
+  assert.equal(recoverDroppedDiffusionSplit(true, "auto", 20), 20);
+});
+
+test("a zero-layer ask is recovered, not treated as absent", () => {
+  assert.equal(recoverDroppedDiffusionSplit(true, "auto", 0), 0);
+});
+
+test("an applied manual split is authoritative, so nothing is recovered", () => {
+  // mode "manual" means the shim honoured the split: gpu_layers is the truth.
+  assert.equal(recoverDroppedDiffusionSplit(true, "manual", 20), null);
+});
+
+test("no standing ask means nothing to recover", () => {
+  assert.equal(recoverDroppedDiffusionSplit(true, "auto", null), null);
+  assert.equal(recoverDroppedDiffusionSplit(true, "auto", undefined), null);
+});
+
+test("a non-diffusion response never recovers a split", () => {
+  assert.equal(recoverDroppedDiffusionSplit(false, "auto", 20), null);
+  assert.equal(recoverDroppedDiffusionSplit(undefined, "auto", 20), null);
+});
+
+test("an older backend without the field leaves the response unchanged", () => {
+  // Absent field -> undefined -> nothing recovered, i.e. today's behaviour.
+  assert.equal(recoverDroppedDiffusionSplit(true, "auto", undefined), null);
 });

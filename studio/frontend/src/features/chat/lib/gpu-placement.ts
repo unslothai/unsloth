@@ -50,6 +50,28 @@ export function shouldPinDiffusionPlacement(
   return isDiffusion === true || diffusionUnknown;
 }
 
+/** The split an older shim DROPPED, recovered from a load/status response.
+ *
+ * A shim without `--ngl` cannot apply a manual split, so the runner reports Auto
+ * while the backend keeps the ask in `diffusion_requested_ngl`. In-memory state
+ * carries that across a reload, but not across a browser refresh, where the store
+ * starts at Auto and the response alone would look like a genuine Auto run. The
+ * ask has to be restored or the next Apply sends `manual/-1`, which the retry
+ * after an unsloth_zoo upgrade can never turn back into the original count.
+ *
+ * Returns null when there is nothing to recover: not diffusion, a split that was
+ * actually applied (mode "manual", so `gpu_layers` is authoritative), or no
+ * standing ask. Zero is a real ask (CPU-only) and is preserved.
+ */
+export function recoverDroppedDiffusionSplit(
+  isDiffusion: boolean | undefined,
+  mode: "auto" | "manual",
+  requestedNgl: number | null | undefined,
+): number | null {
+  if (isDiffusion !== true || mode === "manual") return null;
+  return requestedNgl ?? null;
+}
+
 /** Tri-state diffusion classification for a staged (pre-load) GGUF selection.
  *
  * `undefined` means "not known" and must NOT be collapsed to false by a caller

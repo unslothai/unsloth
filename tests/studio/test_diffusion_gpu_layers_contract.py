@@ -396,3 +396,51 @@ def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
     b2 = _loaded_diffusion(llama_cpp, recorded_layers = 20, requested_ngl = 20)
     b2.diffusion_split_supported = lambda: True
     assert _in_target_state(b2, mode = "manual", layers = 20) is True  # applied: rest
+
+
+# ── the dropped split must reach the client ──
+
+
+def test_response_models_expose_the_requested_split():
+    """A refresh has no in-memory split left, so the wire has to carry the ask."""
+    models_src = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(models_src)
+    for name in ("LoadResponse", "InferenceStatusResponse"):
+        cls = next(
+            n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name
+        )
+        fields = {
+            t.target.id for t in cls.body if isinstance(t, ast.AnnAssign)
+            and isinstance(t.target, ast.Name)
+        }
+        assert "diffusion_requested_ngl" in fields, f"{name} must report the ask"
+
+
+def test_every_diffusion_response_also_reports_the_requested_split():
+    """Wiring, not prose: a new response site that forgets the ask reddens here."""
+    route_src = ROUTE_PATH.read_text(encoding = "utf-8")
+    tree = ast.parse(route_src)
+    sites = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        kwargs = {kw.arg for kw in node.keywords}
+        # Only the responses describing a LOADED model; /validate reports on a
+        # model that has no runner yet, so it has no applied-vs-asked split.
+        if "is_diffusion" not in kwargs or "is_gguf" not in kwargs:
+            continue
+        if not any(
+            isinstance(kw.value, ast.Attribute)
+            and kw.value.attr == "is_diffusion"
+            for kw in node.keywords
+            if kw.arg == "is_diffusion"
+        ):
+            continue
+        sites += 1
+        assert "diffusion_requested_ngl" in kwargs, (
+            f"response at line {node.lineno} reports is_diffusion from the backend "
+            "but not diffusion_requested_ngl, so a dropped split cannot survive a refresh"
+        )
+    assert sites == 3, f"expected the 2 load sites and the status site, found {sites}"

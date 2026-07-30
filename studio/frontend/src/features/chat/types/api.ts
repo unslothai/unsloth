@@ -169,6 +169,10 @@ export interface LoadModelResponse {
   is_lora: boolean;
   is_gguf?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from
+   *  what it applied: a shim without --ngl drops the split and runs Auto, so
+   *  gpu_layers reports -1 while this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -232,6 +236,10 @@ export interface InferenceStatusResponse {
   is_vision: boolean;
   is_gguf?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from
+   *  what it applied: a shim without --ngl drops the split and runs Auto, so
+   *  gpu_layers reports -1 while this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;

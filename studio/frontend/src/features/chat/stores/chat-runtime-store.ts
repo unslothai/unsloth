@@ -10,7 +10,10 @@ import {
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
-import { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
+import {
+  GPU_LAYERS_AUTO,
+  recoverDroppedDiffusionSplit,
+} from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
@@ -678,6 +681,7 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
+  diffusion_requested_ngl?: number | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -722,6 +726,13 @@ export function loadedGpuMemoryFields(resp: {
   // once the shared system cache warms.
   const gpuIds =
     reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
+  // A shim without --ngl reports Auto while the backend still holds the ask, so
+  // recover it: in-memory state survives a reload but not a refresh.
+  const droppedSplit = recoverDroppedDiffusionSplit(
+    resp.is_diffusion,
+    mode,
+    resp.diffusion_requested_ngl,
+  );
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -745,10 +756,15 @@ export function loadedGpuMemoryFields(resp: {
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
           // Diffusion excepted: an "auto" diffusion response may be an older shim
-          // DROPPING a manual split (the ask lives in diffusion_requested_ngl).
-          // Resetting the slider would turn that ask into manual/-1, unapplyable
-          // even after the unsloth_zoo upgrade that adds --ngl.
-          ...(resp.is_diffusion ? {} : { gpuLayers: GPU_LAYERS_AUTO }),
+          // DROPPING a manual split. Restore the ask when the response carries it
+          // (a refresh has no in-memory value left to preserve), else keep what is
+          // standing. Resetting the slider would turn the ask into manual/-1,
+          // unapplyable even after the unsloth_zoo upgrade that adds --ngl.
+          ...(resp.is_diffusion
+            ? droppedSplit != null
+              ? { gpuLayers: droppedSplit }
+              : {}
+            : { gpuLayers: GPU_LAYERS_AUTO }),
           nCpuMoe: 0,
           splitRatio: null,
         };
@@ -757,7 +773,11 @@ export function loadedGpuMemoryFields(resp: {
     // standing manual preference must survive it. But "manual" means a split was
     // actually applied (#7574): adopt it, or a refresh hydrates back to "auto"
     // while the runner serves a manual split.
-    ...(resp.is_diffusion && mode !== "manual" ? {} : { gpuMemoryMode: mode }),
+    ...(resp.is_diffusion && mode !== "manual"
+      ? droppedSplit != null
+        ? { gpuMemoryMode: "manual" as const }
+        : {}
+      : { gpuMemoryMode: mode }),
     loadedGpuMemoryMode: mode,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.

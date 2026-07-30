@@ -466,6 +466,13 @@ class LoadResponse(BaseModel):
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
+    diffusion_requested_ngl: Optional[int] = Field(
+        None,
+        description = "GPU-layer count the diffusion runner was ASKED for, when that differs "
+        "from what it applied: an unsloth_zoo shim without --ngl drops the split and runs "
+        "Auto, so gpu_layers reports -1 while this reports the standing request. None for "
+        "non-diffusion models and whenever the ask and the applied split agree.",
+    )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
@@ -646,6 +653,13 @@ class InferenceStatusResponse(BaseModel):
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
     is_diffusion: bool = Field(
         False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
+    )
+    diffusion_requested_ngl: Optional[int] = Field(
+        None,
+        description = "GPU-layer count the diffusion runner was ASKED for, when that differs "
+        "from what it applied: an unsloth_zoo shim without --ngl drops the split and runs "
+        "Auto, so gpu_layers reports -1 while this reports the standing request. None for "
+        "non-diffusion models and whenever the ask and the applied split agree.",
     )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
     is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
