@@ -549,6 +549,35 @@ def _is_same_path(value: str, local_path: Path) -> bool:
         return False
 
 
+def recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for what a local checkpoint records on disk.
+
+    Mirrors the two disk reads below, so a caller can tell whether a load is
+    filesystem-only before paying a network probe: an adapter's
+    ``base_model_name_or_path``, else a full checkpoint's ``model_name``/``_name_or_path``
+    (a self-reference is not a base). ``needs_hub`` is True when only the
+    ``get_base_model_from_lora`` branch could answer, or the read failed.
+    """
+    root = Path(model_name)
+    try:
+        adapter_cfg = _safe_is_file(root / "adapter_config.json")
+        if adapter_cfg:
+            with open(root / "adapter_config.json", encoding = "utf-8-sig") as f:
+                base = json.load(f).get("base_model_name_or_path")
+            if base:
+                return base, False
+        if _safe_is_file(root / "config.json"):
+            with open(root / "config.json", encoding = "utf-8-sig") as f:
+                cfg = json.load(f)
+            for _key in ("model_name", "_name_or_path"):
+                base = cfg.get(_key)
+                if isinstance(base, str) and base and not _is_same_path(base, root):
+                    return base, False
+        return None, adapter_cfg
+    except Exception:
+        return None, True
+
+
 def _resolve_base_model(model_name: str) -> str:
     """If *model_name* points to a LoRA adapter, return its base model.
 

@@ -40,20 +40,20 @@ def _ensure_backend_on_path() -> None:
         sys.path.insert(0, _BACKEND_PATH)
 
 
-def _recorded_local_adapter_base(model_name) -> "str | None":
-    """A local adapter's recorded base, read from disk. None when there is no local
-    adapter_config.json to read; a REMOTE adapter is already remote by its own name."""
-    try:
-        import json as _json
+def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for the base this checkpoint records on disk.
 
-        cfg = Path(model_name) / "adapter_config.json"
-        if not cfg.is_file():
-            return None
-        return (
-            _json.loads(cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path") or None
-        )
+    Delegates to the resolver's own disk reads so the gate cannot drift from what
+    activation later resolves. Fail closed: an unavailable reader counts as needing the
+    Hub, since skipping a needed probe costs the retry backoff the probe exists to avoid.
+    """
+    try:
+        _ensure_backend_on_path()
+        from utils.transformers_version import recorded_local_base
+
+        return recorded_local_base(model_name)
     except Exception:
-        return None
+        return None, True
 
 
 def _hub_targets_are_local(*targets) -> bool:
@@ -827,12 +827,15 @@ def run_inference_process(
     # then walk back into the retry paths the parent already ruled out, in
     # _remote_lora_base and in tier activation below. Runs before any HF import, so env
     # alone is enough.
-    # Skip it entirely for a filesystem-only load: a local checkpoint, and a local
-    # adapter whose recorded base is local too, never reach the Hub, so probing would
-    # spend seconds before a load that has no Hub dependency.
+    # Skip it entirely for a filesystem-only load: a local checkpoint whose recorded base
+    # (an adapter's, or a full checkpoint's config.json one, both of which activation
+    # resolves and reads Hub metadata for) is local too never reaches the Hub, so probing
+    # would spend seconds before a load that has no Hub dependency.
     _probe_model = config["model_name"]
-    _probe_base = _recorded_local_adapter_base(_probe_model)
-    if "HF_HUB_OFFLINE" not in os.environ and not _hub_targets_are_local(_probe_model, _probe_base):
+    _probe_base, _probe_needs_hub = _recorded_local_base(_probe_model)
+    if "HF_HUB_OFFLINE" not in os.environ and (
+        _probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base)
+    ):
         try:
             _ensure_backend_on_path()
             from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled

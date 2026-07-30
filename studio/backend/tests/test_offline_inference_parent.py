@@ -351,14 +351,14 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
             json.dumps({"base_model_name_or_path": "org/base"}),
             encoding = "utf-8",
         )
-        base = w._recorded_local_adapter_base(str(tmp_path))
-        assert base == "org/base"
+        base, needs_hub = w._recorded_local_base(str(tmp_path))
+        assert (base, needs_hub) == ("org/base", False)
         assert w._hub_targets_are_local(str(tmp_path), base) is False
 
     def test_inference_gate_handles_a_missing_adapter_config(self, tmp_path):
         w = self._load("core/inference/worker.py", "inference_worker_gate_noadapter")
-        assert w._recorded_local_adapter_base(str(tmp_path)) is None
-        assert w._recorded_local_adapter_base("org/model") is None
+        assert w._recorded_local_base(str(tmp_path)) == (None, False)
+        assert w._recorded_local_base("org/model") == (None, False)
 
     def test_both_probes_sit_behind_the_gate(self):
         import pathlib
@@ -373,7 +373,7 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
         assert "not _hub_targets_are_local(" in inf
         assert "not _training_job_is_local(config)" in trn
         # The user's own flag still wins in both.
-        assert inf.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1
+        assert inf.count('if "HF_HUB_OFFLINE" not in os.environ and (') == 1
         assert trn.count('if "HF_HUB_OFFLINE" not in os.environ and not') == 1
 
 
@@ -420,7 +420,9 @@ class TestLocalLoraTrainingJobStillProbes:
         w = self._worker()
         assert w._training_job_is_local({"model_name": str(tmp_path)}) is True
 
-    def test_a_null_recorded_base_does_not_force_a_probe(self, tmp_path):
+    def test_a_null_recorded_base_still_probes(self, tmp_path):
+        """An explicit null reads the same as a missing key: no base on disk, so the
+        resolver falls through to get_base_model_from_lora, which is a Hub call."""
         import json
 
         w = self._worker()
@@ -428,7 +430,7 @@ class TestLocalLoraTrainingJobStillProbes:
             json.dumps({"base_model_name_or_path": None}),
             encoding = "utf-8",
         )
-        assert w._training_job_is_local({"model_name": str(tmp_path)}) is True
+        assert w._training_job_is_local({"model_name": str(tmp_path)}) is False
 
     def test_both_workers_agree(self, tmp_path):
         """The two gates must classify the same adapter the same way."""
@@ -448,9 +450,113 @@ class TestLocalLoraTrainingJobStillProbes:
         inf = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(inf)
 
-        base = inf._recorded_local_adapter_base(str(tmp_path))
+        base, needs_hub = inf._recorded_local_base(str(tmp_path))
+        assert needs_hub is False
         assert inf._hub_targets_are_local(str(tmp_path), base) is False
         assert self._worker()._training_job_is_local({"model_name": str(tmp_path)}) is False
+
+
+class TestFullCheckpointBaseKeepsTheProbe:
+    """A local full checkpoint's config.json can record a REMOTE base, which
+    _resolve_base_model returns and tier activation then reads Hub metadata for, so the
+    job is not filesystem-only even though every path on disk is local."""
+
+    def _module(self, relative_path, name):
+        import importlib.util
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location(name, backend_root / relative_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _checkpoint(self, tmp_path, config_json):
+        import json
+
+        (tmp_path / "config.json").write_text(json.dumps(config_json), encoding = "utf-8")
+        return str(tmp_path)
+
+    def test_remote_model_name_keeps_the_probe(self, tmp_path):
+        target = self._checkpoint(tmp_path, {"model_name": "org/base"})
+        inf = self._module("core/inference/worker.py", "inference_worker_ckpt_gate")
+        trn = self._module("core/training/worker.py", "training_worker_ckpt_gate")
+
+        base, needs_hub = inf._recorded_local_base(target)
+        assert (base, needs_hub) == ("org/base", False)
+        assert inf._hub_targets_are_local(target, base) is False
+        assert trn._training_job_is_local({"model_name": target}) is False
+
+    def test_remote_name_or_path_keeps_the_probe(self, tmp_path):
+        target = self._checkpoint(tmp_path, {"_name_or_path": "org/base"})
+        inf = self._module("core/inference/worker.py", "inference_worker_nop_gate")
+        assert inf._recorded_local_base(target) == ("org/base", False)
+
+    def test_a_self_reference_is_not_a_base(self, tmp_path):
+        """HF writes the checkpoint's own path into _name_or_path; that is not a base
+        and must not cost a probe."""
+        target = self._checkpoint(tmp_path, {"_name_or_path": str(tmp_path)})
+        inf = self._module("core/inference/worker.py", "inference_worker_self_gate")
+        trn = self._module("core/training/worker.py", "training_worker_self_gate")
+
+        assert inf._recorded_local_base(target) == (None, False)
+        assert trn._training_job_is_local({"model_name": target}) is True
+
+    def test_an_adapter_base_still_wins_over_config_json(self, tmp_path):
+        """Ordering matches the resolver: the adapter's base, not the config.json one."""
+        import json
+
+        target = self._checkpoint(tmp_path, {"model_name": "org/from-config"})
+        (tmp_path / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": "org/from-adapter"}),
+            encoding = "utf-8",
+        )
+        inf = self._module("core/inference/worker.py", "inference_worker_order_gate")
+        assert inf._recorded_local_base(target) == ("org/from-adapter", False)
+
+    def test_a_baseless_adapter_needs_the_hub(self, tmp_path):
+        """With no base on disk the resolver falls through to get_base_model_from_lora,
+        which is a Hub call, so the gate must fail closed."""
+        import json
+
+        (tmp_path / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
+        inf = self._module("core/inference/worker.py", "inference_worker_baseless_gate")
+        trn = self._module("core/training/worker.py", "training_worker_baseless_gate")
+
+        assert inf._recorded_local_base(str(tmp_path)) == (None, True)
+        assert trn._training_job_is_local({"model_name": str(tmp_path)}) is False
+
+    def test_the_gate_agrees_with_the_resolver(self, tmp_path):
+        """Anti-drift: this bug was the gate reading less than _resolve_base_model does.
+        For every on-disk shape the two must name the same base."""
+        import json
+        import sys
+
+        backend_root = str(__import__("pathlib").Path(__file__).resolve().parent.parent)
+        if backend_root not in sys.path:
+            sys.path.insert(0, backend_root)
+        from utils.transformers_version import _resolve_base_model, recorded_local_base
+
+        shapes = {
+            "adapter": ({"base_model_name_or_path": "org/a"}, None),
+            "config": (None, {"model_name": "org/c"}),
+            "name_or_path": (None, {"_name_or_path": "org/n"}),
+            "both": ({"base_model_name_or_path": "org/a"}, {"model_name": "org/c"}),
+            "bare": (None, None),
+        }
+        for name, (adapter, config) in shapes.items():
+            d = tmp_path / name
+            d.mkdir()
+            if adapter is not None:
+                (d / "adapter_config.json").write_text(json.dumps(adapter), encoding = "utf-8")
+            if config is not None:
+                (d / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+            base, needs_hub = recorded_local_base(str(d))
+            resolved = _resolve_base_model(str(d))
+            # The resolver returns the input unchanged when it finds no base.
+            assert needs_hub is False, name
+            assert (base or str(d)) == resolved, name
 
 
 class TestLoadRouteResolvesConfigOffTheLoop:

@@ -2343,30 +2343,29 @@ def _training_job_is_local(config) -> bool:
     try:
         if not (model and is_local_path(model)):
             return False
-        # A local adapter can name a remote base, which activation resolves and later
+        # A local checkpoint can name a remote base, which activation resolves and later
         # training and security code fetches. Readable from disk, so no network needed
         # to decide. Matches the inference worker's gate.
-        base = _recorded_local_adapter_base(model)
+        base, needs_hub = _recorded_local_base(model)
+        if needs_hub:
+            return False
         return not base or is_local_path(base)
     except Exception:
         return False
 
 
-def _recorded_local_adapter_base(model_name) -> "str | None":
-    """A local adapter's recorded base, read from disk. None when there is no local
-    adapter_config.json to read."""
-    try:
-        import json as _json
-        from pathlib import Path as _Path
+def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for the base this checkpoint records on disk.
 
-        cfg = _Path(model_name) / "adapter_config.json"
-        if not cfg.is_file():
-            return None
-        return (
-            _json.loads(cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path") or None
-        )
+    Delegates to the resolver's own disk reads so the gate cannot drift from what
+    activation later resolves. Fail closed on an unavailable reader.
+    """
+    try:
+        from utils.transformers_version import recorded_local_base
+
+        return recorded_local_base(model_name)
     except Exception:
-        return None
+        return None, True
 
 
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
