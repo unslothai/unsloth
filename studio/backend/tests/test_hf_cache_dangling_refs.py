@@ -839,9 +839,7 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
         pytest.param(b"\0" * 128, True, id = "a-projector-with-content"),
     ],
 )
-def test_an_empty_projector_is_not_vision_support(
-    tmp_path, monkeypatch, projector, has_vision
-):
+def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, projector, has_vision):
     """has_vision came off the filename alone, so an interrupted companion download advertised a
     projector llama.cpp cannot open. The row's own quant is whole, so no other signal reports it and
     an image-capable client would pick the model and fail."""

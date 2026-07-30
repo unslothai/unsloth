@@ -953,8 +953,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 # An unloadable family is never complete rather than vetoing the snapshot: it is not
                 # a family this row can load, so a whole unsharded one beside it still serves.
                 return all(
-                    indices != set(range(1, family[2] + 1))
-                    or family in payload.unloadable_families
+                    indices != set(range(1, family[2] + 1)) or family in payload.unloadable_families
                     for family, indices in families.items()
                 )
     # No family either way. Absence is not evidence here: a diffusion or .ckpt payload classifies
