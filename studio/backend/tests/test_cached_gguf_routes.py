@@ -158,6 +158,48 @@ def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatc
     assert "load_id" not in rows["Org/Here"]
 
 
+def test_list_cached_gguf_pins_a_snapshot_for_a_recovered_active_cache_repo(monkeypatch, tmp_path):
+    """Being in the active cache normally makes the repo id the load target, but not while
+    refs/main names a commit with no directory. The compat schema carries no partial flag, so an
+    offline client would follow the dangling ref and fail with a whole quant sitting beside it."""
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Recovered"
+    snapshot = repo_dir / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("c" * 40, encoding = "utf-8")
+
+    recovered = _repo(
+        "Org/Recovered",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M.gguf", 256)], snapshot_path = snapshot
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [recovered])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }
+    assert rows["Org/Recovered"]["load_id"] == str(snapshot)
+
+    # Control: the same repo with a resolving ref keeps the repo id.
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    rows = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }
+    assert "load_id" not in rows["Org/Recovered"]
+
+
 def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_path):
     """Pick the snapshot variant discovery reads: newest directory, not newest blob."""
     import os

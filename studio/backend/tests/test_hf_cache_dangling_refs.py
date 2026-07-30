@@ -1689,6 +1689,52 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
     assert rows[0]["capabilities"]["can_chat"] is not torn
 
 
+@pytest.mark.parametrize(
+    ("files", "torn"),
+    [
+        pytest.param(
+            {
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model-00001-of-00002.safetensors": b"\0" * 64,
+                "adapter_model-00002-of-00002.safetensors": b"\0" * 64,
+            },
+            True,
+            id = "a-numbered-adapter-set-with-every-file-present",
+        ),
+        pytest.param(
+            {
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model.safetensors": b"\0" * 256,
+            },
+            False,
+            id = "the-singular-name-peft-resolves",
+        ),
+        pytest.param(
+            {"adapter_config.json": b'{"peft_type":"LORA"}', "adapter_model.bin": b"\0" * 256},
+            False,
+            id = "the-singular-pickle-name",
+        ),
+        pytest.param(
+            {
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model.safetensors": b"\0" * 256,
+                "adapter_model-00001-of-00002.safetensors": b"\0" * 64,
+            },
+            False,
+            id = "a-whole-singular-adapter-beside-a-numbered-set",
+        ),
+    ],
+)
+def test_a_numbered_adapter_set_is_never_a_loadable_payload(tmp_path, monkeypatch, files, torn):
+    """peft's load_peft_weights resolves adapter_model.safetensors or adapter_model.bin and has no
+    shard path, so numbered adapter files are unloadable however complete the set looks. Exempting
+    them from the index requirement let a set nothing can open count as a whole family."""
+    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is torn
+    assert rows[0]["capabilities"]["can_chat"] is not torn
+
+
 def test_the_load_id_pins_the_whole_snapshot_when_the_default_ref_is_torn(tmp_path, monkeypatch):
     """A secondary ref dangles, so recovery fires while refs/main still resolves, but it lands on a
     torn revision. Classifying by filename puts that revision among the payload snapshots, so the
@@ -2679,17 +2725,22 @@ def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, mo
             },
             False,
         ),
-        # Adapters are exempt: peft loads adapter_model.safetensors directly.
+        # No index rescues a numbered adapter set: peft resolves only the singular name, so the
+        # whole family is unloadable rather than merely unindexed.
         (
             {
                 "adapter_config.json": b'{"peft_type":"LORA"}',
                 "adapter_model-00001-of-00002.safetensors": b"\0" * 64,
                 "adapter_model-00002-of-00002.safetensors": b"\0" * 64,
+                "adapter_model.safetensors.index.json": _shard_index(
+                    "adapter_model-00001-of-00002.safetensors",
+                    "adapter_model-00002-of-00002.safetensors",
+                ),
             },
-            False,
+            True,
         ),
     ],
-    ids = ["no-index", "empty-index", "with-index", "bin-index", "adapter-shards-exempt"],
+    ids = ["no-index", "empty-index", "with-index", "bin-index", "adapter-shards-never-load"],
 )
 def test_a_sharded_base_family_needs_its_index(files, partial, tmp_path, monkeypatch):
     """A complete shard set is not a loadable payload on its own."""

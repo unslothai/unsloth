@@ -556,6 +556,16 @@ def _default_ref_names_an_absent_snapshot(repo_cache_dir: Path) -> bool:
         return False
 
 
+def repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
+    """Whether loading *repo_cache_dir* by repo id lands on nothing.
+
+    Being in the active cache normally makes the id the right load target, but not while
+    ``refs/main`` names a commit with no directory: an offline load by id finds nothing there even
+    though a complete snapshot sits beside it, so those rows need a snapshot pinned.
+    """
+    return _default_ref_names_an_absent_snapshot(repo_cache_dir)
+
+
 def _repo_has_a_dangling_ref(repo_cache_dir: Path) -> bool:
     """Whether ANY ref under ``refs/`` names a commit with no snapshot dir.
 
@@ -770,8 +780,8 @@ class _SnapshotPayload(NamedTuple):
     whole: set
     # Required configs that exist but are empty, by format: evidence separate from whole weights.
     unreadable_config_formats: frozenset
-    # Base shard families with no usable <prefix><suffix>.index.json beside them.
-    base_families_without_an_index: frozenset
+    # Shard families no loader can read even with every numbered file present.
+    unloadable_families: frozenset
 
 
 def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
@@ -860,15 +870,18 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
     # from_pretrained reads the shard map from the index and never globs filenames, so shards
     # without one are invisible to it. Named for the family, so model-*.safetensors wants
-    # model.safetensors.index.json. Adapters are exempt; peft loads adapter_model.safetensors.
-    no_index = frozenset(
+    # model.safetensors.index.json.
+    unloadable = frozenset(
         family
         for family in groups["base"]
         if _index_cannot_serve_its_shards(
             snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json"
         )
     )
-    return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable), no_index)
+    # peft resolves the singular adapter_model.safetensors or adapter_model.bin and has no shard
+    # path at all, so a numbered adapter set is unloadable however complete it looks.
+    unloadable |= frozenset(groups["adapter"])
+    return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable), unloadable)
 
 
 def _index_cannot_serve_its_shards(index_path: Path) -> bool:
@@ -927,11 +940,11 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             # reads as checkpoint-like) stood in as the base payload of a row with no base weights.
             return kind != wanted
         if payload.groups[kind]:
-            # An index-less family is never complete rather than vetoing the snapshot: it is not a
+            # An unloadable family is never complete rather than vetoing the snapshot: it is not a
             # family this row can load, so a whole unsharded one beside it still serves.
             return all(
                 indices != set(range(1, family[2] + 1))
-                or family in payload.base_families_without_an_index
+                or family in payload.unloadable_families
                 for family, indices in payload.groups[kind].items()
             )
     # No family either way. Absence is not evidence here: a diffusion or .ckpt payload classifies

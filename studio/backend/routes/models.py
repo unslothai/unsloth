@@ -2954,6 +2954,12 @@ def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
     return impl(repo_info)
 
 
+def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
+    """See hub.utils.inventory_scan; True only in the dangling refs/main window."""
+    from hub.utils.inventory_scan import repo_id_will_not_resolve as impl
+    return impl(repo_cache_dir)
+
+
 def _cached_repo_file_name(file_obj) -> str:
     """Snapshot-relative name for a cached file: huggingface_hub records the bare ``file_name``,
     which cannot tell an ``MTP/`` drafter from a quant."""
@@ -3081,7 +3087,11 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     if repo_path is None or active_root is None:
         return None
     try:
-        if repo_path.parent.resolve(strict = False) == active_root:
+        # A recovered repo sits in the active cache but its refs/main names nothing on disk, so the
+        # id an offline compat client would load resolves to no snapshot. Those still need a pin.
+        if repo_path.parent.resolve(strict = False) == active_root and not _repo_id_will_not_resolve(
+            repo_path
+        ):
             return None
     except (OSError, RuntimeError, ValueError):
         pass
