@@ -127,7 +127,7 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "aui.thread().getState().isRunning" in submit
     assert "usePromptQueueUI.getState()" in submit
     assert "if (liveThreadIsRunning || livePromptQueueActive)" in submit
-    assert "startPromptQueue(" in submit
+    assert "startHydratedPromptQueue(" in submit
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
     assert "tryReservePreStreamRun" not in submit
@@ -139,6 +139,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "const createPromptQueueTarget = useCallback(",
         "const dismissWaitToast",
     )
+    assert "await useChatRuntimeStore.getState().hydratePersistedSettings()" in target
+    assert target.index(
+        "await useChatRuntimeStore.getState().hydratePersistedSettings()"
+    ) < target.index("snapshotQueuedChatRunSettings(chatStateAtQueueStart)")
+    assert "if (!promptQueueTargetMountedRef.current)" in target
     assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
     assert "registerQueuedChatRunSettings(" in target
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target

@@ -2065,9 +2065,13 @@ const Composer: FC<{
     setIndexingActive(active);
   }, []);
 
-  const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
+  const createPromptQueueTarget = useCallback(async (): Promise<PromptQueueTarget | null> => {
     const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
     const initialState = aui.threadListItem().getState();
+    await useChatRuntimeStore.getState().hydratePersistedSettings();
+    if (!promptQueueTargetMountedRef.current) {
+      return null;
+    }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
     const usesThreadDocumentsAtQueueStart =
@@ -2214,6 +2218,24 @@ const Composer: FC<{
     };
   }, [aui, referenceThreadId]);
 
+  const startHydratedPromptQueue = useCallback(
+    (items: string[], waitForCurrentRun = false) => {
+      void createPromptQueueTarget()
+        .then((target) => {
+          if (target) {
+            startPromptQueue(items, target, waitForCurrentRun);
+          }
+        })
+        .catch((error) => {
+          toast.error("Could not start prompt queue", {
+            description:
+              error instanceof Error ? error.message : "Please try again.",
+          });
+        });
+    },
+    [createPromptQueueTarget],
+  );
+
   const dismissWaitToast = useCallback(() => {
     if (waitToastRef.current !== null) {
       toast.dismiss(waitToastRef.current);
@@ -2358,11 +2380,7 @@ const Composer: FC<{
           aui.composer().setText("");
         });
         clearStoredDraft();
-        startPromptQueue(
-          [queuedPrompt],
-          createPromptQueueTarget(),
-          liveThreadIsRunning,
-        );
+        startHydratedPromptQueue([queuedPrompt], liveThreadIsRunning);
         return;
       }
 
@@ -2426,7 +2444,7 @@ const Composer: FC<{
       clearStoredDraft,
       closeOverlay,
       composerText,
-      createPromptQueueTarget,
+      startHydratedPromptQueue,
       disabled,
       disableQueue,
       hasAttachments,
@@ -2458,9 +2476,9 @@ const Composer: FC<{
       // Saved-prompt Run-list calls this directly, so honour disableQueue here
       // too: queuing from the project new-chat composer misbinds the thread.
       if (disableQueue) return;
-      startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
+      startHydratedPromptQueue(items, waitForCurrentRun);
     },
-    [aui, createPromptQueueTarget, threadIsRunning, disableQueue],
+    [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
@@ -2563,7 +2581,7 @@ const Composer: FC<{
                   aui.composer().setText("");
                 });
                 clearStoredDraft();
-                startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
+                startHydratedPromptQueue([queuedPrompt], true);
               }}
               // ComposerPrimitive.Send handles clicks itself rather than
               // submitting the form, so run the complete queue/capacity path.
