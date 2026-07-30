@@ -5574,7 +5574,9 @@ async def _load_model_impl(
             )
             needs_audio_projector_retry = False
             retry_extra_args = (
-                extra_llama_args if extra_llama_args is not None else llama_backend.extra_args
+                extra_llama_args
+                if extra_llama_args is not None
+                else getattr(llama_backend, "extra_args", None)
             )
             if (
                 gguf_runtime_matches

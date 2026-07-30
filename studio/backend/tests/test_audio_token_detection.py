@@ -100,7 +100,9 @@ def test_audio_projector_loads_retry_and_share_download_exclusion():
 
     backend_source = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
     guard_source = inspect.getsource(llama_cpp._with_gguf_load_marker)
-    route_source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+    route_source = (
+        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+    ).read_text(encoding = "utf-8")
 
     assert "has_audio_input = has_audio_input" in backend_source
     target_guard_source = inspect.getsource(llama_cpp.LlamaCppBackend._already_in_target_state)
@@ -117,8 +119,12 @@ def test_audio_projector_loads_retry_and_share_download_exclusion():
 
 def test_runtime_status_persists_chat_capability_without_revalidation():
     backend_root = Path(__file__).resolve().parent.parent
-    backend_source = (backend_root / "core" / "inference" / "inference.py").read_text()
-    route_source = (backend_root / "routes" / "inference.py").read_text()
+    backend_source = (backend_root / "core" / "inference" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    route_source = (backend_root / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert '"is_chat_capable": getattr(config, "is_chat_capable", True)' in backend_source
     assert 'is_chat_capable = model_info.get("is_chat_capable", True)' in route_source

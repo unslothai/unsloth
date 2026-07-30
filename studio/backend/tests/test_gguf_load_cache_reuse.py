@@ -983,6 +983,7 @@ class TestLoadHubDownloadExclusion:
             variant,
             *,
             require_mmproj,
+            mmproj_path = None,
             hf_token = None,
         ):
             captured["repo"] = repo

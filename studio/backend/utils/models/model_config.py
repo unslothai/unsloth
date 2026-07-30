@@ -672,7 +672,7 @@ def _raw_config_model_type(
                     cache_dir = active_hf_hub_cache(),
                 )
             )
-        value = json.loads(config_path.read_text()).get("model_type")
+        value = json.loads(config_path.read_text(encoding = "utf-8")).get("model_type")
         return value if isinstance(value, str) else None
     except Exception as exc:
         logger.debug("Could not read raw model_type for '%s': %s", model_name, exc)
@@ -2015,7 +2015,7 @@ def _local_gguf_config_source(gguf_file: str, *search_roots: Optional[str | Path
         metadata = candidate / "export_metadata.json"
         if metadata.is_file():
             try:
-                base = json.loads(metadata.read_text()).get("base_model")
+                base = json.loads(metadata.read_text(encoding = "utf-8")).get("base_model")
                 if isinstance(base, str) and base:
                     return base
             except Exception as exc:
