@@ -460,7 +460,7 @@ export const ko = {
       codingAgents: "코딩 에이전트",
       codingAgentsHint:
         "이 서버를 대상으로 코딩 에이전트를 실행합니다. 로드된 모델을 사용하며, 로컬 서버는 API 키를 자동으로 발급하고 원격 서버는 명령에 포함합니다.",
-      codingAgentsSwap: "claude를 codex, openclaw, opencode, hermes 또는 pi로 바꾸세요.",
+      codingAgentsSwap: "claude를 codex, openclaw, opencode 또는 hermes로 바꾸세요.",
       codingAgentDetected: "이 컴퓨터에 설치됨",
       codingAgentsDetectedHint: "이 컴퓨터에서 감지됨: {agents}.",
       relativeNever: "없음",

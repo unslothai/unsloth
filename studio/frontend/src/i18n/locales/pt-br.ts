@@ -562,7 +562,7 @@ export const ptBR = {
       codingAgents: "Agentes de código",
       codingAgentsHint:
         "Inicie um agente de código conectado a este servidor. Ele usa o modelo carregado; um servidor local gera uma chave de API automaticamente, um remoto a inclui no comando.",
-      codingAgentsSwap: "Troque claude por codex, openclaw, opencode, hermes ou pi.",
+      codingAgentsSwap: "Troque claude por codex, openclaw, opencode ou hermes.",
       codingAgentDetected: "Instalado nesta máquina",
       codingAgentsDetectedHint: "Detectado nesta máquina: {agents}.",
       relativeNever: "nunca",

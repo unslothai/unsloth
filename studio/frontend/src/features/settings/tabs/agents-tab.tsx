@@ -41,11 +41,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import {
-  ArrowUpRight01Icon,
-  Book03Icon,
-  Copy01Icon,
-} from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
@@ -66,7 +62,7 @@ const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
-const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
+const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
 
 function isLoopbackBase(base: string): boolean {
   try {
@@ -164,12 +160,6 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     docsUrl: "https://unsloth.ai/docs/integrations/opencode",
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
-  },
-  {
-    id: "pi",
-    name: "Pi Coding Agent",
-    docsUrl: DOCS_URL,
-    icon: "pi.svg",
   },
 ];
 
@@ -382,8 +372,8 @@ function AgentIcon({
 }) {
   if (logo) {
     return (
-      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
-        <ApiProviderLogo providerType={logo} className="size-7 rounded-md" />
+      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
+        <ApiProviderLogo providerType={logo} className="size-5 rounded" />
       </span>
     );
   }
@@ -393,13 +383,13 @@ function AgentIcon({
       ? `${import.meta.env.BASE_URL}agent-logos/${darkIcon}`
       : null;
     return (
-      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
+      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
         <img
           src={iconSrc}
           alt=""
           aria-hidden={true}
           className={cn(
-            "size-7 object-contain",
+            "size-5 object-contain",
             darkIconSrc && "dark:hidden",
             invertIconInDark && "dark:invert",
           )}
@@ -409,7 +399,7 @@ function AgentIcon({
             src={darkIconSrc}
             alt=""
             aria-hidden={true}
-            className="hidden size-7 object-contain dark:block"
+            className="hidden size-5 object-contain dark:block"
           />
         ) : null}
       </span>
@@ -419,7 +409,7 @@ function AgentIcon({
     <span
       aria-hidden={true}
       style={{ backgroundColor: color }}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md font-heading text-ui-11 font-semibold text-white"
+      className="flex size-5 shrink-0 items-center justify-center rounded font-heading text-ui-10 font-semibold text-white"
     >
       {mark}
     </span>
@@ -473,13 +463,59 @@ const PASSTHROUGH_EXAMPLES = [
 
 const DRY_RUN_FLAGS = "--no-launch";
 
+/** Code box with the copy control inside it, top-right. Presentational: the
+ *  copy state stays with the caller so existing resets still apply. */
+function CopyableCode({
+  value,
+  copyLabel,
+  copied,
+  onCopy,
+  breakAll = true,
+}: {
+  value: string;
+  copyLabel: string;
+  copied: boolean;
+  onCopy: () => void;
+  breakAll?: boolean;
+}) {
+  const t = useT();
+
+  return (
+    <div className="relative min-w-0">
+      <code
+        className={cn(
+          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-white/[0.05]",
+          breakAll ? "break-all" : "break-words",
+        )}
+      >
+        {value}
+      </code>
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={copyLabel}
+        className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <HugeiconsIcon
+          icon={copied ? Tick02Icon : Copy01Icon}
+          className={cn("size-3.5", copied && "text-control-accent")}
+          strokeWidth={2}
+        />
+      </button>
+      <output className="sr-only" aria-live="polite">
+        {copied ? t("settings.agents.copied") : ""}
+      </output>
+    </div>
+  );
+}
+
 function CommandBlock({ command }: { command: string }) {
   const t = useT();
   const { copied, copy } = useCopyButton(command);
 
   return (
-    <div className="group relative">
-      <pre className="hover-scrollbar overflow-x-auto rounded-lg border border-border bg-muted/40 py-3 pl-3.5 pr-11 text-xs leading-relaxed text-foreground dark:bg-white/[0.04]">
+    <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-white/[0.04]">
+      <pre className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
         <code className="font-mono whitespace-pre">{command}</code>
       </pre>
       <button
@@ -535,7 +571,7 @@ function SubagentSection({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-muted/10 p-3">
+    <div className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-col gap-1">
         <span
           data-settings-label={t("settings.agents.subagent.title")}
@@ -548,60 +584,29 @@ function SubagentSection({
         </p>
       </div>
 
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-ui-11 font-medium text-foreground">
-            {t("settings.agents.subagent.setupCommand")}
-          </span>
-          <button
-            type="button"
-            onClick={commandCopy.copy}
-            aria-label={t("settings.agents.subagent.copySetupCommand")}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <HugeiconsIcon
-              icon={commandCopy.copied ? Tick02Icon : Copy01Icon}
-              className={cn(
-                "size-3.5",
-                commandCopy.copied && "text-control-accent",
-              )}
-            />
-            {commandCopy.copied
-              ? t("settings.agents.copied")
-              : t("settings.agents.copy")}
-          </button>
-        </div>
-        <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
-          {command}
-        </code>
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className="text-ui-11 font-medium text-foreground">
+          {t("settings.agents.subagent.setupCommand")}
+        </span>
+        <CopyableCode
+          value={command}
+          copyLabel={t("settings.agents.subagent.copySetupCommand")}
+          copied={commandCopy.copied}
+          onCopy={commandCopy.copy}
+        />
       </div>
 
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-ui-11 font-medium text-foreground">
-            {t("settings.agents.subagent.usagePrompt", { agent: agent.name })}
-          </span>
-          <button
-            type="button"
-            onClick={promptCopy.copy}
-            aria-label={t("settings.agents.subagent.copyUsagePrompt")}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <HugeiconsIcon
-              icon={promptCopy.copied ? Tick02Icon : Copy01Icon}
-              className={cn(
-                "size-3.5",
-                promptCopy.copied && "text-control-accent",
-              )}
-            />
-            {promptCopy.copied
-              ? t("settings.agents.copied")
-              : t("settings.agents.copy")}
-          </button>
-        </div>
-        <code className="block min-w-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
-          {prompt}
-        </code>
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className="text-ui-11 font-medium text-foreground">
+          {t("settings.agents.subagent.usagePrompt", { agent: agent.name })}
+        </span>
+        <CopyableCode
+          value={prompt}
+          copyLabel={t("settings.agents.subagent.copyUsagePrompt")}
+          copied={promptCopy.copied}
+          onCopy={promptCopy.copy}
+          breakAll={false}
+        />
       </div>
     </div>
   );
@@ -665,7 +670,6 @@ export function AgentsTab() {
   const [modelSearch, setModelSearch] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
-  const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [selectedVariant, setSelectedVariant] = useState<string | null>(
     EXAMPLE_MODEL_VARIANT,
   );
@@ -986,7 +990,6 @@ export function AgentsTab() {
           return;
         }
         setVariants([]);
-        setDefaultVariant(null);
         setSelectedVariant(standaloneFile ? null : preferredVariant);
         setVariantsFailed(false);
         setVariantsLoading(false);
@@ -999,7 +1002,6 @@ export function AgentsTab() {
     // A programmatic model change reaches here too, so clear the previous model's
     // quants up front rather than leaving them selectable until this resolves.
     setVariants([]);
-    setDefaultVariant(null);
     setVariantsLoading(true);
     // Offer the quants from the same place the command loads from, not remote-only ones.
     listGgufVariants(selectedModel, hfToken || undefined, {
@@ -1023,7 +1025,6 @@ export function AgentsTab() {
           ).values(),
         );
         setVariants(uniqueVariants);
-        setDefaultVariant(info.default_variant);
         const available = new Set(
           uniqueVariants.map((variant) => variant.quant),
         );
@@ -1045,7 +1046,6 @@ export function AgentsTab() {
         }
         setVariantsFailed(true);
         setVariants([]);
-        setDefaultVariant(null);
         setSelectedVariant(preferredVariant);
         if (preferredVariant) {
           setVariants([
@@ -1073,7 +1073,7 @@ export function AgentsTab() {
   // picker only ever offers GGUF models.
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-6">
+    <div className="flex min-w-0 max-w-full flex-col gap-8">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1
@@ -1094,249 +1094,265 @@ export function AgentsTab() {
         data-settings-label={t("settings.agents.intro")}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground dark:bg-white/[0.08]">
+        {/* The chip is the docs entry point, so no separate link is needed.
+            No aria-label: it would replace the visible "unsloth start" as the
+            accessible name, leaving voice control unable to target it. */}
+        <a
+          href={DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={t("settings.agents.readDocs")}
+          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.08]"
+        >
           unsloth start
-        </code>{" "}
+        </a>{" "}
         {t("settings.agents.intro")}
       </p>
 
-      <a
-        href={DOCS_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex w-fit items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-      >
-        <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
-        {t("settings.agents.readDocs")}
-        <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-      </a>
-
       <section
         aria-label={t("settings.agents.commandBuilder")}
-        className="flex w-full flex-col gap-4"
+        className="flex w-full flex-col gap-6"
       >
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-3">
-            <span
-              data-settings-label={t("settings.agents.agent")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.agent")}
-            </span>
-            <a
-              href={selectedAgentDetails.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={t("settings.agents.agentDocs", {
-                agent: selectedAgentDetails.name,
-              })}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {t("settings.agents.docs")}
-              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-            </a>
-          </div>
-          <Select
-            value={selectedAgent}
-            onValueChange={(agent) => {
-              agentSelectionChanged.current = true;
-              setSelectedAgent(agent);
-              resetCopied();
-            }}
-          >
-            <SelectTrigger
-              aria-label={t("settings.agents.agent")}
-              className="w-full rounded-lg"
-            >
-              <SelectValue>
-                <span className="flex min-w-0 items-center gap-2">
-                  <AgentIcon
-                    logo={selectedAgentDetails.logo}
-                    icon={selectedAgentDetails.icon}
-                    darkIcon={selectedAgentDetails.darkIcon}
-                    invertIconInDark={selectedAgentDetails.invertIconInDark}
-                    color={selectedAgentDetails.color}
-                    mark={selectedAgentDetails.mark}
-                  />
-                  <span className="truncate">{selectedAgentDetails.name}</span>
+        {/* Keyed to this pane, not the viewport. The dialog leaves the tab
+            about 440px at a 768px window, where three columns crush the agent
+            and model controls; 34rem is the point all three stay usable. */}
+        <div className="@container">
+          <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(9rem,0.5fr)]">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              {/* Fixed height on every column header, so the padded docs link
+                  here cannot push this control below the other two. */}
+              <div className="flex h-5 items-center justify-between gap-3">
+                <span
+                  data-settings-label={t("settings.agents.agent")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.agent")}
                 </span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent align="start">
-              {agents.map((agentId) => {
-                const agent = detailsFor(agentId);
-                return (
-                  <SelectItem key={agent.id} value={agent.id}>
+                <a
+                  href={selectedAgentDetails.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t("settings.agents.agentDocs", {
+                    agent: selectedAgentDetails.name,
+                  })}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {t("settings.agents.docs")}
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+                </a>
+              </div>
+              <Select
+                value={selectedAgent}
+                onValueChange={(agent) => {
+                  agentSelectionChanged.current = true;
+                  setSelectedAgent(agent);
+                  resetCopied();
+                }}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.agents.agent")}
+                  className="w-full rounded-lg"
+                >
+                  <SelectValue>
                     <span className="flex min-w-0 items-center gap-2">
                       <AgentIcon
-                        logo={agent.logo}
-                        icon={agent.icon}
-                        darkIcon={agent.darkIcon}
-                        invertIconInDark={agent.invertIconInDark}
-                        color={agent.color}
-                        mark={agent.mark}
+                        logo={selectedAgentDetails.logo}
+                        icon={selectedAgentDetails.icon}
+                        darkIcon={selectedAgentDetails.darkIcon}
+                        invertIconInDark={selectedAgentDetails.invertIconInDark}
+                        color={selectedAgentDetails.color}
+                        mark={selectedAgentDetails.mark}
                       />
-                      <span className="truncate">{agent.name}</span>
-                      {localDetection &&
-                      loaded &&
-                      detectedAgents.has(agent.id) ? (
-                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
-                          {t("settings.agents.quickstart.installed")}
-                        </span>
-                      ) : null}
+                      <span className="truncate">
+                        {selectedAgentDetails.name}
+                      </span>
                     </span>
-                  </SelectItem>
-                );
-              })}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(10rem,0.4fr)] items-start gap-3 max-md:grid-cols-1">
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <span
-              data-settings-label={t("settings.agents.model")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.model")}
-            </span>
-            <Popover
-              open={modelPickerOpen}
-              onOpenChange={(open) => {
-                setModelPickerOpen(open);
-                if (!open) {
-                  setModelSearch("");
-                }
-              }}
-            >
-              <PopoverTrigger asChild={true}>
-                <button
-                  type="button"
-                  aria-label={t("settings.agents.model")}
-                  aria-expanded={modelPickerOpen}
-                  title={selectedModel}
-                  className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
-                >
-                  <span className="min-w-0 truncate font-mono text-xs">
-                    {labelFor(selectedModel)}
-                  </span>
-                  <HugeiconsIcon
-                    icon={ChevronDownStandardIcon}
-                    strokeWidth={2}
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                sideOffset={4}
-                className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
-              >
-                <Command
-                  shouldFilter={false}
-                  className="rounded-none bg-transparent p-0"
-                >
-                  <CommandInput
-                    value={modelSearch}
-                    onValueChange={setModelSearch}
-                    aria-label={t("settings.agents.searchModels")}
-                    placeholder={t("settings.agents.searchModels")}
-                    className="font-mono text-xs"
-                  />
-                  <CommandList>
-                    <CommandEmpty>{t("settings.agents.noModels")}</CommandEmpty>
-                    {visibleModels.map((model) => (
-                      <CommandItem
-                        key={model}
-                        value={model}
-                        data-checked={model === selectedModel}
-                        onSelect={() => {
-                          modelSelectionChanged.current = true;
-                          setSelectedModel(model);
-                          setSelectedVariant(knownVariants[model] ?? null);
-                          setVariants([]);
-                          setDefaultVariant(null);
-                          setVariantsFailed(false);
-                          setVariantsLoading(isHuggingFaceRepo(model));
-                          setModelSearch("");
-                          setModelPickerOpen(false);
-                          resetCopied();
-                        }}
-                        className="cursor-pointer font-mono text-xs"
-                      >
-                        <span className="min-w-0 truncate" title={model}>
-                          {labelFor(model)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {agents.map((agentId) => {
+                    const agent = detailsFor(agentId);
+                    return (
+                      <SelectItem key={agent.id} value={agent.id}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <AgentIcon
+                            logo={agent.logo}
+                            icon={agent.icon}
+                            darkIcon={agent.darkIcon}
+                            invertIconInDark={agent.invertIconInDark}
+                            color={agent.color}
+                            mark={agent.mark}
+                          />
+                          <span className="truncate">{agent.name}</span>
+                          {localDetection &&
+                          loaded &&
+                          detectedAgents.has(agent.id) ? (
+                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                              {t("settings.agents.quickstart.installed")}
+                            </span>
+                          ) : null}
                         </span>
-                      </CommandItem>
-                    ))}
-                  </CommandList>
-                  {matchingModels.length > visibleModels.length ? (
-                    <p className="border-t border-border/60 px-3 py-2 text-ui-11 text-muted-foreground">
-                      {t("settings.agents.showingModels", {
-                        shown: visibleModels.length,
-                        total: matchingModels.length,
-                      })}
-                    </p>
-                  ) : null}
-                </Command>
-              </PopoverContent>
-            </Popover>
-          </div>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
 
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <span
-              data-settings-label={t("settings.agents.quantization")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.quantization")}
-            </span>
-            <Select
-              value={selectedVariant ?? undefined}
-              onValueChange={(variant) => {
-                chosenVariant.current = { model: selectedModel, variant };
-                setSelectedVariant(variant);
-                resetCopied();
-              }}
-              disabled={variantsLoading || variants.length === 0}
-            >
-              <SelectTrigger
-                aria-label={t("settings.agents.quantization")}
-                className="w-full rounded-lg font-mono text-xs"
-              >
-                <SelectValue
-                  placeholder={
-                    variantsLoading
-                      ? t("settings.agents.loadingQuantizations")
-                      : t("settings.agents.noQuantizations")
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <div className="flex h-5 items-center">
+                <span
+                  data-settings-label={t("settings.agents.model")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.model")}
+                </span>
+              </div>
+              <Popover
+                open={modelPickerOpen}
+                onOpenChange={(open) => {
+                  setModelPickerOpen(open);
+                  if (!open) {
+                    setModelSearch("");
                   }
+                }}
+              >
+                <PopoverTrigger asChild={true}>
+                  <button
+                    type="button"
+                    aria-label={t("settings.agents.model")}
+                    aria-expanded={modelPickerOpen}
+                    title={selectedModel}
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+                  >
+                    <span className="min-w-0 truncate font-mono text-xs">
+                      {labelFor(selectedModel)}
+                    </span>
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      strokeWidth={2}
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  sideOffset={4}
+                  className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
                 >
-                  {selectedVariant}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="start">
-                {variants.map((variant) => {
-                  const metadata = [
-                    variant.quant === defaultVariant
-                      ? t("settings.agents.recommended")
-                      : null,
-                    variant.downloaded ? t("settings.agents.downloaded") : null,
-                    formatBytes(
+                  <Command
+                    shouldFilter={false}
+                    className="rounded-none bg-transparent p-0"
+                  >
+                    <CommandInput
+                      value={modelSearch}
+                      onValueChange={setModelSearch}
+                      aria-label={t("settings.agents.searchModels")}
+                      placeholder={t("settings.agents.searchModels")}
+                      className="font-mono text-xs"
+                    />
+                    <CommandList>
+                      <CommandEmpty>
+                        {t("settings.agents.noModels")}
+                      </CommandEmpty>
+                      {visibleModels.map((model) => (
+                        <CommandItem
+                          key={model}
+                          value={model}
+                          data-checked={model === selectedModel}
+                          onSelect={() => {
+                            modelSelectionChanged.current = true;
+                            setSelectedModel(model);
+                            setSelectedVariant(knownVariants[model] ?? null);
+                            setVariants([]);
+                            setVariantsFailed(false);
+                            setVariantsLoading(isHuggingFaceRepo(model));
+                            setModelSearch("");
+                            setModelPickerOpen(false);
+                            resetCopied();
+                          }}
+                          className="cursor-pointer font-mono text-xs"
+                        >
+                          <span className="min-w-0 truncate" title={model}>
+                            {labelFor(model)}
+                          </span>
+                        </CommandItem>
+                      ))}
+                    </CommandList>
+                    {matchingModels.length > visibleModels.length ? (
+                      <p className="border-t border-border/60 px-3 py-2 text-ui-11 text-muted-foreground">
+                        {t("settings.agents.showingModels", {
+                          shown: visibleModels.length,
+                          total: matchingModels.length,
+                        })}
+                      </p>
+                    ) : null}
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <div className="flex h-5 items-center">
+                <span
+                  data-settings-label={t("settings.agents.quantization")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.quantization")}
+                </span>
+              </div>
+              <Select
+                value={selectedVariant ?? undefined}
+                onValueChange={(variant) => {
+                  chosenVariant.current = { model: selectedModel, variant };
+                  setSelectedVariant(variant);
+                  resetCopied();
+                }}
+                disabled={variantsLoading || variants.length === 0}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.agents.quantization")}
+                  className="w-full rounded-lg font-mono text-xs"
+                >
+                  <SelectValue
+                    placeholder={
+                      variantsLoading
+                        ? t("settings.agents.loadingQuantizations")
+                        : t("settings.agents.noQuantizations")
+                    }
+                  >
+                    {selectedVariant}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start" className="min-w-[16rem]">
+                  {variants.map((variant) => {
+                    // Size only: the recommended/downloaded tags wrapped every
+                    // row onto two lines and made the list hard to scan.
+                    const size = formatBytes(
                       variant.download_size_bytes ?? variant.size_bytes,
-                    ),
-                  ].filter(Boolean);
-                  return (
-                    <SelectItem key={variant.quant} value={variant.quant}>
-                      <span className="font-mono text-xs">{variant.quant}</span>
-                      {metadata.length > 0 ? (
-                        <span className="text-ui-10 text-muted-foreground">
-                          {metadata.join(" · ")}
+                    );
+                    return (
+                      <SelectItem
+                        key={variant.quant}
+                        value={variant.quant}
+                        // Stretch the item text so the size can sit flush right,
+                        // giving the list a clean two-column read.
+                        className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
+                      >
+                        <span className="font-mono text-xs whitespace-nowrap">
+                          {variant.quant}
                         </span>
-                      ) : null}
-                    </SelectItem>
-                  );
-                })}
-              </SelectContent>
-            </Select>
+                        {size ? (
+                          <span className="text-ui-10 whitespace-nowrap text-muted-foreground">
+                            {size}
+                          </span>
+                        ) : null}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 
@@ -1346,27 +1362,16 @@ export function AgentsTab() {
           </p>
         ) : null}
 
-        <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.generatedCommand")}
-            </span>
-            <button
-              type="button"
-              onClick={handleCopy}
-              aria-label={t("settings.agents.copyGeneratedCommand")}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              <HugeiconsIcon
-                icon={copied ? Tick02Icon : Copy01Icon}
-                className={cn("size-3.5", copied && "text-control-accent")}
-              />
-              {copied ? t("settings.agents.copied") : t("settings.agents.copy")}
-            </button>
-          </div>
-          <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
-            {command}
-          </code>
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.agents.generatedCommand")}
+          </span>
+          <CopyableCode
+            value={command}
+            copyLabel={t("settings.agents.copyGeneratedCommand")}
+            copied={copied}
+            onCopy={handleCopy}
+          />
         </div>
 
         <SubagentSection
@@ -1406,7 +1411,7 @@ export function AgentsTab() {
         title={t("settings.agents.remote.title")}
         description={t("settings.agents.remote.description")}
       >
-        <div className="pt-2">
+        <div className="pt-3">
           <CommandBlock command={remoteCommand} />
         </div>
       </SettingsSection>
@@ -1415,7 +1420,7 @@ export function AgentsTab() {
         title={t("settings.agents.passthrough.title")}
         description={t("settings.agents.passthrough.description")}
       >
-        <div className="flex flex-col gap-2 pt-2">
+        <div className="flex flex-col gap-3 pt-3">
           {PASSTHROUGH_EXAMPLES.map(({ agent, flags }) => (
             <CommandBlock key={flags} command={example(agent, flags)} />
           ))}
@@ -1426,7 +1431,7 @@ export function AgentsTab() {
         title={t("settings.agents.dryRun.title")}
         description={t("settings.agents.dryRun.description")}
       >
-        <div className="pt-2">
+        <div className="pt-3">
           <CommandBlock command={example("claude", DRY_RUN_FLAGS)} />
         </div>
       </SettingsSection>

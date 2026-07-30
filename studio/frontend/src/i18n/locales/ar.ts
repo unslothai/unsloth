@@ -461,7 +461,7 @@ export const ar = {
       codingAgents: "وكلاء البرمجة",
       codingAgentsHint:
         "شغّل وكيل برمجة مقابل هذا الخادم. يستخدم النموذج المُحمَّل؛ الخادم المحلي يُنشئ مفتاح API تلقائيًا، والخادم البعيد يُضمّنه في الأمر.",
-      codingAgentsSwap: "استبدل claude بـ codex أو openclaw أو opencode أو hermes أو pi.",
+      codingAgentsSwap: "استبدل claude بـ codex أو openclaw أو opencode أو hermes.",
       codingAgentDetected: "مثبّت على هذا الجهاز",
       codingAgentsDetectedHint: "تم اكتشافه على هذا الجهاز: {agents}.",
       relativeNever: "أبدًا",
