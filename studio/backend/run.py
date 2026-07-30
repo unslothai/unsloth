@@ -2058,7 +2058,6 @@ def run_server(
         # If the desktop app dies without running its cleanup (crash, force
         # quit, killed dev session), exit instead of orphaning on the port.
         from utils.parent_watchdog import start_parent_watchdog
-
         start_parent_watchdog(_trigger_shutdown)
 
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often

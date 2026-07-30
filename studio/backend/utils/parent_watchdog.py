@@ -60,8 +60,7 @@ def _watch_windows(parent_pid, on_parent_exit, stop, poll_seconds) -> None:
 # callback fires immediately: reparented to init means the app died before
 # the watch could arm, e.g. during a slow backend startup).
 def start_parent_watchdog(
-    on_parent_exit: Callable[[], None],
-    poll_seconds: float = _DEFAULT_POLL_SECONDS,
+    on_parent_exit: Callable[[], None], poll_seconds: float = _DEFAULT_POLL_SECONDS
 ) -> Optional[threading.Event]:
     parent_pid = os.getppid()
     if parent_pid <= 1:
