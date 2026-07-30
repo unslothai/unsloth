@@ -482,6 +482,7 @@ def _serialized_override_write(func):
     functools.wraps carries __wrapped__, which inspect.signature follows, so FastAPI still
     sees the endpoint's own parameters and dependencies.
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         with _override_write_lock:
