@@ -262,7 +262,7 @@ class TestInferenceWorkerProbesForItself:
             encoding = "utf-8",
         )
         start = src.index("# Offline auto-detect")
-        return src[start:start + 1800]
+        return src[start : start + 1800]
 
     def test_the_probe_exists_and_runs_before_activation(self):
         import pathlib
