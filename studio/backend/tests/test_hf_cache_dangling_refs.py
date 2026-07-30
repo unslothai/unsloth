@@ -341,6 +341,8 @@ def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
 # --- the load id must name a snapshot that holds the advertised payload ------
 
 OLDER = "d" * 40
+
+
 # from_pretrained finds shards only through this map, never by filename, so a whole set without one
 # is not a loadable payload. It opens every name the map lists, so the names have to be real.
 def _shard_index(*shards: str) -> bytes:
@@ -349,9 +351,7 @@ def _shard_index(*shards: str) -> bytes:
     ).encode()
 
 
-_SHARD_INDEX = _shard_index(
-    "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"
-)
+_SHARD_INDEX = _shard_index("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors")
 _BIN_SHARD_INDEX = _shard_index(
     "pytorch_model-00001-of-00002.bin", "pytorch_model-00002-of-00002.bin"
 )
@@ -1675,9 +1675,7 @@ _WHOLE_SHARDS = {
         ),
     ],
 )
-def test_a_shard_index_has_to_resolve_before_the_family_counts(
-    tmp_path, monkeypatch, index, torn
-):
+def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeypatch, index, torn):
     """Present and non-empty is not enough: from_pretrained parses the index and opens every name
     in its weight_map, so one truncated mid-write or naming a shard the attempt never wrote leaves
     the numbered files reading as a whole family that nothing can load."""
