@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Unsloth Studio uninstaller (macOS / Linux / WSL). Run --help for removal
-# details and options.
-# Custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME at install time are
-# read back from studio.conf.
+# Unsloth Studio uninstaller (macOS / Linux / WSL). Run --help for details.
+# Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from studio.conf.
 #
 # Usage: curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh
 
