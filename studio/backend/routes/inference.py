@@ -6298,7 +6298,8 @@ def _any_remote(targets) -> bool:
     guarding a local read costs one memoised verdict, missing a remote one costs the
     retry backoff this exists to avoid."""
     from utils.paths import is_local_path
-    for target in ((targets,) if isinstance(targets, str) else targets or ()):
+
+    for target in (targets,) if isinstance(targets, str) else targets or ():
         try:
             if not (isinstance(target, str) and is_local_path(target)):
                 return True
@@ -6322,6 +6323,7 @@ def _offline_guarded(targets, fn, /, *args, **kwargs):
     from contextlib import nullcontext
 
     from core.inference.llama_cpp import _hf_offline_if_unreachable
+
     ctx = _hf_offline_if_unreachable() if _any_remote(targets) else nullcontext()
     with ctx:
         return fn(*args, **kwargs)

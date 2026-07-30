@@ -2786,14 +2786,14 @@ class TestGuardIsKeyedOnWhatIsRead:
         src = (backend_root / "routes" / "inference.py").read_text()
         tree = ast.parse(src)
         fn = next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == "_any_remote"
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_any_remote"
         )
         ns: dict = {}
         # is_local_path is imported inside the body; give it a stub module to import from.
         exec(compile(ast.Module([fn], []), "<any_remote>", "exec"), ns)
         import sys
         import types
+
         stub = types.ModuleType("utils.paths")
         stub.is_local_path = lambda p: p.startswith("/local")
         saved = sys.modules.get("utils.paths")
@@ -2805,7 +2805,7 @@ class TestGuardIsKeyedOnWhatIsRead:
             assert any_remote(("/local/adapter", "org/base")) is True
             assert any_remote(("/local/a", "/local/b")) is False
             assert any_remote(None) is False
-            assert any_remote((None,)) is True          # unknown counts as remote
+            assert any_remote((None,)) is True  # unknown counts as remote
             assert any_remote(()) is False
         finally:
             if saved is None:
@@ -2850,10 +2850,11 @@ class TestTransformersOfflineDoesNotSilenceDatasets:
 
     def _worker_block(self):
         import pathlib
+
         backend_root = pathlib.Path(__file__).resolve().parent.parent
         src = (backend_root / "core" / "training" / "worker.py").read_text()
         start = src.index("# Offline auto-detect:")
-        return src[start:start + 2200]
+        return src[start : start + 2200]
 
     def test_datasets_offline_is_gated_on_the_network_verdict(self):
         block = self._worker_block()
