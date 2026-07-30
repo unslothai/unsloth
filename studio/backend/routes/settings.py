@@ -505,9 +505,7 @@ def update_openai_auto_switch_override(
                     # its flags would go dark with no page able to show or restore them.
                     legacy_id = _legacy_standalone_gguf_key(payload.model_id)
                     if legacy_id:
-                        requested_extra_args = get_model_override(legacy_id).get(
-                            "llama_extra_args"
-                        )
+                        requested_extra_args = get_model_override(legacy_id).get("llama_extra_args")
                 if requested_extra_args is None:
                     # Same for the other spelling of a cached repo, which this save retires
                     # below: its flags have nowhere else to live, and the page cannot show them.

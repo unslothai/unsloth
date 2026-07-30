@@ -469,7 +469,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # the two paths cannot drift over which flag belongs to which group -- the allow-list
         # this module stays out of is validate_extra_args, which remains the caller's job.
         from core.inference.llama_server_args import strip_shadowing_flags
-
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],
             # Only the groups this override actually supplies, as the route gates on its
