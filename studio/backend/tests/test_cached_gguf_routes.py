@@ -545,9 +545,9 @@ def test_vision_is_read_from_the_snapshot_the_row_pins(monkeypatch, tmp_path):
     def _row():
         return {
             c["repo_id"]: c
-            for c in asyncio.run(
-                models_route.list_cached_gguf(current_subject = "test-user")
-            )["cached"]
+            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+                "cached"
+            ]
         }["Org/Vision"]
 
     row = _row()
