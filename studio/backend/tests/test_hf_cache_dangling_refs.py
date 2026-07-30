@@ -2137,5 +2137,4 @@ def test_the_two_snapshot_orderings_agree_on_every_permutation(tmp_path):
 
 def _iter_hf_cache_snapshots_names(cache: Path) -> list[str]:
     from utils.models.model_config import _iter_hf_cache_snapshots
-
     return [s.name for s in _iter_hf_cache_snapshots("Org/Model", cache_dir = cache)]
