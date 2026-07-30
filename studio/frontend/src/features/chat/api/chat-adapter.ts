@@ -86,6 +86,7 @@ import {
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
+import { downloadModelWithManager } from "./managed-model-download-bridge";
 import {
   extractDeltaText,
   hasUnclosedThinkTag,
@@ -1382,6 +1383,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+const DEFAULT_AUTO_LOAD_MODEL_ID = "unsloth/Qwen3.5-4B-MTP-GGUF";
+const DEFAULT_AUTO_LOAD_GGUF_VARIANT = "UD-Q4_K_XL";
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -1447,10 +1450,11 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-async function autoLoadSmallestModel(): Promise<{
+async function autoLoadSmallestModel(abortSignal: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
+  abortSignal.throwIfAborted();
   if (await tryAdoptServerActiveModel()) {
     return { loaded: true, blockedByTrustRemoteCode: false };
   }
@@ -1965,10 +1969,13 @@ async function autoLoadSmallestModel(): Promise<{
       };
     }
 
-    // No cached models — try downloading a small default GGUF.
+    // No cached models: download the default through the global manager first.
+    // Keeping transfer and inference load as separate phases makes the download
+    // visible/cancellable and prevents /api/inference/load from owning a hidden
+    // multi-gigabyte fetch.
     updateAutoLoadToast(
       "Downloading a small model…",
-      "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
+      "Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL). Track or cancel it in Downloads.",
     );
     try {
       const rt = useChatRuntimeStore.getState();
@@ -1981,10 +1988,10 @@ async function autoLoadSmallestModel(): Promise<{
       );
       if (
         !(await canAutoLoad({
-          model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
+          model_path: DEFAULT_AUTO_LOAD_MODEL_ID,
           max_seq_length: 0,
           is_lora: false,
-          gguf_variant: "UD-Q4_K_XL",
+          gguf_variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
           // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
           gpu_ids: defaultGpuIds ?? undefined,
@@ -1994,9 +2001,39 @@ async function autoLoadSmallestModel(): Promise<{
         toast.dismiss(toastId);
         return { loaded: false, blockedByTrustRemoteCode };
       }
+
+      const downloadResult = await downloadModelWithManager(
+        {
+          repoId: DEFAULT_AUTO_LOAD_MODEL_ID,
+          variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
+          expectedBytes: 0,
+        },
+        abortSignal,
+      );
+      if (downloadResult !== "complete") {
+        toast.dismiss(toastId);
+        if (downloadResult === "conflict") {
+          toast.info("Resume this download from Models", {
+            description:
+              "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
+          });
+        } else if (downloadResult === "busy") {
+          toast.info("Another model download is already in progress", {
+            description: "Wait for it to finish, then retry your message.",
+          });
+        }
+        hadNonTrustFailure = true;
+        return { loaded: false, blockedByTrustRemoteCode: false };
+      }
+
+      abortSignal.throwIfAborted();
+      updateAutoLoadToast(
+        "Starting model…",
+        "Download complete. Loading Qwen3.5-4B-MTP into memory.",
+      );
       loadAttempts += 1;
       const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        model_path: DEFAULT_AUTO_LOAD_MODEL_ID,
         hf_token: hfToken,
         // Model default under both modes: Auto layers + no pin means
         // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
@@ -2004,7 +2041,7 @@ async function autoLoadSmallestModel(): Promise<{
         max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
-        gguf_variant: "UD-Q4_K_XL",
+        gguf_variant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
@@ -2024,7 +2061,10 @@ async function autoLoadSmallestModel(): Promise<{
       persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
       useChatRuntimeStore
         .getState()
-        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
+        .setCheckpoint(
+          DEFAULT_AUTO_LOAD_MODEL_ID,
+          DEFAULT_AUTO_LOAD_GGUF_VARIANT,
+        );
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
@@ -2034,13 +2074,13 @@ async function autoLoadSmallestModel(): Promise<{
         maxTokens: loadResp.context_length ?? 131072,
       });
       const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        id: DEFAULT_AUTO_LOAD_MODEL_ID,
         name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
         isVision: loadResp.is_vision ?? false,
         isLora: false,
         isGguf: true,
       };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
+      if (!store.models.some((m) => m.id === DEFAULT_AUTO_LOAD_MODEL_ID)) {
         store.setModels([...store.models, defaultModel]);
       }
       useChatRuntimeStore.setState({
@@ -2073,14 +2113,15 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
       recordLastLocalModelLoad({
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        id: DEFAULT_AUTO_LOAD_MODEL_ID,
         kind: "gguf",
-        ggufVariant: "UD-Q4_K_XL",
+        ggufVariant: DEFAULT_AUTO_LOAD_GGUF_VARIANT,
       });
       showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
       return { loaded: true, blockedByTrustRemoteCode: false };
-    } catch {
+    } catch (error) {
       toast.dismiss(toastId);
+      if (abortSignal.aborted) throw error;
       hadNonTrustFailure = true;
       return {
         loaded: false,
@@ -2088,8 +2129,9 @@ async function autoLoadSmallestModel(): Promise<{
           blockedByTrustRemoteCode && !hadNonTrustFailure,
       };
     }
-  } catch {
+  } catch (error) {
     toast.dismiss(toastId);
+    if (abortSignal.aborted) throw error;
     hadNonTrustFailure = true;
     return {
       loaded: false,
@@ -2133,7 +2175,7 @@ export function createOpenAIStreamAdapter(
         }
         if (!useChatRuntimeStore.getState().params.checkpoint) {
           const { loaded, blockedByTrustRemoteCode } =
-            await autoLoadSmallestModel();
+            await autoLoadSmallestModel(abortSignal);
           if (!loaded) {
             toast.error(
               blockedByTrustRemoteCode
@@ -2426,7 +2468,7 @@ export function createOpenAIStreamAdapter(
         let blockedByTrustRemoteCode: boolean;
         try {
           ({ loaded, blockedByTrustRemoteCode } =
-            await autoLoadSmallestModel());
+            await autoLoadSmallestModel(abortSignal));
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
