@@ -8646,16 +8646,32 @@ class LlamaCppBackend:
                     cmd.extend(["--chat-template-file", self._chat_template_file.name])
                     logger.info(f"Using custom chat template file: {self._chat_template_file.name}")
 
-                # Default thinking mode for reasoning models. Qwen3.5/3.6 below
-                # 9B disable thinking by default; 9B+ enable it. Always-on
-                # templates ignore the kwarg, so skip.
+                # Default thinking mode for reasoning models. The Qwen3.5 Small tier
+                # (0.8B, 2B, 4B, 9B) ships with reasoning off by default and the rest of
+                # the family has it on; the templates are byte-identical across sizes, so
+                # this tier split only exists as a launch flag. Always-on templates ignore
+                # the kwarg, so skip.
                 if self._supports_reasoning and not self._reasoning_always_on:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
                     if "qwen3.5" in mid or "qwen3.6" in mid:
-                        size_val = _extract_model_size_b(mid)
-                        if size_val is not None and size_val < 9:
-                            thinking_default = False
+                        # extract_model_size_b prefers MoE active params, reading
+                        # 35B-A3B as 3B. Match total params instead: scan segments
+                        # right to left so the size nearest the leaf beats a size-like
+                        # parent dir, and keep its \s* / M-suffix spellings.
+                        size_re = r"(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])"
+                        size_match = None
+                        for seg in reversed(mid.replace("\\", "/").split("/")):
+                            size_match = re.search(size_re, seg)
+                            if size_match:
+                                break
+                        if size_match:
+                            size_b = float(size_match.group(1))
+                            if size_match.group(2) == "m":
+                                size_b /= 1000.0
+                            # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
+                            if size_b <= 9:
+                                thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
                     # preserve_thinking is an independent kwarg. Default it OFF

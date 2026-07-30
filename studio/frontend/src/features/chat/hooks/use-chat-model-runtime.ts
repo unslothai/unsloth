@@ -1102,14 +1102,29 @@ export function useChatModelRuntime() {
                 presetSource: useChatRuntimeStore.getState().activePresetSource,
               }),
             );
-            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
+            // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
+            // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't
+            // match first, and for "Qwen3.5-35B-A3B" the result is 35 (total
+            // params), not 3 (MoE active params).
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
             if (reasoningDefault) {
               const mid = modelId.toLowerCase();
               if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-                const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-                if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
-                  reasoningDefault = false;
+                // Scan path segments right to left so the size nearest the leaf
+                // wins over a size-like parent dir; trailing boundary stops "8bit".
+                const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
+                const sizeMatch = mid
+                  .replace(/\\/g, "/")
+                  .split("/")
+                  .reduceRight<RegExpMatchArray | null>(
+                    (found, seg) => found ?? seg.match(sizeRe),
+                    null,
+                  );
+                if (sizeMatch) {
+                  const size = parseFloat(sizeMatch[1]);
+                  const sizeB = sizeMatch[2] === "m" ? size / 1000 : size;
+                  if (sizeB <= 9) reasoningDefault = false;
                 }
               }
             }
