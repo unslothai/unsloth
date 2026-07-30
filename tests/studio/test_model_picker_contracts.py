@@ -251,8 +251,20 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
 
 def test_compare_load_uses_each_models_gpu_config():
     src = _read("features/chat/shared-composer.tsx")
-    assert "ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode" in src
-    assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
+    # The mode/layer rule now lives in lib/gpu-placement.ts, behaviourally covered
+    # by studio/frontend/tests/gpu-placement.test.ts, because a diffusion pane (or
+    # one whose GGUF could not be classified yet) must NOT inherit the snapshot.
+    # Assert the delegation, and the fallback itself at its new home.
+    assert "} = resolveComparePlacement(" in src
+    assert "shouldPinDiffusionPlacement(" in src
+    placement = " ".join(_read("features/chat/lib/gpu-placement.ts").split())
+    assert (
+        'own.gpuMemoryMode ?? (treatAsDiffusion ? "auto" : shared.gpuMemoryMode)' in placement
+    )
+    assert "own.gpuLayers ?? (treatAsDiffusion ? GPU_LAYERS_AUTO : shared.gpuLayers)" in placement
+    # An unclassified GGUF is pinned like a confirmed one: /load may still find a
+    # diffusion header after the download and apply the inherited count.
+    assert "return isDiffusion === true || diffusionUnknown" in placement
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
     assert "ownConfig.selectedGpuIndexKind," in src
