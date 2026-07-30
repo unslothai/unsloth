@@ -351,3 +351,147 @@ class TestContextBufferDSV4:
         per_tok = b._compute_buffer_ctx_bytes(100000, cache_type_kv = "f16") / 100000
         expected = 512 * 2 * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
         assert per_tok == pytest.approx(expected, rel = 1e-6)
+
+
+class TestContextBufferLayerSplit:
+    """``layer_split``: the per-device f16 (KQ-mask) rate steps up 4x once the model
+    spans more than one device under ``-sm layer``. Measured per device from
+    llama.cpp's own memory breakdown, dividing the compute column's ctx slope by
+    n_ctx and n_ubatch: exactly 2.00 B/tok/ubatch on 1 GPU and exactly 8.00 on 2, 3,
+    4, 5, 6 and 8 GPUs, across dense GQA, MoE and MLA models at ub 512 and 2048. It
+    is a step on "is split", not a ramp in device count."""
+
+    _RATE_SINGLE = 2.0  # B per context token per ubatch element, per device
+    _RATE_SPLIT = 8.0
+    # (model, n_gpus, n_ubatch, measured B/tok/ubatch/device)
+    _MEASURED = [
+        ("Qwen3.5-9B-MTP", 1, 512, 2.0),
+        ("Qwen3.5-9B-MTP", 2, 512, 8.0),
+        ("Qwen3.6-27B-MTP", 1, 512, 2.0),
+        ("Qwen3.6-27B-MTP", 4, 512, 8.0),
+        ("Qwen3.6-35B-A3B", 1, 2048, 2.0),
+        ("Qwen3.6-35B-A3B", 2, 2048, 8.0),
+        ("gemma-4-12b-it", 1, 512, 2.0),
+        ("gemma-4-12b-it", 3, 512, 8.0),
+        ("gemma-4-12b-it", 5, 512, 8.0),
+        ("gemma-4-12b-it", 6, 512, 8.0),
+        ("gemma-4-12b-it", 8, 512, 8.0),
+        ("gemma-4-26B-A4B-it", 1, 512, 2.0),
+        ("gemma-4-26B-A4B-it", 2, 512, 8.0),
+        ("Kimi-K3", 4, 512, 8.0),
+    ]
+
+    def test_default_is_single_device(self):
+        # Every existing caller keeps the single-device rate (the flag defaults off).
+        b = _backend(embd = 4096)
+        assert b._compute_buffer_ctx_bytes(
+            131072, cache_type_kv = "f16"
+        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16", layer_split = False)
+
+    def test_split_is_exactly_the_multiplier(self):
+        b = _backend(embd = 4096)
+        one = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+        many = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16", layer_split = True)
+        assert many == pytest.approx(
+            one * LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT, rel = 1e-9
+        )
+
+    @pytest.mark.parametrize("name,n_gpus,ub,measured", _MEASURED)
+    def test_upper_bounds_measured_per_device_rate(self, name, n_gpus, ub, measured):
+        # Never under-reserve: the estimate is the measured rate x the 1.5 safety.
+        b = _backend(embd = 4096)
+        per_tok = (
+            b._compute_buffer_ctx_bytes(
+                100000, n_ubatch = ub, cache_type_kv = "f16", layer_split = n_gpus > 1
+            )
+            / 100000
+        )
+        assert per_tok >= measured * ub, f"{name} n={n_gpus}: {per_tok:.0f} < {measured * ub:.0f}"
+
+    @pytest.mark.parametrize("name,n_gpus,ub,measured", _MEASURED)
+    def test_not_wildly_over_measured_per_device_rate(self, name, n_gpus, ub, measured):
+        # And keep the intended margin rather than inflating it: the split step is a
+        # correction, not extra headroom, so stay at the existing 1.5 safety factor.
+        b = _backend(embd = 4096)
+        per_tok = (
+            b._compute_buffer_ctx_bytes(
+                100000, n_ubatch = ub, cache_type_kv = "f16", layer_split = n_gpus > 1
+            )
+            / 100000
+        )
+        expected = measured * ub * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+        assert per_tok == pytest.approx(expected, rel = 1e-6)
+
+    def test_pre_fix_split_reserve_was_short(self):
+        # Regression guard on the bug this fixes: without the step a split reserved
+        # 8/(2*1.5) = 2.67x too little, spending the whole safety margin and more.
+        b = _backend(embd = 4096)
+        one = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16")
+        measured = self._RATE_SPLIT * 512 * 1048576
+        assert one < measured
+        assert b._compute_buffer_ctx_bytes(
+            1048576, cache_type_kv = "f16", layer_split = True
+        ) >= measured
+
+    def test_kimi_k3_1m_four_gpu_reserve(self):
+        # The case that surfaced it: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512.
+        # llama.cpp allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
+        b = _backend(embd = 7168, mla = 576)
+        gib = b._compute_buffer_ctx_bytes(
+            1048576, cache_type_kv = "f16", layer_split = True
+        ) / (1024**3)
+        assert 4.0 <= gib <= 6.5
+
+    @pytest.mark.parametrize("ct", ["q8_0", "q4_0"])
+    def test_quantized_rate_is_floored_not_scaled(self, ct):
+        # The quantized rates are single-GPU totals that already subsume the 1x mask,
+        # so a split floors them at the 4x mask rather than multiplying them.
+        b = _backend(embd = 8192)  # 2.25 x 8192 clears the floor comfortably
+        assert b._compute_buffer_ctx_bytes(
+            131072, cache_type_kv = ct, layer_split = True
+        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = ct)
+
+    def test_quantized_small_embd_takes_the_floor(self):
+        # Below n_embd ~2731 the quantized rate falls under the split mask cost, so
+        # the floor is what keeps a small model on many GPUs from under-reserving.
+        b = _backend(embd = 2048)
+        floored = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0", layer_split = True)
+        assert floored > b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0")
+        assert floored == b._compute_buffer_ctx_bytes(
+            131072, cache_type_kv = "f16", layer_split = True
+        )
+
+    @pytest.mark.parametrize("arch", ["deepseek4", "inkling"])
+    def test_per_architecture_rates_unchanged(self, arch):
+        # deepseek4/inkling carry their own measured totals and return before the flag.
+        b = _backend(embd = 4096, arch = arch)
+        assert b._compute_buffer_ctx_bytes(
+            131072, cache_type_kv = "f16", layer_split = True
+        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+
+
+class TestLayerSplitWiring:
+    """``load_model``'s ``_cc_bytes`` closure is where the fit learns the device
+    count, so it is the one place that can set ``layer_split``. Source-level because
+    the closure is not reachable without a real load; ``_fit_context_to_vram`` only
+    ever sees it as an opaque ``compute_ctx_bytes_fn``."""
+
+    def _cc_bytes_source(self):
+        import inspect
+        src = inspect.getsource(LlamaCppBackend.load_model).splitlines()
+        start = next(i for i, l in enumerate(src) if "def _cc_bytes(" in l)
+        indent = len(src[start]) - len(src[start].lstrip())
+        body = [src[start]]
+        for line in src[start + 1 :]:
+            if line.strip() and len(line) - len(line.lstrip()) <= indent:
+                break
+            body.append(line)
+        return "\n".join(body)
+
+    def test_forwards_layer_split_from_device_count(self):
+        assert "layer_split = n_gpus > 1" in self._cc_bytes_source()
+
+    def test_still_scales_by_device_count(self):
+        # The step is per device on top of the existing replication, not instead of
+        # it: n devices x the split rate. Dropping either halves the reserve.
+        assert "max(1, n_gpus) * self._compute_buffer_ctx_bytes" in self._cc_bytes_source()

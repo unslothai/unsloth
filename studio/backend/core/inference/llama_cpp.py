@@ -4777,6 +4777,17 @@ class LlamaCppBackend:
     _CTX_COMPUTE_BYTES_PER_EMBD = 2.25  # quantized KV, regular attention (dequant scratch)
     _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
     _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
+    # Once the model spans more than one device under `-sm layer`, the f16 ctx-linear
+    # term per device is 4x the single-device one, not 1x. Measured per device with
+    # llama.cpp's own memory breakdown, dividing out n_ctx and n_ubatch: exactly 2.00
+    # B/tok/ubatch on 1 GPU, and exactly 8.00 on 2, 3, 4, 5, 6 and 8 GPUs. It is a step
+    # on "is split", not a ramp in device count (2*n_gpus would only fit n=1 and n=4),
+    # and it is architecture-independent: the same 2 -> 8 step holds on Qwen3.5-9B
+    # (dense GQA), Qwen3.6-35B-A3B and gemma-4-12b/26B (MoE) and Kimi-K3 (MLA), at
+    # ub=512 and ub=2048. Without it a multi-GPU fit under-reserves this term 2.67x
+    # (i.e. 8/(2*1.5)), which spends the whole safety margin and then some: Kimi-K3
+    # UD-IQ1_M at 1M ctx on 4 GPUs reserved 1.5 GiB per device against 4.0 GiB actual.
+    _CTX_COMPUTE_SPLIT_MULT = 4
     # DeepSeek-V4 (deepseek4): its lightning indexer + sparse attention reserve a large
     # context-scaling compute buffer the rates above miss (present even with an f16
     # cache). Measured on UD-Q4_K_XL (ub=512): ~2 GiB at 16k -> ~65.5 GiB at 1M. Without
@@ -4834,6 +4845,8 @@ class LlamaCppBackend:
         n_ctx: int,
         n_ubatch: Optional[int] = None,
         cache_type_kv: Optional[str] = None,
+        *,
+        layer_split: bool = False,
     ) -> int:
         """Context-linear growth of the per-device compute buffer (bytes), charged
         on top of the flat ``_estimate_compute_buffer_bytes``. The flash-attn KQ
@@ -4843,7 +4856,14 @@ class LlamaCppBackend:
         the KQ mask, a flat n_ubatch*2 bytes per context token. ``cache_type_kv`` None
         -> f16 (llama.cpp's default; an env-set quantized cache is budgeted as f16 on
         the KV side, whose over-reservation absorbs the dequant scratch). Returns 0
-        when dims are missing or ``n_ctx`` <= 0."""
+        when dims are missing or ``n_ctx`` <= 0.
+
+        ``layer_split`` charges the KQ-mask rate llama.cpp actually allocates once the
+        model spans more than one device under ``-sm layer``, as a floor on whichever
+        rate applies; see ``_CTX_COMPUTE_SPLIT_MULT``. Tensor mode passes False: it was
+        measured separately at the single-device rate (see ``_plan_tensor_parallel``),
+        and the deepseek4/inkling rates above are per-architecture totals measured as
+        they ship, so they keep their own early return."""
         n_embd = self._embedding_length or 0
         if n_embd <= 0 or n_ctx <= 0:
             return 0
@@ -4884,6 +4904,17 @@ class LlamaCppBackend:
         else:
             # f16/bf16/f32: only the KQ mask ([n_kv, n_ubatch] f16), n_embd-independent.
             per_tok = ub * 2 * self._CTX_COMPUTE_F16_MASK_SAFETY
+        if layer_split:
+            # The mask is there whatever the KV type, and on a split it costs
+            # _CTX_COMPUTE_SPLIT_MULT x more per device. Apply it as a floor rather
+            # than a multiplier: the quantized rates above are totals fitted on
+            # single-GPU measurements, so they already subsume the 1x mask and must
+            # not be scaled again, but they are not guaranteed to cover the 4x one
+            # (2.25 x n_embd only clears it above n_embd ~2731 at any ubatch).
+            per_tok = max(
+                per_tok,
+                ub * 2 * self._CTX_COMPUTE_F16_MASK_SAFETY * self._CTX_COMPUTE_SPLIT_MULT,
+            )
         return int(per_tok * n_ctx)
 
     def _slots_that_fit_on_gpu(
@@ -7758,9 +7789,14 @@ class LlamaCppBackend:
                         # scratch), so pass it through. In a layer split this buffer is
                         # replicated on EVERY device (measured ~equal per GPU), so scale
                         # by the device count; a large model at high context otherwise
-                        # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs).
+                        # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs). The
+                        # per-device rate itself also steps up once split, so tell the
+                        # estimator which side of that step we are on.
                         return max(1, n_gpus) * self._compute_buffer_ctx_bytes(
-                            ctx, _effective_ubatch, cache_type_kv
+                            ctx,
+                            _effective_ubatch,
+                            cache_type_kv,
+                            layer_split = n_gpus > 1,
                         )
 
                     # Layer-split compute buffer (one lump; tensor mode reserves it
@@ -8059,7 +8095,14 @@ class LlamaCppBackend:
                             )
                             # The compute buffer is replicated on every device in a
                             # layer split; fold it into the per-device reserve so a
-                            # multi-GPU pin sizes each card for its own copy.
+                            # multi-GPU pin sizes each card for its own copy. Left at
+                            # the single-device rate on purpose: _select_gpus decides
+                            # the device count from this figure, so we cannot know
+                            # whether the pin will split before asking it. Explicit
+                            # context is honored verbatim either way, so the only cost
+                            # is that a multi-GPU pin at very high explicit context
+                            # under-reserves this term (the auto path below, which is
+                            # what chooses a context, does get the real count).
                             gpu_indices, use_fit = self._select_gpus(
                                 requested_total,
                                 gpus,
