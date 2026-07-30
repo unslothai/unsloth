@@ -165,9 +165,10 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "registerQueuedChatRunSettings(" in target
     assert "params: { ...runSettingsAtQueueStart.params }" in target
     assert "runSettingsAtQueueStart.deepResearchEnabled = false" in target
-    assert target.index("registerQueuedChatRunSettings(") < target.index(
+    assert target.index("const appendResult = thread.append(") < target.index(
         "runSettingsAtQueueStart.deepResearchEnabled = false"
     )
+    assert "void (appendResult as Promise<void>).catch(() => undefined)" in target
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
     assert "await updateStoredChatThread(remoteId" in target
@@ -175,17 +176,17 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "if (shouldCorrectPersistedModel)" in target
     assert 'modelId: runSettingsAtQueueStart.params.checkpoint ?? ""' in target
     assert target.index("await updateStoredChatThread(remoteId") < target.index(
-        "await thread.append("
+        "const appendResult = thread.append("
     )
     assert (
         target.index("addQueuedChatRunSettingsThreadIds(settingsId")
         < target.index("syncPromptQueueUI()")
-        < target.index("await thread.append(")
+        < target.index("const appendResult = thread.append(")
     )
     assert "let cancelled = false" in target
     assert "if (cancelled || !pendingSettingsIds.has(settingsId))" in target
     assert target.index("if (cancelled || !pendingSettingsIds.has(settingsId))") < target.index(
-        "await thread.append("
+        "const appendResult = thread.append("
     )
     assert "cancelled = true" in target
     assert "isTargetCurrentThread() &&" in target
@@ -221,6 +222,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "liveRuntime.ggufContextLength" in auto_load_merge
     assert "queuedRunSettings && isExternalModelId(liveCheckpoint)" in CHAT_ADAPTER
     assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
+    assert "skipAdoptServerModel: true" in CHAT_ADAPTER
+    assert "snapshotQueuedChatRunSettings(" in CHAT_ADAPTER
+    assert "...visibleExternalSettings" in CHAT_ADAPTER
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "return pendingSettings[index].settings" in QUEUED_SETTINGS

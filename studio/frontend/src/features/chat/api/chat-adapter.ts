@@ -9,7 +9,10 @@ import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
-import { consumeQueuedChatRunSettings } from "../utils/queued-chat-run-settings";
+import {
+  consumeQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
+} from "../utils/queued-chat-run-settings";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -1455,11 +1458,16 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-async function autoLoadSmallestModel(): Promise<{
+async function autoLoadSmallestModel(options?: {
+  skipAdoptServerModel?: boolean;
+}): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
-  if (await tryAdoptServerActiveModel()) {
+  if (
+    !options?.skipAdoptServerModel &&
+    (await tryAdoptServerActiveModel())
+  ) {
     return { loaded: true, blockedByTrustRemoteCode: false };
   }
 
@@ -2492,6 +2500,9 @@ export function createOpenAIStreamAdapter(
         const liveCheckpoint =
           useChatRuntimeStore.getState().params.checkpoint;
         if (queuedRunSettings && isExternalModelId(liveCheckpoint)) {
+          const visibleExternalSettings = snapshotQueuedChatRunSettings(
+            useChatRuntimeStore.getState(),
+          );
           const status = await getInferenceStatus().catch(() => null);
           const checkpoint = status
             ? resolveInferenceCheckpointId(status)
@@ -2511,8 +2522,39 @@ export function createOpenAIStreamAdapter(
                 : null,
             };
           }
-          loaded = queuedEmptyModelRuntime !== null;
-          blockedByTrustRemoteCode = false;
+          if (queuedEmptyModelRuntime !== null) {
+            loaded = true;
+            blockedByTrustRemoteCode = false;
+          } else {
+            try {
+              ({ loaded, blockedByTrustRemoteCode } =
+                await autoLoadSmallestModel({
+                  skipAdoptServerModel: true,
+                }));
+              if (loaded) {
+                const loadedRuntime = useChatRuntimeStore.getState();
+                queuedEmptyModelRuntime = {
+                  checkpoint: loadedRuntime.params.checkpoint,
+                  supportsTools: loadedRuntime.supportsTools,
+                  supportsReasoning: loadedRuntime.supportsReasoning,
+                  reasoningAlwaysOn: loadedRuntime.reasoningAlwaysOn,
+                  reasoningStyle: loadedRuntime.reasoningStyle,
+                  supportsReasoningOff:
+                    loadedRuntime.supportsReasoningOff,
+                  reasoningEffortLevels:
+                    loadedRuntime.reasoningEffortLevels,
+                  supportsPreserveThinking:
+                    loadedRuntime.supportsPreserveThinking,
+                  ggufContextLength: loadedRuntime.ggufContextLength,
+                };
+              }
+            } finally {
+              useChatRuntimeStore.setState({
+                ...visibleExternalSettings,
+                params: { ...visibleExternalSettings.params },
+              });
+            }
+          }
         } else {
           try {
             ({ loaded, blockedByTrustRemoteCode } =

@@ -2177,9 +2177,6 @@ const Composer: FC<{
             params: { ...runSettingsAtQueueStart.params },
           },
         );
-        // Deep Research is a one-shot mode. The registered clone keeps it for
-        // this item while later items from the same saved list use normal chat.
-        runSettingsAtQueueStart.deepResearchEnabled = false;
         pendingSettingsIds.add(settingsId);
         try {
           const runtime =
@@ -2217,7 +2214,19 @@ const Composer: FC<{
           // id. Refresh queue aliases before the run begins so stop dialogs
           // deduplicate the two identities.
           syncPromptQueueUI();
-          await thread.append(appendTextToThread(prompt));
+          const appendResult = thread.append(
+            appendTextToThread(prompt),
+          ) as unknown;
+          // Calling append synchronously accepts the user turn; its promise
+          // follows the whole provider run. Do not turn a later paid/streaming
+          // failure into an automatic duplicate dispatch.
+          runSettingsAtQueueStart.deepResearchEnabled = false;
+          if (
+            appendResult &&
+            typeof (appendResult as Promise<void>).catch === "function"
+          ) {
+            void (appendResult as Promise<void>).catch(() => undefined);
+          }
         } catch (error) {
           pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);
