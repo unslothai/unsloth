@@ -18,6 +18,7 @@ CONFIRM_MODEL_SWAP = (FRONTEND / "features/chat/utils/confirm-stop-running-chats
     encoding = "utf-8"
 )
 RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(encoding = "utf-8")
+CHAT_PAGE = (FRONTEND / "features/chat/chat-page.tsx").read_text(encoding = "utf-8")
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
@@ -72,14 +73,32 @@ def test_each_chat_queue_stays_sequential_and_targets_its_background_runtime():
 
 
 def test_switching_or_starting_a_chat_does_not_stop_an_existing_queue():
-    switchers = _between(
+    saved_switch = _between(
         RUNTIME_PROVIDER,
         "function ThreadAutoSwitch(",
+        "function ThreadNewChatSwitch(",
+    )
+    temporary_switch = _between(
+        RUNTIME_PROVIDER,
+        "function ThreadNewChatSwitch(",
         "function ActiveThreadSync(",
     )
-    assert "requestPromptQueueStop" not in switchers
-    assert "switchToThread(threadId)" in switchers
-    assert "switchToNewThread()" in switchers
+    assert "requestPromptQueueStop" not in saved_switch
+    assert "switchToThread(threadId)" in saved_switch
+    assert "useChatRuntimeStore.getState().incognito" in temporary_switch
+    assert "requestTemporaryPromptQueueStop()" in temporary_switch
+    assert "switchToNewThread()" in temporary_switch
+
+    temporary_toggle = _between(
+        CHAT_PAGE,
+        "const toggleIncognito = useCallback(",
+        "const hydratePersistedSettings",
+    )
+    assert "if (wasIncognito)" in temporary_toggle
+    assert "requestTemporaryPromptQueueStop()" in temporary_toggle
+    assert temporary_toggle.index("requestTemporaryPromptQueueStop()") < temporary_toggle.index(
+        "if (onEmptyScratchChat) return"
+    )
 
 
 def test_composer_only_queues_behind_the_current_chat():
@@ -107,9 +126,24 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "registerQueuedChatRunSettings(" in target
     assert "consumeQueuedChatRunSettings(resolvedThreadId)" in CHAT_ADAPTER
     assert '"deepResearchEnabled"' in QUEUED_SETTINGS
+    assert '"supportsReasoning"' in QUEUED_SETTINGS
+    assert '"reasoningAlwaysOn"' in QUEUED_SETTINGS
+    assert '"reasoningStyle"' in QUEUED_SETTINGS
+    assert '"supportsReasoningOff"' in QUEUED_SETTINGS
+    assert '"reasoningEffortLevels"' in QUEUED_SETTINGS
+    assert '"supportsPreserveThinking"' in QUEUED_SETTINGS
+    assert '"researchWebsitePolicy"' in QUEUED_SETTINGS
     assert CHAT_ADAPTER.index(
         "consumeQueuedChatRunSettings(resolvedThreadId)"
     ) < CHAT_ADAPTER.index("if (runtime.deepResearchEnabled && threadAlreadyResearched)")
+    research = _between(
+        CHAT_ADAPTER,
+        "if (\n        runtime.deepResearchEnabled",
+        "const sandboxSessionId",
+    )
+    assert "const liveRuntime = useChatRuntimeStore.getState()" in research
+    assert "...queuedRunSettings" in research
+    assert "params: queuedRunSettings.params.checkpoint" in research
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
@@ -123,6 +157,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert ".slice(Math.max(run.index, 0))" in THREAD
     assert ".some((item) => item.target.usesLocalModel)" in THREAD
     assert "local: promptQueueRunUsesLocalModel(run)" in THREAD
+    assert "temporary: incognitoAtQueueStart" in THREAD
+    assert "temporary: promptQueueRunIsTemporary(run)" in THREAD
+    assert "entry.temporary" in QUEUE_BOUNDARY
 
 
 def test_stop_delete_archive_and_clear_are_thread_scoped():

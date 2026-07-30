@@ -225,6 +225,7 @@ type PromptQueueTarget = {
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
+  temporary: boolean;
 };
 
 type PromptQueueItem = {
@@ -574,6 +575,12 @@ function promptQueueRunUsesLocalModel(run: PromptQueueRun) {
     .some((item) => item.target.usesLocalModel);
 }
 
+function promptQueueRunIsTemporary(run: PromptQueueRun) {
+  return run.items
+    .slice(Math.max(run.index, 0))
+    .some((item) => item.target.temporary);
+}
+
 function promptQueueRunMatchesThreadIds(
   run: PromptQueueRun,
   threadIds: string[],
@@ -710,6 +717,7 @@ function syncPromptQueueUI() {
       current: runCurrent,
       total: runTotal,
       local: promptQueueRunUsesLocalModel(run),
+      temporary: promptQueueRunIsTemporary(run),
     };
     for (const id of ids) {
       byThreadId[id] = entry;
@@ -2143,6 +2151,7 @@ const Composer: FC<{
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
+      temporary: incognitoAtQueueStart,
     };
   }, [aui, referenceThreadId]);
 

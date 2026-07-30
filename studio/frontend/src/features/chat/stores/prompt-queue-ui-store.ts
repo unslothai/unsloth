@@ -8,6 +8,7 @@ export type PromptQueueUIEntry = {
   current: number;
   total: number;
   local: boolean;
+  temporary: boolean;
 };
 
 export type PromptQueueUIItemStatus =

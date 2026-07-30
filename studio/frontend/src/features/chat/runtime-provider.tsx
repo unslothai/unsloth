@@ -79,6 +79,7 @@ import {
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
+import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
@@ -1386,12 +1387,15 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
       return;
     }
-    // New Chat leaves the previous conversation and its prompt queue running.
+    // Saved chats keep running in the background. A temporary chat is never
+    // persisted, so abandoning it must also discard its otherwise unreachable queue.
+    if (useChatRuntimeStore.getState().incognito) {
+      requestTemporaryPromptQueueStop();
+    }
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();

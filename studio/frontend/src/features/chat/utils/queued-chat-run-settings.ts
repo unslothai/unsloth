@@ -5,6 +5,12 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 const QUEUED_SETTING_KEYS = [
   "supportsTools",
+  "supportsReasoning",
+  "reasoningAlwaysOn",
+  "reasoningStyle",
+  "supportsReasoningOff",
+  "reasoningEffortLevels",
+  "supportsPreserveThinking",
   "reasoningEnabled",
   "reasoningEffort",
   "preserveThinking",
@@ -18,6 +24,7 @@ const QUEUED_SETTING_KEYS = [
   "permissionMode",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
+  "researchWebsitePolicy",
   "ragEnabled",
   "ragSource",
   "ragMode",
