@@ -97,22 +97,36 @@ def test_post_warm_thread_joins_the_warm_before_doing_stack_work():
 
 
 def test_post_warm_work_honours_the_coordinated_warm_kill_switch():
-    body = _post_warm_body()
-    statements = [
-        node
-        for node in body.body
-        if not (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        )
-    ]
-    guard = statements[0]
+    """The switch must gate the torch-dependent work, and only that.
 
-    assert isinstance(guard, ast.If), "the kill-switch guard must run before stack work"
+    It used to be the first statement, which also skipped MLX autorepair -- and
+    that one is not torch, has always had its own UNSLOTH_DISABLE_MLX_AUTOREPAIR
+    opt-out, and ran in the lifespan unconditionally before the deferral, so
+    skipping it left a broken-MLX Mac chat-only for good. Assert the guard exists
+    and returns, and that the thing it protects is the RAG warm; the ordering
+    against autorepair is pinned in test_warm_window_review_fixes.py.
+    """
+    body = _post_warm_body()
+    guards = [
+        node for node in body.body
+        if isinstance(node, ast.If) and "DISABLE_ENV_VAR" in ast.unparse(node.test)
+    ]
+    assert guards, "the kill-switch guard is gone; the RAG warm would import torch anyway"
+    guard = guards[0]
     condition = ast.unparse(guard.test)
-    assert "DISABLE_ENV_VAR" in condition and "os.environ" in condition
+    assert "os.environ" in condition
     assert any(isinstance(node, ast.Return) for node in guard.body)
+
+    # Everything after the guard is what the switch actually disables.
+    after = body.body[body.body.index(guard) + 1:]
+    protected = {
+        sub.func.id for stmt in after for sub in ast.walk(stmt)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+    assert "_warm_rag_embedder" in protected, (
+        "the RAG warm is no longer behind the kill switch, so a --no-torch host "
+        "still pulls sentence-transformers and torch at startup"
+    )
 
 
 def test_post_warm_thread_is_started_by_the_lifespan():

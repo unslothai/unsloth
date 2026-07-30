@@ -102,6 +102,21 @@ def purge_partial_import(package: str) -> list:
         return []
     prefix = package + "."
     stale = [name for name in list(sys.modules) if name.startswith(prefix)]
+    # Re-check under the same reasoning as the guard above, immediately before
+    # touching anything: a request that lost the race to import this package
+    # starts its retry the moment the failing import releases the module lock, and
+    # publishes the parent as soon as its __init__ begins. Popping submodules from
+    # under that live import produces exactly the half-initialised package this
+    # function exists to prevent. Narrow, not closed -- an airtight purge would
+    # need CPython's per-module import lock, which is private -- but it removes the
+    # interleaving where the parent appears between the collection and the pops.
+    if package in sys.modules:
+        logger.info(
+            "not purging %s: another importer republished it while collecting its "
+            "leftovers, so that import owns them now",
+            package,
+        )
+        return []
     compiled = sorted(name for name in stale if _is_extension_module(name))
     if compiled:
         logger.warning(
@@ -114,6 +129,15 @@ def purge_partial_import(package: str) -> list:
         )
         return []
     for name in stale:
+        # Last check per pop, for the same race: bail the moment the parent is
+        # back rather than continuing to strip modules a live import is using.
+        if package in sys.modules:
+            logger.warning(
+                "stopped purging %s partway: another importer republished it. The "
+                "submodules already removed will be re-executed by that import.",
+                package,
+            )
+            break
         sys.modules.pop(name, None)
     if stale:
         logger.warning(

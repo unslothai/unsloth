@@ -12151,7 +12151,11 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    for entry in _openai_model_objects():
+    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(),
+    # whose cold build waits on hardware detection. Inline, an early GET /v1/models
+    # held the event-loop thread for the rest of the torch import -- the offload
+    # further down this module could not help, because this call already happened.
+    for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
 
     # Locally available (downloaded/cached) models that are not already loaded.
@@ -12225,7 +12229,9 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    _loaded = _openai_model_objects()
+    # Off-loop for the same reason as the catalog helper: this reaches the
+    # inference singleton, whose cold build waits on hardware detection.
+    _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():

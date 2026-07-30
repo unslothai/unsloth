@@ -516,9 +516,7 @@ def _post_warm_background_work() -> None:
     Joining the warm first means the stack is imported once, in the intended
     order, and these two then run against a warm module cache.
     """
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
-        return
-
+    # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
@@ -534,6 +532,17 @@ def _post_warm_background_work() -> None:
     except Exception as _mlx_exc:
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+    # Only the RAG warm is gated. It pulls sentence-transformers / transformers /
+    # torch, which is exactly what the torch-warm kill switch exists to prevent.
+    # The MLX autorepair above is deliberately outside it: the switch is about
+    # torch, autorepair reinstalls the MLX runtime, and it has always had its own
+    # UNSLOTH_DISABLE_MLX_AUTOREPAIR opt-out. Gating it here would mean that
+    # setting the torch switch on an Apple Silicon host with a broken MLX stack
+    # left Train and Export disabled for good, where before this change
+    # autorepair ran in the lifespan no matter what.
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return
 
     _warm_rag_embedder()
 

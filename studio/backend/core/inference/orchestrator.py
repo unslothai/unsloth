@@ -172,7 +172,13 @@ class InferenceOrchestrator:
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
+        # Deliberately NOT started here. Construction moved onto the startup warm
+        # thread so the first request does not pay for it, and starting the fetch
+        # from __init__ would have turned that into an unprompted outbound request
+        # to huggingface.co on every boot -- before anyone signs in, on a host that
+        # may never serve a request at all. Lazily started by the first reader of
+        # the ranking instead, which is where it happened before the warm existed.
+        self._top_models_started = False
 
     # ------------------------------------------------------------------
     # Default models (top GGUFs fetched dynamically from HF)
@@ -190,9 +196,29 @@ class InferenceOrchestrator:
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
         logger.info("hardware was re-detected; curated default models refreshed")
 
+    def _start_top_models_fetch(self) -> None:
+        """Kick the remote ranking fetch once, on first read of the model list.
+
+        Guarded by the same lock that guards construction, so two concurrent
+        first-readers cannot each put up a thread. Skipped entirely when the host
+        has asked for no outbound calls: the fetch is a raw httpx.get, so
+        HF_HUB_OFFLINE does not reach it on its own.
+        """
+        if self._top_models_started:
+            return
+        with _inference_backend_lock:
+            if self._top_models_started:
+                return
+            self._top_models_started = True
+        if os.environ.get("HF_HUB_OFFLINE") == "1":
+            logger.info("HF_HUB_OFFLINE=1; skipping the remote top-models ranking")
+            return
+        threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
+
     @property
     def default_models(self) -> list[str]:
         self._refresh_static_models_if_stale()
+        self._start_top_models_fetch()
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
         # Never wait for the remote Hugging Face ranking during startup. Chat's

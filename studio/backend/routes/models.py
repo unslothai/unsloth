@@ -1875,10 +1875,21 @@ async def get_model_config(
 
         config_dict = load_model_defaults(model_name)
 
-        # Detect capabilities (HF token for gated models).
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
-        audio_type = detect_audio_type(model_name, hf_token = hf_token)
+        # Detect capabilities (HF token for gated models). The whole block goes to
+        # a worker, not just the ModelConfig call below: is_vision_model() reaches
+        # _detection_sets() too, so leaving it inline let an early
+        # /api/models/{model}/config import transformers -- or block on the warm
+        # thread's import lock -- on the event-loop thread, freezing liveness and
+        # every other request for the rest of that import. Sync helpers, so one
+        # hop covers all three.
+        def _capabilities() -> tuple[bool, bool, object]:
+            return (
+                is_vision_model(model_name, hf_token = hf_token),
+                is_embedding_model(model_name, hf_token = hf_token),
+                detect_audio_type(model_name, hf_token = hf_token),
+            )
+
+        is_vision, is_embedding, audio_type = await asyncio.to_thread(_capabilities)
 
         is_lora = False
         base_model = None

@@ -253,7 +253,7 @@ def detect_hardware() -> DeviceType:
       4. MLX   (Apple Silicon via MLX framework)
       5. CPU   (fallback)
     """
-    global DETECTION_GENERATION
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM, DETECTION_GENERATION
     with _DETECT_LOCK:
         # A forced pass runs while a previous answer is already published, and it
         # mutates the globals partway through -- _detect_hardware_locked() resets
@@ -264,10 +264,19 @@ def detect_hardware() -> DeviceType:
         # reason is None and stops polling, leaving Train hidden on a host the
         # repair just fixed. Clear for the duration, republish once it settles.
         was_complete = DETECTION_COMPLETE.is_set()
+        # The whole published verdict, not just the event: the reset above plus a
+        # DEVICE assigned partway through means a raise leaves a half-written
+        # answer, and the MLX autorepair path catches the exception, so that half
+        # would become what /api/health serves. Losing a "mlx_unavailable" reason
+        # there is the permanent case -- the sidebar poll only continues while it
+        # reads that reason, so it would stop and leave Train hidden on a host the
+        # repair may yet fix.
+        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
         DETECTION_COMPLETE.clear()
         try:
             device = _detect_hardware_locked()
         except BaseException:
+            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM = published
             # Restore rather than leave it clear. A permanently unset event is
             # worse than the intermediate state it would hide: health would go
             # provisional for the life of the process, because
@@ -304,6 +313,14 @@ def ensure_hardware_detected() -> DeviceType:
                 DEVICE = DeviceType.CPU
                 CHAT_ONLY = True
                 CHAT_ONLY_REASON = "detection_failed"
+            # Inside the branch: this function is the cached path too -- every
+            # get_device() on a warm process reaches it and returns immediately.
+            # The orchestrator reads this counter as "hardware was re-detected"
+            # and rebuilds its curated defaults, so bumping it per call made any
+            # GPU or export helper trigger a needless rebuild and a false
+            # "hardware was re-detected" log on the next model list. A forced
+            # detect_hardware() advances it on its own path.
+            DETECTION_GENERATION += 1
         # Set only here, where a final value is guaranteed. The detection
         # branches assign DEVICE partway through and keep probing -- the XPU
         # branch sets DEVICE and CHAT_ONLY before torch.xpu.get_device_name(0),
@@ -311,7 +328,10 @@ def ensure_hardware_detected() -> DeviceType:
         # picked", not "detection finished". A waiter that treats the
         # intermediate value as authoritative can publish training-enabled for a
         # host the except above is about to degrade to CPU/chat-only.
-        DETECTION_GENERATION += 1
+        #
+        # Unconditional, unlike the counter above: setting a set event is a no-op,
+        # and a waiter arriving long after the first detection still has to find
+        # it set.
         DETECTION_COMPLETE.set()
         return DEVICE
 
