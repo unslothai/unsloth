@@ -350,6 +350,9 @@ def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
 # --- the load id must name a snapshot that holds the advertised payload ------
 
 OLDER = "d" * 40
+# from_pretrained finds shards only through this map, never by filename, so a whole set without
+# one is not a loadable payload. Content is irrelevant here; only its presence is read.
+_SHARD_INDEX = b'{"metadata": {}, "weight_map": {}}'
 NEWER = "e" * 40
 
 
@@ -1038,6 +1041,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "config.json": b"{}",
                 "model-00001-of-00002.safetensors": b"\0" * 32,
                 "model-00002-of-00002.safetensors": b"\0" * 32,
+                "model.safetensors.index.json": _SHARD_INDEX,
             },
             False,
             id = "pinned-snapshot-holds-the-whole-sharded-set",
@@ -1065,6 +1069,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
                 "config.json": b"{}",
                 "model-00001-of-00002.safetensors": b"\0" * 32,
                 "model-00002-of-00002.safetensors": b"\0" * 32,
+                "model.safetensors.index.json": _SHARD_INDEX,
                 "pytorch_model-00001-of-00003.bin": b"\0" * 32,
             },
             False,
@@ -1152,6 +1157,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
                 "config.json": b"{}",
                 "model-00001-of-00002.safetensors": b"\0" * 32,
                 "model-00002-of-00002.safetensors": b"\0" * 32,
+                "model.safetensors.index.json": _SHARD_INDEX,
             },
             False,
             id = "a-whole-sharded-set-and-no-other-trace",
@@ -1646,6 +1652,7 @@ def test_a_whole_payload_under_a_resolving_ref_is_still_chattable(tmp_path, monk
             "config.json": b'{"model_type":"llama"}',
             "model-00001-of-00002.safetensors": b"\0" * 256,
             "model-00002-of-00002.safetensors": b"\0" * 256,
+            "model.safetensors.index.json": _SHARD_INDEX,
         },
         newer_files = {"README.md": b"probe"},
         ref = OLDER,
@@ -2397,6 +2404,7 @@ def test_an_adapter_beside_a_config_json_is_still_an_adapter(tmp_path, monkeypat
                 "config.json": b'{"model_type":"llama"}',
                 "model-00001-of-00002.safetensors": b"\0" * 64,
                 "model-00002-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": _SHARD_INDEX,
             },
             False,
         ),
@@ -2557,5 +2565,88 @@ def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, mo
     _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    "files, partial",
+    [
+        # from_pretrained maps shards through the index and never globs the names. Without one it
+        # reports no model.safetensors at all, so the set on disk is unreachable.
+        (
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+            },
+            True,
+        ),
+        # An empty index parses no map, so it is no better than an absent one.
+        (
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": b"",
+            },
+            True,
+        ),
+        (
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model-00002-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            },
+            False,
+        ),
+        # The index is named for its family, so a .bin set wants pytorch_model.bin.index.json.
+        (
+            {
+                "config.json": b'{"model_type":"llama"}',
+                "pytorch_model-00001-of-00002.bin": b"\0" * 64,
+                "pytorch_model-00002-of-00002.bin": b"\0" * 64,
+                "pytorch_model.bin.index.json": _SHARD_INDEX,
+            },
+            False,
+        ),
+        # Adapters are exempt: peft loads adapter_model.safetensors directly.
+        (
+            {
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model-00001-of-00002.safetensors": b"\0" * 64,
+                "adapter_model-00002-of-00002.safetensors": b"\0" * 64,
+            },
+            False,
+        ),
+    ],
+    ids = ["no-index", "empty-index", "with-index", "bin-index", "adapter-shards-exempt"],
+)
+def test_a_sharded_base_family_needs_its_index(files, partial, tmp_path, monkeypatch):
+    """A complete shard set is not a loadable payload on its own."""
+    _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is partial
+    assert rows[0]["capabilities"]["can_chat"] is not partial
+
+
+def test_an_index_less_shard_set_does_not_veto_a_whole_family(tmp_path, monkeypatch):
+    """The index makes a family uncountable, not the snapshot unusable. A whole model.safetensors
+    beside an index-less .bin set still serves the row, the same as beside a torn one."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "pytorch_model-00001-of-00002.bin": b"\0" * 64,
+                "pytorch_model-00002-of-00002.bin": b"\0" * 64,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is False
     assert rows[0]["capabilities"]["can_chat"] is True

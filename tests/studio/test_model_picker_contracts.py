@@ -846,7 +846,7 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     # the Hub download and reopening the same dialog.
     assert 'new Error("Model load cancelled.")' in autoload
     assert "unslothUserCancelled: true" in autoload
-    assert "noteLoadFailure(failureLabel, cancelled)" in autoload
+    assert "recordTerminalFailure(failureLabel, cancelled)" in autoload
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():
@@ -1232,4 +1232,8 @@ def test_chat_autoload_records_a_terminal_validation_failure():
     # probe records too, and a cancelled sweep skips every later candidate.
     assert "canAutoLoadRecordingTerminalFailures(failureLabel, {" in autoload
     assert "recordTerminalFailure(failureLabel, error)" in autoload
+    # The GGUF metadata preflight's own cancellation goes through the helper too, or it records
+    # the failure without halting and every later candidate reopens the dialog.
+    assert "recordTerminalFailure(failureLabel, cancelled)" in autoload
+    assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
     assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload

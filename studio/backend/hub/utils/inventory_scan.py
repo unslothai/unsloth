@@ -776,6 +776,8 @@ class _SnapshotPayload(NamedTuple):
     # Required configs that exist but are empty, by the format that has to parse them. Nothing can
     # load past one, so it is evidence separate from the weights being whole.
     unreadable_config_formats: frozenset
+    # Base shard families with no usable <prefix><suffix>.index.json beside them.
+    base_families_without_an_index: frozenset
 
 
 def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
@@ -863,7 +865,23 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         )
         groups[kind].setdefault(family, set()).add(index)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
-    return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable))
+    # from_pretrained reads the shard map from the index and never globs the filenames, so shards
+    # without one are invisible to it: it reports no model.safetensors at all. Named for the family,
+    # so model-*.safetensors wants model.safetensors.index.json and a diffusion prefix wants its
+    # own. Adapters are exempt; peft loads adapter_model.safetensors directly.
+    no_index = frozenset(
+        family
+        for family in groups["base"]
+        if not _is_a_readable_file(snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json")
+    )
+    return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable), no_index)
+
+
+def _is_a_readable_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
@@ -890,8 +908,11 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             # stood in as the base payload of a checkpoint row that has no base weights at all.
             return kind != wanted
         if payload.groups[kind]:
+            # An index-less family is never complete rather than vetoing the snapshot: it is not a
+            # family this row can load, so a whole unsharded one beside it still serves.
             return all(
                 indices != set(range(1, family[2] + 1))
+                or family in payload.base_families_without_an_index
                 for family, indices in payload.groups[kind].items()
             )
     # No family either way. Absence is not evidence here: a diffusion or .ckpt payload classifies

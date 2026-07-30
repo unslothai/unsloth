@@ -1666,12 +1666,13 @@ async function autoLoadSmallestModel(): Promise<{
       // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        // Raised before loadModel, so its catch never sees it; tagged and
-        // recorded like the cancels inside it so the sweep stops here.
+        // Raised before loadModel, so its catch never sees it. Through the same
+        // helper as the other two sites, or this one records the failure without
+        // halting and every later candidate reopens the dialog.
         const cancelled = Object.assign(new Error("Model load cancelled."), {
           unslothUserCancelled: true,
         });
-        noteLoadFailure(failureLabel, cancelled);
+        recordTerminalFailure(failureLabel, cancelled);
         throw cancelled;
       }
       isDiffusion = (
