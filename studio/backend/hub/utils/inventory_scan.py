@@ -679,6 +679,11 @@ _UNJUDGEABLE_FAMILY = object()
 def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     if snapshot_dir is None:
         return set()
+    # A load id can name the .gguf file itself, which the lister resolves to its parent. Walking the
+    # file finds nothing, so every quant read as short a shard and a whole local model went out
+    # unofferable. Resolve the same way the lister does, so both judge one directory.
+    from hub.utils.gguf import _resolve_gguf_dir
+    snapshot_dir = _resolve_gguf_dir(snapshot_dir) or snapshot_dir
     # Keyed on quant, then on the shard family (directory, prefix, total), the same grouping
     # _snapshot_lacks_a_complete_weight_family uses. One quant label can cover several families.
     split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
@@ -767,8 +772,9 @@ class _SnapshotPayload(NamedTuple):
     groups: dict
     # Kinds holding a file that names no total, i.e. a family of one.
     whole: set
-    # A config.json that exists but is empty. from_pretrained fails parsing it.
-    config_is_unreadable: bool
+    # Required configs that exist but are empty, by the format that has to parse them. Nothing can
+    # load past one, so it is evidence separate from the weights being whole.
+    unreadable_config_formats: frozenset
 
 
 def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
@@ -798,7 +804,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     )
     groups: dict[str, dict[tuple[str, str, int, str], set[int]]] = {"base": {}, "adapter": {}}
     whole: set[str] = set()
-    config_is_unreadable = False
+    unreadable: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
     except OSError:
@@ -815,10 +821,13 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             continue
         if name == "config.json":
             flags["has_config"] = True
-            config_is_unreadable = config_is_unreadable or empty
+            if empty:
+                unreadable.update(("safetensors", "checkpoint"))
             continue
         if name == "adapter_config.json":
             flags["has_adapter_config"] = True
+            if empty:
+                unreadable.add("adapter")
             continue
         if empty:
             continue
@@ -853,7 +862,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         )
         groups[kind].setdefault(family, set()).add(index)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
-    return _SnapshotPayload(model_format, groups, whole, config_is_unreadable)
+    return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable))
 
 
 def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
@@ -868,7 +877,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
     if payload is None:
         return False
     # Recognised by filename, so it classifies, but nothing can parse it.
-    if payload.config_is_unreadable and payload.model_format in ("safetensors", "checkpoint"):
+    if payload.model_format in payload.unreadable_config_formats:
         return True
     order = ("adapter", "base") if payload.model_format == "adapter" else ("base", "adapter")
     for kind in order:
@@ -913,6 +922,18 @@ def _recovered_snapshot_cannot_serve(
     if not _repo_has_a_dangling_ref(repo_cache_dir):
         return False
     return _snapshot_cannot_serve_its_payload(snapshot_dir)
+
+
+def snapshot_holds_a_complete_payload(snapshot_dir: Optional[Path]) -> bool:
+    """Whether *snapshot_dir* can serve a load from its own contents alone.
+
+    The selection-side counterpart to the partial check: a row picks the newest snapshot that
+    classifies, and filename-only classification cannot tell a whole payload from one short a
+    shard, so without this a broken newer revision hides a complete older one.
+    """
+    if snapshot_dir is None:
+        return False
+    return not _snapshot_cannot_serve_its_payload(snapshot_dir)
 
 
 def recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:

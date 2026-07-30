@@ -2414,3 +2414,109 @@ def test_a_recovered_snapshot_that_cannot_load_is_not_chattable(
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is partial
     assert rows[0]["capabilities"]["can_chat"] is not partial
+
+
+def test_a_complete_older_snapshot_beats_a_torn_newer_one(tmp_path, monkeypatch):
+    """The payload classification is by filename, so a revision interrupted mid-download still
+    qualifies. Pinning the newest that merely classifies hid a complete older payload and made the
+    row resume-only, with can_chat false, for a model that loads."""
+    import os
+
+    repo = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {"config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256},
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+            },
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    os.utime(repo / "snapshots" / OLDER, (1_700_000_000, 1_700_000_000))
+    os.utime(repo / "snapshots" / SNAPSHOT, (1_700_009_999, 1_700_009_999))
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert Path(rows[0]["load_id"]) == repo / "snapshots" / OLDER
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_the_newest_snapshot_still_wins_when_both_are_complete(tmp_path, monkeypatch):
+    """Control: preferring a complete payload must not turn into preferring an older one."""
+    import os
+
+    repo = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {"config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256},
+            SNAPSHOT: {"config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256},
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    os.utime(repo / "snapshots" / OLDER, (1_700_000_000, 1_700_000_000))
+    os.utime(repo / "snapshots" / SNAPSHOT, (1_700_009_999, 1_700_009_999))
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert Path(rows[0]["load_id"]) == repo / "snapshots" / SNAPSHOT
+    assert rows[0]["partial"] is False
+
+
+def test_an_empty_adapter_config_is_not_loadable(tmp_path, monkeypatch):
+    """The adapter's required config gets the same treatment as config.json: recognised by name so
+    the snapshot classifies, but peft cannot parse an empty one, so whole weights are not enough."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {"adapter_config.json": b"", "adapter_model.safetensors": b"\0" * 128}
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["model_format"] == "adapter"
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_an_empty_base_config_does_not_block_an_adapter_row(tmp_path, monkeypatch):
+    """The veto is scoped to the format that has to parse the file. An adapter loads through
+    adapter_config.json, so a stray empty config.json beside it is not its problem."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b"",
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model.safetensors": b"\0" * 128,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["model_format"] == "adapter"
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_local_gguf_file_path_is_judged_on_its_directory(tmp_path):
+    """A load id can name the .gguf file itself. The lister resolves that to the parent, so the
+    completion walk has to as well: walking a regular file finds no quants, and every variant of a
+    whole local model came back partial and unofferable."""
+    folder = tmp_path / "local_model"
+    folder.mkdir()
+    (folder / "config.json").write_bytes(b'{"model_type":"llama"}')
+    (folder / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 64)
+
+    assert inventory_scan._completed_gguf_variants(folder / "Model-Q4_K_M.gguf") == {"Q4_K_M"}
+    assert _local_offer(folder / "Model-Q4_K_M.gguf") == [("Q4_K_M", True)]
+
+
+def test_a_bare_gguf_file_with_no_marker_is_not_resolved(tmp_path):
+    """The resolve only fires where the lister's does, on a parent holding one of its marker files.
+    Without one the lister offers nothing, so there is nothing to call complete either."""
+    folder = tmp_path / "loose"
+    folder.mkdir()
+    (folder / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 64)
+
+    assert inventory_scan._completed_gguf_variants(folder / "Model-Q4_K_M.gguf") == set()

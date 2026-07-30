@@ -646,12 +646,17 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         for snapshot, flags in revision_flags
         if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == model_format
     ]
+    # That classification is by filename, so a revision interrupted mid-download qualifies. Pin the
+    # newest one whose shards are all present before falling back to the newest that merely
+    # classifies, or an interrupted update hides a complete older payload and the row goes out
+    # resume-only. Same rule the GGUF side keeps for a whole quant.
+    complete = [s for s in payload_snapshots if hf_cache_scan.snapshot_holds_a_complete_payload(s)]
     return _CachedNonGgufPayload(
         size_bytes = sum(size for size, _mtime in selected_blobs.values()),
         has_runnable_weights = model_format != "unknown",
         model_format = model_format,
         last_modified = max((mtime for _size, mtime in selected_blobs.values()), default = 0.0),
-        payload_snapshot = _newest_snapshot_dir(payload_snapshots),
+        payload_snapshot = _newest_snapshot_dir(complete or payload_snapshots),
         payload_snapshots = _resolved_snapshot_ids(payload_snapshots),
     )
 
