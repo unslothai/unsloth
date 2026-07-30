@@ -1765,7 +1765,10 @@ class TestHfUnreachableProbe:
 
         seen = {}
 
-        def _probe(timeout, *, gateway_errors_offline = True):
+        # **_kwargs so the sibling ambiguity flag does not turn this into a TypeError
+        # that the guard's fail-open would swallow. Both flags are asserted by
+        # TestSlowProxyDoesNotForceOffline.
+        def _probe(timeout, *, gateway_errors_offline = True, **_kwargs):
             seen["gateway_errors_offline"] = gateway_errors_offline
             return gateway_errors_offline
 
@@ -2637,3 +2640,92 @@ class TestMetadataReadsUseTheHubProxy:
         finally:
             proxy.shutdown()
             hub.shutdown()
+
+
+class TestSlowProxyDoesNotForceOffline:
+    """A functional-but-slow proxy is ambiguous, so the shared guard must fail open.
+
+    Otherwise an uncached load through a corporate proxy whose HEAD exceeds the probe
+    timeout is turned cache-only, and the hub client's longer request never runs. The
+    worker already passes proxy_timeouts_offline=False; the route guard must agree.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _fresh(self, monkeypatch):
+        from utils.utils import reset_hf_reachability_cache
+        reset_hf_reachability_cache()
+        monkeypatch.delenv("UNSLOTH_OFFLINE_PROBE", raising = False)
+        yield
+        reset_hf_reachability_cache()
+
+    def test_shared_guard_passes_both_ambiguity_flags_off(self, monkeypatch):
+        seen = {}
+
+        def _probe(timeout, **kwargs):
+            seen.update(kwargs)
+            return False
+
+        import utils.transformers_version as tv
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
+        from utils.utils import hf_unreachable
+
+        assert hf_unreachable(timeout = 1) is False
+        assert seen == {
+            "gateway_errors_offline": False,
+            "proxy_timeouts_offline": False,
+        }
+
+    def test_slow_proxy_reads_reachable_not_offline(self, monkeypatch):
+        """End to end through the real classifier: a clean timeout behind a proxy."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://hub.example.test")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        monkeypatch.delenv("NO_PROXY", raising = False)
+
+        class _SlowOpener:
+            def open(self, req, timeout = None):
+                raise TimeoutError("proxy is up, upstream is slow")
+
+        monkeypatch.setattr(tv, "_hf_proxy_opener", lambda _url: _SlowOpener())
+        # Sanity: the same input IS offline with the flag on, so the flag is what moves it.
+        assert tv.hf_endpoint_unreachable(1, proxy_timeouts_offline = True) is True
+
+        from utils.utils import hf_unreachable
+        assert hf_unreachable(timeout = 1) is False
+
+
+class TestValidateGuardCoversMetadataPreflights:
+    """/validate resolves the config under the guard, then runs more remote reads.
+
+    Those preflights (upgrade check, trust-remote-code, sizing, training guard) each
+    fetch raw metadata, so leaving them outside the window just moves the stall.
+    """
+
+    def test_every_remote_preflight_on_validate_is_wrapped(self):
+        """AST check: no bare await asyncio.to_thread(<remote preflight>, ...) remains."""
+        import ast
+        import pathlib
+
+        src = pathlib.Path("routes/inference.py").read_text()
+        tree = ast.parse(src)
+        remote = {
+            "check_upgrade_for_model",
+            "latest_tier_active_for",
+            "get_base_model_from_lora_identifier",
+            "_guard_chat_load_against_training",
+        }
+        bare = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "to_thread"):
+                continue
+            if not node.args:
+                continue
+            first = node.args[0]
+            name = getattr(first, "id", None) or getattr(first, "attr", None)
+            if name in remote:
+                bare.append((name, node.lineno))
+        assert bare == [], f"unguarded remote preflight(s): {bare}"

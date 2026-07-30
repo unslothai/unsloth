@@ -65,6 +65,21 @@ from utils.transformers_version import (
 
 
 @pytest.fixture(autouse = True)
+def _no_ambient_proxy(monkeypatch):
+    """Module-wide: these tests patch urlopen, which a selected proxy opener bypasses.
+
+    Every remote read here goes through ``_hf_urlopen``, which calls ``opener.open`` when
+    a proxy applies. A runner with HTTPS_PROXY / ALL_PROXY set would then make a real
+    request instead of hitting the patch, so results would track ambient CI connectivity.
+    """
+    for key in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _capturable_logger(monkeypatch):
     """Make the ``caplog`` assertions independent of test collection order.
 
@@ -2568,20 +2583,7 @@ class TestOfflineCacheNotPoisoned:
 
 
 class TestHfEndpointUnreachable:
-    @pytest.fixture(autouse = True)
-    def _direct_probe(self, monkeypatch):
-        """These tests patch urlopen, so ambient proxies must not select an opener."""
-        for key in (
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-            "no_proxy",
-        ):
-            monkeypatch.delenv(key, raising = False)
+    # Ambient proxies are cleared module-wide by _no_ambient_proxy.
 
     def test_reachable_returns_false(self, monkeypatch):
         class _Resp:
@@ -2841,7 +2843,9 @@ class TestLatestTierForces16Bit:
             "fallback so /validate does not 409 a 4-bit load /load would allow"
         )
         # requires_trust_remote_code must be resolved before the flip consumes it.
-        assert body.index("requires_trust_remote_code = any(") < body.index(
+        # Anchored on the resolving call, not its expression form: the any() now runs
+        # inside _offline_guarded on a worker thread.
+        assert body.index("_requires_trust_remote_code_for_model(_t") < body.index(
             "not requires_trust_remote_code"
         )
 
