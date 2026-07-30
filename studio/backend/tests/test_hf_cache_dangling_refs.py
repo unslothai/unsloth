@@ -13,6 +13,7 @@ process can delete one race-free.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import stat
 from pathlib import Path
@@ -340,9 +341,20 @@ def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
 # --- the load id must name a snapshot that holds the advertised payload ------
 
 OLDER = "d" * 40
-# from_pretrained finds shards only through this map, never by filename, so a whole set without
-# one is not a loadable payload. Content is irrelevant here; only its presence is read.
-_SHARD_INDEX = b'{"metadata": {}, "weight_map": {}}'
+# from_pretrained finds shards only through this map, never by filename, so a whole set without one
+# is not a loadable payload. It opens every name the map lists, so the names have to be real.
+def _shard_index(*shards: str) -> bytes:
+    return json.dumps(
+        {"metadata": {}, "weight_map": {f"w{i}": name for i, name in enumerate(shards)}}
+    ).encode()
+
+
+_SHARD_INDEX = _shard_index(
+    "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"
+)
+_BIN_SHARD_INDEX = _shard_index(
+    "pytorch_model-00001-of-00002.bin", "pytorch_model-00002-of-00002.bin"
+)
 NEWER = "e" * 40
 
 
@@ -1633,6 +1645,97 @@ def test_a_whole_payload_under_a_resolving_ref_is_still_chattable(tmp_path, monk
     assert rows[0]["capabilities"]["can_chat"] is True
 
 
+_WHOLE_SHARDS = {
+    "config.json": b'{"model_type":"llama"}',
+    "model-00001-of-00002.safetensors": b"\0" * 256,
+    "model-00002-of-00002.safetensors": b"\0" * 256,
+}
+
+
+@pytest.mark.parametrize(
+    ("index", "torn"),
+    [
+        pytest.param(_SHARD_INDEX, False, id = "a-map-naming-both-shards"),
+        pytest.param(
+            b'{"metadata": {}, "weight_map": {"w0": "model-00001-of-0',
+            True,
+            id = "an-index-truncated-mid-write",
+        ),
+        pytest.param(
+            _shard_index("model-00001-of-00003.safetensors"),
+            True,
+            id = "a-map-naming-a-shard-that-is-not-here",
+        ),
+        pytest.param(b'{"metadata": {}}', True, id = "an-index-with-no-weight-map"),
+        pytest.param(_shard_index(), True, id = "a-map-naming-nothing"),
+        pytest.param(
+            _shard_index("../../elsewhere.safetensors"),
+            True,
+            id = "a-map-reaching-outside-the-snapshot",
+        ),
+    ],
+)
+def test_a_shard_index_has_to_resolve_before_the_family_counts(
+    tmp_path, monkeypatch, index, torn
+):
+    """Present and non-empty is not enough: from_pretrained parses the index and opens every name
+    in its weight_map, so one truncated mid-write or naming a shard the attempt never wrote leaves
+    the numbered files reading as a whole family that nothing can load."""
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {**_WHOLE_SHARDS, "model.safetensors.index.json": index}},
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is torn
+    assert rows[0]["capabilities"]["can_chat"] is not torn
+
+
+def test_the_load_id_pins_the_whole_snapshot_when_the_default_ref_is_torn(tmp_path, monkeypatch):
+    """A secondary ref dangles, so recovery fires while refs/main still resolves, but it lands on a
+    torn revision. Classifying by filename puts that revision among the payload snapshots, so the
+    membership test alone hands the row back to the repo id and loads the half download."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {**_WHOLE_SHARDS, "model.safetensors.index.json": _SHARD_INDEX},
+            NEWER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            },
+        },
+        refs = {"main": NEWER, "stale": UPSTREAM_HEAD},
+    )
+    _age(repo_dir / "snapshots" / OLDER, 600)
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
+
+
+def test_the_load_id_stays_the_repo_id_when_the_default_ref_is_whole(tmp_path, monkeypatch):
+    """Control for the test above: where refs/main lands on the complete payload the repo id is
+    what loads, so the row must keep advertising it rather than pin a path."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            },
+            NEWER: {**_WHOLE_SHARDS, "model.safetensors.index.json": _SHARD_INDEX},
+        },
+        refs = {"main": NEWER, "stale": UPSTREAM_HEAD},
+    )
+    _age(repo_dir / "snapshots" / OLDER, 600)
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    assert rows[0]["load_id"] == "Org/Model"
+
+
 def test_a_payload_split_across_snapshots_is_not_advertised_runnable(tmp_path, monkeypatch):
     """The payload flags are OR-ed over every revision, so config.json in one snapshot and the
     weights in another look runnable while no single directory can serve the row. With no
@@ -2574,7 +2677,7 @@ def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, mo
                 "config.json": b'{"model_type":"llama"}',
                 "pytorch_model-00001-of-00002.bin": b"\0" * 64,
                 "pytorch_model-00002-of-00002.bin": b"\0" * 64,
-                "pytorch_model.bin.index.json": _SHARD_INDEX,
+                "pytorch_model.bin.index.json": _BIN_SHARD_INDEX,
             },
             False,
         ),

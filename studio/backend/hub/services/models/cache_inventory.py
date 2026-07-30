@@ -316,8 +316,17 @@ def _resolve_load_identity(
         default_snapshot = hf_cache_scan.default_ref_snapshot(repo_path)
         # No usable refs/main (missing, or resolving past this row's payload): from_pretrained
         # would fail offline and fetch upstream HEAD online, so point the load at the payload.
-        if default_snapshot is None or (
-            payload_snapshots and str(default_snapshot) not in payload_snapshots
+        if (
+            default_snapshot is None
+            or (payload_snapshots and str(default_snapshot) not in payload_snapshots)
+            # Membership only says the directory classifies, so refs/main can land on a torn
+            # revision while the caller picked a whole one. Loading by id would then resume-only a
+            # row that has a complete payload sitting beside it.
+            or (
+                default_snapshot != snapshot_path
+                and not hf_cache_scan.snapshot_holds_a_complete_payload(default_snapshot)
+                and hf_cache_scan.snapshot_holds_a_complete_payload(snapshot_path)
+            )
         ):
             load_id = str(snapshot_path)
     # Keeping the repo id lets refs/main decide, possibly an older payload snapshot: judge that one.

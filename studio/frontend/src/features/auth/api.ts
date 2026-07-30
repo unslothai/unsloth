@@ -89,6 +89,25 @@ async function redirectToAuth(): Promise<void> {
   window.location.href = target;
 }
 
+function asTransportFailure(err: unknown): unknown {
+  // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always backend-down; the web
+  // build distinguishes offline for the right message. Tagged so a caller can tell "never reached
+  // the backend" from "the backend rejected this".
+  if (!(err instanceof TypeError)) return err;
+  if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+    return Object.assign(
+      new Error(
+        "You appear to be offline. Check your network connection and try again.",
+      ),
+      { unslothTransportFailure: true },
+    );
+  }
+  return Object.assign(
+    new Error("Unsloth isn't running -- please relaunch it."),
+    { unslothTransportFailure: true },
+  );
+}
+
 async function retryWithCurrentToken(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -96,7 +115,14 @@ async function retryWithCurrentToken(
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  return fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+  // Every retry path funnels through here, so the refresh and Tauri auto-auth retries get the same
+  // tag as the first attempt; an untagged TypeError read as a rejection and let auto-load fall
+  // through to the default download.
+  try {
+    return await fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+  } catch (err) {
+    throw asTransportFailure(err);
+  }
 }
 
 async function retryWithTauriAutoAuth(
@@ -171,24 +197,7 @@ export async function authFetch(
       headers,
     });
   } catch (err) {
-    if (err instanceof TypeError) {
-      // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always
-      // backend-down; the web build distinguishes offline for the right message.
-      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
-        // Tagged so a caller can tell "never reached the backend" from "the backend rejected it".
-        throw Object.assign(
-          new Error(
-            "You appear to be offline. Check your network connection and try again.",
-          ),
-          { unslothTransportFailure: true },
-        );
-      }
-      throw Object.assign(
-        new Error("Unsloth isn't running -- please relaunch it."),
-        { unslothTransportFailure: true },
-      );
-    }
-    throw err;
+    throw asTransportFailure(err);
   }
 
   if (await isPasswordChangeRequiredResponse(response)) {

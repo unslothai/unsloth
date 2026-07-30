@@ -14,11 +14,12 @@ layers built on top of these primitives live in download_registry.py.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 import time
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple, Optional
 
 from loggers import get_logger
@@ -863,16 +864,45 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     no_index = frozenset(
         family
         for family in groups["base"]
-        if not _is_a_readable_file(snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json")
+        if _index_cannot_serve_its_shards(
+            snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json"
+        )
     )
     return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable), no_index)
 
 
-def _is_a_readable_file(path: Path) -> bool:
+def _index_cannot_serve_its_shards(index_path: Path) -> bool:
+    """Whether *index_path* would fail to hand ``from_pretrained`` a shard set.
+
+    Existing is not enough: the loader parses the file and opens every name in ``weight_map``, so a
+    truncated index or one naming a shard the interrupted download never wrote is as unloadable as
+    no index at all, while the numbered filenames still read as a whole family.
+    """
     try:
-        return path.is_file() and path.stat().st_size > 0
-    except OSError:
-        return False
+        if not index_path.is_file() or index_path.stat().st_size <= 0:
+            return True
+        with index_path.open(encoding = "utf-8") as handle:
+            index = json.load(handle)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return True
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if not isinstance(weight_map, dict) or not weight_map:
+        return True
+    for shard in set(weight_map.values()):
+        # Names are relative to the index, so anything reaching outside it is not a shard of this
+        # family; treating it as absent keeps the check from following it off the snapshot.
+        if not isinstance(shard, str) or not shard:
+            return True
+        parts = PurePosixPath(shard.replace("\\", "/"))
+        if parts.is_absolute() or ".." in parts.parts:
+            return True
+        try:
+            named = index_path.parent / parts
+            if not named.is_file() or named.stat().st_size <= 0:
+                return True
+        except (OSError, ValueError):
+            return True
+    return False
 
 
 def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
