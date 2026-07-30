@@ -491,6 +491,27 @@ def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
     assert "CUDA out of memory" in str(excinfo.value)
 
 
+@pytest.mark.parametrize("body", [b"", b"   ", b'  {"status": "loa', b"{}"])
+def test_load_model_http_rejects_a_truncated_padded_body(monkeypatch, body):
+    """A proxy that gives up mid-pad leaves a 200 the load never finished under, so
+    it must fail like any other load failure rather than read as completion."""
+    studio_mod = _load_run_command()
+
+    monkeypatch.setattr(
+        studio_mod.urllib.request, "urlopen", lambda request, timeout: BytesIO(body)
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        studio_mod._load_model_via_http(
+            port = 8888,
+            api_key = "sk-test",
+            model = "owner/model-GGUF",
+            gguf_variant = None,
+            max_seq_length = 0,
+            load_in_4bit = True,
+        )
+    assert "did not report completion" in str(excinfo.value)
+
+
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(

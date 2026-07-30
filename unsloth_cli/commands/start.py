@@ -35,6 +35,7 @@ from unsloth_cli._inference import (
     find_studio_server,
     is_loopback_url,
     raise_for_deferred_error,
+    require_completed_padded_body,
     urlopen_no_redirect,
     verify_studio_identity,
 )
@@ -897,6 +898,7 @@ def _load_model_with_progress(
     base: str, key: str, model: str, load: LoadOptions, payload: dict
 ) -> dict:
     """Run the blocking load request while polling its download progress."""
+    load_url = f"{base}/api/inference/load"
     result: list[tuple[bool, object]] = []
     done = threading.Event()
 
@@ -904,7 +906,7 @@ def _load_model_with_progress(
         try:
             value = _http_json(
                 "POST",
-                f"{base}/api/inference/load",
+                load_url,
                 key,
                 payload,
                 timeout = 3600,
@@ -928,9 +930,15 @@ def _load_model_with_progress(
         ok, value = result[0]
         if not ok:
             assert isinstance(value, BaseException)
+            # A pad-only or half-written body fails `_http_json`'s json.loads: report
+            # the padded 200 that never completed, not a JSON error from the API.
+            if isinstance(value, ValueError):
+                require_completed_padded_body(load_url, None)
             raise value
         progress.complete()
-        return value if isinstance(value, dict) else {}
+        # `_http_json` decodes a blank body as `{}`, which a truncated padded reply
+        # would otherwise make look like a completed load.
+        return require_completed_padded_body(load_url, value)
     finally:
         progress.close()
 

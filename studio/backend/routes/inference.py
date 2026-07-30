@@ -6177,10 +6177,11 @@ async def _load_model_impl(
                 current_request_counted = current_request_counted,
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
-        # Unload any active GGUF model first
+        # Unload any active GGUF model first. Off the event loop: a 600 GB teardown
+        # measures 160s, and on-loop it would block _tunnel_safe_json's own padding.
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
-            llama_backend.unload_model()
+            await asyncio.to_thread(llama_backend.unload_model)
 
         # Shut down any export subprocess to free VRAM
         try:
@@ -7064,7 +7065,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
-                llama_backend.unload_model()
+                # Off the event loop like the in-flight branch above: a 600 GB teardown
+                # measures 160s, and on-loop it would block this route's own padding.
+                await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
                 api_monitor.record_lifecycle(
                     event = "unload",

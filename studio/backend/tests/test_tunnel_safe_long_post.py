@@ -26,10 +26,14 @@ treats any 200 as success still has to be taught the in-band failure key.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import sys
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -54,6 +58,13 @@ def route(monkeypatch):
 async def _collect(response):
     """Chunks a client would receive, in order."""
     return [chunk async for chunk in response.body_iterator]
+
+
+async def _collect_into(response, sink):
+    """As _collect, but visible to another thread while the stream is still open."""
+    async for chunk in response.body_iterator:
+        sink.append(chunk)
+    return sink
 
 
 def test_a_fast_call_keeps_the_plain_response(route):
@@ -263,6 +274,253 @@ def test_preview_chat_waits_for_a_slow_checkpoint_load(route, slow_load, monkeyp
     assert not preview._preview_lock.locked()
 
 
+# ── The slow teardown must not sit on the event loop ──────────────────────────
+#
+# ``LlamaCppBackend.unload_model`` is a plain ``def`` and a 600 GB teardown measures
+# ~160s. Called bare, it blocks the loop that runs _tunnel_safe_json's own timer and
+# its pad generator, so zero bytes leave and the proxy 524s the padded response
+# anyway: the padding is dead code on exactly the two slowest paths.
+
+
+class _SlowSyncTeardown:
+    """A synchronous GGUF teardown that finishes only once the padding has flowed.
+
+    Left on the event loop it can never see a pad byte, so it falls out on ``cap_s``
+    having recorded none -- which is precisely the bug.
+    """
+
+    def __init__(
+        self,
+        chunks,
+        *,
+        want = 3,
+        cap_s = 2.0,
+    ):
+        self._chunks = chunks
+        self._want = want
+        self._cap_s = cap_s
+        self.thread = None
+        self.pads_while_running = None
+
+    def __call__(self, *args, **kwargs):
+        self.thread = threading.current_thread()
+        deadline = time.monotonic() + self._cap_s
+        while len(self._chunks) < self._want and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.pads_while_running = len(self._chunks)
+        return True
+
+    def assert_padded_off_the_loop(self, label):
+        assert self.thread is not None, f"{label} never ran"
+        assert self.thread is not threading.main_thread(), f"{label} ran on the event loop thread"
+        assert self.pads_while_running is not None and self.pads_while_running >= self._want, (
+            f"{label} blocked the padding: {self.pads_while_running} pad bytes went out "
+            "while it ran, so a proxy would have timed the response out"
+        )
+
+
+def _no_active_generation_checks(route, monkeypatch):
+    """Neutralise the chat-cancellation gate; test_active_generations owns it."""
+    monkeypatch.setattr(route, "_raise_or_cancel_active_generations", lambda **kwargs: 0)
+
+    async def _drain(**kwargs):
+        return None
+
+    monkeypatch.setattr(route, "_drain_and_recancel_before_teardown", _drain)
+
+
+def _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, *, teardown):
+    """POST /load for a non-GGUF model while a GGUF is resident: the branch that
+    tears the llama-server down before handing the GPUs to Unsloth."""
+    import core.export
+
+    from core.inference import llama_keepwarm as kw
+
+    _no_active_generation_checks(route, monkeypatch)
+    monkeypatch.setattr(route, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    monkeypatch.setattr(route, "validate_extra_args", lambda args: [])
+    monkeypatch.setattr(
+        route,
+        "_resolve_model_identifier_for_request",
+        lambda request, operation: (request.model_path, request.model_path, False),
+    )
+    monkeypatch.setattr(
+        route,
+        "resolve_effective_chat_template_override",
+        lambda model_identifier = None, user_override = None: None,
+    )
+    monkeypatch.setattr(route, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(route, "_mlx_distributed_launch_detected", lambda: False)
+    monkeypatch.setattr(
+        route.ModelConfig,
+        "from_identifier",
+        staticmethod(
+            lambda **kwargs: SimpleNamespace(
+                is_gguf = False,
+                identifier = "org/A",
+                display_name = "A",
+                is_vision = False,
+                is_lora = False,
+                is_audio = False,
+                audio_type = None,
+                has_audio_input = False,
+                is_local = False,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+        ),
+    )
+    monkeypatch.setattr(route, "_effective_load_in_4bit", lambda config, requested: False)
+    monkeypatch.setattr(route, "_resolve_inherited_extra_args", lambda *a, **k: None)
+    monkeypatch.setattr(route, "_guard_chat_load_against_training", lambda *a, **k: None)
+    monkeypatch.setattr(route, "load_inference_config", lambda name: {})
+    monkeypatch.setattr(
+        route,
+        "_detect_safetensors_features",
+        lambda backend, template, tools = None: {
+            "supports_reasoning": False,
+            "reasoning_style": "enable_thinking",
+            "reasoning_effort_levels": [],
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+            "supports_tools": False,
+        },
+    )
+    monkeypatch.setattr(route, "_resolve_loaded_trust_remote_code", lambda *a, **k: False)
+    monkeypatch.setattr(
+        core.export, "get_export_backend", lambda: SimpleNamespace(current_checkpoint = None)
+    )
+    monkeypatch.setattr(kw, "note_model_loaded", lambda *a, **k: None)
+    monkeypatch.setattr(
+        route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,  # a GGUF is resident and must come down first
+            is_active = True,
+            hf_variant = None,
+            model_identifier = "org/OLD-GGUF",
+            layer_preserves_tensor_intent = False,
+            unload_model = teardown,
+        ),
+    )
+    monkeypatch.setattr(
+        route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(
+            active_model_name = "org/OTHER",
+            models = {},
+            load_model = lambda **kwargs: True,
+        ),
+    )
+
+
+def test_a_slow_gguf_teardown_before_an_unsloth_load_still_pads(route, monkeypatch):
+    """POST /load replacing a resident GGUF with a non-GGUF model."""
+    from models.inference import LoadRequest
+
+    chunks: list[bytes] = []
+    teardown = _SlowSyncTeardown(chunks)
+    _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, teardown = teardown)
+
+    async def run():
+        response = await route.load_model(LoadRequest(model_path = "org/A"), None, "tester")
+        if not isinstance(response, StreamingResponse):
+            return response
+        await _collect_into(response, chunks)
+        return response
+
+    response = asyncio.run(run())
+    # Pre-fix the teardown ran inside the task's first step, so the loop never got
+    # to time out and this was a plain LoadResponse: not one pad byte on the wire.
+    assert isinstance(
+        response, StreamingResponse
+    ), "a load whose teardown blocks the loop can never be padded"
+    teardown.assert_padded_off_the_loop("the pre-load GGUF teardown")
+    assert json.loads(b"".join(chunks))["status"] == "loaded"
+
+
+def _stub_gguf_unload(route, monkeypatch, *, teardown):
+    """POST /unload for the already-loaded GGUF: the manual teardown branch."""
+    from core.inference import llama_keepwarm as kw
+
+    _no_active_generation_checks(route, monkeypatch)
+    monkeypatch.setattr(route, "is_registered_native_path_label", lambda *a: False)
+    monkeypatch.setattr(kw, "note_model_unloaded", lambda: None)
+    monkeypatch.setattr(
+        route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_active = True,
+            is_loaded = True,
+            model_identifier = "org/A-GGUF",
+            hf_variant = "UD-Q4_K_XL",
+            unload_model = teardown,
+        ),
+    )
+    monkeypatch.setattr(
+        route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(
+            get_loading_model = lambda: None,
+            active_model_name = None,
+            models = {},
+            unload_model = lambda path: None,
+        ),
+    )
+
+
+def test_a_slow_gguf_unload_still_pads(route, monkeypatch):
+    """POST /unload of a resident GGUF -- the path whose 160s measurement is the
+    reason /unload is padded at all."""
+    from models.inference import UnloadRequest
+
+    chunks: list[bytes] = []
+    teardown = _SlowSyncTeardown(chunks)
+    _stub_gguf_unload(route, monkeypatch, teardown = teardown)
+
+    async def run():
+        response = await route.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester")
+        if not isinstance(response, StreamingResponse):
+            return response
+        await _collect_into(response, chunks)
+        return response
+
+    response = asyncio.run(run())
+    assert isinstance(
+        response, StreamingResponse
+    ), "an unload whose teardown blocks the loop can never be padded"
+    teardown.assert_padded_off_the_loop("the manual GGUF teardown")
+    assert json.loads(b"".join(chunks)) == {"status": "unloaded", "model": "org/A-GGUF"}
+
+
+def test_every_gguf_teardown_on_a_padded_route_is_off_loop():
+    """A regression fence for the two call sites above: a new bare
+    ``unload_model()`` anywhere in /load or /unload silently un-pads that path."""
+    import ast
+
+    src = (_backend_root / "routes" / "inference.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    bare: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name not in (
+            "_load_model_impl",
+            "_unload_model_impl",
+        ):
+            continue
+        for call in ast.walk(node):
+            # A bare call: attribute .unload_model(...) rather than a to_thread arg.
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "unload_model"
+            ):
+                bare.append(call.lineno)
+    assert bare == [], (
+        f"unload_model called on the event loop at routes/inference.py:{bare}; "
+        "wrap it in asyncio.to_thread or the padding never gets to run"
+    )
+
+
 # ── Non-browser clients ───────────────────────────────────────────────────────
 
 
@@ -289,6 +547,41 @@ def test_a_python_client_can_recognise_the_late_failure(route):
     assert 'deferred.get("detail")' in cli
     # unsloth_cli/tests/test_inference_chat.py asserts it actually raises.
     assert "def raise_for_deferred_error(" in cli
+
+
+def test_both_clients_reject_a_truncated_padded_body():
+    """The proxy can also kill a padded response after the 200 committed: measured
+    above as a 200 with an EMPTY body. Both clients must call that a failure -- if
+    one accepts it, the same reply means "loaded" to one and "failed" to the other.
+
+    Behaviour lives in the clients' own suites (unsloth_cli/tests/test_inference_chat.py
+    and studio/frontend/tests/padded-response.test.ts); this only pins that neither
+    side can quietly drop the check.
+    """
+    cli = (_repo_root / "unsloth_cli" / "_inference.py").read_text(encoding = "utf-8")
+    assert "def require_completed_padded_body(" in cli
+    assert "require_completed_padded_body(url, raise_for_deferred_error(url, body))" in cli
+
+    web = (
+        _repo_root
+        / "studio"
+        / "frontend"
+        / "src"
+        / "features"
+        / "chat"
+        / "api"
+        / "padded-response.ts"
+    ).read_text(encoding = "utf-8")
+    assert "export function assertCompletedPaddedBody(" in web
+    # Scoped to /load and /unload: the shared parseJsonOrThrow serves ~30 endpoints,
+    # some of which legitimately answer with no body.
+    chat_api = (
+        _repo_root / "studio" / "frontend" / "src" / "features" / "chat" / "api" / "chat-api.ts"
+    ).read_text(encoding = "utf-8")
+    assert re.findall(r'parseJsonOrThrow<[^>]*>\(\s*response,\s*"([^"]+)"', chat_api) == [
+        "Model load",
+        "Model unload",
+    ]
 
 
 def test_the_pad_interval_stays_inside_the_proxy_window():

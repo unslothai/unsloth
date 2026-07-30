@@ -570,6 +570,64 @@ def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
     assert "507" in err and "CUDA out of memory" in err
 
 
+@pytest.mark.parametrize(
+    ("body", "what"),
+    [
+        (b"", "an empty body"),
+        (b"   ", "pad bytes only"),
+        (b'  {"status": "loa', "a payload cut in half"),
+        (b"null", "a literal null"),
+        (b"{}", "an empty object"),
+    ],
+)
+def test_http_backend_load_rejects_a_truncated_padded_body(monkeypatch, capsys, body, what):
+    """A proxy that gives up mid-pad leaves a 200 the padded route never finished.
+
+    The tunnel probe measured it: one byte at t=90s then silence is killed ~125s
+    later and the client sees a 200 with an EMPTY body. Accepting that would report
+    an unfinished load as done and start generating against the previous model.
+    """
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeLoadResponse(body)
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        backend.ensure_loaded(
+            "org/model-GGUF",
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
+        )
+
+    assert excinfo.value.exit_code == 1, what
+    err = capsys.readouterr().err
+    assert "Model load failed" in err
+    assert "did not report completion" in err
+    # Still drained, so the load is not abandoned at the headers.
+    assert response.reads == 1 and response.closed
+
+
+def test_padded_body_helper_passes_a_real_payload_through():
+    from unsloth_cli._inference import require_completed_padded_body
+
+    body = {"status": "loaded", "model": "org/model-GGUF"}
+    assert require_completed_padded_body("http://x/api/inference/load", body) is body
+    assert require_completed_padded_body("http://x", {"status": "unloaded"}) == {
+        "status": "unloaded"
+    }
+
+
+def test_padded_body_helper_names_the_route_and_the_recovery():
+    from unsloth_cli._inference import require_completed_padded_body
+    url = "http://x/api/inference/load"
+    for body in (None, {}, [], "", 0, "loaded"):
+        with pytest.raises(RuntimeError) as excinfo:
+            require_completed_padded_body(url, body)
+        message = str(excinfo.value)
+        assert message.startswith(f"{url} did not report completion")
+        assert "Check the model's status" in message
+
+
 def test_deferred_error_helper_passes_a_normal_body_through():
     from unsloth_cli._inference import raise_for_deferred_error
 

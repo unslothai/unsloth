@@ -1222,7 +1222,7 @@ def _load_model_via_http(
     import urllib.request
     import urllib.error
 
-    from unsloth_cli._inference import raise_for_deferred_error
+    from unsloth_cli._inference import raise_for_deferred_error, require_completed_padded_body
 
     payload: dict = {
         "model_path": model,
@@ -1252,11 +1252,15 @@ def _load_model_via_http(
     )
     try:
         with urllib.request.urlopen(req, timeout = timeout) as resp:
-            body = json.loads(resp.read())
+            try:
+                body = json.loads(resp.read())
+            except ValueError:
+                body = None  # truncated padded reply; rejected below
         # A load slower than the tunnel timer commits its 200 before it finishes and
         # pads the body, so a late failure arrives in-band; raise it as the HTTPError
-        # this function already turns into the RuntimeError the caller reports.
-        return raise_for_deferred_error(url, body)
+        # this function already turns into the RuntimeError the caller reports. A body
+        # the proxy truncated instead is no completion report at all.
+        return require_completed_padded_body(url, raise_for_deferred_error(url, body))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors = "replace")
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc

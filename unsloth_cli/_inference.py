@@ -91,12 +91,32 @@ def raise_for_deferred_error(url: str, body):
     )
 
 
+def require_completed_padded_body(url: str, body):
+    """Return ``body``, or raise if it is not the payload a padded route promised.
+
+    A proxy that gives up mid-pad leaves a 200 with an empty or truncated body, so
+    accepting it reports an unfinished load or unload as a completed one. Only the
+    two padded routes commit their status that early, so only they require a
+    payload (an empty dict counts: it is what a blank body decodes to here).
+
+    Mirrored by ``assertCompletedPaddedBody`` in
+    studio/frontend/src/features/chat/api/padded-response.ts.
+    """
+    if isinstance(body, dict) and body:
+        return body
+    raise RuntimeError(
+        f"{url} did not report completion: the connection closed before the "
+        "server's reply arrived. Check the model's status before retrying."
+    )
+
+
 def read_json_checking_deferred_error(url: str, response):
     """Drain ``response``, then raise any deferred error its body carries.
 
     Draining matters on its own: stopping at the headers of a padded /load leaves
-    the load still running, so the caller resumes too early. Returns the decoded
-    body, or None when it is not JSON (nothing to check, and no caller reads it).
+    the load still running, so the caller resumes too early. A body that is not a
+    complete JSON payload is a truncated padded reply, not a success, so it raises
+    (see ``require_completed_padded_body``).
     """
     try:
         raw = response.read()
@@ -105,8 +125,8 @@ def read_json_checking_deferred_error(url: str, response):
     try:
         body = json.loads(raw.decode(errors = "replace") or "{}")
     except ValueError:
-        return None
-    return raise_for_deferred_error(url, body)
+        body = None
+    return require_completed_padded_body(url, raise_for_deferred_error(url, body))
 
 
 def ensure_studio_backend_path() -> None:

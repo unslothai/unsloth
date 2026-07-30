@@ -3303,6 +3303,43 @@ def test_load_model_with_progress_fails_on_a_deferred_error(monkeypatch):
     assert excinfo.value.exit_code == 1
 
 
+@pytest.mark.parametrize(
+    ("body", "what"),
+    [
+        (b"", "an empty body"),
+        (b"   ", "pad bytes only"),
+        (b'  {"status": "loa', "a payload cut in half"),
+    ],
+)
+def test_load_model_with_progress_rejects_a_truncated_padded_body(monkeypatch, body, what):
+    """A proxy that gives up mid-pad leaves a 200 the load never finished under.
+
+    The measured shape (test_tunnel_safe_long_post.py): one byte at t=90s, silence,
+    killed ~125s later, client sees a 200 with an EMPTY body. `_http_json` decodes a
+    blank body as `{}`, so without the check this returned a successful-looking result
+    and the agent connected to whatever model was still resident.
+    """
+
+    def urlopen(request, timeout):
+        if request.full_url.endswith("/api/inference/load"):
+            return io.BytesIO(body)
+        # Progress polling is best-effort; 404 it so the display just disables.
+        raise urllib.error.HTTPError(request.full_url, 404, "not found", None, None)
+
+    monkeypatch.setattr(start, "urlopen_no_redirect", urlopen)
+    monkeypatch.setattr(start, "_DOWNLOAD_POLL_INTERVAL_S", 0.001)
+    with pytest.raises(RuntimeError) as excinfo:
+        start._load_model_with_progress(
+            BASE,
+            "sk-test",
+            "owner/model-GGUF",
+            start.LoadOptions(),
+            {"model_path": "owner/model-GGUF"},
+        )
+    assert "did not report completion" in str(excinfo.value), what
+    assert "/api/inference/load" in str(excinfo.value)
+
+
 def test_download_progress_ignores_fully_cached_bytes(capsys):
     display = start._DownloadProgressDisplay()
     display.update(

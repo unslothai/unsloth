@@ -31,6 +31,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
@@ -106,7 +107,15 @@ function deferredError(body: unknown): { status: number; message: string } | nul
   return { status, message: parseErrorText(status, { detail: deferred.detail }) };
 }
 
-async function parseJsonOrThrow<T>(response: Response): Promise<T> {
+/**
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`, and only the two
+ * padded routes may: a truncated body is an unfinished operation there, while
+ * elsewhere an empty one is legitimate.
+ */
+async function parseJsonOrThrow<T>(
+  response: Response,
+  paddedLabel?: string,
+): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(parseErrorText(response.status, body));
@@ -114,6 +123,9 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const deferred = deferredError(body);
   if (deferred) {
     throw new Error(deferred.message);
+  }
+  if (paddedLabel !== undefined) {
+    assertCompletedPaddedBody(body, paddedLabel);
   }
   return body as T;
 }
@@ -186,7 +198,7 @@ export async function loadModel(
       nativePathLease: undefined,
     }),
   });
-  return parseJsonOrThrow<LoadModelResponse>(response);
+  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function validateModel(
@@ -281,7 +293,7 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  await parseJsonOrThrow<unknown>(response);
+  await parseJsonOrThrow<unknown>(response, "Model unload");
 }
 
 /**

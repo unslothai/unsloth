@@ -1625,7 +1625,9 @@ def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unload
     standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
     standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
     standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
-    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
+    # No parens: both teardowns are asyncio.to_thread arguments (a 600 GB one measures
+    # 160s and on-loop would block /load's tunnel padding).
+    unload_gguf = src.index("llama_backend.unload_model", standard_wait)
 
     assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
     assert standard_branch < standard_wait < standard_sidecar_check
