@@ -3207,3 +3207,104 @@ class TestLocalLoraRemoteBaseIsInTheGuardTargets:
                     bad.append((node.lineno, names))
         assert checked >= 4, f"expected the four config-keyed guards, saw {checked}"
         assert bad == [], f"guard target tuple omits the resolved base: {bad}"
+
+
+class TestHungProbeHonoursFailOpenBehindAProxy:
+    """A thread still alive at the join is ambiguous behind a proxy: connect, TLS and the
+    response can each stay under `timeout` while the total runs past it. Direct, a hang
+    still means the real hub calls would hang too, so that verdict is unchanged."""
+
+    class _Hang:
+        def open(self, req, timeout = None):
+            import threading as _t
+            _t.Event().wait()
+
+    def test_behind_a_proxy_the_flag_decides(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://hub.example.test")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        monkeypatch.delenv("NO_PROXY", raising = False)
+        monkeypatch.setattr(tv, "_hf_proxy_opener", lambda _u: self._Hang())
+
+        assert tv.hf_endpoint_unreachable(1, proxy_timeouts_offline = True) is True
+        assert tv.hf_endpoint_unreachable(1, proxy_timeouts_offline = False) is False
+
+    def test_direct_hang_still_reads_unreachable(self, monkeypatch, clean_proxy_env):
+        """Unchanged: a direct hang means the load would hang the same way."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://hub.example.test")
+        monkeypatch.setattr(tv, "_hf_proxy_opener", lambda _u: self._Hang())
+        assert tv.hf_endpoint_unreachable(1, proxy_timeouts_offline = False) is True
+
+    def test_it_stays_bounded(self, monkeypatch, clean_proxy_env):
+        import time as _time
+
+        import utils.transformers_version as tv
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://hub.example.test")
+        monkeypatch.setattr(tv, "_hf_proxy_opener", lambda _u: self._Hang())
+        t0 = _time.monotonic()
+        assert tv.hf_endpoint_unreachable(1) is True
+        assert _time.monotonic() - t0 < 5.0
+
+
+class TestGuardsShareOneDnsLookup:
+    """/validate opens several guards per request. The DNS shortcut is cheap only when
+    DNS is fast; on a slow resolver it costs its full timeout per guard."""
+
+    @pytest.fixture(autouse = True)
+    def _fresh(self):
+        from utils.utils import reset_hf_reachability_cache
+        reset_hf_reachability_cache()
+        yield
+        reset_hf_reachability_cache()
+
+    def test_slow_dns_costs_one_lookup_across_sibling_guards(self, monkeypatch, clean_offline_env):
+        """The case that accumulates: DNS answers past its deadline, so the shortcut is
+        inconclusive and the probe decides. That probe memoises, so the siblings reuse it."""
+        from core.inference.llama_cpp import _hf_unreachable
+
+        dns = []
+        probe = []
+        monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: (dns.append(1), False)[1])
+        import utils.transformers_version as tv
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable",
+                            lambda *a, **k: (probe.append(1), True)[1])
+
+        assert _hf_unreachable() is True
+        for _ in range(5):
+            assert _hf_unreachable() is True
+        assert dns == [1], f"DNS shortcut ran {len(dns)} times, expected once"
+        assert probe == [1], f"probe ran {len(probe)} times, expected once"
+
+    def test_a_reachable_verdict_is_reused_too(self, monkeypatch, clean_offline_env):
+        from core.inference.llama_cpp import _hf_unreachable
+
+        dns = []
+        probe = []
+        monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: (dns.append(1), False)[1])
+        import utils.transformers_version as tv
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable",
+                            lambda *a, **k: (probe.append(1), False)[1])
+
+        assert _hf_unreachable() is False
+        for _ in range(5):
+            assert _hf_unreachable() is False
+        assert dns == [1] and probe == [1]
+
+    def test_a_dead_lookup_is_not_recorded_so_recovery_is_immediate(
+        self, monkeypatch, clean_offline_env,
+    ):
+        """A dead lookup fails fast, so caching it would only delay recovery by the TTL."""
+        from core.inference.llama_cpp import _hf_unreachable
+
+        state = {"dead": True}
+        monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: state["dead"])
+        import utils.transformers_version as tv
+        monkeypatch.setattr(tv, "hf_endpoint_unreachable", lambda *a, **k: False)
+
+        assert _hf_unreachable() is True
+        state["dead"] = False
+        assert _hf_unreachable() is False  # no waiting out the TTL

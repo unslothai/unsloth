@@ -218,9 +218,17 @@ def hf_endpoint_unreachable(
     t.start()
     t.join(timeout + 1)
     if t.is_alive():
-        # Hung past its own timeout (wedged resolver): the real hub calls would hang the
-        # same way, so cache-only is the useful answer. Distinct from the slow-answer case
-        # below, where the socket timed out cleanly.
+        # Hung past the deadline. Behind a proxy that is the same ambiguous answer as a
+        # clean timeout, since connect, TLS and the response can each stay under `timeout`
+        # while the total runs past the join, so lifetime callers fail open here too.
+        # Direct, a hang means the real hub calls would hang the same way, so cache-only
+        # stays the useful answer.
+        try:
+            from utils.utils import hf_proxy_configured
+            if hf_proxy_configured():
+                return proxy_timeouts_offline
+        except Exception:
+            pass
         return True
     if result["timed_out"]:
         # A slow server still completes the TCP handshake; a blackholed route does not.

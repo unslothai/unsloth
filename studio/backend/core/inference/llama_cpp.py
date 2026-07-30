@@ -566,9 +566,16 @@ def _hf_unreachable() -> bool:
     down when a proxy is configured, since the proxy resolves the host.
     """
     try:
-        from utils.utils import hf_dns_dead, hf_unreachable
+        from utils.utils import hf_dns_dead, hf_reachability_memo, hf_unreachable
     except Exception:
         return False
+    # A fresh verdict already answers this. One request opens several guards, and the DNS
+    # shortcut is only cheap when DNS is fast: a slow resolver costs its full timeout per
+    # guard and leaves a stuck thread behind each time. Peek only, never record: a dead
+    # lookup fails fast anyway, and recording it would make recovery sticky for the TTL.
+    memo = hf_reachability_memo()
+    if memo is not None:
+        return memo
     if hf_dns_dead():
         return True
     return hf_unreachable()

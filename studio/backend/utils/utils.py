@@ -223,6 +223,17 @@ def hf_probe_disabled() -> bool:
     }
 
 
+def hf_reachability_memo() -> Optional[bool]:
+    """The memoised verdict while still fresh, else None.
+
+    Lets a caller skip a cheaper-but-still-slow shortcut it has already effectively run:
+    one request opens several guards, and repeating a 2s DNS lookup per guard adds up.
+    Lock-free like force_hf_offline_active: the tuple read is atomic.
+    """
+    cached = _hf_reachability
+    return cached[1] if _reachability_fresh(cached) else None
+
+
 def reset_hf_reachability_cache() -> None:
     """Drop the memoised verdict so the next call re-probes (tests, network changes)."""
     global _hf_reachability
