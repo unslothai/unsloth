@@ -13,6 +13,7 @@ import contextlib
 import json
 import time
 from typing import Optional
+from urllib.parse import parse_qs
 
 from loggers import get_logger
 
@@ -25,6 +26,37 @@ _PREVIEW_PATH_PREFIX = "/p/"
 # Anything else 404s at the gate: FastAPI would answer 405 before the token
 # check runs, which leaks which routes exist.
 _ALLOWED_METHODS = {"GET", "HEAD", "POST"}
+
+_CHAT_SUFFIX = "/v1/chat/completions"
+
+
+def _bearer_token(scope) -> Optional[str]:
+    for name, value in scope.get("headers") or ():
+        if name == b"authorization":
+            header = value.decode("latin-1")
+            if header[:7].lower() == "bearer ":
+                return header[7:].strip() or None
+            return None
+    return None
+
+
+def _post_chat_authorized(scope, path: str) -> bool:
+    # The only POST surface is chat completions. Verify the capability BEFORE
+    # forwarding: FastAPI parses the request body ahead of the handler's own
+    # token check, which would let unauthenticated callers burn CPU/memory on
+    # large bodies with no rate limit. Mirrors routes.preview._extract_token
+    # (?k= query, else Authorization: Bearer).
+    if not path.endswith(_CHAT_SUFFIX):
+        return False
+    ref = path[len(_PREVIEW_PATH_PREFIX) : -len(_CHAT_SUFFIX)]
+    if not ref:
+        return False
+    query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+    token = (query.get("k") or [None])[0] or _bearer_token(scope)
+
+    from utils.preview_token import verify_preview_ref  # lazy: keeps this module import-light
+
+    return verify_preview_ref(ref, token)
 
 # Tunnel-readiness probe, answered by the gate itself on a path outside /p so
 # it can never shadow a run page (runs live under /p/{run}).
@@ -110,6 +142,9 @@ class PreviewOnlyGate:
             or method not in _ALLOWED_METHODS
             or not is_public_preview_path(path)
         ):
+            await _send_json(send, 404, _NOT_FOUND_BODY)
+            return
+        if method == "POST" and not _post_chat_authorized(scope, path):
             await _send_json(send, 404, _NOT_FOUND_BODY)
             return
         await self.app(scope, receive, _mask_405(send))

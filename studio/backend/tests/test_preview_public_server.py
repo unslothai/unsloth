@@ -227,6 +227,67 @@ def test_listener_rejects_unsupported_methods(app):
     assert put.status_code == delete.status_code == options.status_code == 404
 
 
+def test_gate_blocks_unauthenticated_chat_posts(app):
+    # receive=None proves the body is never read: FastAPI would parse it
+    # before the handler's token check, unmetered.
+    called = {"hit": False}
+
+    async def _app(scope, receive, send):
+        called["hit"] = True
+
+    sent = []
+
+    async def _send(message):
+        sent.append(message)
+
+    gate = pps.PreviewOnlyGate(_app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/p/demorun/v1/chat/completions",
+        "query_string": b"",
+        "headers": [],
+    }
+    asyncio.run(gate(scope, None, _send))
+    assert called["hit"] is False
+    assert sent[0]["status"] == 404
+
+    scope["query_string"] = b"k=not-a-valid-token"
+    asyncio.run(gate(scope, None, _send))
+    assert called["hit"] is False
+
+
+def test_gate_forwards_tokened_chat_posts(app):
+    token = preview_token.sign_preview_ref("demorun")
+    calls = {"n": 0}
+
+    async def _app(scope, receive, send):
+        calls["n"] += 1
+
+    gate = pps.PreviewOnlyGate(_app)
+
+    async def _send(message):
+        pass
+
+    by_query = {
+        "type": "http",
+        "method": "POST",
+        "path": "/p/demorun/v1/chat/completions",
+        "query_string": f"k={token}".encode(),
+        "headers": [],
+    }
+    asyncio.run(gate(by_query, None, _send))
+    by_bearer = {
+        "type": "http",
+        "method": "POST",
+        "path": "/p/demorun/v1/chat/completions",
+        "query_string": b"",
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+    }
+    asyncio.run(gate(by_bearer, None, _send))
+    assert calls["n"] == 2
+
+
 def test_listener_masks_method_mismatches_on_real_routes(app):
     # An allowed verb on the wrong route would 405 in FastAPI before the token
     # check; the gate rewrites that to the same generic 404.
