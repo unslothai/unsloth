@@ -582,7 +582,6 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # lifespan always carries one.
     if generation is not None and _post_warm_current_generation() != generation:
         import structlog as _structlog
-
         _structlog.get_logger(__name__).info(
             "post-warm work %s stood down: its lifespan ended while the ML stack "
             "was still loading",

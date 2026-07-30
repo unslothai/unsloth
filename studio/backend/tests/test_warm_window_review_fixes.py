@@ -417,6 +417,7 @@ def test_shutdown_stands_the_post_warm_thread_down(monkeypatch):
     monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
     monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
     import utils.mlx_repair as mlx_mod
+
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
 
     assert main_mod._start_post_warm_thread() is True
@@ -479,9 +480,9 @@ def test_a_restart_gets_its_own_worker_while_the_old_one_is_parked(monkeypatch):
     main_mod._stop_post_warm_thread()
 
     # Lifespan 2 starts immediately, with the old worker still alive.
-    assert main_mod._start_post_warm_thread() is True, (
-        "the restart was refused a worker because the retired one was still parked"
-    )
+    assert (
+        main_mod._start_post_warm_thread() is True
+    ), "the restart was refused a worker because the retired one was still parked"
     new = main_mod._post_warm_thread
     assert new is not old
 
@@ -490,9 +491,7 @@ def test_a_restart_gets_its_own_worker_while_the_old_one_is_parked(monkeypatch):
     release_new.set()
     new.join(30)
 
-    assert ran == ["mlx", "rag"], (
-        f"the restarted lifespan did not get its deferred work: {ran}"
-    )
+    assert ran == ["mlx", "rag"], f"the restarted lifespan did not get its deferred work: {ran}"
 
 
 def test_only_the_current_generation_does_the_work(monkeypatch):
@@ -515,9 +514,7 @@ def test_only_the_current_generation_does_the_work(monkeypatch):
     first.join(30)
     second.join(30)
 
-    assert ran == ["mlx", "rag"], (
-        f"expected one worker to do the work once, got {ran}"
-    )
+    assert ran == ["mlx", "rag"], f"expected one worker to do the work once, got {ran}"
 
 
 def test_shutdown_does_not_wait_for_the_post_warm_thread():
@@ -573,9 +570,9 @@ def test_health_will_not_publish_a_verdict_mid_redetect(monkeypatch):
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", None, raising = False)
     hw_mod.DETECTION_COMPLETE.clear()
     try:
-        assert main_mod._hardware_snapshot() is None, (
-            "a cleared completion event still produced a publishable verdict"
-        )
+        assert (
+            main_mod._hardware_snapshot() is None
+        ), "a cleared completion event still produced a publishable verdict"
     finally:
         hw_mod.DETECTION_COMPLETE.set()
 
@@ -606,11 +603,13 @@ def test_health_rereads_the_verdict_after_authentication():
     """The bearer check is an await, so the pre-auth answer must be revalidated."""
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
     )
     snapshots = [
-        sub.lineno for sub in ast.walk(fn)
+        sub.lineno
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Call) and getattr(sub.func, "id", None) == "_hardware_snapshot"
     ]
     assert len(snapshots) >= 2, (
@@ -627,13 +626,15 @@ def test_detection_wait_requires_a_device_not_just_the_event():
     """Event-set-with-DEVICE-None must send the caller to a fresh detection."""
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_await_hardware_detection"
     )
     # The docstring names DEVICE, so match the executable form: a comparison of
     # the DEVICE attribute against None. A dumped-text search passes on prose.
     device_tests = [
-        sub for sub in ast.walk(fn)
+        sub
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Compare)
         and isinstance(sub.left, ast.Attribute)
         and sub.left.attr == "DEVICE"
