@@ -3423,6 +3423,33 @@ def test_chat_count_tokens_refuses_image_messages(monkeypatch):
     assert switched == [], "and neither must the auto-switch hook"
 
 
+def test_chat_count_tokens_refuses_audio_messages(monkeypatch):
+    # The completion path injects the newest recording as an audio part, and the message
+    # conversion has no audio branch, so counting would price a text-only prompt and come
+    # back short by the whole clip. ChatCountTokensRequest allows extra fields, so without
+    # this guard audio_base64 is accepted, silently dropped, and answered with a number.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request(
+        [{"role": "user", "content": "what did I just say"}],
+        audio_base64 = "UklGRiQAAABXQVZF",
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "audio" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_still_counts_without_audio(monkeypatch):
+    # Control for the guard above: the same thread with no recording attached still counts,
+    # so the refusal keys on the audio itself rather than on the shape of the request.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    body = _counted_body(_count_request([{"role": "user", "content": "what did I just say"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached"
+
+
 # The shapes the recount sends for a thread with documents in scope. Only a thread left
 # on a PENDING turn is one the next generation answers from these exact messages, and
 # the tool loop opens that turn by splicing in what build_rag_autoinject retrieves.
