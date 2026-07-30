@@ -25,8 +25,6 @@ spec = importlib.util.spec_from_file_location("inference_route_under_test", "rou
 route = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(route)
 
-import core.inference.llama_cpp as llama_cpp
-
 events = []
 
 @contextlib.contextmanager
@@ -37,7 +35,9 @@ def _tracking_guard():
     finally:
         events.append("close")
 
-llama_cpp._hf_offline_if_unreachable = _tracking_guard
+# Patched on the ROUTE module: _offline_guarded deliberately uses the module-level symbol
+# so route tests can intercept it, rather than re-importing from llama_cpp.
+route._hf_offline_if_unreachable = _tracking_guard
 
 # 1. the wrapped work runs INSIDE the window, not after it closes
 def _work(a, b, *, kw):

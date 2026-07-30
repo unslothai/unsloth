@@ -6322,8 +6322,9 @@ def _offline_guarded(targets, fn, /, *args, **kwargs):
     a wrapped call's own model_identifier kwarg cannot collide."""
     from contextlib import nullcontext
 
-    from core.inference.llama_cpp import _hf_offline_if_unreachable
-
+    # The module-level symbol, not a fresh import: route tests patch
+    # routes.inference._hf_offline_if_unreachable to stay deterministic, and a local
+    # re-import would bypass the patch and run a real probe.
     ctx = _hf_offline_if_unreachable() if _any_remote(targets) else nullcontext()
     with ctx:
         return fn(*args, **kwargs)
@@ -6585,8 +6586,15 @@ async def validate_model(
         # already resolved above for the sizing flip).
         requires_security_review = False
         if not is_gguf:
-            requires_security_review = any(
-                _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
+            # _fetch_security_status does hf_model_info with 10s and 20s timeouts, so this
+            # needs the same window and worker thread as the preflights above.
+            requires_security_review = await asyncio.to_thread(
+                _offline_guarded,
+                security_targets,
+                lambda: any(
+                    _requires_security_review_for_model(_t, request.hf_token)
+                    for _t in security_targets
+                ),
             )
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context

@@ -15,6 +15,7 @@ No GPU, no network, no subprocess. Linux/macOS/Windows compatible.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import sys
@@ -957,6 +958,12 @@ class TestProbeDnsDead:
 
 
 class TestHfOfflineIfUnreachable:
+    @pytest.fixture(autouse = True)
+    def _no_ambient_proxy(self, clean_proxy_env):
+        """hf_dns_dead stands down when a proxy is configured, so on a runner with
+        HTTP_PROXY set the patched resolver is bypassed and the DNS-failure scenario these
+        tests mean to exercise never happens."""
+
     def test_dns_fail_sets_env_inside_block_only(self, dns, reachable, clean_offline_env):
         dns.fail()
         assert "HF_HUB_OFFLINE" not in os.environ
@@ -2962,3 +2969,102 @@ class TestModelConfigPredicateHonoursTheWindow:
             t.join(5)
 
         assert calls == []
+
+
+class TestLocalModelWithRemoteBaseIsGuarded:
+    """A local LoRA or GGUF is served from disk, so the load guard stands down for it. Its
+    base can still be a hub repo, and resolving the config dereferences that base."""
+
+    def test_helper_engages_for_a_remote_target(self, monkeypatch):
+        import utils.models.model_config as mc
+        import core.inference.llama_cpp as llama_cpp
+
+        opened = []
+
+        @contextlib.contextmanager
+        def _fake_for(target):
+            opened.append(target)
+            yield
+
+        monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable_for", _fake_for)
+        with mc._offline_while_reading("org/base"):
+            pass
+        assert opened == ["org/base"]
+
+    def test_helper_is_a_noop_when_the_guard_is_unavailable(self, monkeypatch):
+        """Worker contexts may not be able to import the route-side guard."""
+        import builtins
+
+        import utils.models.model_config as mc
+
+        real_import = builtins.__import__
+
+        def _boom(name, *a, **k):
+            if name == "core.inference.llama_cpp":
+                raise ImportError("not available here")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _boom)
+        with mc._offline_while_reading("org/base"):
+            pass  # must not raise
+
+    def test_local_lora_base_lookup_runs_inside_the_window(self):
+        """AST check: the base-derived vision/audio probes sit under the guard."""
+        import ast
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "utils" / "models" / "model_config.py").read_text(
+            encoding = "utf-8",
+        )
+        tree = ast.parse(src)
+
+        guarded = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With):
+                continue
+            if not any(
+                isinstance(i.context_expr, ast.Call)
+                and getattr(i.context_expr.func, "id", None) == "_offline_while_reading"
+                for i in node.items
+            ):
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call):
+                    name = getattr(inner.func, "id", None)
+                    if name:
+                        guarded.add(name)
+
+        for name in ("is_vision_model", "detect_audio_type"):
+            assert name in guarded, f"{name} is not inside an _offline_while_reading window"
+
+    def test_no_unguarded_base_vision_probe_remains(self):
+        """Every is_vision_model call on a resolved base must be under the guard."""
+        import ast
+        import pathlib
+
+        backend_root = pathlib.Path(__file__).resolve().parent.parent
+        src = (backend_root / "utils" / "models" / "model_config.py").read_text(
+            encoding = "utf-8",
+        )
+        tree = ast.parse(src)
+
+        guarded_lines = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.With) and any(
+                isinstance(i.context_expr, ast.Call)
+                and getattr(i.context_expr.func, "id", None) == "_offline_while_reading"
+                for i in node.items
+            ):
+                guarded_lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+
+        bare = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "is_vision_model"):
+                continue
+            # Only calls on a name that came from resolved metadata, not on the identifier
+            # the caller already guarded.
+            arg = node.args[0] if node.args else None
+            if getattr(arg, "id", None) in ("base", "check_model") and node.lineno not in guarded_lines:
+                bare.append(node.lineno)
+        assert bare == [], f"unguarded base vision probe at line(s) {bare}"
