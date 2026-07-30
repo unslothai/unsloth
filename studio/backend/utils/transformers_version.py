@@ -155,7 +155,6 @@ def hf_endpoint_unreachable(
     # can also override a requests-compatible NO_PROXY decision.
     try:
         from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
-
         proxy = hf_proxy_for_endpoint(endpoint)
         # urllib cannot speak socks5, so its instant failure is not proof of no egress.
         if proxy and not hf_proxy_usable_by_urllib(proxy):

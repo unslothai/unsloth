@@ -1510,9 +1510,7 @@ class TestSpawnEnvironmentDoesNotInheritScopedOffline:
 class TestSpawnWindowKeepsTheParentOffline:
     """Restoring the user's env for a spawn must not un-offline the guarded parent."""
 
-    def test_env_offline_still_true_inside_the_spawn_window(
-        self, monkeypatch, clean_offline_env
-    ):
+    def test_env_offline_still_true_inside_the_spawn_window(self, monkeypatch, clean_offline_env):
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.transformers_version import _env_offline
         from utils.utils import force_hf_offline, hf_env_offline
@@ -2571,9 +2569,7 @@ class TestMetadataReadsUseTheHubProxy:
         from utils.transformers_version import _load_config_json
 
         assert _load_config_json("acme/ministral-3b") == payload
-        assert seen == [
-            ("GET", "http://hub.invalid/acme/ministral-3b/raw/main/config.json"),
-        ]
+        assert seen == [("GET", "http://hub.invalid/acme/ministral-3b/raw/main/config.json")]
 
     def test_tokenizer_config_read_goes_through_the_proxy(self, stub_proxy, monkeypatch):
         seen, _ = stub_proxy
@@ -2619,6 +2615,7 @@ class TestMetadataReadsUseTheHubProxy:
 
                 def log_message(self, *args):
                     pass
+
             return _H
 
         body = _json.dumps(payload).encode()
