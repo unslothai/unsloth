@@ -683,6 +683,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     # file finds nothing, so every quant read as short a shard and a whole local model went out
     # unofferable. Resolve the same way the lister does, so both judge one directory.
     from hub.utils.gguf import _resolve_gguf_dir
+
     snapshot_dir = _resolve_gguf_dir(snapshot_dir) or snapshot_dir
     # Keyed on quant, then on the shard family (directory, prefix, total), the same grouping
     # _snapshot_lacks_a_complete_weight_family uses. One quant label can cover several families.
