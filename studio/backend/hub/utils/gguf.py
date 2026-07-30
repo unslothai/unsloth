@@ -553,9 +553,8 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
         if is_mmproj_filename(file.name):
-            # A projector llama.cpp cannot open is not vision support. An interrupted download can
-            # leave the name in place with nothing behind it, and the row's own quant being whole
-            # means no other signal reports the gap.
+            # An interrupted download leaves the name with nothing behind it, and a projector
+            # llama.cpp cannot open is not vision support.
             try:
                 has_vision = has_vision or file.stat().st_size > 0
             except OSError:

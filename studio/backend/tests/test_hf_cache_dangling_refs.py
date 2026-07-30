@@ -343,8 +343,8 @@ def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
 OLDER = "d" * 40
 
 
-# from_pretrained finds shards only through this map, never by filename, so a whole set without one
-# is not a loadable payload. It opens every name the map lists, so the names have to be real.
+# from_pretrained finds shards only through this map and opens every name it lists, never by
+# filename, so the names have to be real.
 def _shard_index(*shards: str) -> bytes:
     return json.dumps(
         {"metadata": {}, "weight_map": {f"w{i}": name for i, name in enumerate(shards)}}
@@ -841,8 +841,7 @@ def test_vision_is_reported_only_from_the_snapshot_the_row_pins(
 )
 def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, projector, has_vision):
     """has_vision came off the filename alone, so an interrupted companion download advertised a
-    projector llama.cpp cannot open. The row's own quant is whole, so no other signal reports it and
-    an image-capable client would pick the model and fail."""
+    projector llama.cpp cannot open while the row's own quant stayed whole."""
     from hub.utils.gguf import list_local_gguf_variants
 
     _repo_with(
@@ -1705,9 +1704,8 @@ _WHOLE_SHARDS = {
     ],
 )
 def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeypatch, index, torn):
-    """Present and non-empty is not enough: from_pretrained parses the index and opens every name
-    in its weight_map, so one truncated mid-write or naming a shard the attempt never wrote leaves
-    the numbered files reading as a whole family that nothing can load."""
+    """Present and non-empty is not enough: the index must parse and every weight_map name must
+    resolve, or the numbered files read as a whole family that nothing can load."""
     _repo_with(
         tmp_path,
         snapshots = {SNAPSHOT: {**_WHOLE_SHARDS, "model.safetensors.index.json": index}},
@@ -1796,10 +1794,9 @@ def test_a_shard_index_has_to_resolve_before_the_family_counts(tmp_path, monkeyp
     ],
 )
 def test_the_family_a_loader_would_pick_is_the_one_judged(tmp_path, monkeypatch, files, torn):
-    """Files on disk are not interchangeable evidence. transformers takes model.safetensors, then
-    its index, then pytorch_model.bin, and never falls back once it has picked, so a whole .bin
-    cannot vouch for a broken safetensors index. peft resolves only the singular adapter names and
-    has no shard path, so a numbered adapter set is unloadable however complete it looks."""
+    """transformers takes model.safetensors, then its index, then pytorch_model.bin, and never falls
+    back once one matches, so a whole .bin cannot vouch for a broken safetensors index. peft
+    resolves only the singular adapter names and has no shard path, so numbered sets never load."""
     _repo_with(tmp_path, snapshots = {SNAPSHOT: files}, refs = {"main": UPSTREAM_HEAD})
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is torn
@@ -1807,9 +1804,8 @@ def test_the_family_a_loader_would_pick_is_the_one_judged(tmp_path, monkeypatch,
 
 
 def test_the_load_id_pins_the_whole_snapshot_when_the_default_ref_is_torn(tmp_path, monkeypatch):
-    """A secondary ref dangles, so recovery fires while refs/main still resolves, but it lands on a
-    torn revision. Classifying by filename puts that revision among the payload snapshots, so the
-    membership test alone hands the row back to the repo id and loads the half download."""
+    """Recovery fires off a secondary dangling ref while refs/main resolves to a torn revision, and
+    that revision classifies, so membership alone would hand the row back to the half download."""
     repo_dir = _repo_with(
         tmp_path,
         snapshots = {
@@ -1830,8 +1826,7 @@ def test_the_load_id_pins_the_whole_snapshot_when_the_default_ref_is_torn(tmp_pa
 
 
 def test_the_load_id_stays_the_repo_id_when_the_default_ref_is_whole(tmp_path, monkeypatch):
-    """Control for the test above: where refs/main lands on the complete payload the repo id is
-    what loads, so the row must keep advertising it rather than pin a path."""
+    """Control: where refs/main lands on the complete payload the repo id is what loads."""
     repo_dir = _repo_with(
         tmp_path,
         snapshots = {
@@ -2796,8 +2791,7 @@ def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, mo
             },
             False,
         ),
-        # No index rescues a numbered adapter set: peft resolves only the singular name, so the
-        # whole family is unloadable rather than merely unindexed.
+        # No index rescues a numbered adapter set: peft resolves only the singular name.
         (
             {
                 "adapter_config.json": b'{"peft_type":"LORA"}',

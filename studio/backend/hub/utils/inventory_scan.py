@@ -559,9 +559,8 @@ def _default_ref_names_an_absent_snapshot(repo_cache_dir: Path) -> bool:
 def repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
     """Whether loading *repo_cache_dir* by repo id lands on nothing.
 
-    Being in the active cache normally makes the id the right load target, but not while
-    ``refs/main`` names a commit with no directory: an offline load by id finds nothing there even
-    though a complete snapshot sits beside it, so those rows need a snapshot pinned.
+    The active cache normally makes the id the right target, but not while ``refs/main`` names a
+    commit with no directory: the load finds nothing even though a snapshot sits beside it.
     """
     return _default_ref_names_an_absent_snapshot(repo_cache_dir)
 
@@ -868,9 +867,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         )
         groups[kind].setdefault(family, set()).add(index)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
-    # from_pretrained reads the shard map from the index and never globs filenames, so shards
-    # without one are invisible to it. Named for the family, so model-*.safetensors wants
-    # model.safetensors.index.json.
+    # from_pretrained reads the shard map from the index and never globs, so shards without one are
+    # invisible. Named for the family: model-*.safetensors wants model.safetensors.index.json.
     unloadable = frozenset(
         family
         for family in groups["base"]
@@ -878,8 +876,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json"
         )
     )
-    # peft resolves the singular adapter_model.safetensors or adapter_model.bin and has no shard
-    # path at all, so a numbered adapter set is unloadable however complete it looks.
+    # peft resolves only the singular adapter_model.* and has no shard path, so a numbered adapter
+    # set is unloadable however complete it looks.
     unloadable |= frozenset(groups["adapter"])
     return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable), unloadable)
 
@@ -887,9 +885,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
 def _index_cannot_serve_its_shards(index_path: Path) -> bool:
     """Whether *index_path* would fail to hand ``from_pretrained`` a shard set.
 
-    Existing is not enough: the loader parses the file and opens every name in ``weight_map``, so a
-    truncated index or one naming a shard the interrupted download never wrote is as unloadable as
-    no index at all, while the numbered filenames still read as a whole family.
+    Existing is not enough: the loader parses it and opens every ``weight_map`` name, so a truncated
+    index or one naming a shard never written is as unloadable as no index at all.
     """
     try:
         if not index_path.is_file() or index_path.stat().st_size <= 0:
@@ -902,8 +899,7 @@ def _index_cannot_serve_its_shards(index_path: Path) -> bool:
     if not isinstance(weight_map, dict) or not weight_map:
         return True
     for shard in set(weight_map.values()):
-        # Names are relative to the index, so anything reaching outside it is not a shard of this
-        # family; treating it as absent keeps the check from following it off the snapshot.
+        # Names are relative to the index: anything reaching outside is not a shard of this family.
         if not isinstance(shard, str) or not shard:
             return True
         parts = PurePosixPath(shard.replace("\\", "/"))
@@ -935,14 +931,12 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
     other = "base" if wanted == "adapter" else "adapter"
     order = (wanted, other)
     for kind in order:
-        # Both loaders try safetensors before pickle and neither falls back once it has picked, so
-        # judge in that order: a whole pytorch_model.bin cannot vouch for a snapshot whose
-        # safetensors index is the one from_pretrained will choose and fail on.
+        # Both loaders try safetensors before pickle and never fall back once one matches, so judge
+        # in that order: a whole pytorch_model.bin cannot vouch for a broken safetensors index.
         for suffix in (".safetensors", ".bin"):
             if suffix in payload.whole[kind]:
-                # Only the row's own kind proves it loads: otherwise a lone adapter_model.bin (which
-                # reads as checkpoint-like) stood in as the base payload of a row with no base
-                # weights.
+                # Only the row's own kind proves it loads: a lone adapter_model.bin reads as
+                # checkpoint-like and would stand in for a row with no base weights.
                 return kind != wanted
             families = {
                 family: indices
@@ -950,8 +944,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 if family[3] == suffix
             }
             if families:
-                # An unloadable family is never complete rather than vetoing the snapshot: it is not
-                # a family this row can load, so a whole unsharded one beside it still serves.
+                # An unloadable family counts as incomplete rather than vetoing the snapshot: a
+                # whole unsharded one beside it still serves.
                 return all(
                     indices != set(range(1, family[2] + 1)) or family in payload.unloadable_families
                     for family, indices in families.items()

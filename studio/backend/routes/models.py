@@ -3087,8 +3087,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     if repo_path is None or active_root is None:
         return None
     try:
-        # A recovered repo sits in the active cache but its refs/main names nothing on disk, so the
-        # id an offline compat client would load resolves to no snapshot. Those still need a pin.
+        # A recovered repo's refs/main names nothing, so its id resolves nowhere and needs a pin.
         if repo_path.parent.resolve(strict = False) == active_root and not _repo_id_will_not_resolve(
             repo_path
         ):

@@ -319,9 +319,8 @@ def _resolve_load_identity(
         if (
             default_snapshot is None
             or (payload_snapshots and str(default_snapshot) not in payload_snapshots)
-            # Membership only says the directory classifies, so refs/main can land on a torn
-            # revision while the caller picked a whole one. Loading by id would then resume-only a
-            # row that has a complete payload sitting beside it.
+            # Membership only says the directory classifies: refs/main can land on a torn revision
+            # while a complete payload sits beside it, so keep the id only when it lands on one.
             or (
                 default_snapshot != snapshot_path
                 and not hf_cache_scan.snapshot_holds_a_complete_payload(default_snapshot)

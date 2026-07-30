@@ -159,9 +159,8 @@ def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatc
 
 
 def test_list_cached_gguf_pins_a_snapshot_for_a_recovered_active_cache_repo(monkeypatch, tmp_path):
-    """Being in the active cache normally makes the repo id the load target, but not while
-    refs/main names a commit with no directory. The compat schema carries no partial flag, so an
-    offline client would follow the dangling ref and fail with a whole quant sitting beside it."""
+    """Being in the active cache normally makes the repo id the load target, but not while refs/main
+    names a commit with no directory: an offline client would follow the dangling ref and fail."""
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Recovered"
     snapshot = repo_dir / "snapshots" / ("a" * 40)

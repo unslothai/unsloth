@@ -1237,10 +1237,8 @@ def test_chat_autoload_records_a_terminal_validation_failure():
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
-    """recordTerminalFailure keys on the tag, so an untagged TypeError from a retry reads as "the
-    backend rejected this model" and the sweep walks on to the Hub download. A 401 refresh and the
-    Tauri auto-auth paths all reissue through retryWithCurrentToken, so the conversion has to sit
-    there as well as on the first attempt."""
+    """recordTerminalFailure keys on the tag, so an untagged TypeError from a retry reads as a
+    rejection: retries reissue through retryWithCurrentToken, so it tags like the first attempt."""
     src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
         encoding = "utf-8"
     )
@@ -1252,6 +1250,5 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     retry = retry.split("\n}\n", 1)[0]
     assert "fetchWithTauriNetworkRetry" in retry
     assert "throw asTransportFailure(err);" in retry
-    # The first attempt shares the helper rather than repeating the branch.
     first = src.split("export async function authFetch", 1)[1]
     assert "throw asTransportFailure(err);" in first
