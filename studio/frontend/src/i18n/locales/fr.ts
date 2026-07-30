@@ -595,7 +595,6 @@ export const fr = {
   },
   studio: {
     routeTitle: "Entraîner",
-    title: "Studio de fine-tuning",
     wizard: {
       modelTitle: "Modèle",
       modelDescription: "Sélectionner le modèle et la méthode d'entraînement",
@@ -670,6 +669,7 @@ export const fr = {
         "Certains emplacements de jeux de données n'ont pas pu être analysés.",
       noLocalDatasets:
         "Rien sur cet appareil pour le moment. Téléchargez un jeu de données depuis le Hub, créez-en un dans Recettes ou téléversez un fichier.",
+      openDataRecipes: "Ouvrir les recettes de données",
       searchingHub: "Recherche sur Hugging Face…",
       noDatasetsFound: "Aucun jeu de données trouvé.",
       tokenRejectedTitle: "Token Hugging Face refusé",
@@ -766,70 +766,11 @@ export const fr = {
       checkingDataset: "Vérification du jeu de données...",
       trainingConfig: "Configuration d'entraînement",
     },
-    model: {
-      title: "Modèle",
-      description: "Sélectionnez le modèle de base et la méthode d'entraînement",
-      fasterTrainingBadge: "Entraînement 2x plus rapide",
-      baseModel: "Modèle de base",
-      localModel: "Modèle local",
-      localModelTooltip:
-        "Chemin vers un modèle téléchargé localement ou un dépôt HF personnalisé.",
-      scanningLocalAndCachedModels:
-        "Analyse des modèles locaux et en cache...",
-      scanning: "Analyse...",
-      scanningLocalModels: "Analyse des modèles locaux...",
-      noLocalModelsFound: "Aucun modèle local trouvé",
-      noLocalModelsFoundManual:
-        "Aucun modèle local trouvé. Saisissez le chemin manuellement.",
-      failedToLoadLocalModels: "Échec du chargement des modèles locaux",
-      hfCache: "Cache HF",
-      customFolders: "Dossiers personnalisés",
-      localDir: "Répertoire local",
-      huggingFaceModel: "Modèle Hugging Face",
-      huggingFaceModelTooltip:
-        "Recherchez des modèles Hugging Face ou choisissez dans notre liste recommandée.",
-      searchModels: "Rechercher des modèles...",
-      searching: "Recherche...",
-      noModelsFound: "Aucun modèle trouvé",
-      needsVram: "Nécessite ~{vram} Go de VRAM (GPU : {gpu} Go)",
-      tightVram: "~{vram} Go de VRAM (juste sur {gpu} Go)",
-      vramEstimate: "~{vram} Go de VRAM",
-      method: "Méthode",
-      methodTooltip:
-        "QLoRA utilise la quantification 4 bits pour la VRAM la plus faible. LoRA utilise 16 bits. Full met à jour tous les poids. CPT (Continued Pretraining) entraîne sur du texte brut pour adapter le modèle à un nouveau domaine sans formatage de discussion.",
-      readMore: "En savoir plus",
-      fullFineTune: "Fine-tune complet",
-      checkingToken: "Vérification du token...",
-      getOrUpdateToken: "Obtenir ou mettre à jour le token",
-      huggingFaceTokenOptional: "Token Hugging Face (facultatif)",
-      continuedPretraining: "Pré-entraînement continu",
-      localModels: "Modèles locaux",
-      localModelsFound: "{count} modèles locaux/en cache trouvés",
-      loadingLocalModels: "Chargement des modèles locaux...",
-    },
     dataset: {
-      title: "Jeu de données",
-      description: "Sélectionnez ou téléversez des données d'entraînement",
       source: "Source du jeu de données",
       sourceAriaLabel: "Source du jeu de données",
-      chooseDataset: "Choisir un jeu de données",
-      chooseDatasetTooltip:
-        "Utilisez les onglets de la fenêtre pour basculer entre Hugging Face et les sorties de recettes locales.",
-      localTab: "Local",
-      searchHuggingFaceDatasets: "Rechercher des jeux de données Hugging Face...",
-      searchLocalDatasets: "Rechercher des jeux de données locaux...",
-      searching: "Recherche...",
-      noDatasetsFound: "Aucun jeu de données trouvé",
-      loadingLocalDatasets: "Chargement des jeux de données locaux...",
       failedToLoadLocalDatasets:
         "Échec du chargement des jeux de données locaux.",
-      noLocalDatasetsYet: "Aucun jeu de données local pour le moment.",
-      noLocalDatasetsMatchSearch:
-        "Aucun jeu de données local ne correspond à la recherche.",
-      openDataRecipes: "Ouvrir les recettes de données",
-      browsingSource:
-        "Navigation dans {browsing}. La sélection actuelle reste {current}.",
-      localDatasets: "Jeux de données locaux",
       localDataset: "Jeu de données local",
       localDatasetRows: " / {count} lignes",
       huggingFaceDataset: "Jeu de données Hugging Face",
@@ -841,7 +782,6 @@ export const fr = {
       updated: "Mis à jour",
       evalDataset: "Jeu de données d'évaluation",
       uploading: "Téléversement...",
-      upload: "Téléverser",
       uploadEvalFile: "Téléverser un fichier d'évaluation",
       evalDatasetDescription:
         "Facultatif. Si non fourni, une petite portion sera prélevée sur les données d'entraînement.",
@@ -918,7 +858,6 @@ export const fr = {
       uploadSingleFileDescription:
         "Le téléversement du jeu de données d'entraînement accepte un seul fichier.",
       checkingToken: "Vérification du token...",
-      getOrUpdateToken: "Obtenir ou mettre à jour le token",
       preview: "Aperçu du jeu de données",
       split: "Split",
       subset: "Sous-ensemble",
@@ -950,8 +889,6 @@ export const fr = {
       },
     },
     params: {
-      title: "Paramètres",
-      description: "Configurez les hyperparamètres d'entraînement",
       mode: {
         simple: "Simple",
         advanced: "Avancé",
@@ -1061,11 +998,6 @@ export const fr = {
       readMore: "En savoir plus",
     },
     training: {
-      title: "Entraînement",
-      description: "Surveillez et contrôlez l'entraînement",
-      chartNoDataTitle: "Aucune donnée d'entraînement pour le moment",
-      chartNoDataDescription:
-        "Démarrez l'entraînement pour voir la progression de la perte",
       startTraining: "Démarrer l'entraînement",
       starting: "Démarrage...",
       loadingModel: "Chargement du modèle...",
@@ -1077,12 +1009,8 @@ export const fr = {
         "Impossible de vérifier les paramètres de ce modèle. Vérifiez votre connexion ou votre token Hugging Face, puis réessayez.",
       datasetUnverified:
         "Impossible de vérifier si le jeu de données est compatible avec ce modèle. Vérifiez votre connexion ou votre token Hugging Face ; le démarrage de l'entraînement relancera la vérification.",
-      configLabel: "Configuration d'entraînement",
-      upload: "Téléverser",
       uploadConfigTooltip: "Charger une configuration YAML enregistrée",
-      save: "Enregistrer",
       saveConfigTooltip: "Télécharger la configuration actuelle au format YAML",
-      reset: "Réinitialiser",
       resetConfigTooltip: "Réinitialiser aux valeurs par défaut du modèle",
       configLoaded: "Configuration chargée",
       failedToLoadConfig: "Échec du chargement de la configuration",

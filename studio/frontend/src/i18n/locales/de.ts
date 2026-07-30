@@ -611,7 +611,6 @@ export const de = {
   },
   studio: {
     routeTitle: "Trainieren",
-    title: "Fine-Tuning-Studio",
     wizard: {
       modelTitle: "Modell",
       modelDescription: "Modell und Trainingsmethode auswählen",
@@ -687,6 +686,7 @@ export const de = {
         "Einige Datensatzspeicherorte konnten nicht durchsucht werden.",
       noLocalDatasets:
         "Noch nichts auf diesem Gerät. Laden Sie einen Datensatz aus dem Hub herunter, erstellen Sie einen unter „Rezepte“ oder laden Sie eine Datei hoch.",
+      openDataRecipes: "Rezepte öffnen",
       searchingHub: "Hugging Face wird durchsucht…",
       noDatasetsFound: "Keine Datensätze gefunden.",
       tokenRejectedTitle: "Hugging Face-Token abgelehnt",
@@ -781,70 +781,11 @@ export const de = {
       checkingDataset: "Datensatz wird geprüft...",
       trainingConfig: "Trainingskonfiguration",
     },
-    model: {
-      title: "Modell",
-      description: "Basismodell und Trainingsmethode auswählen",
-      fasterTrainingBadge: "2x schnelleres Training",
-      baseModel: "Basismodell",
-      localModel: "Lokales Modell",
-      localModelTooltip:
-        "Pfad zu einem lokal heruntergeladenen Modell oder einem eigenen HF-Repo.",
-      scanningLocalAndCachedModels:
-        "Lokale und zwischengespeicherte Modelle werden gescannt...",
-      scanning: "Wird gescannt...",
-      scanningLocalModels: "Lokale Modelle werden gescannt...",
-      noLocalModelsFound: "Keine lokalen Modelle gefunden",
-      noLocalModelsFoundManual:
-        "Keine lokalen Modelle gefunden. Pfad manuell eingeben.",
-      failedToLoadLocalModels: "Lokale Modelle konnten nicht geladen werden",
-      hfCache: "HF-Cache",
-      customFolders: "Eigene Ordner",
-      localDir: "Lokales Verzeichnis",
-      huggingFaceModel: "Hugging Face Modell",
-      huggingFaceModelTooltip:
-        "Durchsuchen Sie Hugging Face Modelle oder wählen Sie aus unserer empfohlenen Liste.",
-      searchModels: "Modelle suchen...",
-      searching: "Wird gesucht...",
-      noModelsFound: "Keine Modelle gefunden",
-      needsVram: "Benötigt ~{vram} GB VRAM (GPU: {gpu} GB)",
-      tightVram: "~{vram} GB VRAM (knapp bei {gpu} GB)",
-      vramEstimate: "~{vram} GB VRAM",
-      method: "Methode",
-      methodTooltip:
-        "QLoRA nutzt 4-Bit-Quantisierung für minimalen VRAM. LoRA nutzt 16-Bit. Full aktualisiert alle Gewichte. CPT (Continued Pretraining) trainiert auf Rohtext, um das Modell ohne Chat-Formatierung an eine neue Domäne anzupassen.",
-      readMore: "Mehr erfahren",
-      fullFineTune: "Vollständiges Fine-Tuning",
-      checkingToken: "Token wird geprüft...",
-      getOrUpdateToken: "Token abrufen oder aktualisieren",
-      huggingFaceTokenOptional: "Hugging Face Token (optional)",
-      continuedPretraining: "Continued Pretraining",
-      localModels: "Lokale Modelle",
-      localModelsFound: "{count} lokale/zwischengespeicherte Modelle gefunden",
-      loadingLocalModels: "Lokale Modelle werden geladen...",
-    },
     dataset: {
-      title: "Datensatz",
-      description: "Trainingsdaten auswählen oder hochladen",
       source: "Datensatzquelle",
       sourceAriaLabel: "Datensatzquelle",
-      chooseDataset: "Datensatz auswählen",
-      chooseDatasetTooltip:
-        "Wechseln Sie über die Popup-Tabs zwischen Hugging Face und lokalen Recipe-Ausgaben.",
-      localTab: "Lokal",
-      searchHuggingFaceDatasets: "Hugging Face Datensätze suchen...",
-      searchLocalDatasets: "Lokale Datensätze suchen...",
-      searching: "Wird gesucht...",
-      noDatasetsFound: "Keine Datensätze gefunden",
-      loadingLocalDatasets: "Lokale Datensätze werden geladen...",
       failedToLoadLocalDatasets:
         "Lokale Datensätze konnten nicht geladen werden.",
-      noLocalDatasetsYet: "Noch keine lokalen Datensätze.",
-      noLocalDatasetsMatchSearch:
-        "Keine lokalen Datensätze entsprechen der Suche.",
-      openDataRecipes: "Rezepte öffnen",
-      browsingSource:
-        "Sie durchsuchen {browsing}. Die aktuelle Auswahl bleibt {current}.",
-      localDatasets: "Lokale Datensätze",
       localDataset: "Lokaler Datensatz",
       localDatasetRows: " / {count} Zeilen",
       huggingFaceDataset: "Hugging Face Datensatz",
@@ -856,7 +797,6 @@ export const de = {
       updated: "Aktualisiert",
       evalDataset: "Eval-Datensatz",
       uploading: "Wird hochgeladen...",
-      upload: "Hochladen",
       uploadEvalFile: "Eval-Datei hochladen",
       evalDatasetDescription:
         "Optional. Wird keiner angegeben, wird ein kleiner Teil aus den Trainingsdaten abgetrennt.",
@@ -929,7 +869,6 @@ export const de = {
       uploadSingleFileDescription:
         "Der Trainingsdatensatz-Upload akzeptiert eine einzelne Datei.",
       checkingToken: "Token wird geprüft...",
-      getOrUpdateToken: "Token abrufen oder aktualisieren",
       preview: "Datensatz-Vorschau",
       split: "Split",
       subset: "Teilmenge",
@@ -961,8 +900,6 @@ export const de = {
       },
     },
     params: {
-      title: "Parameter",
-      description: "Trainings-Hyperparameter konfigurieren",
       mode: {
         simple: "Einfach",
         advanced: "Erweitert",
@@ -1071,11 +1008,6 @@ export const de = {
       readMore: "Mehr erfahren",
     },
     training: {
-      title: "Training",
-      description: "Training überwachen und steuern",
-      chartNoDataTitle: "Noch keine Trainingsdaten",
-      chartNoDataDescription:
-        "Starten Sie das Training, um den Loss-Verlauf zu sehen",
       startTraining: "Training starten",
       starting: "Wird gestartet...",
       loadingModel: "Modell wird geladen...",
@@ -1087,12 +1019,8 @@ export const de = {
         "Die Modelleinstellungen konnten nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token und versuchen Sie es erneut.",
       datasetUnverified:
         "Die Kompatibilität des Datensatzes mit diesem Modell konnte nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token. Beim Start des Trainings wird die Prüfung erneut versucht.",
-      configLabel: "Trainingskonfiguration",
-      upload: "Hochladen",
       uploadConfigTooltip: "Eine gespeicherte YAML-Konfiguration laden",
-      save: "Speichern",
       saveConfigTooltip: "Aktuelle Konfiguration als YAML herunterladen",
-      reset: "Zurücksetzen",
       resetConfigTooltip: "Auf Modellstandardwerte zurücksetzen",
       configLoaded: "Konfiguration geladen",
       failedToLoadConfig: "Konfiguration konnte nicht geladen werden",

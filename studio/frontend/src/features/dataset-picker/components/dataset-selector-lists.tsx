@@ -8,6 +8,7 @@ import {
   RetryButton,
 } from "@/components/resource-picker/picker-tab-toggle";
 import { SelectablePickerItem } from "@/components/resource-picker/selectable-picker-item";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cacheLocalPathMatchesSelection } from "@/features/training";
 import { useT } from "@/i18n";
@@ -37,6 +38,7 @@ export function DatasetDeviceList({
   warning,
   hasQuery,
   onRetry,
+  onOpenDataRecipes,
   selectedLocalPath,
   selectedHfRepoId,
   onPick,
@@ -47,6 +49,7 @@ export function DatasetDeviceList({
   warning: boolean;
   hasQuery: boolean;
   onRetry: () => void;
+  onOpenDataRecipes: () => void;
   selectedLocalPath: string | null;
   selectedHfRepoId: string | null;
   onPick: (item: DatasetDeviceItem) => void;
@@ -77,8 +80,18 @@ export function DatasetDeviceList({
       return null;
     }
     return (
-      <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-        {t("studio.datasetPicker.noLocalDatasets")}
+      <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+        <p className="text-xs text-muted-foreground">
+          {t("studio.datasetPicker.noLocalDatasets")}
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onOpenDataRecipes}
+        >
+          {t("studio.datasetPicker.openDataRecipes")}
+        </Button>
       </div>
     );
   }

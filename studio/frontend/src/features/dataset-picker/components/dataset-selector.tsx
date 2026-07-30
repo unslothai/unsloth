@@ -30,6 +30,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { datasetSelectionDisplayName } from "../lib/display";
 import {
@@ -81,6 +82,7 @@ export function DatasetSelector({
   triggerDataTour?: string;
 }) {
   const t = useT();
+  const navigate = useNavigate();
   const dataset = useTrainingConfigStore((s) => s.dataset);
   const uploadedFile = useTrainingConfigStore((s) => s.uploadedFile);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
@@ -113,6 +115,10 @@ export function DatasetSelector({
   const retryLocalDatasets = useCallback(() => {
     refreshInventory().catch(() => undefined);
   }, [refreshInventory]);
+  const openDataRecipes = useCallback(() => {
+    closePicker();
+    navigate({ to: "/data-recipes" });
+  }, [closePicker, navigate]);
 
   const cachedDatasetById = useMemo(() => {
     const map = new Map<string, CachedInventoryRow>();
@@ -363,6 +369,7 @@ export function DatasetSelector({
           warning={inventoryWarning}
           hasQuery={activeQuery.length > 0}
           onRetry={retryLocalDatasets}
+          onOpenDataRecipes={openDataRecipes}
           selectedLocalPath={datasetSource === "upload" ? uploadedFile : null}
           selectedHfRepoId={datasetSource === "huggingface" ? dataset : null}
           onPick={(item) => {

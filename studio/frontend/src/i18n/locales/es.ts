@@ -596,7 +596,6 @@ export const es = {
   },
   studio: {
     routeTitle: "Entrenar",
-    title: "Studio de fine-tuning",
     wizard: {
       modelTitle: "Modelo",
       modelDescription: "Selecciona el modelo y el método de entrenamiento",
@@ -671,6 +670,7 @@ export const es = {
         "No se pudieron explorar algunas ubicaciones de conjuntos de datos.",
       noLocalDatasets:
         "Todavía no hay nada en este dispositivo. Descarga un conjunto de datos del Hub, crea uno en Recetas o sube un archivo.",
+      openDataRecipes: "Abrir recetas de datos",
       searchingHub: "Buscando en Hugging Face…",
       noDatasetsFound: "No se encontraron conjuntos de datos.",
       tokenRejectedTitle: "Hugging Face rechazó el token",
@@ -765,71 +765,11 @@ export const es = {
       checkingDataset: "Comprobando conjunto de datos...",
       trainingConfig: "Configuración de entrenamiento",
     },
-    model: {
-      title: "Modelo",
-      description: "Selecciona el modelo base y el método de entrenamiento",
-      fasterTrainingBadge: "Entrenamiento 2x más rápido",
-      baseModel: "Modelo base",
-      localModel: "Modelo local",
-      localModelTooltip:
-        "Ruta a un modelo descargado localmente o a un repositorio de HF personalizado.",
-      scanningLocalAndCachedModels:
-        "Analizando modelos locales y en caché...",
-      scanning: "Analizando...",
-      scanningLocalModels: "Analizando modelos locales...",
-      noLocalModelsFound: "No se encontraron modelos locales",
-      noLocalModelsFoundManual:
-        "No se encontraron modelos locales. Introduce la ruta manualmente.",
-      failedToLoadLocalModels: "No se pudieron cargar los modelos locales",
-      hfCache: "Caché de HF",
-      customFolders: "Carpetas personalizadas",
-      localDir: "Directorio local",
-      huggingFaceModel: "Modelo de Hugging Face",
-      huggingFaceModelTooltip:
-        "Busca modelos en Hugging Face o elige de nuestra lista recomendada.",
-      searchModels: "Buscar modelos...",
-      searching: "Buscando...",
-      noModelsFound: "No se encontraron modelos",
-      needsVram: "Necesita ~{vram} GB de VRAM (GPU: {gpu} GB)",
-      tightVram: "~{vram} GB de VRAM (ajustado en {gpu} GB)",
-      vramEstimate: "~{vram} GB de VRAM",
-      method: "Método",
-      methodTooltip:
-        "QLoRA usa cuantización de 4 bits para la menor VRAM. LoRA usa 16 bits. Full actualiza todos los pesos. CPT (Continued Pretraining) entrena con texto sin procesar para adaptar el modelo a un nuevo dominio sin formato de chat.",
-      readMore: "Leer más",
-      fullFineTune: "Fine-tune completo",
-      checkingToken: "Comprobando token...",
-      getOrUpdateToken: "Obtener o actualizar token",
-      huggingFaceTokenOptional: "Token de Hugging Face (opcional)",
-      continuedPretraining: "Preentrenamiento continuo",
-      localModels: "Modelos locales",
-      localModelsFound: "{count} modelos locales/en caché encontrados",
-      loadingLocalModels: "Cargando modelos locales...",
-    },
     dataset: {
-      title: "Conjunto de datos",
-      description: "Selecciona o sube datos de entrenamiento",
       source: "Origen del conjunto de datos",
       sourceAriaLabel: "Origen del conjunto de datos",
-      chooseDataset: "Elegir conjunto de datos",
-      chooseDatasetTooltip:
-        "Usa las pestañas emergentes para alternar entre Hugging Face y las salidas de recetas locales.",
-      localTab: "Local",
-      searchHuggingFaceDatasets:
-        "Buscar conjuntos de datos de Hugging Face...",
-      searchLocalDatasets: "Buscar conjuntos de datos locales...",
-      searching: "Buscando...",
-      noDatasetsFound: "No se encontraron conjuntos de datos",
-      loadingLocalDatasets: "Cargando conjuntos de datos locales...",
       failedToLoadLocalDatasets:
         "No se pudieron cargar los conjuntos de datos locales.",
-      noLocalDatasetsYet: "Aún no hay conjuntos de datos locales.",
-      noLocalDatasetsMatchSearch:
-        "Ningún conjunto de datos local coincide con la búsqueda.",
-      openDataRecipes: "Abrir recetas de datos",
-      browsingSource:
-        "Explorando {browsing}. La selección actual sigue siendo {current}.",
-      localDatasets: "Conjuntos de datos locales",
       localDataset: "Conjunto de datos local",
       localDatasetRows: " / {count} filas",
       huggingFaceDataset: "Conjunto de datos de Hugging Face",
@@ -841,7 +781,6 @@ export const es = {
       updated: "Actualizado",
       evalDataset: "Conjunto de datos de evaluación",
       uploading: "Subiendo...",
-      upload: "Subir",
       uploadEvalFile: "Subir archivo de evaluación",
       evalDatasetDescription:
         "Opcional. Si no se proporciona, se separará una pequeña porción de los datos de entrenamiento.",
@@ -916,7 +855,6 @@ export const es = {
       uploadSingleFileDescription:
         "La subida del conjunto de datos de entrenamiento acepta un solo archivo.",
       checkingToken: "Comprobando token...",
-      getOrUpdateToken: "Obtener o actualizar token",
       preview: "Vista previa del conjunto de datos",
       split: "Partición",
       subset: "Subconjunto",
@@ -948,8 +886,6 @@ export const es = {
       },
     },
     params: {
-      title: "Parámetros",
-      description: "Configura los hiperparámetros de entrenamiento",
       mode: {
         simple: "Simple",
         advanced: "Avanzado",
@@ -1057,11 +993,6 @@ export const es = {
       readMore: "Leer más",
     },
     training: {
-      title: "Entrenamiento",
-      description: "Monitorea y controla el entrenamiento",
-      chartNoDataTitle: "Aún no hay datos de entrenamiento",
-      chartNoDataDescription:
-        "Inicia el entrenamiento para ver el progreso de la pérdida",
       startTraining: "Iniciar entrenamiento",
       starting: "Iniciando...",
       loadingModel: "Cargando modelo...",
@@ -1073,12 +1004,8 @@ export const es = {
         "No se pudo verificar la configuración de este modelo. Comprueba la conexión o el token de Hugging Face y vuelve a intentarlo.",
       datasetUnverified:
         "No se pudo verificar si el conjunto de datos es compatible con este modelo. Comprueba la conexión o el token de Hugging Face; al iniciar el entrenamiento se volverá a intentar la comprobación.",
-      configLabel: "Configuración de entrenamiento",
-      upload: "Subir",
       uploadConfigTooltip: "Carga una configuración YAML guardada",
-      save: "Guardar",
       saveConfigTooltip: "Descarga la configuración actual como YAML",
-      reset: "Restablecer",
       resetConfigTooltip: "Restablece a los valores predeterminados del modelo",
       configLoaded: "Configuración cargada",
       failedToLoadConfig: "No se pudo cargar la configuración",
