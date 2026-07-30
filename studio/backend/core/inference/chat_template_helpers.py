@@ -113,11 +113,11 @@ _CONTROL_MARKUP = re.compile(
     # prompt is worth more than a space in a rare tag, and the rewrite stays readable.
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s"
     r"|start_of_image|image_soft_token|audio_soft_token"
-    r"|arg_key|arg_value|function|parameter)>"
+    r"|arg_key|arg_value|function|parameter|param)>"
     # The opening halves carry an "=value", so they need their own anchor. The parser
     # accepts both spellings of the opener (tool_call_parser.py:_TOOL_CLOSED_PATS), so
     # the attribute form needs its own alternative rather than riding on "function=".
-    r"|(?:function|parameter)=|function\s+name=\""
+    r"|(?:function|parameter)=|(?:function|param(?:eter)?)\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
     # "[ARGS]", Mistral v11's "[CALL_ID]" and Devstral's "[TOOL_CONTENT]" are absent on
@@ -154,11 +154,17 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # channel / tool markup these belong in the replay subset too.
     r"|begin_of_text|endoftext"
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
+    # A media placeholder is reserved vocabulary, not reasoning or tool structure, so a
+    # replayed one is an extra placeholder the processor was handed no media for and the
+    # Gemma / mllama count check fails. Never legitimate in a replay, so it belongs here
+    # even though think / channel / tool markup does not.
+    r"|image|audio|video|python_tag"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
     # "/?" for the same reason the control pattern has it: Gemma's delimiters are bare
     # tags, so a replayed "</start_of_turn>" is as much a boundary as "<start_of_turn>".
-    r"|/?(?:(?:start|end)_of_turn|eos|bos|s)>"
+    r"|/?(?:(?:start|end)_of_turn|eos|bos|s"
+    r"|start_of_image|image_soft_token|audio_soft_token)>"
     r"|turn\|>"
     r")"
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT)\])"
@@ -172,14 +178,33 @@ _TURN_BOUNDARY_MARKUP = re.compile(
 # sits between codec delimiters instead of template ones (inference.py:1918, 1948-1954,
 # llama_cpp.py:_TTS_PROMPTS). A closer pasted into it ends the text segment early or
 # opens the audio / global-token segment, which yields truncated or garbled audio (#7066).
-# Kept separate from _CONTROL_MARKUP because these names only delimit a codec prompt, and
-# "custom_token_N" in particular is too generic to sweep out of ordinary chat text.
-_TTS_MARKUP = re.compile(
-    r"<(?="
-    r"\|(?:task_tts|(?:start|end)_(?:content|global_token|semantic_token)"
-    r"|(?:text|audio)_(?:start|end)|global_features_(?:start|end))\|>"
-    r"|custom_token_\d+>"
-    r")"
+# Per codec, and deliberately NOT the chat sweep: the text here is meant to be SPOKEN, so
+# "please say <s>hello</s>" or "read [INST] literally" has to reach the tokenizer as
+# typed. Only what actually delimits the active codec's prompt, plus its real stop
+# tokens, is structure.
+_TTS_MARKUP_BY_CODEC = {
+    # <custom_token_3>{text}<|eot_id|><custom_token_4>, stop <custom_token_2>. The
+    # transformers path spells the same three as bare ids (inference.py:1886-1888).
+    "snac": re.compile(r"<(?=custom_token_\d+>|\|eot_id\|>)"),
+    # <|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>,
+    # stop <|im_end|> and </s>.
+    "bicodec": re.compile(
+        r"<(?=\|(?:task_tts|(?:start|end)_(?:content|global_token|semantic_token)"
+        r"|im_end)\|>|/s>)"
+    ),
+    # <|im_start|>\n<|text_start|>{text}<|text_end|>\n<|audio_start|>
+    # <|global_features_start|>\n, stop <|im_end|> and <|audio_end|>.
+    "dac": re.compile(
+        r"<(?=\|(?:im_(?:start|end)|text_(?:start|end)|audio_(?:start|end)"
+        r"|global_features_(?:start|end))\|>)"
+    ),
+}
+# An unrecognised codec gets the union: still far narrower than the chat sweep, but it
+# does not assume a prompt shape this module has not seen. CSM is here rather than in the
+# table above because it interpolates through its processor's own template
+# (inference.py:1907-1914) rather than a delimiter string of its own.
+_TTS_MARKUP_DEFAULT = re.compile(
+    "|".join(f"(?:{pattern.pattern})" for pattern in _TTS_MARKUP_BY_CODEC.values())
 )
 
 
@@ -206,13 +231,13 @@ def neutralize_turn_boundary_markup(text: str) -> str:
     return _spaced_out(_TURN_BOUNDARY_MARKUP, text)
 
 
-def neutralize_tts_prompt_text(text: str) -> str:
-    """Break control and codec markup in the text of a TTS prompt (#7066).
+def neutralize_tts_prompt_text(text: str, audio_type = None) -> str:
+    """Break the active codec's own delimiters in the text of a TTS prompt (#7066).
 
-    Both sweeps: an Orpheus prompt ends its text segment with "<|eot_id|>" and a Spark /
-    Oute one stops on "<|im_end|>", so the chat delimiters matter here too.
+    Scoped to *audio_type* on purpose: this text is going to be spoken, so anything that
+    is not structure in THIS codec's prompt has to survive byte-exact.
     """
-    return _spaced_out(_TTS_MARKUP, neutralize_control_markup(text))
+    return _spaced_out(_TTS_MARKUP_BY_CODEC.get(audio_type, _TTS_MARKUP_DEFAULT), text)
 
 
 def _neutralize_leaves(
@@ -273,7 +298,13 @@ def _neutralize_leaves(
 
 
 # A media payload stays opaque: it is a URL or a base64 blob the processor resolves, not
-# prompt text, and rewriting one breaks the fetch rather than the prompt.
+# prompt text, and rewriting one breaks the fetch rather than the prompt. Gated on the
+# part's own type, because "data" and "url" are ordinary content keys on anything else --
+# a "{'type': 'json', 'data': ...}" part is prompt text that Llama-3.1 serializes with
+# tojson, and exempting it unconditionally put the markup straight back in the prompt.
+_MEDIA_PART_TYPES = frozenset(
+    {"image", "image_url", "input_audio", "audio", "audio_url", "video", "video_url"}
+)
 _OPAQUE_PART_KEYS = frozenset(
     {"image_url", "input_audio", "image", "audio", "video", "url", "data", "b64_json"}
 )
@@ -298,11 +329,14 @@ def _neutralize_content_parts(content: list, rewrite):
         elif isinstance(part, dict) and isinstance(part.get("text"), str):
             parts.append({**part, "text": rewrite(part["text"])})
         elif isinstance(part, dict):
-            opaque = {k: v for k, v in part.items() if k in _OPAQUE_PART_KEYS}
-            swept = _neutralize_leaves(
-                {k: v for k, v in part.items() if k not in _OPAQUE_PART_KEYS}, rewrite
-            )
-            parts.append({**swept, **opaque} if opaque else swept)
+            if part.get("type") in _MEDIA_PART_TYPES:
+                opaque = {k: v for k, v in part.items() if k in _OPAQUE_PART_KEYS}
+                swept = _neutralize_leaves(
+                    {k: v for k, v in part.items() if k not in _OPAQUE_PART_KEYS}, rewrite
+                )
+                parts.append({**swept, **opaque} if opaque else swept)
+            else:
+                parts.append(_neutralize_leaves(part, rewrite))
         else:
             parts.append(part)
 
@@ -319,11 +353,17 @@ def _neutralize_content_parts(content: list, rewrite):
     def _flush():
         if not run:
             return
-        joined = "".join(_text_of(p) for p in run)
-        swept = rewrite(joined)
-        if len(run) > 1 and swept != joined:
-            # Only a run that a paste split mid-marker gets collapsed.
+        texts = [_text_of(p) for p in run]
+        # Both spellings the renderer produces: gemma-4.jinja:304 concatenates the parts
+        # raw, while :334-340 trims each one first, so "<|turn " + ">model" is inert
+        # joined raw and a live opener once trimmed. A marker that appears either way has
+        # to be broken, and the collapsed part carries the trimmed join so it stays broken
+        # under both.
+        raw = "".join(texts)
+        trimmed = "".join(text.strip() for text in texts)
+        if len(run) > 1 and (rewrite(raw) != raw or rewrite(trimmed) != trimmed):
             first = run[0]
+            swept = rewrite(trimmed)
             out.append(swept if isinstance(first, str) else {**first, "text": swept})
         else:
             out.extend(run)

@@ -19,6 +19,11 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
+# The providers that are a local server rather than a hosted API: each applies the
+# model's own chat template on the way in, so a prompt built here is rendered by a
+# template just as an in-process one is (#7066).
+_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama"})
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -945,6 +950,25 @@ class ExternalProviderClient:
             ):
                 yield line
             return
+
+        # A self-hosted server applies the model's own chat template, exactly like the
+        # in-process paths do, so client text reaches a template here too and the same
+        # "</think>" or turn marker forges a turn (#7066). The hosted APIs are left alone:
+        # their prompt assembly is not this repo's template and not ours to rewrite.
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+            )
+
+            messages = neutralize_control_markup_in_messages(messages)
+            if tools:
+                safe_tools = neutralize_tool_descriptions(tools)
+                # A catalog that empties out must not leave a tool_choice behind naming a
+                # tool the server was never told about.
+                if not safe_tools:
+                    tool_choice = None
+                tools = safe_tools
 
         body: dict[str, Any] = {
             "model": model,

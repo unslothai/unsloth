@@ -1846,7 +1846,7 @@ class InferenceBackend:
         top_k = self._normalize_top_k(top_k)
         # Every codec below builds its prompt by concatenation rather than through a
         # template, so this is the one choke point for all four (#7066).
-        text = neutralize_tts_prompt_text(text)
+        text = neutralize_tts_prompt_text(text, audio_type)
 
         with self._generation_lock:
             if use_adapter is not None:
