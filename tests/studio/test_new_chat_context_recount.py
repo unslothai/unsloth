@@ -833,7 +833,7 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
     [
         # A tool result arriving on a tool-call part that already existed. It carries no `text`,
         # and filling it in adds no part, so neither a text length nor a part tally moves.
-        ('live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };', None),
+        ("live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };", None),
         # An edit to different text of the same length, which a size-based signature cannot see.
         ('live[0].content = [{ type: "text", text: "ih" }];', None),
         ("", 62),
