@@ -568,6 +568,12 @@ function getPromptQueueRunTargetIds(run: PromptQueueRun) {
   );
 }
 
+function promptQueueRunUsesLocalModel(run: PromptQueueRun) {
+  return run.items
+    .slice(Math.max(run.index, 0))
+    .some((item) => item.target.usesLocalModel);
+}
+
 function promptQueueRunMatchesThreadIds(
   run: PromptQueueRun,
   threadIds: string[],
@@ -703,7 +709,7 @@ function syncPromptQueueUI() {
       runId: run.id,
       current: runCurrent,
       total: runTotal,
-      local: getActivePromptQueueItem(run)?.target.usesLocalModel ?? true,
+      local: promptQueueRunUsesLocalModel(run),
     };
     for (const id of ids) {
       byThreadId[id] = entry;

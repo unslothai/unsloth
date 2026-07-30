@@ -17,6 +17,7 @@ const QUEUED_SETTING_KEYS = [
   "bypassPermissions",
   "permissionMode",
   "webFetchToolsEnabled",
+  "deepResearchEnabled",
   "ragEnabled",
   "ragSource",
   "ragMode",

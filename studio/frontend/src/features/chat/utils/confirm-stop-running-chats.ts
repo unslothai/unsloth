@@ -19,6 +19,16 @@ export interface StopRunningChatsDecision {
   promptQueueThreadIds: string[];
 }
 
+export function getLocalPromptQueueThreadIds(): string[] {
+  return [
+    ...new Set(
+      Object.entries(usePromptQueueUI.getState().byThreadId)
+        .filter(([, entry]) => entry.local)
+        .map(([threadId]) => threadId),
+    ),
+  ];
+}
+
 /**
  * Gate a model load / reload on local chats still generating or queued: they share one
  * llama-server, so a reload ends all of them. Ask first, then let the backend cancel active
@@ -36,15 +46,14 @@ export async function confirmStopRunningChatsIfNeeded(
   let running = Object.entries(runningByThreadId)
     .filter(([threadId, on]) => on && localRunByThreadId[threadId])
     .map(([threadId]) => threadId);
-  const promptQueueThreadIds: string[] = [];
+  const promptQueueThreadIds = getLocalPromptQueueThreadIds();
   const queuedRunIds = new Set<string>();
-  for (const [threadId, entry] of Object.entries(
-    usePromptQueueUI.getState().byThreadId,
-  )) {
-    if (!entry.local) {
+  const promptQueuesByThreadId = usePromptQueueUI.getState().byThreadId;
+  for (const threadId of promptQueueThreadIds) {
+    const entry = promptQueuesByThreadId[threadId];
+    if (!entry) {
       continue;
     }
-    promptQueueThreadIds.push(threadId);
     if (!queuedRunIds.has(entry.runId)) {
       queuedRunIds.add(entry.runId);
       running.push(threadId);

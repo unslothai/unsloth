@@ -106,14 +106,23 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
     assert "registerQueuedChatRunSettings(" in target
     assert "consumeQueuedChatRunSettings(resolvedThreadId)" in CHAT_ADAPTER
+    assert '"deepResearchEnabled"' in QUEUED_SETTINGS
+    assert CHAT_ADAPTER.index(
+        "consumeQueuedChatRunSettings(resolvedThreadId)"
+    ) < CHAT_ADAPTER.index("if (runtime.deepResearchEnabled && threadAlreadyResearched)")
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
-    assert "if (!entry.local)" in CONFIRM_MODEL_SWAP
+    assert "getLocalPromptQueueThreadIds" in CONFIRM_MODEL_SWAP
     assert "promptQueueThreadIds" in MODEL_RUNTIME
-    assert "requestPromptQueueStop(stopDecision.promptQueueThreadIds)" in MODEL_RUNTIME
+    assert "const promptQueueThreadIds = getLocalPromptQueueThreadIds()" in MODEL_RUNTIME
+    assert "requestPromptQueueStop(promptQueueThreadIds)" in MODEL_RUNTIME
+    assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
+    assert ".slice(Math.max(run.index, 0))" in THREAD
+    assert ".some((item) => item.target.usesLocalModel)" in THREAD
+    assert "local: promptQueueRunUsesLocalModel(run)" in THREAD
 
 
 def test_stop_delete_archive_and_clear_are_thread_scoped():

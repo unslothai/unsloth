@@ -30,7 +30,10 @@ import {
   validateModel,
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
-import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
+import {
+  confirmStopRunningChatsIfNeeded,
+  getLocalPromptQueueThreadIds,
+} from "../utils/confirm-stop-running-chats";
 import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
 import {
   GPU_LAYERS_AUTO,
@@ -948,8 +951,9 @@ export function useChatModelRuntime() {
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
 
-            if (stopDecision.promptQueueThreadIds.length > 0) {
-              requestPromptQueueStop(stopDecision.promptQueueThreadIds);
+            const promptQueueThreadIds = getLocalPromptQueueThreadIds();
+            if (promptQueueThreadIds.length > 0) {
+              requestPromptQueueStop(promptQueueThreadIds);
             }
             if (currentCheckpoint) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
@@ -1749,8 +1753,9 @@ export function useChatModelRuntime() {
       if (bailIfLoading()) return false;
 
       async function performUnload(): Promise<void> {
-        if (stopDecision.promptQueueThreadIds.length > 0) {
-          requestPromptQueueStop(stopDecision.promptQueueThreadIds);
+        const promptQueueThreadIds = getLocalPromptQueueThreadIds();
+        if (promptQueueThreadIds.length > 0) {
+          requestPromptQueueStop(promptQueueThreadIds);
         }
         await unloadModel({
           model_path: params.checkpoint,

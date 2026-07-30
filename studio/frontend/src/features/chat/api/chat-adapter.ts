@@ -2116,13 +2116,22 @@ export function createOpenAIStreamAdapter(
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const queuedRunSettings =
+        consumeQueuedChatRunSettings(resolvedThreadId);
+      if (queuedRunSettings) {
+        runtime = { ...runtime, ...queuedRunSettings };
+      }
       const threadAlreadyResearched = Boolean(
         resolvedThreadId &&
           useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
       );
       if (runtime.deepResearchEnabled && threadAlreadyResearched) {
-        runtime.setDeepResearchEnabled(false);
-        runtime = useChatRuntimeStore.getState();
+        if (queuedRunSettings) {
+          runtime = { ...runtime, deepResearchEnabled: false };
+        } else {
+          runtime.setDeepResearchEnabled(false);
+          runtime = useChatRuntimeStore.getState();
+        }
       }
       if (
         runtime.deepResearchEnabled &&
@@ -2308,7 +2317,9 @@ export function createOpenAIStreamAdapter(
             createdRun,
             detachResearchFollow,
           );
-          runtime.setDeepResearchEnabled(false);
+          if (!queuedRunSettings) {
+            runtime.setDeepResearchEnabled(false);
+          }
           if (abortSignal.aborted) {
             const detached = Boolean(
               (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
@@ -2366,11 +2377,6 @@ export function createOpenAIStreamAdapter(
           runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
         }
         return;
-      }
-      const queuedRunSettings =
-        consumeQueuedChatRunSettings(resolvedThreadId);
-      if (queuedRunSettings) {
-        runtime = { ...runtime, ...queuedRunSettings };
       }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
