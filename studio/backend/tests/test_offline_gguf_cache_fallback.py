@@ -2909,9 +2909,9 @@ class TestModelConfigPredicateHonoursTheWindow:
             t.join(5)
             assert _env_offline() is True
 
-        assert seen["env_during"] is None       # the user's value really was restored
+        assert seen["env_during"] is None  # the user's value really was restored
         assert seen["predicate_during"] is True  # but the predicate still reads offline
-        assert _env_offline() is False           # and it lets go afterwards
+        assert _env_offline() is False  # and it lets go afterwards
 
     def test_raw_fetch_is_skipped_during_the_window(self, monkeypatch, tmp_path):
         """The stall this prevents: _detect_audio_from_tokenizer's own requests.get is the
@@ -2954,7 +2954,9 @@ class TestModelConfigPredicateHonoursTheWindow:
             t.start()
             assert in_window.wait(5)
             mc._detect_audio_from_tokenizer(
-                "org/some-audio-model", None, local_files_only = False,
+                "org/some-audio-model",
+                None,
+                local_files_only = False,
             )
             release.set()
             t.join(5)
