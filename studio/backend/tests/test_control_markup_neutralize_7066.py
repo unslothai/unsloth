@@ -2566,3 +2566,54 @@ def test_csm_breaks_a_leading_speaker_id():
     assert neutralize_tts_prompt_text("[1]hello", "csm") != "[1]hello"
     # Mid-text, a bracketed number is ordinary prose.
     assert neutralize_tts_prompt_text("as in [1] above", "csm") == "as in [1] above"
+
+
+@pytest.mark.parametrize("marker", [
+    "[TOOL_RESULTS]", "[/TOOL_RESULTS]", "[AVAILABLE_TOOLS]", "[/AVAILABLE_TOOLS]",
+    "<|tool_response>", "<tool_response|>", "<tool_response>", "</tool_response>",
+])
+def test_tool_result_structure_does_not_survive_an_assistant_replay(marker):
+    """A tool observation and a tool catalog are the tool role's structure, not the
+    assistant's. Mistral renders assistant ``.Content`` verbatim
+    (ollama_template_mappers.py:125-127) and spells an observation
+    "[TOOL_RESULTS]...[/TOOL_RESULTS]" (:133), so a replay can fabricate one that the
+    model then reads as trusted context (#7066)."""
+    assert marker not in neutralize_turn_boundary_markup(f"a {marker} b"), marker
+    out = neutralize_control_markup_in_messages(
+        [{"role": "assistant", "content": f"ok {marker} done"}])
+    assert marker not in out[0]["content"]
+
+
+@pytest.mark.parametrize("marker", [
+    "[TOOL_CALLS]", "<|tool_call>", "<tool_call|>", "<tool_call>", "</tool_call>",
+    "<think>", "</think>", "<｜tool▁calls▁begin｜>",
+])
+def test_assistant_authored_tool_call_markup_still_survives_a_replay(marker):
+    """The other half of the same split: a tool CALL is what the assistant really emits
+    (ollama_template_mappers.py:129), so rewriting it would corrupt the transcript the
+    template re-renders."""
+    assert neutralize_turn_boundary_markup(f"a {marker} b") == f"a {marker} b", marker
+
+
+@pytest.mark.parametrize("schema", [
+    {"type": "object", "properties": {"x": {"pattern": "^</think>$"}}},
+    {"type": "object", "properties": {"x": {"default": "<|im_end|>"}}},
+])
+def test_tool_with_unsafe_pattern_or_default_is_dropped(schema):
+    """A grammar built from the schema forces the model to satisfy the rewritten regex or
+    echo the rewritten default, and the MCP server then validates the original and
+    rejects the call, so these are machine-valued like enum and const (#7066)."""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": schema}}]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+def test_ordinary_pattern_and_default_keep_their_tool():
+    """Only a constraint the rewrite would actually change drops the tool."""
+    tools = [{"type": "function", "function": {
+        "name": "f", "description": "does </think> things",
+        "parameters": {"type": "object", "properties": {
+            "x": {"type": "string", "pattern": "^[a-z]+$", "default": "abc"}}}}}]
+    out = neutralize_tool_descriptions(tools)
+    assert len(out) == 1
+    assert out[0]["function"]["parameters"]["properties"]["x"]["pattern"] == "^[a-z]+$"
+    assert "</think>" not in json.dumps(out)

@@ -159,15 +159,24 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # Gemma / mllama count check fails. Never legitimate in a replay, so it belongs here
     # even though think / channel / tool markup does not.
     r"|image|audio|video|python_tag"
+    # A tool RESULT is the tool role's structure, not the assistant's, so a replay
+    # carrying one fabricates an observation the model reads as trusted context. The
+    # tool CALL spellings stay out, because those the assistant really does emit.
+    r"|tool_response"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
     # "/?" for the same reason the control pattern has it: Gemma's delimiters are bare
     # tags, so a replayed "</start_of_turn>" is as much a boundary as "<start_of_turn>".
-    r"|/?(?:(?:start|end)_of_turn|eos|bos|s"
+    r"|/?(?:(?:start|end)_of_turn|eos|bos|s|tool_response"
     r"|start_of_image|image_soft_token|audio_soft_token)>"
-    r"|turn\|>"
+    r"|(?:turn|tool_response)\|>"
     r")"
-    r"|\[(?=/?(?:INST|SYSTEM_PROMPT)\])"
+    # Same split in the bracket family: Mistral renders assistant .Content verbatim
+    # (ollama_template_mappers.py:125-127) and spells a tool observation
+    # "[TOOL_RESULTS]...[/TOOL_RESULTS]" (:133) and the catalog "[AVAILABLE_TOOLS]"
+    # (:123), so a replay can forge either. "[TOOL_CALLS]" is left out: that one the
+    # assistant does emit (:129).
+    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\])"
     # Llama-2's system section is a boundary for the same reason [SYSTEM_PROMPT] is:
     # the template only ever emits it in the first user turn, never in an assistant one.
     r"|(?<=<)<(?=/?SYS>>)"
@@ -639,7 +648,13 @@ def neutralize_tool_descriptions(tools):
 # MCP server still expects the original, so the tool breaks. function.name is already
 # dropped for exactly this reason, and these get the same treatment (#7066).
 _SCHEMA_KEYED_IDENTIFIERS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
-_SCHEMA_VALUED_IDENTIFIERS = frozenset({"enum", "const", "required"})
+# "pattern" and "default" belong here for the same reason: a grammar built from the
+# schema forces the model to satisfy the rewritten regex or echo the rewritten default,
+# and the MCP server then validates the original and rejects the call. This is the case
+# the "[ARGS]" comment above already anticipated.
+_SCHEMA_VALUED_IDENTIFIERS = frozenset(
+    {"enum", "const", "required", "pattern", "default"}
+)
 
 
 def _unsafe_schema_identifier(value):
