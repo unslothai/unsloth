@@ -1624,7 +1624,14 @@ async function autoLoadSmallestModel(): Promise<{
       // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        throw new Error("Model load cancelled.");
+        // Tagged and recorded like the two cancels inside loadModel. This one is
+        // raised before it, so the catch around that call never sees it, and the
+        // sweep would carry on to the Hub download and reopen the same dialog.
+        const cancelled = Object.assign(new Error("Model load cancelled."), {
+          unslothUserCancelled: true,
+        });
+        noteLoadFailure(failureLabel, cancelled);
+        throw cancelled;
       }
       isDiffusion = (
         await fetchGgufStagedMetadata({

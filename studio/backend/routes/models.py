@@ -2948,6 +2948,12 @@ def _is_main_gguf_filename(name: str) -> bool:
     return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
 
 
+def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
+    """See hub.utils.inventory_scan; False for anything upstream already returns."""
+    from hub.utils.inventory_scan import recovered_repo_is_unusable_by_repo_id as impl
+    return impl(repo_info)
+
+
 def _cached_repo_file_name(file_obj) -> str:
     """Snapshot-relative name for a cached file: huggingface_hub records the bare ``file_name``,
     which cannot tell an ``MTP/`` drafter from a quant."""
@@ -3183,6 +3189,11 @@ async def list_cached_models(
                     # Pass the snapshot path too so the config check also hides
                     # custom Whisper checkpoints, not just curated repo ids.
                     if _is_hidden_model(repo_id, str(repo_info.repo_path)):
+                        continue
+                    # This response carries neither partial nor a load id, so a recovered repo
+                    # that only loads from a snapshot path, or is short a shard, cannot be
+                    # described here honestly. The Hub inventory still lists it.
+                    if _recovered_repo_is_unusable_by_repo_id(repo_info):
                         continue
                     if _repo_has_gguf_files(repo_info):
                         continue

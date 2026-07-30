@@ -842,7 +842,12 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
     assert "hf_token: preparedToken.token" in autoload
-    assert 'throw new Error("Model load cancelled.")' in autoload
+    # Declining the token still aborts the candidate, and the throw carries the
+    # cancellation marker so the sweep stops instead of falling through to the
+    # Hub download and reopening the same dialog.
+    assert 'new Error("Model load cancelled.")' in autoload
+    assert "unslothUserCancelled: true" in autoload
+    assert "noteLoadFailure(failureLabel, cancelled)" in autoload
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():

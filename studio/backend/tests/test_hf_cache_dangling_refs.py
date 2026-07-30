@@ -2138,3 +2138,132 @@ def test_the_two_snapshot_orderings_agree_on_every_permutation(tmp_path):
 def _iter_hf_cache_snapshots_names(cache: Path) -> list[str]:
     from utils.models.model_config import _iter_hf_cache_snapshots
     return [s.name for s in _iter_hf_cache_snapshots("Org/Model", cache_dir = cache)]
+
+
+@pytest.mark.parametrize("ref_label, refs", [("dangling", {"main": UPSTREAM_HEAD}),
+                                             ("resolving", {"main": SNAPSHOT})])
+def test_a_stray_base_shard_does_not_veto_a_complete_adapter(ref_label, refs, tmp_path, monkeypatch):
+    """A LoRA snapshot can carry an unrelated interrupted base family. The row
+    classifies as an adapter, and the adapter is whole, so it loads; judging base
+    first regardless of format let that stray shard make it uncheckable.
+
+    Both formats that would put base first need a config.json, so its absence is
+    what says this snapshot can only be an adapter."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model.safetensors": b"\0" * 128,
+                "pytorch_model-00001-of-00002.bin": b"\0" * 64,
+            }
+        },
+        refs = refs,
+    )
+    rows = _autoload_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["model_format"] == "adapter"
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    "files, cannot_serve",
+    [
+        # config.json makes this a base row, and nothing stands in for its shards.
+        (
+            {
+                "config.json": b"{}",
+                "pytorch_model-00001-of-00002.bin": b"\0" * 64,
+                "adapter_config.json": b"{}",
+                "adapter_model.safetensors": b"\0" * 64,
+            },
+            True,
+        ),
+        # No config.json, so the row is the adapter, and the adapter is torn. A
+        # stray whole base family cannot stand in for it either.
+        (
+            {
+                "adapter_config.json": b"{}",
+                "adapter_model-00001-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors": b"\0" * 256,
+            },
+            True,
+        ),
+        ({"config.json": b"{}", "model.safetensors": b"\0" * 256}, False),
+    ],
+)
+def test_the_judged_weight_family_follows_the_row_format(files, cannot_serve, tmp_path):
+    """Both directions of the precedence, so the fix cannot be read as
+    "an adapter always rescues the snapshot"."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    for name, payload in files.items():
+        (snapshot / name).write_bytes(payload)
+    assert inventory_scan._snapshot_lacks_a_complete_weight_family(snapshot) is cannot_serve
+
+
+def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
+    """GET /api/models/cached-models, the compatibility route. Its schema has no
+    partial and no load_id, so it can only describe a repo that loads by id."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.models as models_route
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_root),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        response = asyncio.run(
+            models_route.list_cached_models(current_subject = "tester", hf_token = None)
+        )
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+    return [row["repo_id"] for row in response["cached"]]
+
+
+@pytest.mark.parametrize(
+    "snapshot_files",
+    [
+        {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256},
+        {"config.json": b"{}", "model.safetensors": b"\0" * 256},
+    ],
+    ids = ["short-a-shard", "whole-but-only-loadable-by-path"],
+)
+def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
+    snapshot_files, tmp_path, monkeypatch
+):
+    """Un-hiding a repo must not smuggle it into a response that cannot say what
+    is wrong with it. That route reports neither partial nor a load id, so a torn
+    recovery reads as a plain cached model and a whole one is offered under a repo
+    id that does not resolve, which fails offline and refetches online."""
+    _repo_with(tmp_path, snapshots = {SNAPSHOT: snapshot_files}, refs = {"main": UPSTREAM_HEAD})
+    assert _compat_cached_models(tmp_path, monkeypatch) == []
+    # The Hub inventory still lists it, with the fields to describe it.
+    assert [row["repo_id"] for row in _autoload_rows(tmp_path, monkeypatch)] == ["Org/Model"]
+
+
+def test_the_compatibility_route_still_lists_what_upstream_returns(tmp_path, monkeypatch):
+    """The control that bounds the gate: a repo whose refs/main resolves is one
+    upstream already returned, so it is unaffected."""
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256}},
+        refs = {"main": SNAPSHOT},
+    )
+    assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]
+
+
+def test_a_recovery_whose_default_ref_resolves_is_still_listed(tmp_path, monkeypatch):
+    """Recovery also fires when a secondary ref dangles while refs/main resolves.
+    Those load by id perfectly well, so the gate must not swallow them."""
+    _repo_with(
+        tmp_path,
+        snapshots = {SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256}},
+        refs = {"main": SNAPSHOT, "stale": UPSTREAM_HEAD},
+    )
+    assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]

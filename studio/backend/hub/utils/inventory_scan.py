@@ -762,12 +762,15 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
     """Whether the payload *snapshot_dir* carries is short a shard.
 
     ``from_pretrained`` loads one family, so a whole safetensors set beside an interrupted ``.bin``
-    one still serves the row. Base weights are judged first and alone (nothing stands in for missing
-    base shards); only an adapter-only snapshot is judged on its adapter. Shard groups key on (dir,
-    prefix, total) since a snapshot may ship several sets; a file naming no total is a whole family.
+    one still serves the row. Only the family the row's format names is judged, and nothing stands
+    in for it. Which that is follows _classify_non_gguf_model_format: both base formats require a
+    config.json, so without one the snapshot can only be an adapter and a stray base shard must not
+    veto it. Shard groups key on (dir, prefix, total) since a snapshot may ship several sets; a file
+    naming no total is a whole family.
     """
     groups: dict[str, dict[tuple[str, str, int], set[int]]] = {"base": {}, "adapter": {}}
     whole: set[str] = set()
+    has_config = False
     try:
         paths = list(snapshot_dir.rglob("*"))
     except OSError:
@@ -778,6 +781,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 continue
         except OSError:
             continue
+        if path.name.lower() == "config.json":
+            has_config = True
         kind = _weight_family_kind(path.name)
         if kind is None:
             continue
@@ -792,7 +797,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         groups[kind].setdefault((str(path.parent), path.name[: match.start()], total), set()).add(
             index
         )
-    for kind in ("base", "adapter"):
+    for kind in (("base", "adapter") if has_config else ("adapter", "base")):
         if kind in whole:
             return False
         if groups[kind]:
@@ -834,6 +839,28 @@ def _recovered_snapshot_cannot_serve(
     if not _repo_has_a_dangling_ref(repo_cache_dir):
         return False
     return _snapshot_cannot_serve_its_payload(snapshot_dir)
+
+
+def recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
+    """Whether a recovered repo is one a caller that can only say ``repo_id`` must skip.
+
+    The Hub inventory carries ``partial`` and a ``load_id`` that can name a snapshot path, so it
+    describes these rows honestly. The compatibility ``/api/models/cached-models`` schema has
+    neither field, so an unusable recovery there reads as a plain cached model: a torn snapshot
+    looks ready, and one whose ``refs/main`` does not resolve cannot be loaded by id at all,
+    failing offline and refetching online. False for every repo upstream already returns, so this
+    only withholds rows this recovery added.
+    """
+    if not isinstance(repo_info, _RecoveredRepoInfo):
+        return False
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is None:
+        return True
+    # Recovery also fires when a secondary ref dangles while refs/main resolves; those load by id.
+    landing = default_ref_snapshot(repo_path)
+    if landing is None:
+        return True
+    return _snapshot_cannot_serve_its_payload(landing)
 
 
 def snapshot_variants_all_complete(snapshot: str) -> bool:
