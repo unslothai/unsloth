@@ -49,3 +49,22 @@ export function shouldPinDiffusionPlacement(
   if (!targetIsGguf) return false;
   return isDiffusion === true || diffusionUnknown;
 }
+
+/** Tri-state diffusion classification for a staged (pre-load) GGUF selection.
+ *
+ * `undefined` means "not known" and must NOT be collapsed to false by a caller
+ * that hands the answer on: a definite false tells the compare flow this is an
+ * ordinary GGUF, which skips the re-probe above and lets an unconfigured pane
+ * inherit another model's layer split (#7574).
+ */
+export function resolveStagedDiffusionClassification(
+  knownDiffusion: boolean | undefined,
+  staged:
+    | { isDiffusion?: boolean; diffusionUnknown?: boolean }
+    | null
+    | undefined,
+): boolean | undefined {
+  if (knownDiffusion) return true;
+  if (staged == null || staged.diffusionUnknown) return undefined;
+  return staged.isDiffusion;
+}

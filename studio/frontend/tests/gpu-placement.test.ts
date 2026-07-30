@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   GPU_LAYERS_AUTO,
   resolveComparePlacement,
+  resolveStagedDiffusionClassification,
   shouldPinDiffusionPlacement,
 } from "../src/features/chat/lib/gpu-placement.ts";
 
@@ -122,5 +123,68 @@ test("an own split still wins for an unclassified GGUF", () => {
       shouldPinDiffusionPlacement(true, false, true),
     ),
     { gpuMemoryMode: "manual", gpuLayers: 6 },
+  );
+});
+
+// -- the config-picker path must hand on "unknown", not a definite false --
+//
+// model-config-page probes the GGUF, then onRun passes the answer into the
+// selection, which becomes sel.isDiffusion in the compare flow. A definite
+// false there skips the pane's re-probe entirely, so the unknown state has to
+// survive this hop or the split leaks again through a different door.
+
+test("an inconclusive staged probe stays unknown", () => {
+  assert.equal(
+    resolveStagedDiffusionClassification(undefined, {
+      isDiffusion: false,
+      diffusionUnknown: true,
+    }),
+    undefined,
+  );
+});
+
+test("a confirmed ordinary GGUF stays a definite false", () => {
+  assert.equal(
+    resolveStagedDiffusionClassification(undefined, {
+      isDiffusion: false,
+      diffusionUnknown: false,
+    }),
+    false,
+  );
+});
+
+test("a confirmed diffusion GGUF stays a definite true", () => {
+  assert.equal(
+    resolveStagedDiffusionClassification(undefined, {
+      isDiffusion: true,
+      diffusionUnknown: false,
+    }),
+    true,
+  );
+});
+
+test("an already-known diffusion target short-circuits the probe", () => {
+  assert.equal(resolveStagedDiffusionClassification(true, null), true);
+});
+
+test("a pending probe is unknown, not ordinary", () => {
+  assert.equal(resolveStagedDiffusionClassification(undefined, null), undefined);
+  assert.equal(
+    resolveStagedDiffusionClassification(undefined, undefined),
+    undefined,
+  );
+});
+
+test("the unknown verdict re-probes and reaches diffusion-safe placement", () => {
+  // End to end across the two helpers: unknown -> undefined -> the compare
+  // preflight re-probes (sel.isDiffusion === undefined) and learns unknown:true.
+  const handedOn = resolveStagedDiffusionClassification(undefined, {
+    isDiffusion: false,
+    diffusionUnknown: true,
+  });
+  assert.equal(handedOn, undefined);
+  assert.deepEqual(
+    resolveComparePlacement({}, shared, shouldPinDiffusionPlacement(true, handedOn, true)),
+    { gpuMemoryMode: "auto", gpuLayers: GPU_LAYERS_AUTO },
   );
 });

@@ -17,6 +17,7 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   readPersistedSpeculativeType,
+  resolveStagedDiffusionClassification,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
@@ -790,6 +791,7 @@ export function ModelConfigPage({
     layerCount: number | null;
     moeLayerCount: number | null;
     isDiffusion?: boolean;
+    diffusionUnknown?: boolean;
   } | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
@@ -844,7 +846,14 @@ export function ModelConfigPage({
     contextFetchKey != null &&
     stagedDims == null &&
     (config.gpuMemoryMode === "manual" || config.selectedGpuIds != null);
-  const classifiedIsDiffusion = isDiffusion ? true : stagedDims?.isDiffusion;
+  // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands
+  // "unknown" to the selection. Collapsing it to false would tell a compare pane
+  // this is an ordinary GGUF, skipping its re-probe and letting it inherit
+  // another model's layer split (#7574).
+  const classifiedIsDiffusion = resolveStagedDiffusionClassification(
+    isDiffusion,
+    stagedDims,
+  );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
