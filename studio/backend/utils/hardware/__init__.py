@@ -9,8 +9,6 @@ from .hardware import (
     DEVICE,
     CHAT_ONLY,
     detect_hardware,
-    ensure_hardware_detected,
-    start_background_detection,
     get_device,
     is_apple_silicon,
     clear_gpu_cache,
@@ -46,6 +44,21 @@ from .vram_estimation import (
     extract_arch_config,
     estimate_training_vram,
 )
+
+
+def ensure_hardware_detected() -> DeviceType:
+    """Detect once, from any thread; delegate so the live function always runs.
+
+    A delegating wrapper rather than a re-export, matching export_capability()
+    below: the re-export form is a module-level import that nothing in this file
+    loads, which scripts/verify_import_hoist.py reads as a botched hoist.
+    """
+    return _hardware.ensure_hardware_detected()
+
+
+def start_background_detection() -> None:
+    """Put detection on a daemon thread if nothing is running it yet."""
+    _hardware.start_background_detection()
 
 
 def export_capability() -> dict:
