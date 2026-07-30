@@ -2074,3 +2074,68 @@ def test_a_nonsensical_shard_spec_is_never_complete(tmp_path):
     set must not read as a satisfied range."""
     snapshot = _snapshot_with(tmp_path, {"Model-Q4_K_M-00003-of-00002.gguf": 16})
     assert inventory_scan._completed_gguf_variants(snapshot) == set()
+
+
+def test_the_loader_and_the_inventory_break_an_mtime_tie_the_same_way(tmp_path):
+    """Two snapshots can carry the same mtime, and mtime alone is not a total
+    order. The inventory pins by (mtime, resolved path); the loader's own walk
+    sorted on mtime and let filesystem order settle the rest, so the row could
+    advertise one revision while /load read weights from the other."""
+    import os
+
+    from hub.utils.hf_cache_state import latest_snapshot_dir
+    from utils.models.model_config import _iter_hf_cache_snapshots
+
+    cache = tmp_path / "hub"
+    repo = _repo_with(
+        cache,
+        snapshots = {
+            SNAPSHOT: {"Model-Q4_K_M.gguf": b"\0" * 64},
+            OLDER: {"Model-Q4_K_M.gguf": b"\0" * 64},
+        },
+        refs = {"main": SNAPSHOT},
+    )
+    stamp = 1_700_000_000
+    for commit in (SNAPSHOT, OLDER):
+        os.utime(repo / "snapshots" / commit, (stamp, stamp))
+    assert len({(repo / "snapshots" / c).stat().st_mtime for c in (SNAPSHOT, OLDER)}) == 1
+
+    loader_order = list(_iter_hf_cache_snapshots("Org/Model", cache_dir = cache))
+    assert loader_order, "the loader must still find the snapshots"
+    assert loader_order[0] == latest_snapshot_dir(repo)
+
+
+def test_the_two_snapshot_orderings_agree_on_every_permutation(tmp_path):
+    """The keys must be one ordering, not merely agree on the winner: a caller
+    that takes the second-newest has to see the same sequence."""
+    import os
+
+    from hub.utils.hf_cache_state import snapshot_selection_key
+    from utils.models.model_config import _snapshot_selection_key
+
+    cache = tmp_path / "hub"
+    commits = [c * 40 for c in "abcd"]
+    repo = _repo_with(
+        cache,
+        snapshots = {c: {"Model-Q4_K_M.gguf": b"\0" * 64} for c in commits},
+        refs = {"main": commits[0]},
+    )
+    stamp = 1_700_000_000
+    for index, commit in enumerate(commits):
+        # Two pairs at equal mtimes, so ties decide half the ordering.
+        moment = stamp + (index // 2)
+        os.utime(repo / "snapshots" / commit, (moment, moment))
+
+    snapshots = sorted((repo / "snapshots").iterdir())
+    assert [snapshot_selection_key(s) for s in snapshots] == [
+        _snapshot_selection_key(s) for s in snapshots
+    ]
+    assert list(_iter_hf_cache_snapshots_names(cache)) == [
+        s.name for s in sorted(snapshots, key = snapshot_selection_key, reverse = True)
+    ]
+
+
+def _iter_hf_cache_snapshots_names(cache: Path) -> list[str]:
+    from utils.models.model_config import _iter_hf_cache_snapshots
+
+    return [s.name for s in _iter_hf_cache_snapshots("Org/Model", cache_dir = cache)]

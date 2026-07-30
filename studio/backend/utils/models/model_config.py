@@ -1891,6 +1891,24 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(search_dir)
 
 
+def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
+    """Order snapshots by mtime, then by resolved path.
+
+    Mirrors hub.utils.hf_cache_state.snapshot_selection_key (utils cannot import
+    hub). Must change in lockstep: mtime alone is not a total order, and if the
+    two sides break a tie differently the inventory row advertises one revision
+    while the load reads the other.
+    """
+    try:
+        mtime = snapshot.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    try:
+        return mtime, str(snapshot.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return mtime, str(snapshot)
+
+
 def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
@@ -1933,14 +1951,15 @@ def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = Non
             continue
     if not snap_dirs:
         return
-    snap_dirs_with_mtime = []
+    ordered = []
     for snap_dir in snap_dirs:
         try:
-            snap_dirs_with_mtime.append((snap_dir.stat().st_mtime, snap_dir))
+            snap_dir.stat()
         except OSError:
             continue
-    snap_dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
-    yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
+        ordered.append((_snapshot_selection_key(snap_dir), snap_dir))
+    ordered.sort(key = lambda item: item[0], reverse = True)
+    yield from (snap_dir for _key, snap_dir in ordered)
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
