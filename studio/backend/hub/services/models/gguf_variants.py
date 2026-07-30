@@ -547,6 +547,7 @@ async def get_gguf_variants_response(
             downloaded. A quant short a shard stays listed to resume or delete, but is not offered
             as ready, since the loader would ask llama-server for files that are not there.
             """
+
             def _downloaded(v) -> bool:
                 # An unlabelled quant cannot be judged, so it is kept as ready.
                 return complete is None or not v.quant or v.quant in complete
