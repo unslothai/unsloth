@@ -1791,10 +1791,12 @@ def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
     repo id; the server backfill only mirrors what is stored, so nothing else moves it."""
     config = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function adoptLegacyConfigKey(" in config
-    # A newer save under the current key wins, and the stale record still goes.
+    # A newer save under the current key wins, and the stale record still goes. The saved
+    # config is the third argument: passing it second writes an all-defaults record under a
+    # key built from the config object, and the delete below then loses the real one.
     assert (
         "const moved = loadPerModelConfig(modelId, ggufVariant) ? true : "
-        "savePerModelConfig(modelId, legacy, ggufVariant);" in config
+        "savePerModelConfig(modelId, ggufVariant, legacy);" in config
     )
     assert "deletePerModelConfig(legacyModelId, ggufVariant);" in config
     # Both entry points move it before anything reads the new key.

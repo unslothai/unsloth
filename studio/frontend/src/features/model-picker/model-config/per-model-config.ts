@@ -781,7 +781,7 @@ export function adoptLegacyConfigKey(
   }
   const moved = loadPerModelConfig(modelId, ggufVariant)
     ? true
-    : savePerModelConfig(modelId, legacy, ggufVariant);
+    : savePerModelConfig(modelId, ggufVariant, legacy);
   if (moved) {
     deletePerModelConfig(legacyModelId, ggufVariant);
   }
