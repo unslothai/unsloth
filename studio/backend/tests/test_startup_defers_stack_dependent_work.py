@@ -153,7 +153,8 @@ def test_post_warm_thread_is_started_by_the_lifespan():
     # thread that does nothing.
     tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
     starter = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_start_post_warm_thread"
     )
     assert "_post_warm_background_work" in _names_called(starter)

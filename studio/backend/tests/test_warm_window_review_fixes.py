@@ -417,6 +417,7 @@ def test_shutdown_stands_the_post_warm_thread_down(monkeypatch):
     monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
     monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
     import utils.mlx_repair as mlx_mod
+
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
 
     main_mod._post_warm_stand_down.clear()
@@ -458,6 +459,7 @@ def test_a_second_lifespan_does_not_stack_post_warm_threads(monkeypatch):
     monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
     monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: None)
     import utils.mlx_repair as mlx_mod
+
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: None)
 
     main_mod._post_warm_stand_down.clear()
@@ -486,13 +488,14 @@ def test_shutdown_does_not_wait_for_the_post_warm_thread():
     rest of the ML stack import, which is the stall this path exists to avoid."""
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_stop_post_warm_thread"
     )
     joins = [
-        sub for sub in ast.walk(fn)
-        if isinstance(sub, ast.Call)
-        and getattr(sub.func, "attr", None) == "join"
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call) and getattr(sub.func, "attr", None) == "join"
     ]
     assert not joins, "shutdown joins the post-warm thread; that can block for the import"
 
@@ -501,11 +504,13 @@ def test_the_lifespan_stops_the_post_warm_thread_on_shutdown():
     """Guard the wiring: the signal has to actually be sent."""
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
     )
     called = {
-        sub.func.id for sub in ast.walk(fn)
+        sub.func.id
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
     }
     assert "_stop_post_warm_thread" in called

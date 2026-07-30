@@ -523,7 +523,9 @@ def _start_post_warm_thread() -> bool:
         return False
     _post_warm_stand_down.clear()
     _post_warm_thread = threading.Thread(
-        target = _post_warm_background_work, daemon = True, name = "post-warm",
+        target = _post_warm_background_work,
+        daemon = True,
+        name = "post-warm",
     )
     _post_warm_thread.start()
     return True
