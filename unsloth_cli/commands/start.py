@@ -2717,8 +2717,9 @@ def _launch(
         # subprocess cwd was changed by the caller. Some Node CLIs use PWD for
         # project-root discovery instead of process.cwd().
         child_env["PWD"] = os.getcwd()
-    # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper.
-    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper. A no-op
+    # handler, not SIG_IGN: exec preserves an ignored signal but resets a caught one.
+    previous = signal.signal(signal.SIGINT, lambda *_: None)
     try:
         code = subprocess.run([executable, *command[1:]], env = child_env).returncode
     finally:
