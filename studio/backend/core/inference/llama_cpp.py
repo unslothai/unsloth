@@ -4498,15 +4498,12 @@ class LlamaCppBackend:
         still fits the SMALLEST card of a layer-split subset; 0 when even ``min_ctx``
         does not. The reserve shrinks with the context, so a subset
         ``_every_gpu_holds_reserve`` turns down at the pooled context usually serves a
-        lower one: 40000 + 2500 MiB free holds 31488, where rejecting it outright drops
-        auto context to 4096.
-
-        Bisects the reserve rather than inverting a rate. It is monotone in context on
-        every branch but proportional on only some (deepseek4 carries a flat indexer
-        term), so a closed form over-estimates those: on a 4000 MiB card it answers
-        43341, whose reserve is 6048 MiB, OOMing the card this exists to protect. The
-        MiB comparison mirrors ``_every_gpu_holds_reserve``, so that gate accepts what
-        this returns."""
+        lower one: 40000 + 2500 MiB free holds 31488, not the 4096 a drop would leave.
+        Bisects the reserve, which is monotone in context on every branch but
+        proportional on only some: deepseek4's flat indexer term makes a closed form
+        answer 43341 on a 4000 MiB card, whose reserve there is 6048 MiB. The MiB
+        comparison mirrors ``_every_gpu_holds_reserve``, so that gate accepts what this
+        returns."""
         values = list(usable_mib)
         if not values or ctx < min_ctx:
             return 0
@@ -8368,13 +8365,12 @@ class LlamaCppBackend:
                                 if not self._every_gpu_holds_reserve(
                                     _usable_mib, _reserve_at(capped)
                                 ):
-                                    # The reserve shrinks with the context, so keep the
-                                    # largest one the smallest card does hold instead of
-                                    # losing the subset to the 4096 drop below. Costs no
-                                    # context: subsets are prefixes of a usable-descending
-                                    # ranking and the reserve is the same function of
-                                    # context for every n > 1, so a later subset that
-                                    # clears the gate clears it no higher than this cap.
+                                    # Keep the largest context the smallest card holds
+                                    # rather than lose the subset to the 4096 drop below.
+                                    # Costs no context: subsets are prefixes of a
+                                    # usable-descending ranking and the reserve is the
+                                    # same function of context for every n > 1, so any
+                                    # later subset clears the gate no higher than this.
                                     capped = self._cap_ctx_to_per_device_reserve(
                                         capped, _usable_mib, _reserve_at
                                     )
