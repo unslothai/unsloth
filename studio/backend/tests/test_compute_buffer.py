@@ -581,9 +581,10 @@ class TestPipelineParallelPredicate:
         self,
         args = None,
         env = None,
+        n_layers = None,
     ):
         from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
-        return _pipeline_parallel_disabled_by_args(args, env = env or {})
+        return _pipeline_parallel_disabled_by_args(args, env = env or {}, n_layers = n_layers)
 
     def test_plain_launch_keeps_the_step(self):
         assert self._off([]) is False
@@ -701,13 +702,57 @@ class TestPipelineParallelPredicate:
         assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "0"}) is False
         assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "not-a-number"}) is False
 
+    # -- a finite -ngl override loads a layer prefix, so pipelining is off --
+
+    @pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+    def test_finite_gpu_layers_below_the_count_disables(self, flag):
+        # User extras land after Studio's -ngl -1, so this last-wins.
+        assert self._off([flag, "1"], n_layers = 93) is True
+        assert self._off([f"{flag}=1"], n_layers = 93) is True
+
+    def test_all_layers_keeps_the_step(self):
+        # n_gpu_layers() is n_layer_all + 1 for any negative value.
+        assert self._off(["-ngl", "-1"], n_layers = 93) is False
+
+    def test_gpu_layers_above_the_count_keeps_the_step(self):
+        # 999 > n_layer_all, so llama.cpp still pipelines.
+        assert self._off(["-ngl", "999"], n_layers = 93) is False
+
+    def test_gpu_layers_at_the_boundary(self):
+        # Pipelining needs n_gpu_layers > n_layer_all, so equal is off; one above
+        # keeps the step because block_count can undercount n_layer_all.
+        assert self._off(["-ngl", "93"], n_layers = 93) is True
+        assert self._off(["-ngl", "94"], n_layers = 93) is False
+
+    def test_zero_gpu_layers_disables(self):
+        assert self._off(["-ngl", "0"], n_layers = 93) is True
+
+    def test_unknown_layer_count_keeps_the_step(self):
+        assert self._off(["-ngl", "1"]) is False
+        assert self._off(["-ngl", "1"], n_layers = 0) is False
+
+    def test_last_gpu_layers_flag_wins(self):
+        assert self._off(["-ngl", "1", "--gpu-layers", "-1"], n_layers = 93) is False
+        assert self._off(["-ngl", "-1", "--gpu-layers", "1"], n_layers = 93) is True
+
+    def test_malformed_gpu_layers_keeps_the_step(self):
+        # validate_extra_args rejects these upstream; ambiguous here means keep.
+        assert self._off(["-ngl", "abc"], n_layers = 93) is False
+        assert self._off(["-ngl", "-2"], n_layers = 93) is False
+        assert self._off(["-ngl"], n_layers = 93) is False
+
     def test_wired_into_the_fit(self):
         # The flag has to reach _cc_bytes, else the predicate is dead code.
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        assert "_pipeline_parallel_disabled_by_args(extra_args)" in src
+        compact = "".join(src.split())
+        assert "_pipeline_parallel_disabled_by_args(extra_args,n_layers=self._n_layers)" in compact
         assert "layer_split = n_gpus > 1 and not _pipeline_parallel_off" in src
+        # The count is only real if the GGUF header was parsed first.
+        assert src.index("_read_gguf_metadata(model_path)") < src.index(
+            "_pipeline_parallel_disabled_by_args("
+        )
 
 
 class TestPerDeviceSplitReserve:

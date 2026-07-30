@@ -49,6 +49,7 @@ from core.inference.llama_server_args import (
     parse_cache_override,
     parse_cache_override_per_axis,
     parse_ctx_override,
+    parse_gpu_layers_override,
     parse_split_mode_override,
     resolve_requested_ctx,
     strip_shadowing_flags,
@@ -1745,7 +1746,9 @@ def _is_positive_int(value: Optional[str]) -> bool:
 
 
 def _pipeline_parallel_disabled_by_args(
-    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    n_layers: Optional[int] = None,
 ) -> bool:
     """Whether the launch turns OFF llama.cpp's pipeline parallelism, i.e. the 4x in
     ``_CTX_COMPUTE_SPLIT_MULT``. llama-context.cpp requires ``-sm layer``, KV offload
@@ -1759,7 +1762,8 @@ def _pipeline_parallel_disabled_by_args(
     inherited value on the layer path, so it never reaches the child.
 
     Over-reserving only costs context; under-reserving OOMs the split, so every
-    ambiguous input resolves to "still pipelined"."""
+    ambiguous input resolves to "still pipelined". ``n_layers`` is the GGUF block
+    count for the ``-ngl`` check below; None/0 means unknown."""
     source_env = os.environ if env is None else env
     if source_env.get("LLAMA_ARG_OVERRIDE_TENSOR"):
         return True
@@ -1775,6 +1779,19 @@ def _pipeline_parallel_disabled_by_args(
     split_mode = parse_split_mode_override(extra_args)
     if split_mode is not None and split_mode.strip().lower() not in {"layer", "tensor"}:
         return True
+    # Pipelining needs n_gpu_layers > n_layer_all, so a user -ngl (appended after
+    # Studio's -ngl -1, last-wins) that cannot exceed the count loads a prefix and
+    # turns it off. Negative means all layers, and a value above the count still
+    # pipelines, so both keep the step. n_layers is Studio's block_count, which can
+    # undercount n_layer_all (MTP layers), so a value in between keeps the step:
+    # over-reserving costs context, under-reserving OOMs.
+    if n_layers:
+        try:
+            gpu_layers = parse_gpu_layers_override(extra_args)
+        except ValueError:
+            gpu_layers = None  # malformed: unknown, so keep the step
+        if gpu_layers is not None and 0 <= gpu_layers <= n_layers:
+            return True
     values = [str(raw) for raw in extra_args or ()]
     for i, raw in enumerate(values):
         flag = _flag_name(raw)
@@ -7405,7 +7422,9 @@ class LlamaCppBackend:
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
                 )
-                _pipeline_parallel_off = _pipeline_parallel_disabled_by_args(extra_args)
+                _pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
+                    extra_args, n_layers = self._n_layers
+                )
                 # A hard-crash recovery may relaunch this same plan with FA off.
                 # Size that larger cache up front so the recovery cannot OOM.
                 planned_flash_attn = False
