@@ -1097,10 +1097,13 @@ function handlePromptQueueRunFailed(threadId?: string | null) {
 
 if (typeof window !== "undefined") {
   window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
-    const { threadIds } =
+    const { threadIds, temporaryOnly } =
       (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
     if (threadIds && threadIds.length > 0) {
       stopPromptQueueRunForThreadIds(threadIds);
+      return;
+    }
+    if (temporaryOnly) {
       return;
     }
     stopAllPromptQueueRuns();
@@ -1113,11 +1116,15 @@ if (typeof window !== "undefined") {
 }
 
 interface PromptQueueCallbacks {
-  startQueue: (items: string[], waitForCurrentRun?: boolean) => void;
+  startQueue: (
+    items: string[],
+    waitForCurrentRun?: boolean,
+    onAborted?: () => void,
+  ) => boolean;
   stopQueue: () => void;
 }
 const noopStartPromptQueue: PromptQueueCallbacks["startQueue"] = () =>
-  undefined;
+  false;
 const noopStopPromptQueue: PromptQueueCallbacks["stopQueue"] = () => undefined;
 const PromptQueueContext = createContext<PromptQueueCallbacks>({
   startQueue: noopStartPromptQueue,
@@ -2075,8 +2082,12 @@ const Composer: FC<{
   const [indexingActive, setIndexingActive] = useState(false);
   const indexingActiveRef = useRef(false);
   const promptQueueTargetMountedRef = useRef(true);
-  const promptQueueStartPendingRef = useRef(new Set<string>());
-  const promptQueueFactoryGenerationRef = useRef(0);
+  const promptQueueStartPendingRef = useRef(
+    new Map<
+      string,
+      { temporary: boolean; cancelled: boolean }
+    >(),
+  );
   useEffect(() => {
     promptQueueTargetMountedRef.current = true;
     return () => {
@@ -2087,7 +2098,7 @@ const Composer: FC<{
     const cancelPendingQueueFactories = (
       event: Event,
     ) => {
-      const { threadIds } =
+      const { threadIds, temporaryOnly } =
         (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
       if (threadIds && threadIds.length > 0) {
         const state = aui.threadListItem().getState();
@@ -2100,8 +2111,13 @@ const Composer: FC<{
           return;
         }
       }
-      promptQueueFactoryGenerationRef.current += 1;
-      promptQueueStartPendingRef.current.clear();
+      for (const [key, reservation] of promptQueueStartPendingRef.current) {
+        if (temporaryOnly && !reservation.temporary) {
+          continue;
+        }
+        reservation.cancelled = true;
+        promptQueueStartPendingRef.current.delete(key);
+      }
     };
     window.addEventListener(
       PROMPT_QUEUE_STOP_EVENT,
@@ -2318,6 +2334,7 @@ const Composer: FC<{
       items: string[],
       waitForCurrentRun = false,
       onStarted?: () => void,
+      onAborted?: () => void,
     ) => {
       const reservationKey = JSON.stringify([
         referenceThreadId,
@@ -2327,16 +2344,23 @@ const Composer: FC<{
       if (promptQueueStartPendingRef.current.has(reservationKey)) {
         return false;
       }
-      promptQueueStartPendingRef.current.add(reservationKey);
-      const factoryGeneration = promptQueueFactoryGenerationRef.current;
+      const reservation = {
+        temporary: useChatRuntimeStore.getState().incognito,
+        cancelled: false,
+      };
+      promptQueueStartPendingRef.current.set(reservationKey, reservation);
       void createPromptQueueTarget()
         .then((target) => {
           if (
             target &&
-            promptQueueFactoryGenerationRef.current === factoryGeneration
+            !reservation.cancelled &&
+            promptQueueStartPendingRef.current.get(reservationKey) ===
+              reservation
           ) {
             startPromptQueue(items, target, waitForCurrentRun);
             onStarted?.();
+          } else {
+            onAborted?.();
           }
         })
         .catch((error) => {
@@ -2344,10 +2368,12 @@ const Composer: FC<{
             description:
               error instanceof Error ? error.message : "Please try again.",
           });
+          onAborted?.();
         })
         .finally(() => {
           if (
-            promptQueueFactoryGenerationRef.current === factoryGeneration
+            promptQueueStartPendingRef.current.get(reservationKey) ===
+            reservation
           ) {
             promptQueueStartPendingRef.current.delete(reservationKey);
           }
@@ -2601,11 +2627,17 @@ const Composer: FC<{
       items: string[],
       waitForCurrentRun =
         threadIsRunning || aui.thread().getState().isRunning,
+      onAborted?: () => void,
     ) => {
       // Saved-prompt Run-list calls this directly, so honour disableQueue here
       // too: queuing from the project new-chat composer misbinds the thread.
-      if (disableQueue) return;
-      startHydratedPromptQueue(items, waitForCurrentRun);
+      if (disableQueue) return false;
+      return startHydratedPromptQueue(
+        items,
+        waitForCurrentRun,
+        undefined,
+        onAborted,
+      );
     },
     [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
@@ -3874,8 +3906,15 @@ const ComposerToolsMenu: FC<{
         aui.composer().setText(text);
       }}
       onRunList={(items) => {
-        setPromptStorageOpen(false);
-        startQueue(items);
+        const started = startQueue(items, undefined, () => {
+          setPromptStorageOpen(true);
+          toast.info("Saved list was not queued", {
+            description: "The chat changed before the queue was ready. Try again.",
+          });
+        });
+        if (started) {
+          setPromptStorageOpen(false);
+        }
       }}
     />
     <DropdownMenu

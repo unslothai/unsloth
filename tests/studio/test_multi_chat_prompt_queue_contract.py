@@ -142,11 +142,13 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
     assert "promptQueueStartPendingRef.current" in THREAD
     assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
-    assert "promptQueueStartPendingRef.current.add(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
-    assert "promptQueueFactoryGenerationRef.current += 1" in THREAD
-    assert "promptQueueStartPendingRef.current.clear()" in THREAD
-    assert "promptQueueFactoryGenerationRef.current === factoryGeneration" in THREAD
+    assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
+    assert "temporary: useChatRuntimeStore.getState().incognito" in THREAD
+    assert "reservation.cancelled = true" in THREAD
+    assert "temporaryOnly && !reservation.temporary" in THREAD
+    assert "onAborted?.()" in THREAD
+    assert 'toast.info("Saved list was not queued"' in THREAD
     assert ".finally(() =>" in THREAD
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
@@ -332,6 +334,8 @@ def test_stop_delete_archive_and_clear_are_thread_scoped():
     assert "requestPromptQueueStop();" in CLEAR_ALL_CHATS
     assert "serverCancelByThreadId" in CLEAR_ALL_CHATS
     assert "stopChatThread(threadId)" in CLEAR_ALL_CHATS
+    assert "detail: { threadIds, temporaryOnly: true }" in QUEUE_BOUNDARY
+    assert "if (temporaryOnly)" in THREAD
     assert "threadIds !== undefined && threadIds.length === 0" in QUEUE_BOUNDARY
     assert "detail: threadIds ? { threadIds } : undefined" in QUEUE_BOUNDARY
     assert "const aliasesByQueuedRun = new Map<string, string[]>()" in CONFIRM_MODEL_SWAP
