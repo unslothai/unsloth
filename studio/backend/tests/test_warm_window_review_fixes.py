@@ -396,3 +396,117 @@ def test_threading_import_is_present_for_the_lazy_fetch():
     src = (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
     assert "import threading" in src
     assert isinstance(threading.Lock(), type(threading.Lock()))
+
+
+# --------------------------------------------------- post-warm thread lifetime
+
+
+def test_shutdown_stands_the_post_warm_thread_down(monkeypatch):
+    """Work must not start for an application that has already stopped.
+
+    The thread spends its life parked in join_background_warm(), so a shutdown
+    landing before the warm finishes cannot reach it any other way: it wakes up
+    later and goes on to load the embedder, which can fall back to spawning a
+    llama-server.
+    """
+    import main as main_mod
+
+    ran: list[str] = []
+    released = threading.Event()
+
+    monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
+    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+    import utils.mlx_repair as mlx_mod
+    monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
+
+    main_mod._post_warm_stand_down.clear()
+    assert main_mod._start_post_warm_thread() is True
+    try:
+        # Shutdown while the thread is still inside the join.
+        main_mod._stop_post_warm_thread()
+    finally:
+        released.set()
+        main_mod._post_warm_thread.join(30)
+
+    assert ran == [], (
+        f"post-warm work ran after shutdown: {ran}. The RAG warm can load an "
+        f"embedder or start a llama-server for a stopped application."
+    )
+
+
+def test_the_post_warm_thread_still_works_without_a_shutdown(monkeypatch):
+    """Negative control: standing down must not become never running."""
+    import main as main_mod
+    import utils.mlx_repair as mlx_mod
+
+    ran: list[str] = []
+    monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: None)
+    monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
+    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+
+    main_mod._post_warm_stand_down.clear()
+    assert main_mod._start_post_warm_thread() is True
+    main_mod._post_warm_thread.join(30)
+    assert ran == ["mlx", "rag"]
+
+
+def test_a_second_lifespan_does_not_stack_post_warm_threads(monkeypatch):
+    """One waiting thread is enough; a restart must not add another."""
+    import main as main_mod
+
+    released = threading.Event()
+    monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
+    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: None)
+    import utils.mlx_repair as mlx_mod
+    monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: None)
+
+    main_mod._post_warm_stand_down.clear()
+    assert main_mod._start_post_warm_thread() is True
+    first = main_mod._post_warm_thread
+    try:
+        assert main_mod._start_post_warm_thread() is False, (
+            "a second lifespan stacked another post-warm thread on a first that "
+            "was still waiting for the warm"
+        )
+        assert main_mod._post_warm_thread is first
+    finally:
+        released.set()
+        first.join(30)
+
+    # Once it has finished, a later lifespan may put up a fresh one.
+    main_mod._post_warm_stand_down.clear()
+    released.clear()
+    assert main_mod._start_post_warm_thread() is True
+    released.set()
+    main_mod._post_warm_thread.join(30)
+
+
+def test_shutdown_does_not_wait_for_the_post_warm_thread():
+    """Stopping must be a signal, not a join: a join would hold shutdown for the
+    rest of the ML stack import, which is the stall this path exists to avoid."""
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_stop_post_warm_thread"
+    )
+    joins = [
+        sub for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and getattr(sub.func, "attr", None) == "join"
+    ]
+    assert not joins, "shutdown joins the post-warm thread; that can block for the import"
+
+
+def test_the_lifespan_stops_the_post_warm_thread_on_shutdown():
+    """Guard the wiring: the signal has to actually be sent."""
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    called = {
+        sub.func.id for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+    assert "_stop_post_warm_thread" in called
+    assert "_start_post_warm_thread" in called

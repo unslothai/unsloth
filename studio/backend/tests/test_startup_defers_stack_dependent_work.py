@@ -133,11 +133,30 @@ def test_post_warm_work_honours_the_coordinated_warm_kill_switch():
 
 
 def test_post_warm_thread_is_started_by_the_lifespan():
+    """The lifespan must still put the thread up -- now through a helper.
+
+    It used to construct the Thread inline. That thread was untracked, so a
+    shutdown landing while it was parked in the warm join could not stop it and a
+    second lifespan stacked another one, which is why the start moved behind
+    _start_post_warm_thread(). Follow the indirection rather than pinning the
+    inline form.
+    """
     referenced = _names_called(_lifespan_body())
-    assert "_post_warm_background_work" in referenced, (
+    assert "_start_post_warm_thread" in referenced or (
+        "_post_warm_background_work" in referenced
+    ), (
         "nothing starts the post-warm thread, so the MLX autorepair and the RAG "
         "warm would never run"
     )
+
+    # ...and the helper must target the real work, or the above is satisfied by a
+    # thread that does nothing.
+    tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
+    starter = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_start_post_warm_thread"
+    )
+    assert "_post_warm_background_work" in _names_called(starter)
 
 
 def test_post_warm_actually_runs_both_pieces_of_work(monkeypatch):

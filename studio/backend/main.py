@@ -502,6 +502,43 @@ def _warm_rag_embedder() -> None:
         pass
 
 
+_post_warm_thread: Optional[threading.Thread] = None
+# Set by lifespan shutdown. The post-warm thread spends most of its life blocked
+# in join_background_warm(), so a shutdown that lands before the warm finishes
+# cannot stop it by any other means: it wakes up later and, without this, goes on
+# to load the embedder (or drop to a llama-server subprocess) for an application
+# that is no longer running.
+_post_warm_stand_down = threading.Event()
+
+
+def _start_post_warm_thread() -> bool:
+    """Put up the post-warm thread once per running lifespan. True iff started.
+
+    Tracked rather than fire-and-forget: with the warm restartable, a second
+    lifespan in one process would otherwise stack a second post-warm thread on
+    top of a first that is still waiting.
+    """
+    global _post_warm_thread
+    if _post_warm_thread is not None and _post_warm_thread.is_alive():
+        return False
+    _post_warm_stand_down.clear()
+    _post_warm_thread = threading.Thread(
+        target = _post_warm_background_work, daemon = True, name = "post-warm",
+    )
+    _post_warm_thread.start()
+    return True
+
+
+def _stop_post_warm_thread() -> None:
+    """Tell the post-warm thread to stand down; never wait for it.
+
+    Joining would hold shutdown for the rest of the ML stack import, which is the
+    stall this whole path exists to avoid. Signalling is enough: the thread
+    re-checks after its join and returns without touching the stack.
+    """
+    _post_warm_stand_down.set()
+
+
 def _post_warm_background_work() -> None:
     """Stack-dependent startup work, run after the coordinated warm.
 
@@ -518,6 +555,18 @@ def _post_warm_background_work() -> None:
     """
     # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
+
+    # The join above is where this thread waits out the whole ML stack import, so
+    # shutdown routinely happens while we are parked in it. Everything below
+    # imports or loads something, and the RAG warm can go as far as spawning a
+    # llama-server; none of that may start for an application that has stopped.
+    if _post_warm_stand_down.is_set():
+        import structlog as _structlog
+        _structlog.get_logger(__name__).info(
+            "post-warm work stood down: the lifespan shut down while the ML stack "
+            "was still loading"
+        )
+        return
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
     # Reinstall mlx by name on a background thread and re-detect, so a
@@ -650,7 +699,7 @@ async def lifespan(app: FastAPI):
     # `import main` used to pull in before the port could bind. The socket binds
     # as soon as this returns, so the login screen is up while the stack loads.
     start_background_warm()
-    threading.Thread(target = _post_warm_background_work, daemon = True, name = "post-warm").start()
+    _start_post_warm_thread()
 
     _lifespan_log.info(
         "lifespan startup completed in %.1fms",
@@ -673,6 +722,10 @@ async def lifespan(app: FastAPI):
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
+
+    # Before the rest of teardown: this thread is usually parked in the warm join,
+    # and everything it does afterwards imports or loads part of the ML stack.
+    _stop_post_warm_thread()
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
