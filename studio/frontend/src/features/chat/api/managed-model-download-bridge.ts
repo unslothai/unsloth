@@ -17,7 +17,7 @@ export function downloadModelWithManager(
   signal: AbortSignal,
 ): Promise<ManagedModelDownloadResult> {
   return coordinateManagedModelDownload(request, signal, {
-    requestStart: downloadManager.requestStart,
+    requestStart: downloadManager.requestStartWithOwnership,
     cancel: downloadManager.cancel,
     subscribe: subscribeJobListeners,
     jobKey: jobKeyOf,

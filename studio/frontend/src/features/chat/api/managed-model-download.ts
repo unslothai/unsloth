@@ -15,7 +15,12 @@ export type ManagedModelDownloadRequest = {
 };
 
 type ManagedDownloadRequest = ManagedModelDownloadRequest & { kind: "model" };
-type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
+type DownloadStartOutcome =
+  | "started"
+  | "existing"
+  | "conflict"
+  | "busy"
+  | "error";
 type JobListeners = {
   onComplete?: (variant: string | null, bytes: number) => unknown;
   onCancelled?: (variant: string | null) => unknown;
@@ -67,6 +72,7 @@ export function coordinateManagedModelDownload(
   return new Promise((resolve, reject) => {
     let settled = false;
     let unsubscribe: (() => void) | null = null;
+    let startOutcome: DownloadStartOutcome | null = null;
 
     const cleanup = () => {
       signal.removeEventListener("abort", onAbort);
@@ -90,7 +96,9 @@ export function coordinateManagedModelDownload(
       reject(error);
     };
     const onAbort = () => {
-      Promise.resolve(dependencies.cancel(key)).catch(() => undefined);
+      if (startOutcome === "started") {
+        Promise.resolve(dependencies.cancel(key)).catch(() => undefined);
+      }
       fail(abortReason(signal));
     };
 
@@ -125,16 +133,17 @@ export function coordinateManagedModelDownload(
     dependencies
       .requestStart(managedRequest)
       .then((outcome) => {
+        startOutcome = outcome;
         // The abort may have landed while requestStart was still running its
-        // async preflight, before a cancellable job existed. If that preflight
-        // subsequently starts this job, cancel it again now that it is live.
+        // async preflight, before ownership was known. Cancel only when this
+        // request actually started the job, never when it attached to one.
         if (signal.aborted) {
           if (outcome === "started") {
             Promise.resolve(dependencies.cancel(key)).catch(() => undefined);
           }
           return;
         }
-        if (outcome !== "started") {
+        if (outcome !== "started" && outcome !== "existing") {
           settle(outcome);
         }
       })

@@ -16,7 +16,7 @@ const REQUEST = {
 };
 
 function createHarness(
-  outcome: "started" | "conflict" | "busy" | "error" = "started",
+  outcome: "started" | "existing" | "conflict" | "busy" | "error" = "started",
 ) {
   const order: string[] = [];
   const cancelledKeys: string[] = [];
@@ -96,6 +96,23 @@ test("chat abort cancels the exact manager job and preserves the abort reason", 
   assert.equal(harness.unsubscribed(), true);
 });
 
+test("chat abort does not cancel a pre-existing managed download", async () => {
+  const harness = createHarness("existing");
+  const controller = new AbortController();
+  const pending = coordinateManagedModelDownload(
+    REQUEST,
+    controller.signal,
+    harness.dependencies,
+  );
+  const reason = new Error("Stopped by user");
+
+  controller.abort(reason);
+
+  await assert.rejects(pending, (error) => error === reason);
+  assert.deepEqual(harness.cancelledKeys, []);
+  assert.equal(harness.unsubscribed(), true);
+});
+
 test("chat abort re-cancels a job that starts after async preflight", async () => {
   const harness = createHarness();
   const controller = new AbortController();
@@ -113,14 +130,11 @@ test("chat abort re-cancels a job that starts after async preflight", async () =
 
   controller.abort(reason);
   await assert.rejects(pending, (error) => error === reason);
-  assert.deepEqual(harness.cancelledKeys, [
-    `model:${REQUEST.repoId}#${REQUEST.variant}`,
-  ]);
+  assert.deepEqual(harness.cancelledKeys, []);
 
   finishStart?.("started");
   await Promise.resolve();
   assert.deepEqual(harness.cancelledKeys, [
-    `model:${REQUEST.repoId}#${REQUEST.variant}`,
     `model:${REQUEST.repoId}#${REQUEST.variant}`,
   ]);
 });

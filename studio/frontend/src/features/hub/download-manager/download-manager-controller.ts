@@ -16,6 +16,7 @@ import { runtimeRegistry } from "./runtime-registry";
 import {
   cancelConflict,
   requestStart,
+  requestStartWithOwnership,
   restartConflict,
   resumeConflict,
 } from "./transport-conflict";
@@ -45,6 +46,7 @@ export function __resetDownloadManagerForTests(): void {
 
 export interface DownloadManagerController {
   requestStart: typeof requestStart;
+  requestStartWithOwnership: typeof requestStartWithOwnership;
   cancel: typeof cancelJob;
   probeAndAdopt: typeof probeAndAdopt;
   setExpected: typeof setExpected;
@@ -56,6 +58,7 @@ export interface DownloadManagerController {
 
 export const downloadManager: DownloadManagerController = {
   requestStart,
+  requestStartWithOwnership,
   cancel: cancelJob,
   probeAndAdopt,
   setExpected,

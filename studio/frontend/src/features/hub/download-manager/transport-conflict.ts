@@ -88,6 +88,7 @@ async function activeSiblingTransport(
 // repo is occupied by a sibling variant/snapshot/pending start that is not this
 // transfer; "error" means the start failed or was refused.
 export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
+export type DownloadStartOwnershipOutcome = DownloadStartOutcome | "existing";
 
 // A start can no-op without throwing: the backend can refuse it (startJob
 // finalizes "error"), startJob's peer guard can skip it, or
@@ -102,12 +103,12 @@ function isJobActiveFor(req: DownloadRequest): boolean {
 async function runWithPendingStartGuard(
   req: DownloadRequest,
   action: () => Promise<DownloadStartOutcome>,
-): Promise<DownloadStartOutcome> {
+): Promise<DownloadStartOwnershipOutcome> {
   const startKey = pendingStartKey(req);
-  // Already active or pending for the repo: only report "started" when this
-  // exact request is the live transfer; a peer/snapshot/pending start has not.
+  // Distinguish attaching to an exact live transfer from creating one so a
+  // caller can avoid cancelling a shared job that it does not own.
   if (hasActiveOrPendingStart(req)) {
-    return isJobActiveFor(req) ? "started" : "busy";
+    return isJobActiveFor(req) ? "existing" : "busy";
   }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
   try {
@@ -120,9 +121,9 @@ async function runWithPendingStartGuard(
   }
 }
 
-export async function requestStart(
+export function requestStartWithOwnership(
   req: DownloadRequest,
-): Promise<DownloadStartOutcome> {
+): Promise<DownloadStartOwnershipOutcome> {
   return runWithPendingStartGuard(req, async () => {
     let mode: TransportMode = getTransportMode();
     try {
@@ -199,6 +200,14 @@ export async function requestStart(
     await startJob(req, { useXet: mode === TRANSPORT.XET });
     return isJobActiveFor(req) ? "started" : "error";
   });
+}
+
+export async function requestStart(
+  req: DownloadRequest,
+): Promise<DownloadStartOutcome> {
+  const outcome = await requestStartWithOwnership(req);
+  // Preserve the established controller contract for existing callers.
+  return outcome === "existing" ? "started" : outcome;
 }
 
 export function resumeConflict(conflictKey: string): void {
