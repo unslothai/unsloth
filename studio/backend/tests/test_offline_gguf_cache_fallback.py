@@ -3215,7 +3215,11 @@ class TestHungProbeHonoursFailOpenBehindAProxy:
     still means the real hub calls would hang too, so that verdict is unchanged."""
 
     class _Hang:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             import threading as _t
             _t.Event().wait()
 
@@ -3257,6 +3261,7 @@ class TestGuardsShareOneDnsLookup:
     @pytest.fixture(autouse = True)
     def _fresh(self):
         from utils.utils import reset_hf_reachability_cache
+
         reset_hf_reachability_cache()
         yield
         reset_hf_reachability_cache()
@@ -3270,8 +3275,10 @@ class TestGuardsShareOneDnsLookup:
         probe = []
         monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: (dns.append(1), False)[1])
         import utils.transformers_version as tv
-        monkeypatch.setattr(tv, "hf_endpoint_unreachable",
-                            lambda *a, **k: (probe.append(1), True)[1])
+
+        monkeypatch.setattr(
+            tv, "hf_endpoint_unreachable", lambda *a, **k: (probe.append(1), True)[1]
+        )
 
         assert _hf_unreachable() is True
         for _ in range(5):
@@ -3286,8 +3293,10 @@ class TestGuardsShareOneDnsLookup:
         probe = []
         monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: (dns.append(1), False)[1])
         import utils.transformers_version as tv
-        monkeypatch.setattr(tv, "hf_endpoint_unreachable",
-                            lambda *a, **k: (probe.append(1), False)[1])
+
+        monkeypatch.setattr(
+            tv, "hf_endpoint_unreachable", lambda *a, **k: (probe.append(1), False)[1]
+        )
 
         assert _hf_unreachable() is False
         for _ in range(5):
@@ -3295,7 +3304,7 @@ class TestGuardsShareOneDnsLookup:
         assert dns == [1] and probe == [1]
 
     def test_a_dead_lookup_is_not_recorded_so_recovery_is_immediate(
-        self, monkeypatch, clean_offline_env,
+        self, monkeypatch, clean_offline_env
     ):
         """A dead lookup fails fast, so caching it would only delay recovery by the TTL."""
         from core.inference.llama_cpp import _hf_unreachable
@@ -3303,6 +3312,7 @@ class TestGuardsShareOneDnsLookup:
         state = {"dead": True}
         monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: state["dead"])
         import utils.transformers_version as tv
+
         monkeypatch.setattr(tv, "hf_endpoint_unreachable", lambda *a, **k: False)
 
         assert _hf_unreachable() is True
