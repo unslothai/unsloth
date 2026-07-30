@@ -50,7 +50,19 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if an HF offline env var is truthy (canonical strip+lower parse, on/true/yes/1)."""
+    """True if an HF offline env var is truthy (canonical strip+lower parse, on/true/yes/1).
+
+    Also true inside an open force_hf_offline window, even when the env momentarily
+    disagrees: hf_environment_restored_for_spawn puts the user's values back for the whole
+    Process.start() window, and this gates detect_audio_type's raw requests.get, which the
+    patched hub constant does not cover. Function-local import to avoid an import cycle;
+    the env parse stays as the fallback.
+    """
+    try:
+        from utils.utils import hf_env_offline
+        return hf_env_offline()
+    except Exception:
+        pass
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES

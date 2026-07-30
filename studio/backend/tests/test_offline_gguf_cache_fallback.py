@@ -2873,3 +2873,90 @@ class TestTransformersOfflineDoesNotSilenceDatasets:
         hub = block.index('os.environ["HF_HUB_OFFLINE"] = "1"')
         gate = block.index("if _network_offline:")
         assert hub < gate, "HF_HUB_OFFLINE must not be gated on the network verdict"
+
+
+class TestModelConfigPredicateHonoursTheWindow:
+    """model_config._env_offline gates detect_audio_type's raw requests.get, which the
+    patched hub constant does not cover. During hf_environment_restored_for_spawn the env
+    is back to the user's values, so an env-only predicate would fire that 15s request."""
+
+    def test_predicate_is_true_inside_the_spawn_window(self, monkeypatch):
+        import threading
+
+        from utils.models.model_config import _env_offline
+        from utils.utils import force_hf_offline, hf_environment_restored_for_spawn
+
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            monkeypatch.delenv(key, raising = False)
+
+        seen = {}
+        in_window = threading.Event()
+        checked = threading.Event()
+
+        def _spawn_window():
+            with hf_environment_restored_for_spawn():
+                seen["env_during"] = os.environ.get("HF_HUB_OFFLINE")
+                in_window.set()
+                checked.wait(5)
+
+        with force_hf_offline():
+            assert _env_offline() is True
+            t = threading.Thread(target = _spawn_window)
+            t.start()
+            assert in_window.wait(5)
+            seen["predicate_during"] = _env_offline()
+            checked.set()
+            t.join(5)
+            assert _env_offline() is True
+
+        assert seen["env_during"] is None       # the user's value really was restored
+        assert seen["predicate_during"] is True  # but the predicate still reads offline
+        assert _env_offline() is False           # and it lets go afterwards
+
+    def test_raw_fetch_is_skipped_during_the_window(self, monkeypatch, tmp_path):
+        """The stall this prevents: _detect_audio_from_tokenizer's own requests.get is the
+        call the gate protects, so drive that function rather than a caller that could
+        return earlier for unrelated reasons."""
+        import threading
+
+        import utils.models.model_config as mc
+        from utils.utils import force_hf_offline, hf_environment_restored_for_spawn
+
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            monkeypatch.delenv(key, raising = False)
+        monkeypatch.setenv("HF_HOME", str(tmp_path))
+
+        calls = []
+
+        class _FakeRequests:
+            @staticmethod
+            def get(url, **kwargs):
+                calls.append(url)
+                raise AssertionError("no request may leave during an offline window")
+
+        monkeypatch.setitem(sys.modules, "requests", _FakeRequests)
+
+        # Control: outside any window the gate is open and the fetch is attempted.
+        mc._detect_audio_from_tokenizer("org/some-audio-model", None, local_files_only = False)
+        assert calls, "the raw fetch is not reached at all, so the gate is untested"
+        calls.clear()
+
+        in_window = threading.Event()
+        release = threading.Event()
+
+        def _spawn_window():
+            with hf_environment_restored_for_spawn():
+                in_window.set()
+                release.wait(5)
+
+        with force_hf_offline():
+            t = threading.Thread(target = _spawn_window)
+            t.start()
+            assert in_window.wait(5)
+            mc._detect_audio_from_tokenizer(
+                "org/some-audio-model", None, local_files_only = False,
+            )
+            release.set()
+            t.join(5)
+
+        assert calls == []
