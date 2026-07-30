@@ -2011,8 +2011,9 @@ def test_a_split_payload_is_partial_wherever_it_is_cached(
 
 
 @pytest.mark.parametrize("where", ["active", "legacy"])
-@pytest.mark.parametrize("ref_label, refs", [("dangling", {"main": UPSTREAM_HEAD}),
-                                             ("resolving", {"main": SNAPSHOT})])
+@pytest.mark.parametrize(
+    "ref_label, refs", [("dangling", {"main": UPSTREAM_HEAD}), ("resolving", {"main": SNAPSHOT})]
+)
 def test_a_self_contained_snapshot_is_not_made_partial_by_a_second_one(
     where, ref_label, refs, tmp_path, monkeypatch
 ):
