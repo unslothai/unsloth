@@ -13,7 +13,7 @@ from typing import Optional
 
 from loggers import get_logger
 
-from cloudflare_tunnel import start_preview_tunnel, stop_studio_tunnel
+from cloudflare_tunnel import start_preview_tunnel, stop_studio_tunnel, stop_tunnel_if_url
 from preview_public_server import listener
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 
@@ -73,13 +73,13 @@ class PreviewShareLink:
             return url
 
     async def stop(self) -> None:
-        # Only tear down a tunnel we started: the slot is shared with a
-        # --cloudflare launch's studio-wide tunnel, which is not ours to stop.
+        # Stop only the exact tunnel we started: the shared slot may hold (or
+        # have been replaced by) a studio-wide tunnel that is not ours to stop.
         async with self._lock:
             if self._url is None:
                 return
-            self._url = None
-            await asyncio.to_thread(stop_studio_tunnel)
+            url, self._url = self._url, None
+            await asyncio.to_thread(stop_tunnel_if_url, url)
             await listener.stop()
 
 

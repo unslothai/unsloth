@@ -186,13 +186,13 @@ def test_listener_serves_only_preview_paths(app):
     statuses = _serve_and_get(
         app,
         [
-            "/p/_health",
+            pps._PREVIEW_HEALTH_PATH,
             f"/p/demorun?k={token}",
             "/api/health",
             "/",
         ],
     )
-    assert statuses["/p/_health"] == 200
+    assert statuses[pps._PREVIEW_HEALTH_PATH] == 200
     assert statuses[f"/p/demorun?k={token}"] == 200
     # The private surface is unreachable even though it exists on the app.
     assert statuses["/api/health"] == 404
@@ -222,8 +222,8 @@ def test_health_marker_matches_the_tunnel_probe(app):
 
 
 def test_health_does_not_shadow_a_run_on_the_authenticated_app(app, tmp_path):
-    # The probe lives in the gate, not the shared router: a run literally named
-    # "_health" keeps its token-checked page on the authenticated app.
+    # The probe lives in the gate, outside /p: a run literally named "_health"
+    # keeps its token-checked page on the authenticated app.
     from fastapi.testclient import TestClient
 
     _make_run(tmp_path / "outputs", name = "_health")
@@ -233,6 +233,17 @@ def test_health_does_not_shadow_a_run_on_the_authenticated_app(app, tmp_path):
     assert response.headers["content-type"].startswith("text/html")
     # And without a token it 404s like any other run, not like an open probe.
     assert TestClient(app).get("/p/_health").status_code == 404
+
+
+def test_signed_health_run_is_served_through_the_listener(app, tmp_path):
+    # The reviewer scenario: a shared link for a run named "_health" must reach
+    # the token-checked page on the public listener, not the probe.
+    _make_run(tmp_path / "outputs", name = "_health")
+    token = preview_token.sign_preview_ref("_health")
+    statuses = _serve_and_get(app, [f"/p/_health?k={token}", "/p/_health"])
+    assert statuses[f"/p/_health?k={token}"] == 200
+    # Unsigned, it 404s like any run; the probe lives on its own path.
+    assert statuses["/p/_health"] == 404
 
 
 def test_listener_start_is_idempotent(app):
@@ -379,18 +390,42 @@ def test_stop_tears_down_tunnel_and_listener(monkeypatch, link):
     fake = _FakeListener()
     monkeypatch.setattr(psl, "listener", fake)
     monkeypatch.setattr(psl, "start_preview_tunnel", lambda port: "https://x.trycloudflare.com")
-    stopped = {"n": 0}
-    monkeypatch.setattr(
-        psl, "stop_studio_tunnel", lambda: stopped.__setitem__("n", stopped["n"] + 1)
-    )
+    stopped = []
+    monkeypatch.setattr(psl, "stop_tunnel_if_url", lambda url: (stopped.append(url), True)[1])
 
     app = _FakeApp()
     asyncio.run(link.ensure(app))
     asyncio.run(link.stop())
 
-    assert stopped["n"] == 1
+    # The targeted stop gets the exact URL this link opened.
+    assert stopped == ["https://x.trycloudflare.com"]
     assert fake.stopped == 1
     assert link.current(app) is None
+
+
+def test_stop_leaves_a_replacement_tunnel_running(monkeypatch, link):
+    # If the shared slot was replaced after the preview tunnel opened, the
+    # conditional stop must no-op instead of killing the replacement.
+    import cloudflare_tunnel as ct
+
+    class _FakeTunnel:
+        def __init__(self, url):
+            self.url = url
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+    replacement = _FakeTunnel("https://studio.trycloudflare.com")
+    monkeypatch.setattr(ct, "_active_tunnel", replacement)
+
+    assert ct.stop_tunnel_if_url("https://preview.trycloudflare.com") is False
+    assert replacement.stopped is False
+    assert ct._active_tunnel is replacement
+
+    assert ct.stop_tunnel_if_url("https://studio.trycloudflare.com") is True
+    assert replacement.stopped is True
+    assert ct._active_tunnel is None
 
 
 def test_ensure_registers_an_atexit_backstop(monkeypatch, link):
@@ -421,6 +456,9 @@ def test_stop_without_a_link_leaves_the_shared_tunnel_slot_alone(monkeypatch, li
     monkeypatch.setattr(psl, "listener", fake)
     monkeypatch.setattr(
         psl, "stop_studio_tunnel", lambda: pytest.fail("must not stop a tunnel it does not own")
+    )
+    monkeypatch.setattr(
+        psl, "stop_tunnel_if_url", lambda url: pytest.fail("must not stop a tunnel it does not own")
     )
 
     asyncio.run(link.stop())

@@ -21,10 +21,9 @@ logger = get_logger(__name__)
 # Bare /p (the JWT-authenticated listing route) is deliberately excluded.
 _PREVIEW_PATH_PREFIX = "/p/"
 
-# Tunnel-readiness probe, answered by the gate itself: a route on the shared
-# router would reserve "_health" inside the /{run} namespace on the
-# authenticated app too. Shadows only this exact path, only on this listener.
-_PREVIEW_HEALTH_PATH = "/p/_health"
+# Tunnel-readiness probe, answered by the gate itself on a path outside /p so
+# it can never shadow a run page (runs live under /p/{run}).
+_PREVIEW_HEALTH_PATH = "/_preview_health"
 _PREVIEW_HEALTH_SERVICE = "Unsloth Preview"
 _PREVIEW_HEALTH_BODY = json.dumps({"service": _PREVIEW_HEALTH_SERVICE}).encode("utf-8")
 
@@ -77,11 +76,12 @@ class PreviewOnlyGate:
             # No preview route speaks websocket; refuse rather than proxy through.
             await send({"type": "websocket.close", "code": 1008})
             return
-        if scope_type != "http" or not is_public_preview_path(scope.get("path", "")):
-            await _send_json(send, 404, _NOT_FOUND_BODY)
-            return
-        if scope.get("path") == _PREVIEW_HEALTH_PATH:
+        path = scope.get("path", "")
+        if scope_type == "http" and path == _PREVIEW_HEALTH_PATH:
             await _send_json(send, 200, _PREVIEW_HEALTH_BODY)
+            return
+        if scope_type != "http" or not is_public_preview_path(path):
+            await _send_json(send, 404, _NOT_FOUND_BODY)
             return
         await self.app(scope, receive, send)
 

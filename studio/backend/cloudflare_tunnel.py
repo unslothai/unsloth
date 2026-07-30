@@ -45,8 +45,9 @@ _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
 # URL is fetched once before it is advertised.
 _PUBLIC_PROBE_PATH = "/api/health"
 _PUBLIC_PROBE_MARKER = "Unsloth UI Backend"
-# The preview-only listener 404s /api/health; probe its own unauthenticated marker.
-_PREVIEW_PROBE_PATH = "/p/_health"
+# The preview-only listener 404s /api/health; probe the gate's own marker,
+# served outside /p so it can never collide with a run name.
+_PREVIEW_PROBE_PATH = "/_preview_health"
 _PREVIEW_PROBE_MARKER = "Unsloth Preview"
 # One deadline for DNS propagation + the health probe, bounding the startup stall.
 _PUBLIC_PROBE_TIMEOUT = 45.0
@@ -487,3 +488,17 @@ def stop_studio_tunnel() -> None:
         tunnel, _active_tunnel = _active_tunnel, None
     if tunnel is not None:
         tunnel.stop()
+
+
+# Stops the active tunnel only if it still serves `url`. No-op when the shared
+# slot has since been replaced (e.g. by a studio-wide tunnel), and no shutdown
+# latch so an unrelated in-flight start is not aborted.
+def stop_tunnel_if_url(url: str) -> bool:
+    global _active_tunnel
+    with _active_lock:
+        tunnel = _active_tunnel
+        if tunnel is None or tunnel.url != url:
+            return False
+        _active_tunnel = None
+    tunnel.stop()
+    return True
