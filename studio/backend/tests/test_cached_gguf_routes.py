@@ -402,6 +402,46 @@ def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monke
     assert advertised - {v.quant for v in list_local_gguf_variants(str(older))[0] if v.quant}
 
 
+@pytest.mark.parametrize(
+    ("files", "expected_default", "expected_ready"),
+    [
+        pytest.param(
+            {"Model-Q8_0.gguf": b"\0" * 256, "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256},
+            "Q8_0",
+            {"Q8_0"},
+            id = "the-preferred-quant-is-short-a-shard",
+        ),
+        pytest.param(
+            {"Model-Q8_0.gguf": b"\0" * 256, "Model-Q4_K_M.gguf": b"\0" * 128},
+            "Q4_K_M",
+            {"Q4_K_M", "Q8_0"},
+            id = "both-whole-so-the-usual-preference-stands",
+        ),
+        pytest.param(
+            {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256},
+            "Q4_K_M",
+            set(),
+            id = "nothing-ready-so-the-default-is-a-download-target",
+        ),
+    ],
+)
+def test_the_local_default_variant_is_one_that_can_load(
+    tmp_path, files, expected_default, expected_ready
+):
+    """The picker takes default_variant and only re-checks whether it fits in memory, never whether
+    it is downloaded, so recommending a quant short a shard selects one that cannot load while a
+    whole one sits beside it."""
+    snapshot = tmp_path / "models--Org--Model" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    for name, blob in files.items():
+        (snapshot / name).write_bytes(blob)
+
+    response = asyncio.run(GV.get_gguf_variants_response(str(snapshot), hf_token = None))
+
+    assert response.default_variant == expected_default
+    assert {v.quant for v in response.variants if v.downloaded} == expected_ready
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",

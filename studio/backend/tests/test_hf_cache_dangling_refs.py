@@ -1733,6 +1733,11 @@ _WHOLE_SHARDS = {
             id = "a-map-naming-a-shard-that-is-not-here",
         ),
         pytest.param(b'{"metadata": {}}', True, id = "an-index-with-no-weight-map"),
+        pytest.param(
+            _shard_index("model-00001-of-00002.safetensors"),
+            True,
+            id = "a-map-covering-only-part-of-the-numbered-family",
+        ),
         pytest.param(_shard_index(), True, id = "a-map-naming-nothing"),
         pytest.param(
             _shard_index("../../elsewhere.safetensors"),

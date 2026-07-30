@@ -810,6 +810,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     )
     groups: dict[str, dict[tuple[str, str, int, str], set[int]]] = {"base": {}, "adapter": {}}
     whole: dict[str, set[str]] = {"base": set(), "adapter": set()}
+    shard_names: dict[tuple[str, str, int, str], set[str]] = {}
     unreadable: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
@@ -866,6 +867,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             path.suffix.lower(),
         )
         groups[kind].setdefault(family, set()).add(index)
+        shard_names.setdefault(family, set()).add(path.name)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
     # from_pretrained reads the shard map from the index and never globs, so shards without one are
     # invisible. Named for the family: model-*.safetensors wants model.safetensors.index.json.
@@ -873,7 +875,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         family
         for family in groups["base"]
         if _index_cannot_serve_its_shards(
-            snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json"
+            snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json",
+            shard_names.get(family, set()),
         )
     )
     # peft resolves only the singular adapter_model.* and has no shard path, so a numbered adapter
@@ -882,11 +885,12 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     return _SnapshotPayload(model_format, groups, whole, frozenset(unreadable), unloadable)
 
 
-def _index_cannot_serve_its_shards(index_path: Path) -> bool:
-    """Whether *index_path* would fail to hand ``from_pretrained`` a shard set.
+def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> bool:
+    """Whether *index_path* would fail to hand ``from_pretrained`` the family in *family_files*.
 
     Existing is not enough: the loader parses it and opens every ``weight_map`` name, so a truncated
-    index or one naming a shard never written is as unloadable as no index at all.
+    index or one naming a shard never written is as unloadable as no index at all. The map is also
+    the only list of files read, so one covering part of the numbered family silently drops the rest.
     """
     try:
         if not index_path.is_file() or index_path.stat().st_size <= 0:
@@ -897,6 +901,13 @@ def _index_cannot_serve_its_shards(index_path: Path) -> bool:
         return True
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
+        return True
+    named = {
+        shard.replace("\\", "/").rsplit("/", 1)[-1]
+        for shard in weight_map.values()
+        if isinstance(shard, str)
+    }
+    if not family_files <= named:
         return True
     for shard in set(weight_map.values()):
         # Names are relative to the index: anything reaching outside is not a shard of this family.
