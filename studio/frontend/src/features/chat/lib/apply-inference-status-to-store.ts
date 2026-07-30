@@ -300,6 +300,11 @@ export function applyActiveModelStatusToStore(
         selectedGpuIndexKind: prevState.selectedGpuIndexKind,
       }),
   };
+  const nativeLeaseMatchesStatus =
+    status.is_gguf === true &&
+    Boolean(status.native_path_token_id_hash) &&
+    prevState.activeNativePathTokenIdHash ===
+      status.native_path_token_id_hash;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -319,10 +324,13 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
-    ...(status.is_gguf &&
-    (!hydratingExistingModel || options.readoptingSameModel)
+    ...(nativeLeaseMatchesStatus
       ? {}
-      : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
+      : {
+          activeNativePathToken: null,
+          activeNativePathTokenIdHash: null,
+          activeNativePathExpiresAtMs: null,
+        }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),

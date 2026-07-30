@@ -3686,9 +3686,9 @@ def _request_matches_loaded_settings(
 
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest, *, operation: str
-) -> tuple[str, str, bool]:
+) -> tuple[str, str, bool, str | None]:
     if not request.native_path_lease:
-        return request.model_path, request.model_path, False
+        return request.model_path, request.model_path, False, None
     try:
         grant = verify_native_path_lease(
             request.native_path_lease,
@@ -3706,7 +3706,7 @@ def _resolve_model_identifier_for_request(
             detail = redact_native_paths(str(exc)),
         ) from exc
     display_label = grant.display_label or Path(request.model_path).name or "Native model"
-    return str(grant.canonical_path), display_label, True
+    return str(grant.canonical_path), display_label, True, grant.token_id_hash
 
 
 # GGUF inference backend (llama-server)
@@ -5549,6 +5549,7 @@ async def _load_model_impl(
     _note_model_load_in_progress(request.model_path, 1)
 
     native_grant_backed = False
+    native_path_token_id_hash = None
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
     try:
@@ -5603,8 +5604,12 @@ async def _load_model_impl(
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
 
-        model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "load-model")
+        _resolved_model = _resolve_model_identifier_for_request(
+            request, operation = "load-model"
+        )
+        model_identifier, model_log_label, native_grant_backed = _resolved_model[:3]
+        native_path_token_id_hash = (
+            _resolved_model[3] if len(_resolved_model) > 3 else None
         )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
@@ -5669,6 +5674,8 @@ async def _load_model_impl(
 
                 _gguf_audio = getattr(llama_backend, "_audio_type", None)
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
+                if native_grant_backed:
+                    llama_backend._native_token_id_hash = native_path_token_id_hash
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label
@@ -5683,6 +5690,7 @@ async def _load_model_impl(
                     is_local_model = _loaded_is_local_model(
                         llama_backend, native_grant_backed, llama_backend.model_identifier
                     ),
+                    native_path_token_id_hash = native_path_token_id_hash,
                     is_diffusion = llama_backend.is_diffusion,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
@@ -6124,6 +6132,7 @@ async def _load_model_impl(
             _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = model_log_label if native_grant_backed else None
             llama_backend._native_grant_backed = bool(native_grant_backed)
+            llama_backend._native_token_id_hash = native_path_token_id_hash
             # Provenance is a load-time fact. Re-deriving it per status poll
             # would flip a local model to remote if its directory is deleted
             # or unmounted underneath a still-running server.
@@ -6141,6 +6150,7 @@ async def _load_model_impl(
                 is_lora = False,
                 is_gguf = True,
                 is_local_model = config.is_local,
+                native_path_token_id_hash = native_path_token_id_hash,
                 is_diffusion = llama_backend.is_diffusion,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
@@ -6471,9 +6481,10 @@ async def validate_model(
     native_grant_backed = False
     model_log_label = request.model_path
     try:
-        model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "validate-model")
+        _resolved_model = _resolve_model_identifier_for_request(
+            request, operation = "validate-model"
         )
+        model_identifier, model_log_label, native_grant_backed = _resolved_model[:3]
         config = ModelConfig.from_identifier(
             model_id = model_identifier,
             hf_token = request.hf_token,
@@ -7409,6 +7420,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = None if _native_grant_backed else _model_id,
+                native_path_token_id_hash = getattr(
+                    llama_backend, "_native_token_id_hash", None
+                ),
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 is_local_model = _loaded_is_local_model(
@@ -7518,6 +7532,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             # concrete reload identity so a fresh/stale client can hydrate the
             # same checkpoint instead of preserving arbitrary local state.
             model_identifier = backend.active_model_name or idle_model_identifier,
+            native_path_token_id_hash = idle_capabilities.get(
+                "native_path_token_id_hash"
+            ),
             gguf_variant = idle_gguf_variant,
             is_vision = idle_capabilities.get("is_vision", is_vision),
             is_gguf = idle_unloaded,

@@ -27,6 +27,37 @@ import routes.inference as inf  # noqa: E402
 from models.inference import ValidateModelRequest  # noqa: E402
 
 
+def test_native_resolution_returns_opaque_token_identity(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    model_path = tmp_path / "same-name.gguf"
+    model_path.write_bytes(b"gguf")
+    monkeypatch.setattr(
+        inf,
+        "verify_native_path_lease",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            canonical_path = model_path,
+            display_label = "same-name.gguf",
+            token_id_hash = "opaque-file-a",
+        ),
+    )
+
+    resolved = inf._resolve_model_identifier_for_request(
+        ValidateModelRequest(
+            model_path = "same-name.gguf",
+            native_path_lease = "signed.lease",
+        ),
+        operation = "validate-model",
+    )
+
+    assert resolved == (
+        str(model_path),
+        "same-name.gguf",
+        True,
+        "opaque-file-a",
+    )
+
+
 def _provoke(
     monkeypatch,
     exc: BaseException,

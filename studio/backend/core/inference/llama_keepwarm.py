@@ -428,6 +428,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                                 else public_model_id(internal_identifier)
                             )
                         ),
+                        "native_path_token_id_hash": getattr(
+                            backend, "_native_token_id_hash", None
+                        ),
                         "is_vision": backend.is_vision,
                         "is_diffusion": backend.is_diffusion,
                         "is_audio": getattr(backend, "_is_audio", False),

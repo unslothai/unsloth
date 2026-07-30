@@ -1155,6 +1155,8 @@ export function useChatModelRuntime() {
             rollbackState.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
             rollbackState.activeNativePathExpiresAtMs;
+          const previousActiveNativePathTokenIdHash =
+            rollbackState.activeNativePathTokenIdHash;
           // Snapshot the load settings at click time, before the awaits below
           // (validation, the trust dialog, unload). When the picker staged a
           // config payload, prefer it over the store: React may not have
@@ -1646,6 +1648,8 @@ export function useChatModelRuntime() {
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
               activeNativePathToken: nativePathToken ?? null,
+              activeNativePathTokenIdHash:
+                loadResponse.native_path_token_id_hash ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
                 : null,
@@ -1778,6 +1782,11 @@ export function useChatModelRuntime() {
                 useChatRuntimeStore.setState({
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
+                  activeNativePathTokenIdHash: previousActiveNativePathToken
+                    ? (rollbackResponse.native_path_token_id_hash ??
+                      previousActiveNativePathTokenIdHash ??
+                      null)
+                    : null,
                   // Restore the previous token's lease together with the token so a
                   // rollback never pairs restored token A with failed load B's expiry.
                   activeNativePathExpiresAtMs: previousActiveNativePathToken

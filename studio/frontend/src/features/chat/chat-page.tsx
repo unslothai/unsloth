@@ -2718,6 +2718,7 @@ export function ChatPage({
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          activeNativePathTokenIdHash: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider render gate shows
           // stale stats. The per-thread copies go too, so a switch back cannot re-apply.

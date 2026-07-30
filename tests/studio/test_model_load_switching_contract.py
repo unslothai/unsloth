@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "studio" / "frontend" / "src"
+BACKEND = ROOT / "studio" / "backend"
 
 
 def _read(relative: str) -> str:
@@ -329,12 +330,23 @@ def test_external_intent_restores_config_after_stale_status_check():
 
 def test_model_change_clears_a_stale_native_path_lease():
     status = _read("features/chat/lib/apply-inference-status-to-store.ts")
-    native_lease = status.split(
-        "activeNativePathToken: null, activeNativePathExpiresAtMs: null",
-        1,
-    )[0]
-    assert "status.is_gguf &&" in native_lease
-    assert "(!hydratingExistingModel || options.readoptingSameModel)" in native_lease
+    assert "const nativeLeaseMatchesStatus =" in status
+    assert "Boolean(status.native_path_token_id_hash)" in status
+    assert "prevState.activeNativePathTokenIdHash ===" in status
+    assert "activeNativePathTokenIdHash: null" in status
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert (
+        "activeNativePathTokenIdHash:\n"
+        "                loadResponse.native_path_token_id_hash ?? null"
+        in runtime
+    )
+    routes = (BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8")
+    keepwarm = (
+        BACKEND / "core" / "inference" / "llama_keepwarm.py"
+    ).read_text(encoding = "utf-8")
+    assert "grant.token_id_hash" in routes
+    assert "llama_backend._native_token_id_hash = native_path_token_id_hash" in routes
+    assert '"native_path_token_id_hash": getattr(' in keepwarm
 
 
 def test_chat_page_forwards_resident_reselection_to_intent_owner():
