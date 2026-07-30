@@ -1449,9 +1449,9 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 
 /** Whether a cache row is a model the user can actually chat with.
 *
-*  The cache endpoints also return resume/delete-only rows (interrupted or cancelled downloads) with
-*  partial: true and can_chat: false; loading one wastes an attempt and suppresses the default
-*  download. Both fields are optional so an older backend keeps trying the row. */
+*  The cache endpoints also return resume/delete-only rows (partial: true, can_chat: false); loading
+*  one wastes an attempt and suppresses the default download. Both fields are optional so an older
+*  backend keeps trying the row. */
 function isChattableCachedRepo(repo: {
   partial?: boolean;
   capabilities?: { can_chat?: boolean } | null;
@@ -1516,16 +1516,14 @@ async function autoLoadSmallestModel(): Promise<{
     current: { label: string; detail: string; blamesModel: boolean } | null;
   } = { current: null };
 
-  // Set once the user declines the HF token dialog, so the rest of the sweep and
-  // the Hub default download do not ask again.
+  // Set once the user declines the HF token dialog, so the sweep and the Hub download stop asking.
   let autoLoadCancelled = false;
 
   function noteLoadFailure(label: string, error: unknown): void {
     const detail =
       error instanceof Error && error.message.trim() ? error.message.trim() : "";
-    // loadModel also rejects before /api/inference/load is sent: dismissed HF token dialog, or fetch
-    // failed because Studio is down or the browser is offline. Those still stop the Hub download,
-    // but the model did nothing wrong, so the headline must not name it.
+    // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
+    // backend): those still stop the Hub download, but the headline must not blame the model.
     const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
     const blamesModel = !(
       marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
@@ -1578,20 +1576,16 @@ async function autoLoadSmallestModel(): Promise<{
   }
 
   function recordTerminalFailure(label: string, error: unknown): void {
-    // Only the two terminal markers. An ordinary failure stays this candidate's
-    // problem and the sweep moves on, which is what recovering from a transient
-    // blip on the first candidate depends on.
+    // Only the two terminal markers: an ordinary failure stays this candidate's problem and the
+    // sweep moves on, which is how a transient blip on the first candidate still recovers.
     const marker = error as {
       unslothTransportFailure?: boolean;
       unslothUserCancelled?: boolean;
     };
     if (marker?.unslothUserCancelled === true) {
       noteLoadFailure(label, error);
-      // The user declined once. Trying the next candidate reopens the same
-      // dialog, so the sweep stops rather than asking again per repo. A
-      // transport failure deliberately does NOT stop it: the backend can come
-      // back within the sweep, and a later candidate still loading is the
-      // recovery autoload/transport_failure_then_success covers.
+      // The next candidate would reopen the same dialog, so stop rather than ask per repo. A
+      // transport failure deliberately does NOT stop it: the backend can come back mid-sweep.
       autoLoadCancelled = true;
       return;
     }
@@ -1607,9 +1601,8 @@ async function autoLoadSmallestModel(): Promise<{
     try {
       return await canAutoLoad(payload);
     } catch (error) {
-      // validateModel prepares the token too, so a dismissed dialog or a dead
-      // backend surfaces here, not from loadModel below, and the sweep's bare
-      // catches would drop it and go on to the Hub download.
+      // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here,
+      // not from loadModel, and the sweep's bare catches would drop it and hit the Hub download.
       recordTerminalFailure(label, error);
       throw error;
     }
@@ -1666,9 +1659,8 @@ async function autoLoadSmallestModel(): Promise<{
       // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        // Raised before loadModel, so its catch never sees it. Through the same
-        // helper as the other two sites, or this one records the failure without
-        // halting and every later candidate reopens the dialog.
+        // Raised before loadModel, so its catch never sees it: route it through the same helper as
+        // the other two sites, or every later candidate reopens the dialog.
         const cancelled = Object.assign(new Error("Model load cancelled."), {
           unslothUserCancelled: true,
         });
@@ -1681,8 +1673,7 @@ async function autoLoadSmallestModel(): Promise<{
           gguf_variant: candidate.ggufVariant,
           hf_token: preparedToken.token,
         }).catch((error: unknown) => {
-          // Same authFetch as validate and load, so a dead backend throws here
-          // too, ahead of both their catches. Record it for the same reason.
+          // Same authFetch as validate and load, so a dead backend throws here first.
           recordTerminalFailure(failureLabel, error);
           throw error;
         })
@@ -1769,8 +1760,8 @@ async function autoLoadSmallestModel(): Promise<{
           }
         : {}),
     }).catch((error: unknown) => {
-      // The sweep's parameterless catches discard this error, so a genuine load failure used to fall
-      // through to the Hub download. Rethrow to keep their control flow.
+      // The sweep's parameterless catches discard this error, so record it before rethrowing or a
+      // genuine load failure falls through to the Hub download.
       noteLoadFailure(failureLabel, error);
       throw error;
     });
@@ -1905,8 +1896,8 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedGguf().catch(() => []),
       listCachedModels().catch(() => []),
     ]);
-    // Filtered once, so the last-used lookup below sees the same set as the sweeps and neither
-    // spends an attempt on a resume-only row.
+    // Filtered once, so the last-used lookup sees the same set as the sweeps and neither spends an
+    // attempt on a resume-only row.
     const ggufRepos = allGgufRepos.filter(isChattableCachedRepo);
     const modelRepos = allModelRepos.filter(isChattableCachedRepo);
 
@@ -2060,8 +2051,8 @@ async function autoLoadSmallestModel(): Promise<{
 
     // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    // A cached model tried and failed stops here too: the reason is the useful answer, not an
-    // unrelated Hub default. An empty cache never sets loadFailure and still falls through.
+    // A cached model tried and failed stops here too: that reason beats an unrelated Hub default.
+    // An empty cache never sets loadFailure and still falls through.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);
       if (loadFailure.current) {

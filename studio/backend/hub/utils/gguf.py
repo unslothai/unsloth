@@ -319,8 +319,7 @@ def list_gguf_variants_from_hf_cache(
 
     Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
     *complete* is the subset whose shards are all present, so the caller marks the rest partial
-    rather than ready. Reporting readiness instead of trimming keeps this agreeing with the
-    snapshot-path form of the same call, which lists a torn quant and flags it.
+    rather than ready, as the snapshot-path form of this call does.
     """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
@@ -454,8 +453,8 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
 
 
 def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, None]:
-    """Cache result for a caller with nowhere to put readiness: drops the quants short a shard,
-    keeping the whole list only when none is complete, so the folder still shows up to manage."""
+    """Cache result for a caller with nowhere to put readiness: drop the quants short a shard, but
+    keep the whole list when none is complete so the folder still shows up to manage."""
     variants, has_vision, complete = cached
     whole = [v for v in variants if not v.quant or v.quant in complete]
     return whole or variants, has_vision, None

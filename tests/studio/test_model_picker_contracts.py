@@ -842,8 +842,7 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
     assert "hf_token: preparedToken.token" in autoload
-    # The throw carries the cancellation marker, so the sweep stops instead of falling through to
-    # the Hub download and reopening the same dialog.
+    # The throw carries the cancellation marker, so the sweep stops instead of reopening the dialog.
     assert 'new Error("Model load cancelled.")' in autoload
     assert "unslothUserCancelled: true" in autoload
     assert "recordTerminalFailure(failureLabel, cancelled)" in autoload
@@ -1206,17 +1205,16 @@ def test_vulkan_inference_devices_are_the_pickable_set():
 
 def test_chat_autoload_records_a_terminal_validation_failure():
     """canAutoLoad runs validateModel, which prepares the token, so a dismissed dialog or a dead
-    backend throws there rather than from loadModel and the sweep's bare catches would still reach
-    the Hub download. Hence the two terminal markers are recorded at the preflight boundary; an
-    ordinary validation failure stays per-candidate and the sweep continues."""
+    backend throws there rather than from loadModel and the sweep's bare catches would reach the Hub
+    download. Only the two terminal markers are recorded; an ordinary failure stays per-candidate."""
     adapter = _read("features/chat/api/chat-adapter.ts")
     recorder = adapter.split("function recordTerminalFailure", 1)[1]
     recorder = recorder.split("async function canAutoLoadRecordingTerminalFailures", 1)[0]
     assert "unslothTransportFailure === true" in recorder
     assert "unslothUserCancelled === true" in recorder
     assert recorder.count("noteLoadFailure(label, error)") == 2
-    # A declined token dialog halts the sweep, since retrying reopens it once per candidate. A
-    # transport failure deliberately does not, so a later candidate still loads after a blip.
+    # A declined dialog halts the sweep, since retrying reopens it per candidate; a transport
+    # failure deliberately does not.
     assert "autoLoadCancelled = true;" in recorder
     assert recorder.index("autoLoadCancelled = true;") < recorder.index(
         "unslothTransportFailure === true"
@@ -1228,12 +1226,11 @@ def test_chat_autoload_records_a_terminal_validation_failure():
     assert "throw error;" in wrapper
     autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
-    # The preflight goes through the wrapper rather than calling canAutoLoad raw, the GGUF metadata
-    # probe records too, and a cancelled sweep skips every later candidate.
+    # The preflight goes through the wrapper, the GGUF metadata probe records too, and a cancelled
+    # sweep skips every later candidate.
     assert "canAutoLoadRecordingTerminalFailures(failureLabel, {" in autoload
     assert "recordTerminalFailure(failureLabel, error)" in autoload
-    # The GGUF metadata preflight's own cancellation goes through the helper too, or it records
-    # the failure without halting and every later candidate reopens the dialog.
+    # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordTerminalFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
     assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload

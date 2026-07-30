@@ -288,7 +288,7 @@ def _resolve_load_identity(
     The partial flag, the metadata probe and the load id must agree on one directory, so resolve it
     once here. *snapshot_path* becomes the load identity whenever the repo id will not resolve, so
     pass a snapshot holding this row's payload, not merely the newest. *payload_snapshots* is every
-    snapshot that does; None means the caller does not track them and *snapshot_path* is trusted.
+    snapshot that does; None means the caller does not track them, so *snapshot_path* is trusted.
     """
     load_id = repo_id
     active_cache = True
@@ -305,7 +305,7 @@ def _resolve_load_identity(
         except (OSError, RuntimeError, ValueError):
             active_cache = False
             load_id = str(snapshot_path or repo_path)
-    # Only pin a snapshot known to hold the payload: the newest-snapshot fallback may name an unusable one.
+    # Only pin a snapshot known to hold the payload: the newest-snapshot fallback may be unusable.
     default_snapshot: Optional[Path] = None
     if (
         load_id == repo_id
@@ -314,14 +314,13 @@ def _resolve_load_identity(
         and (payload_snapshots is None or str(snapshot_path) in payload_snapshots)
     ):
         default_snapshot = hf_cache_scan.default_ref_snapshot(repo_path)
-        # No usable refs/main (missing, or resolving past this row's payload): from_pretrained(repo_id)
-        # would fail offline and fetch upstream HEAD online, so point the load at the payload instead.
+        # No usable refs/main (missing, or resolving past this row's payload): from_pretrained
+        # would fail offline and fetch upstream HEAD online, so point the load at the payload.
         if default_snapshot is None or (
             payload_snapshots and str(default_snapshot) not in payload_snapshots
         ):
             load_id = str(snapshot_path)
-    # Keeping the repo id lets refs/main decide, possibly an older payload snapshot: that is what
-    # loads, so the row is judged against it.
+    # Keeping the repo id lets refs/main decide, possibly an older payload snapshot: judge that one.
     load_snapshot = (default_snapshot or snapshot_path) if load_id == repo_id else snapshot_path
     return _LoadIdentity(load_id, active_cache, load_snapshot)
 
@@ -343,11 +342,9 @@ def _cache_inventory_fields(
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
-    The SOLE producer of a row's ``capabilities``: every flag is derived here, from the snapshot this
-    row describes. The recurring defect is a repo-wide signal hung on a row whose load id names one
-    directory, so add new flags here rather than patching them on afterwards. *identity* is accepted
-    already resolved so a caller that needed the load snapshot to compute *partial* cannot resolve it
-    twice to different answers.
+    The SOLE producer of a row's ``capabilities``: every flag is derived from the snapshot this row
+    describes, so add new flags here rather than patching them on afterwards. *identity* is accepted
+    already resolved so it cannot be resolved twice to different answers.
     """
     if identity is None:
         identity = _resolve_load_identity(
@@ -506,8 +503,7 @@ class _CachedNonGgufPayload(NamedTuple):
     payload_snapshots: frozenset[str]
 
 
-# Keys mirror _classify_non_gguf_model_format's keyword arguments, so one revision's flags classify
-# exactly as the whole repo's do.
+# Keys mirror _classify_non_gguf_model_format's kwargs, so one revision classifies as the repo does.
 _PAYLOAD_FLAGS = (
     "has_config",
     "has_adapter_config",
@@ -521,9 +517,8 @@ _PAYLOAD_FLAGS = (
 def _newest_snapshot_dir(candidates) -> Optional[Path]:
     """Newest of *candidates*, or None when there are none.
 
-    Ordered by ``snapshot_selection_key``, which ``latest_snapshot_dir`` and
-    ``iter_hf_cache_snapshots`` also use, so every consumer names the same directory. *candidates*
-    come out of a ``frozenset``, so mtime alone left ties to iteration order.
+    Ordered by ``snapshot_selection_key``, shared with ``latest_snapshot_dir`` and
+    ``iter_hf_cache_snapshots`` so every consumer agrees; mtime alone left frozenset ties unbroken.
     """
     paths = [Path(candidate) for candidate in candidates]
     if not paths:
@@ -550,13 +545,12 @@ def _resolved_snapshot_ids(candidates) -> frozenset[str]:
 def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[str]]:
     """Snapshot dirs a GGUF load can actually use, plus the newest of them.
 
-    The row's size sums quants over every revision while variant resolution reads only the
-    ``load_id`` directory, so the two must agree or an advertised quant resolves to nothing. Prefer a
-    snapshot holding a whole quant; one mixing a whole quant with an interrupted split one still
-    counts, since the lister trims its offer to the completed subset. Fall back to any primary GGUF.
+    Size sums quants over every revision but variant resolution reads only the ``load_id`` directory,
+    so they must agree or an advertised quant resolves to nothing. Prefer a snapshot holding a whole
+    quant (a mixed one counts; the lister trims to the completed subset), else any primary GGUF.
     """
-    # Matched on the snapshot-relative path, not the bare ``file_name``: ``MTP/`` drafters are only
-    # recognisable as companions from their directory, else a drafter-only snapshot wins.
+    # Snapshot-relative path, not the bare ``file_name``: only the directory marks an ``MTP/``
+    # drafter as a companion, else a drafter-only snapshot wins.
     with_gguf = [
         snapshot
         for revision in repo_info.revisions
@@ -638,18 +632,15 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     else:
         selected_blobs = all_weight_blobs
 
-    # Weights are pooled across revisions, so the newest snapshot need not hold any: the load id must
-    # name one that classifies the same way on its own. trusted=False because from_pretrained needs
-    # config.json in that ONE directory; a snapshot qualifying only via that trust keeps the repo id.
+    # Weights pool across revisions, so the load id must name a snapshot that classifies the same way
+    # alone. trusted=False: from_pretrained needs config.json in that ONE directory.
     payload_snapshots = [
         snapshot
         for snapshot, flags in revision_flags
         if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == model_format
     ]
-    # That classification is by filename, so a revision interrupted mid-download qualifies. Pin the
-    # newest one whose shards are all present before falling back to the newest that merely
-    # classifies, or an interrupted update hides a complete older payload and the row goes out
-    # resume-only. Same rule the GGUF side keeps for a whole quant.
+    # Classification is by filename, so a revision interrupted mid-download qualifies: prefer the
+    # newest with every shard present, else an interrupted update hides a complete older payload.
     complete = [s for s in payload_snapshots if hf_cache_scan.snapshot_holds_a_complete_payload(s)]
     return _CachedNonGgufPayload(
         size_bytes = sum(size for size, _mtime in selected_blobs.values()),
@@ -715,8 +706,7 @@ def _read_model_card_frontmatter(path: Path) -> dict:
 
 
 def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = None) -> dict:
-    # Describe the directory the row hands out, not merely the newest, which may carry neither the
-    # quantization config nor the model card.
+    # Describe the directory the row hands out, not merely the newest.
     if snapshot is None:
         snapshot = _cached_model_snapshot_path(repo_path)
     if snapshot is None:
@@ -788,8 +778,8 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                # Resolved once, so the metadata probe, the partial walk and the load id cannot
-                # disagree about which revision this row is (refs/main decides, not the newest).
+                # Resolved once so the metadata probe, the partial walk and the load id agree on the
+                # revision (refs/main decides, not the newest).
                 identity = _resolve_load_identity(
                     repo_id,
                     repo_path = repo_path,
@@ -802,8 +792,7 @@ def _scan_cached_models() -> list[dict]:
                 if local_metadata.pop("_hidden_stt", False):
                     skipped_stt += 1
                     continue
-                # Scoped to the snapshot the row advertises, so an incomplete newer revision cannot
-                # flip can_chat off for it.
+                # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,
@@ -811,10 +800,8 @@ def _scan_cached_models() -> list[dict]:
                     snapshot_dir = load_snapshot,
                 )
                 # Payload flags are OR-ed over every revision, so config.json in one snapshot plus
-                # weights in another looks runnable while no single directory can serve it. An empty
-                # set means exactly that, so the row would reach for the Hub, which this branch
-                # exists to stop. Unqualified on purpose: a repo outside the active cache is always
-                # pinned to a path, and a snapshot refs/main could serve from would be in this set.
+                # weights in another looks runnable while no single directory can serve it: an empty
+                # set means the row would reach for the Hub, which this branch exists to stop.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
                 row = {

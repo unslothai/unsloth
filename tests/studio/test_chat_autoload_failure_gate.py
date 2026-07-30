@@ -4,8 +4,8 @@
 """A failed auto-load of a cached model must not become a Hub download.
 
 Runs the real ``autoLoadSmallestModel`` from chat-adapter.ts under node with the module boundary
-stubbed, so these assert behaviour rather than source text. The sweep's catches are parameterless,
-so a cached repo whose load rejected fell through to fetching an unrelated default model.
+stubbed, so these assert behaviour, not source text. The sweep's catches are parameterless, so a
+cached repo whose load rejected fell through to fetching an unrelated default model.
 """
 
 import json
@@ -33,8 +33,8 @@ TEMP = WORKDIR / "temp" / "chat_autoload_failure_gate"
 DEFAULT_MODEL = "unsloth/Qwen3.5-4B-MTP-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 
-# Stubs for everything autoLoadSmallestModel imports. Each scenario supplies the cache inventory and
-# how /validate and /load answer for a given model_path.
+# Stubs for everything autoLoadSmallestModel imports; each scenario supplies the cache inventory and
+# how /validate and /load answer per model_path.
 PREAMBLE = """
 type LastLocalModelKind = "gguf" | "model";
 type GgufVariantDetail = {
@@ -238,8 +238,7 @@ def _build_harness(run_dir: Path):
 
 def _run(scenario_expr: str) -> dict:
     _require_node()
-    # Its own directory per invocation, harness included: a shared file lets a concurrent runner read
-    # one that another is mid-rewrite.
+    # Its own directory per invocation: a shared file lets one runner read what another is rewriting.
     TEMP.mkdir(parents = True, exist_ok = True)
     run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     _build_harness(run_dir)
@@ -282,8 +281,8 @@ def _toasts(out: dict, kind: str) -> list[dict]:
 
 
 def test_failed_cached_load_does_not_download_the_default_model():
-    """The reported case: the only cached repo enumerates fine but its load OOMs, so auto-load must
-    stop at the failure rather than fetch a model the user never asked for."""
+    """The reported case: the only cached repo enumerates fine but its load OOMs, so auto-load stops
+    there rather than fetch a model the user never asked for."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " load: (p) => p.model_path === GEMMA.repo_id ? new Error(OOM) : LOADED(p) })"
@@ -343,8 +342,7 @@ def test_enumeration_failure_still_downloads_the_default_model():
 
 
 def test_consent_gated_candidate_still_downloads_the_default_model():
-    """trust_remote_code / security review block before the load is attempted: a deferral, not a
-    failure."""
+    """trust_remote_code / security review block before the load: a deferral, not a failure."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " validate: (p) => p.model_path === GEMMA.repo_id"
@@ -357,8 +355,7 @@ def test_consent_gated_candidate_still_downloads_the_default_model():
 
 
 def test_attempt_cap_still_gates_the_default_download():
-    """Four broken repos: the sweep tries smaller candidates, stops at three, and never reaches the
-    Hub."""
+    """Four broken repos: the sweep tries smaller candidates, stops at three, never reaches the Hub."""
     out = _run(
         "scenario({ ggufRepos: [1, 2, 3, 4].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
         " load_id: `r${i}`, size_bytes: i })),"
@@ -385,8 +382,7 @@ def test_a_later_cached_model_can_still_load_after_an_earlier_failure():
 
 
 def test_reported_failure_is_flagged_so_callers_drop_the_generic_advice():
-    """Both send paths toast a generic "No model loaded" on loaded: false, burying the detailed one
-    unless flagged."""
+    """Both send paths toast a generic "No model loaded" on loaded: false, burying the detailed one."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " load: () => new Error(OOM) })"
@@ -404,8 +400,8 @@ def test_empty_device_does_not_flag_a_reported_failure():
 
 
 def test_a_resume_only_cached_row_is_skipped_so_the_default_still_downloads():
-    """An interrupted download leaves a partial / can_chat=false row for the resume and delete
-    affordances; sweeping it anyway would let its rejection suppress the default download."""
+    """An interrupted download leaves a partial / can_chat=false row for resume and delete; sweeping
+    it anyway would let its rejection suppress the default download."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/half', load_id: 'org/half',"
         " size_bytes: 1, partial: true, capabilities: { can_chat: false } }],"
@@ -431,8 +427,7 @@ def test_a_can_chat_false_cached_row_is_skipped_on_its_own():
 
 
 def test_the_last_used_model_is_skipped_when_its_row_went_partial():
-    """The last-used shortcut reads the same rows, so a cancelled update there must not spend the
-    attempt either."""
+    """The last-used shortcut reads the same rows, so a cancelled update must not spend an attempt."""
     out = _run(
         "scenario({ ggufRepos: [{ ...GEMMA, partial: true }],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
@@ -445,8 +440,8 @@ def test_the_last_used_model_is_skipped_when_its_row_went_partial():
 
 
 def test_a_complete_cached_row_is_still_attempted():
-    """Guard on the filter: a healthy row is still swept, and a backend omitting the fields (older
-    Studio) keeps its behaviour."""
+    """Guard on the filter: a healthy row is still swept, and an older backend omitting the fields
+    keeps its behaviour."""
     out = _run(
         "scenario({ ggufRepos: [{ ...GEMMA, partial: false, capabilities: { can_chat: true } }],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"

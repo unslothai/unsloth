@@ -206,8 +206,7 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
 
     ``repo_info.revisions`` is a ``frozenset``, so on a coarse-timestamp filesystem this route
     published whichever snapshot the hash seed reached first while ``/api/models/gguf-variants``
-    named the one ``snapshot_selection_key`` picks. Both revision orders are driven because that is
-    what the seed varies.
+    named the one ``snapshot_selection_key`` picks. Both revision orders are driven for that reason.
     """
     import os
 

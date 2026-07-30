@@ -175,7 +175,7 @@ export async function authFetch(
       // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always
       // backend-down; the web build distinguishes offline for the right message.
       if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
-        // Tagged so a caller can tell "never reached the backend" from "the backend rejected this".
+        // Tagged so a caller can tell "never reached the backend" from "the backend rejected it".
         throw Object.assign(
           new Error(
             "You appear to be offline. Check your network connection and try again.",

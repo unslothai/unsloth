@@ -2870,8 +2870,8 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
     """Most useful on-disk path for a HF cache repo.
 
     Delegates to the Hub scanner's function of the same name so this route and
-    ``/api/hub/local-models`` name one directory: the most-recent snapshot dir (what
-    ``from_pretrained`` uses), ties broken by ``snapshot_selection_key``.
+    ``/api/hub/local-models`` name one directory: the newest snapshot dir, ties broken by
+    ``snapshot_selection_key``.
     """
     from hub.utils import inventory_scan as hf_cache_scan
     return hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
@@ -3007,8 +3007,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
-            # Snapshot-relative: file_name is bare, so only the directory tells an MTP/ drafter
-            # from a primary quant.
+            # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
@@ -3086,8 +3085,8 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
             return None
     except (OSError, RuntimeError, ValueError):
         pass
-    # snapshot_selection_key is shared by every selector, so this route and the /gguf-variants
-    # lister name one snapshot. Snapshot mtime, not blob mtime: HF reuses old blobs in new snapshots.
+    # snapshot_selection_key is shared by every selector, so this route and the /gguf-variants lister
+    # name one snapshot. Snapshot mtime, not blob mtime: HF reuses old blobs in new snapshots.
     candidates = [
         Path(snapshot)
         for revision in repo_info.revisions
@@ -3096,8 +3095,8 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
     # Newest first, skipping any holding no whole quant: an interrupted download would otherwise beat
-    # an older snapshot that can still load. One whole quant is enough, matching
-    # _repo_gguf_payload_snapshots and the /gguf-variants lister, which trims to the completed subset.
+    # an older snapshot that can still load. One whole quant is enough, as the lister trims its offer
+    # to the completed subset.
     for snapshot in candidates:
         if snapshot_has_complete_variants(str(snapshot)):
             return str(snapshot)
