@@ -3004,23 +3004,29 @@ def _repo_has_mmproj(repo_info) -> bool:
 
 
 def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
-    """Whether the copy this row loads ships a projector beside it.
+    """Whether the copy this row loads ships a projector.
 
-    The loader opens the projector next to the file it loads, so a revision holding one the load
-    never reaches is not vision support. A pinned row is judged on its snapshot; an unpinned one
-    on wherever the repo id resolves, asked through the resolver the load itself uses. Falls back
-    to the repo wide scan only when nothing resolves.
+    The loader opens the projector out of the snapshot it loads from, so one in a revision the
+    load never reaches is not vision support. A pinned row is judged on its snapshot, an unpinned
+    one on the first snapshot the load's own ordering finds a quant in. Judged per snapshot, not
+    per file: a split quant can sit in a subdirectory while the projector sits at the root.
     """
     if load_id:
         return _snapshot_has_gguf_projector(load_id)
+    # No projector in any revision means none to reach, and saves walking the cache for it.
+    if not _repo_has_mmproj(repo_info):
+        return False
     try:
-        from hub.utils.gguf import resolve_local_gguf_path
-        resolved = resolve_local_gguf_path(repo_info.repo_id, None)
+        from hub.utils.gguf import iter_snapshots_preferring_whole, list_local_gguf_variants
+
+        for snapshot in iter_snapshots_preferring_whole(repo_info.repo_id, None):
+            variants, has_vision = list_local_gguf_variants(str(snapshot))
+            if variants:
+                return bool(has_vision)
     except Exception:
-        resolved = None
-    if resolved:
-        return _snapshot_has_gguf_projector(str(Path(resolved).parent))
-    return _repo_has_mmproj(repo_info)
+        pass
+    # Nothing on disk to load, so the row is describing the repo rather than a copy of it.
+    return True
 
 
 def _iter_gguf_paths(root: Path):

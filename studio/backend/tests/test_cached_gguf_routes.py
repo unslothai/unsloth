@@ -622,6 +622,52 @@ def test_vision_is_read_from_the_snapshot_a_repo_id_load_resolves(monkeypatch, t
     assert row["has_vision"] is True
 
 
+def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monkeypatch, tmp_path):
+    """Split quants live in a per quant subdirectory while the projector stays at the snapshot
+    root, so vision has to be judged on the snapshot rather than on the file's own directory."""
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Nested"
+    snapshot = repo_dir / "snapshots" / ("d" * 40)
+    (snapshot / "UD-Q4_K_XL").mkdir(parents = True)
+    for shard in ("00001", "00002"):
+        (snapshot / "UD-Q4_K_XL" / f"Model-UD-Q4_K_XL-{shard}-of-00002.gguf").write_bytes(
+            b"\0" * 256
+        )
+    (snapshot / "mmproj-F16.gguf").write_bytes(b"\0" * 256)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+
+    repo = _repo(
+        "Org/Nested",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    _file("Model-UD-Q4_K_XL-00001-of-00002.gguf", 256),
+                    _file("Model-UD-Q4_K_XL-00002-of-00002.gguf", 256),
+                    _file("mmproj-F16.gguf", 256),
+                ],
+                snapshot_path = snapshot,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr(
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [snapshot]
+    )
+
+    row = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }["Org/Nested"]
+    assert "load_id" not in row
+    assert row["has_vision"] is True
+
+
 def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch, tmp_path):
     """The lister and the load take the whole copy, so mtime order alone would read metadata out of
     a newer half download nothing loads."""
