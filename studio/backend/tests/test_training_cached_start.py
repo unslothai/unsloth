@@ -1288,10 +1288,7 @@ def test_legacy_cached_dataset_loads_offline_without_completion_manifest(monkeyp
 
 
 @pytest.mark.parametrize("load_in_4bit", [False, True])
-def test_training_model_load_target_uses_verified_inactive_snapshot(
-    tmp_path,
-    load_in_4bit,
-):
+def test_training_model_load_target_uses_verified_inactive_snapshot(tmp_path, load_in_4bit):
     from core.training.training import resolve_training_model_load_target
     model_snap = _model_repo_with_ref(tmp_path, "unsloth/test", "commit-old")
 

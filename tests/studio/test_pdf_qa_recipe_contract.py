@@ -21,9 +21,7 @@ REPO = Path(__file__).resolve().parents[2]
 RECIPE_PATH = (
     REPO / "studio/frontend/src/features/data-recipes/learning-recipes/pdf-grounded-qa.json"
 )
-TRAINING_START_PATH = (
-    REPO / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
-)
+TRAINING_START_PATH = REPO / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
 SEED_BUILDER_PATH = (
     REPO / "studio/frontend/src/features/recipe-studio/utils/payload/builders-seed.ts"
 )
