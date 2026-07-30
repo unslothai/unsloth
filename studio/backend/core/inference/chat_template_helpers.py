@@ -54,7 +54,18 @@ _CONTROL_MARKUP = re.compile(
     # (ollama_template_mappers.py:1023, 1029) rather than a separate closing name, so an
     # MCP description carrying one closed the catalog and rose to system level (#7066).
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
+    # Kimi K2 / Moonshot wrap history in a section and each call in a begin/end
+    # pair (tool_call_parser.py:20, 55-56, 86-89); none of them is the short
+    # "tool_call" spelling, so a paste could fabricate a historical call (#7066).
+    r"|tool_calls?(?:_section)?_(?:begin|end)|tool_call_argument_begin"
     r"|end(?:_of_(?:turn|text))?"
+    # Document boundaries: begin_of_text is Llama-3.1 / Llama-4's BOS and endoftext is
+    # the GPT-2-lineage EOS that Qwen2.5, Qwen3, Phi, gpt-oss and GLM-4.5 all still
+    # carry. Reserved vocabulary, so this is the same argument as the media
+    # placeholders below: the trie splits a pasted copy back out to the real token id,
+    # so client text lands in the prompt as a document break the template never
+    # opened, mid-conversation (#7066).
+    r"|begin_of_text|endoftext"
     # header_start / header_end / <|eot|> are Llama-4's spelling of Llama-3's
     # start_header_id / end_header_id / eot_id, and im_sep is Phi-4's role separator.
     r"|header_(?:start|end)|im_(?:start|end|sep)"
@@ -70,7 +81,11 @@ _CONTROL_MARKUP = re.compile(
     # covers Gemma-4's <|image> / <|audio> openers.
     r"|image|audio|video|python_tag"
     r"|return|system|start|think|turn|user|call|\")\|?>"
-    r"|\uff5c[A-Za-z\u2581_]{1,40}\uff5c>"
+    # The parser also recognises the space and backslash-escaped spellings of the same
+    # openers (tool_call_parser.py:47-53, 62-66), so the class has to admit both. The
+    # name still has to start with a letter, which keeps "<\uff5c \uff5c>" and other
+    # fullwidth-punctuation pairs out while the bars keep this off ordinary text.
+    r"|\uff5c[A-Za-z][A-Za-z\u2581_ \\]{0,39}\uff5c>"
     # "tools" is the Qwen / Hermes tool catalog block. The template interpolates the
     # system message INTO the same system turn that holds "<tools>...</tools>", so a
     # "</tools>" in client text closes the real catalog and everything after it reads
@@ -83,19 +98,24 @@ _CONTROL_MARKUP = re.compile(
     # "<function=name><parameter=k>v</parameter></function>". tool_call_parser.py
     # treats all of them as structural, so a replayed value or a tool result can
     # close the current value and inject another key or call (#7066).
-    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think"
+    # Gemma spells its own BOS / EOS as bare tags rather than the pipe shape, and both
+    # are in its tokenizer's added-token trie (google/gemma-3-4b-it), so this is the
+    # bare-tag half of the begin_of_text / endoftext pair above.
+    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos"
     r"|start_of_image|image_soft_token|audio_soft_token"
     r"|arg_key|arg_value|function|parameter)>"
     # The opening halves carry an "=value", so they need their own anchor.
     r"|(?:function|parameter)="
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
-    # "[ARGS]" is deliberately absent even though Mistral emits "[TOOL_CALLS]NAME[ARGS]".
-    # It is the standard CLI-synopsis metavariable ("usage: tool [OPTIONS] [ARGS]") and
-    # the most common bracket collision there is -- it even appears as a live string in
-    # this repo. It also cannot forge anything on its own: the call block only opens at
-    # "[TOOL_CALLS]", which IS broken, and a schema "enum" / "pattern" carrying it would
-    # otherwise be rewritten into a grammar literal the model is then forced to emit.
+    # "[ARGS]", Mistral v11's "[CALL_ID]" and Devstral's "[TOOL_CONTENT]" are absent on
+    # purpose. All three are metadata WITHIN a block, never its opener, and the openers
+    # ("[TOOL_CALLS]", "[TOOL_RESULTS]") are broken, so none of them can start or close
+    # anything alone; on the way back in they are read by tool_healing.py:36-56, out of
+    # model output rather than out of a prompt. "[ARGS]" also collides with real text:
+    # it is the standard CLI-synopsis metavariable ("usage: tool [OPTIONS] [ARGS]"), it
+    # appears as a live string in this repo, and inside a schema "enum" / "pattern" the
+    # rewrite would turn it into a grammar literal the model is then forced to emit.
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\]|TOOL_CALLS\])"
     # Llama-2 opens its system block with "<<SYS>>" INSIDE the first [INST], so the
     # doubled angle is the opener, not a single "<". Both meta-llama/Llama-2-*-chat-hf's
@@ -118,12 +138,15 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep)"
     r"|end(?:_of_(?:turn|text))?|eo[tm](?:_id)?|header_(?:start|end)"
+    # A document boundary is never the assistant's own structure, so unlike think /
+    # channel / tool markup these belong in the replay subset too.
+    r"|begin_of_text|endoftext"
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
     # "/?" for the same reason the control pattern has it: Gemma's delimiters are bare
     # tags, so a replayed "</start_of_turn>" is as much a boundary as "<start_of_turn>".
-    r"|/?(?:start|end)_of_turn>"
+    r"|/?(?:(?:start|end)_of_turn|eos|bos)>"
     r"|turn\|>"
     r")"
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT)\])"
@@ -154,6 +177,20 @@ def neutralize_control_markup(text: str) -> str:
 def neutralize_turn_boundary_markup(text: str) -> str:
     """Break only the turn-boundary sentinels, for replayed assistant text (#7066)."""
     return _spaced_out(_TURN_BOUNDARY_MARKUP, text)
+
+
+def _neutralize_leaves(value, rewrite):
+    """Apply *rewrite* to every string leaf, keys included, of a nested structure."""
+    if isinstance(value, str):
+        return rewrite(value)
+    if isinstance(value, dict):
+        return {
+            (rewrite(key) if isinstance(key, str) else key): _neutralize_leaves(item, rewrite)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_neutralize_leaves(item, rewrite) for item in value]
+    return value
 
 
 def _neutralize_argument_leaves(value):
@@ -303,11 +340,34 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             new_name = neutralize_control_markup(name)
             if new_name != name:
                 updates["name"] = new_name
+        # Gemma-4 concatenates a replayed "reasoning" / "reasoning_content" into its
+        # thought channel and Harmony renders "thinking", none of which is "content", so a
+        # boundary in one closed the reasoning block and forged a turn (#7066). Boundary
+        # rewrite only: the thought's own think / channel markup is structural.
+        for field in ("reasoning", "reasoning_content", "thinking"):
+            value = msg.get(field)
+            if isinstance(value, str) and value:
+                new_value = neutralize_turn_boundary_markup(value)
+                if new_value != value:
+                    updates[field] = new_value
+        # Gemma-4's legacy assistant-level "tool_responses": format_tool_response_block
+        # renders the name and every leaf of the payload, so markup there closes
+        # "<|tool_response>" and opens a model turn. Tool output, so the full rewrite.
+        tool_responses = msg.get("tool_responses")
+        if isinstance(tool_responses, list) and tool_responses:
+            new_tool_responses = _neutralize_leaves(tool_responses, neutralize_control_markup)
+            if new_tool_responses != tool_responses:
+                updates["tool_responses"] = new_tool_responses
         content = msg.get("content")
         if content:
             new_content = content
             if isinstance(content, str):
                 new_content = rewrite(content)
+            elif isinstance(content, dict):
+                # Llama-3.1 serializes mapping content with tojson
+                # (chat_templates.py:127-128), and /generate/stream takes raw dicts, so an
+                # object value reaches the prompt as live structure too (#7066).
+                new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
                 # OpenAI-style parts: rewrite each text, pass images / audio through.
                 new_content = [
