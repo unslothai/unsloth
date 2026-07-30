@@ -145,9 +145,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert ".getItemById(state.id)\n            .initialize()" in target
     assert "let cancelled = false" in target
     assert "if (cancelled || !pendingSettingsIds.has(settingsId))" in target
-    assert target.index(
-        "if (cancelled || !pendingSettingsIds.has(settingsId))"
-    ) < target.index("await thread.append(")
+    assert target.index("if (cancelled || !pendingSettingsIds.has(settingsId))") < target.index(
+        "await thread.append("
+    )
     assert "cancelled = true" in target
     assert "consumeQueuedChatRunSettings(resolvedThreadId)" in CHAT_ADAPTER
     assert '"deepResearchEnabled"' in QUEUED_SETTINGS
