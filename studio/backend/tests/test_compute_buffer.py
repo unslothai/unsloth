@@ -437,19 +437,40 @@ class TestContextBufferLayerSplit:
         assert 4.0 <= gib <= 6.5
 
     @pytest.mark.parametrize("ct", ["q8_0", "q4_0"])
-    def test_quantized_rate_is_floored_not_scaled(self, ct):
-        # Quantized rates are single-GPU totals that already subsume the 1x mask.
-        b = _backend(embd = 8192)  # 2.25 x 8192 clears the floor comfortably
-        assert b._compute_buffer_ctx_bytes(
-            131072, cache_type_kv = ct, layer_split = True
-        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = ct)
+    @pytest.mark.parametrize("embd,mla", [(2048, None), (8192, None), (7168, 576)])
+    def test_quantized_adds_the_mask_delta(self, ct, embd, mla):
+        # The quantized rate is a single-GPU TOTAL holding mask*1 + dequant scratch.
+        # Only the mask replicates, so a split adds exactly 3 more masks.
+        b = _backend(embd = embd, mla = mla)
+        mask = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+        single = b._compute_buffer_ctx_bytes(131072, cache_type_kv = ct)
+        split = b._compute_buffer_ctx_bytes(131072, cache_type_kv = ct, layer_split = True)
+        delta = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * mask
+        assert split == pytest.approx(single + delta, rel = 1e-9)
 
-    def test_quantized_small_embd_takes_the_floor(self):
-        # Below n_embd ~2731 the quantized rate falls under the split mask cost.
-        b = _backend(embd = 2048)
-        floored = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0", layer_split = True)
-        assert floored > b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0")
-        assert floored == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16", layer_split = True)
+    @pytest.mark.parametrize("embd,mla", [(2048, None), (2560, None), (8192, None), (7168, 576)])
+    def test_quantized_split_beats_the_old_max_floor(self, embd, mla):
+        # The pre-fix floor max(quantized, 4x mask) treated the dequant scratch and
+        # the enlarged mask as alternatives, leaving the smaller one unbudgeted.
+        b = _backend(embd = embd, mla = mla)
+        old_floor = max(
+            b._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0"),
+            b._compute_buffer_ctx_bytes(262144, cache_type_kv = "f16", layer_split = True),
+        )
+        assert b._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0", layer_split = True) > (
+            old_floor
+        )
+
+    def test_quantized_split_covers_measured_plus_mask(self):
+        # Qwen3.5-4B (n_embd 2560) at 256k q8_0: 1330 MiB measured single-device,
+        # + 3 replicated [n_kv, ub] f16 masks (768 MiB) = 2098 MiB per device. The
+        # old floor reserved 1536 MiB and left ~560 MiB/device unbudgeted.
+        b = _backend(embd = 2560)
+        ctx, ub = 262144, 512
+        mask_mib = 3 * ub * 2 * ctx / MIB
+        assert mask_mib == pytest.approx(768.0, rel = 1e-6)
+        split_mib = b._compute_buffer_ctx_bytes(ctx, ub, "q8_0", layer_split = True) / MIB
+        assert split_mib >= 1330 + mask_mib
 
     @pytest.mark.parametrize("arch", ["deepseek4", "inkling"])
     def test_per_architecture_rates_unchanged(self, arch):
@@ -488,9 +509,10 @@ class TestLayerSplitWiring:
 
 class TestPipelineParallelPredicate:
     """The 4x step is llama.cpp's pipeline parallelism (ggml n_copies == 4), which
-    llama-context.cpp declines under tensor overrides or with KV offload off; charging
-    it then would waste context. Causal check: on two GPUs a -ot pattern matching no
-    tensor changes no placement but takes the rate 8.00 -> 2.00."""
+    llama-context.cpp declines unless the split mode is layer, KV offload is on and
+    the tensor-override list is empty; charging it then would waste context. Causal
+    check: on two GPUs a -ot pattern matching no tensor changes no placement but takes
+    the rate 8.00 -> 2.00. Env is parsed before argv, so every toggle is last-wins."""
 
     def _off(
         self,
@@ -535,6 +557,87 @@ class TestPipelineParallelPredicate:
         # -otd targets the draft model, not the main model's tensor_buft_overrides.
         assert self._off([flag, "exps=CPU"]) is False
 
+    # -- KV offload is last-wins across env then CLI (arg.cpp parses env first) --
+
+    @pytest.mark.parametrize("flag", ["-kvo", "--kv-offload"])
+    def test_cli_kv_offload_reenable_beats_a_false_env(self, flag):
+        # The positive form exists, so this launch really does keep pipelining on:
+        # reserving 1x here would OOM the split.
+        assert self._off([flag], env = {"LLAMA_ARG_KV_OFFLOAD": "0"}) is False
+
+    def test_last_kv_offload_flag_wins(self):
+        assert self._off(["-kvo", "-nkvo"]) is True
+        assert self._off(["-nkvo", "-kvo"]) is False
+
+    def test_kv_offload_env_junk_value_keeps_the_default(self):
+        assert self._off([], env = {"LLAMA_ARG_KV_OFFLOAD": "maybe"}) is False
+
+    # -- pipeline parallelism requires LLAMA_SPLIT_MODE_LAYER --
+
+    @pytest.mark.parametrize("mode", ["none", "row", "NONE", " row "])
+    def test_non_layer_split_mode_disables(self, mode):
+        assert self._off(["-sm", mode]) is True
+        assert self._off([f"--split-mode={mode}"]) is True
+
+    def test_explicit_layer_split_mode_keeps_the_step(self):
+        assert self._off(["-sm", "layer"]) is False
+        assert self._off(["-sm", "row", "-sm", "layer"]) is False  # last-wins
+
+    def test_tensor_split_mode_keeps_the_step(self):
+        # The layer branch is an elif on tensor_parallel, so it is only reached
+        # after a downgrade -- which strips -sm and leaves the child pipelined.
+        assert self._off(["-sm", "tensor"]) is False
+
+    def test_layer_branch_is_only_reached_after_the_flag_is_stripped(self):
+        # Guards the assumption above.
+        import inspect
+
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "iftensor_parallelandtp_gpus:" in compact
+        assert "extra_args=strip_split_mode_only(" in compact
+        assert "elifgpusandself._can_estimate_kv()andeffective_ctx>0:" in compact
+
+    def test_env_split_mode_is_ignored(self):
+        # load_model pops a non-layer inherited LLAMA_ARG_SPLIT_MODE on the layer
+        # path, so the child always runs -sm layer; honoring it here would reserve
+        # 1x for a launch that pipelines.
+        assert self._off([], env = {"LLAMA_ARG_SPLIT_MODE": "row"}) is False
+
+    def test_layer_path_scrubs_a_non_layer_split_mode_env(self):
+        # Guards the assumption the test above rests on.
+        import inspect
+
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert 'if_inherited_smand_inherited_sm!="layer":' in compact
+        assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
+
+    # -- -cmoe / -ncmoe set tensor_buft_overrides exactly like -ot --
+
+    @pytest.mark.parametrize("flag", ["-cmoe", "--cpu-moe"])
+    def test_cpu_moe_disables(self, flag):
+        assert self._off([flag]) is True
+
+    @pytest.mark.parametrize("flag", ["-ncmoe", "--n-cpu-moe"])
+    def test_n_cpu_moe_disables(self, flag):
+        assert self._off([flag, "8"]) is True
+        assert self._off([f"{flag}=8"]) is True
+
+    @pytest.mark.parametrize("flag", ["-ncmoe", "--n-cpu-moe"])
+    def test_n_cpu_moe_zero_keeps_the_step(self, flag):
+        # The handler loops N times, so 0 pushes no override at all.
+        assert self._off([flag, "0"]) is False
+
+    def test_env_cpu_moe_disables(self):
+        assert self._off([], env = {"LLAMA_ARG_CPU_MOE": "1"}) is True
+        # handler_void only fires on a truthy env value.
+        assert self._off([], env = {"LLAMA_ARG_CPU_MOE": "0"}) is False
+        assert self._off([], env = {"LLAMA_ARG_CPU_MOE": ""}) is False
+
+    def test_env_n_cpu_moe_disables(self):
+        assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "4"}) is True
+        assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "0"}) is False
+        assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "not-a-number"}) is False
+
     def test_wired_into_the_fit(self):
         # The flag has to reach _cc_bytes, else the predicate is dead code.
         import inspect
@@ -542,3 +645,118 @@ class TestPipelineParallelPredicate:
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "_pipeline_parallel_disabled_by_args(extra_args)" in src
         assert "layer_split = n_gpus > 1 and not _pipeline_parallel_off" in src
+
+
+class TestPerDeviceSplitReserve:
+    """The auto-context loop admits a GPU subset on the POOLED budget, but the
+    per-device reserve (flat layer overhead + this PR's enlarged context-compute
+    copy) is replicated on every card. A roomy card's spare VRAM covers a nearly
+    full card's copy in the sum, and the small card OOMs at launch.
+
+    Exposed when the loop cannot start at one GPU (``_auto_min_gpus >= 2``, set by
+    every tensor -> layer downgrade). Starting at one card, the pooled test already
+    charges n copies where the per-card test charges one, so a subset of size n is
+    only reached after n-1 failed, which bounds the smallest card from below by the
+    reserve -- the check is then provably redundant, homogeneous or not."""
+
+    _OH = LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB * MIB
+    _UB = 2048
+    # 48 GB / 24 GB cards, the small one mostly occupied. Its usable budget still
+    # clears the flat overhead alone, so _auto_min_gpus keeps counting it.
+    _HETEROGENEOUS = ([(0, 40_000), (1, 2_500)], {0: 49_152, 1: 24_576})
+    _HOMOGENEOUS = ([(0, 40_000), (1, 40_000)], {0: 49_152, 1: 49_152})
+
+    def _fit_backend(self, kv_per_tok = 20_000):
+        b = _backend(embd = 8192)
+        b._can_estimate_kv = lambda: True
+        b._estimate_kv_cache_bytes = lambda ctx, ct = None, **kw: max(0, ctx) * kv_per_tok
+        return b
+
+    def _drive(self, b, gpus, totals, model_mib, native_ctx, min_gpus = 2, enforce = True):
+        """Mirror of load_model's auto-context subset loop over the production fit
+        and reserve helpers. Returns (gpu_indices, chosen_ctx)."""
+        frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+        model_bytes = model_mib * MIB
+
+        def usable(g):
+            return g[1] - (1.0 - frac) * totals[g[0]]
+
+        ranked = sorted(gpus, key = usable, reverse = True)
+        for n in range(min_gpus, len(ranked) + 1):
+            subset = ranked[:n]
+            pool = sum(max(0.0, usable(g)) for g in subset)
+            ms = model_bytes + (n - 1) * self._OH
+            cc = lambda c, n = n: n * b._compute_buffer_ctx_bytes(
+                c, self._UB, "f16", layer_split = n > 1
+            )
+            capped = b._fit_context_to_vram(
+                native_ctx,
+                pool,
+                ms,
+                "f16",
+                n_ubatch = self._UB,
+                compute_ctx_bytes_fn = cc,
+                budget_frac = 1.0,
+                total_mib = None,
+            )
+            if (ms + b._estimate_kv_cache_bytes(capped) + cc(capped)) / MIB > pool:
+                continue
+            if enforce and not LlamaCppBackend._every_gpu_holds_reserve(
+                (usable(g) for g in subset),
+                (self._OH if n > 1 else 0) + cc(capped) // n,
+            ):
+                continue
+            return sorted(idx for idx, _ in subset), capped
+        return None, 0
+
+    def test_pooled_budget_hides_the_small_cards_shortfall(self):
+        # Pre-fix: the pair is admitted at native context even though card 1 has
+        # ~1.7 GiB usable and owes 1 GiB overhead + 6 GiB of replicated KQ mask.
+        b = self._fit_backend()
+        gpus, totals = self._HETEROGENEOUS
+        gpu_indices, ctx = self._drive(b, gpus, totals, 20_480, 262144, enforce = False)
+        assert gpu_indices == [0, 1] and ctx == 262144
+        reserve_mib = (self._OH + b._compute_buffer_ctx_bytes(
+            ctx, self._UB, "f16", layer_split = True
+        )) / MIB
+        card1_usable = 2_500 - 0.03 * 24_576
+        assert card1_usable < reserve_mib  # would OOM card 1 at load
+
+    def test_subset_is_rejected_when_a_card_cannot_hold_its_reserve(self):
+        b = self._fit_backend()
+        gpus, totals = self._HETEROGENEOUS
+        assert self._drive(b, gpus, totals, 20_480, 262144) == (None, 0)
+
+    def test_homogeneous_gpus_are_unaffected(self):
+        b = self._fit_backend()
+        gpus, totals = self._HOMOGENEOUS
+        with_gate = self._drive(b, gpus, totals, 20_480, 262144)
+        without = self._drive(b, gpus, totals, 20_480, 262144, enforce = False)
+        assert with_gate == without == ([0, 1], 262144)
+
+    @pytest.mark.parametrize("model_mib", [8_192, 20_480, 30_720])
+    def test_no_op_when_the_loop_may_start_at_one_gpu(self, model_mib):
+        # _auto_min_gpus == 1: the n-1 subset having failed already bounds the
+        # smallest card below by the reserve, so the gate changes nothing.
+        b = self._fit_backend()
+        for gpus, totals in (self._HETEROGENEOUS, self._HOMOGENEOUS):
+            with_gate = self._drive(b, gpus, totals, model_mib, 262144, min_gpus = 1)
+            without = self._drive(b, gpus, totals, model_mib, 262144, min_gpus = 1, enforce = False)
+            assert with_gate == without
+            assert with_gate[0] is not None
+
+    def test_reserve_check_rejects_only_the_short_card(self):
+        reserve = 3072 * MIB  # bytes in, MiB compared
+        assert LlamaCppBackend._every_gpu_holds_reserve([4000.0, 3072.0], reserve) is True
+        assert LlamaCppBackend._every_gpu_holds_reserve([40000.0, 3071.0], reserve) is False
+        assert LlamaCppBackend._every_gpu_holds_reserve([-10.0], reserve) is False
+        assert LlamaCppBackend._every_gpu_holds_reserve([], reserve) is False
+
+    def test_wired_into_the_auto_context_loop(self):
+        import inspect
+
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "ifnotself._every_gpu_holds_reserve(" in compact
+        # Gated on the chosen context, and only reachable after the pooled test.
+        assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact
+        assert "+_cc_sub(capped)//n_gpus," in compact
