@@ -3424,10 +3424,8 @@ def test_chat_count_tokens_refuses_image_messages(monkeypatch):
 
 
 def test_chat_count_tokens_refuses_audio_messages(monkeypatch):
-    # The completion path injects the newest recording as an audio part, and the message
-    # conversion has no audio branch, so counting would price a text-only prompt and come
-    # back short by the whole clip. ChatCountTokensRequest allows extra fields, so without
-    # this guard audio_base64 is accepted, silently dropped, and answered with a number.
+    # extra = "allow", so without this guard audio_base64 is accepted, dropped, and
+    # answered with a total short by the clip the completion would have injected.
     switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
     payload = _count_request(
         [{"role": "user", "content": "what did I just say"}],
@@ -3442,8 +3440,7 @@ def test_chat_count_tokens_refuses_audio_messages(monkeypatch):
 
 
 def test_chat_count_tokens_still_counts_without_audio(monkeypatch):
-    # Control for the guard above: the same thread with no recording attached still counts,
-    # so the refusal keys on the audio itself rather than on the shape of the request.
+    # Control: the refusal keys on the audio, not on the shape of the request.
     _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
     body = _counted_body(_count_request([{"role": "user", "content": "what did I just say"}]))
     assert body["input_tokens"] == 1234

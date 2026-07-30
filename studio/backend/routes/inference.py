@@ -7328,8 +7328,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
-            # Read here as well as inside _llama_status_model_ids: is_local_model below
-            # needs the flag, and the helper reports identities rather than provenance.
+            # is_local_model below needs the flag; the helper reports identities, not provenance.
             _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
             # Shared with the token count endpoint, which hands the same identity back
             # so a client can tell whose tokenizer produced a count.
@@ -14685,10 +14684,8 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "Cannot count tokens for messages containing images.",
         )
-    # Same reason for audio: the completion path injects the newest recording as an audio
-    # part, and toOpenAIMessages has no audio branch, so a count would price a text-only
-    # prompt. The Studio caller declines client side; refuse here too so a direct caller
-    # on /v1/chat/count_tokens cannot be handed a total that is short by the whole clip.
+    # Same for audio: the completion injects the recording, this cannot, so the count would
+    # be short by the whole clip. Studio declines client side, /v1 callers reach here.
     if getattr(payload, "audio_base64", None):
         raise HTTPException(
             status_code = 503,

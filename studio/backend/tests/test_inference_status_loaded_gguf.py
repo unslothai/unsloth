@@ -3,12 +3,10 @@
 
 """``GET /api/inference/status`` must answer with a GGUF loaded.
 
-Every field the loaded-GGUF branch publishes is read off the llama backend inside a
-``try`` whose ``except`` reports 500, so a name that goes undefined in that branch is
-invisible until something loads a model and then asks for status. Nothing in either
-suite called the handler that way, which is how the branch shipped broken once:
-``_native_grant_backed`` lost its binding when the identity logic moved into
-``_llama_status_model_ids``, while ``is_local_model`` kept reading it.
+The loaded-GGUF branch runs inside a ``try`` whose ``except`` reports 500, so a name
+undefined there is invisible until something loads a model and asks for status. Nothing
+called the handler that way, which is how ``_native_grant_backed`` once lost its binding
+to a refactor while ``is_local_model`` kept reading it.
 
 No GPU, no llama-server, no GGUF on disk: the backend is a stub.
 """
@@ -22,11 +20,10 @@ import routes.inference as inference_route
 
 
 class _StatusBackend:
-    """A loaded GGUF, with the shape ``get_status`` reads rather than a full backend.
+    """A loaded GGUF with the shape ``get_status`` reads, not a full backend.
 
-    Unknown attributes answer None so an Optional field the handler grows later does not
-    have to be added here; the typed ones are set explicitly so the response model
-    validates for real instead of being handed a mock.
+    Unknown attributes answer None so a later Optional field needs no edit here; the typed
+    ones are set explicitly so the response model validates for real, not against a mock.
     """
 
     def __init__(
@@ -61,8 +58,7 @@ class _StatusBackend:
         self.n_moe_layers = 0
 
     def __getattr__(self, name):
-        # Only reached for attributes __init__ did not set. Deliberately not a MagicMock:
-        # a bool or int field must fail validation here rather than silently pass.
+        # Not a MagicMock on purpose: a bool or int field must fail validation, not pass.
         if name.startswith("__"):
             raise AttributeError(name)
         return None
@@ -93,8 +89,7 @@ def test_a_loaded_repo_gguf_reports_its_public_id(status_route):
 
 
 def test_a_backend_without_the_flag_still_reports(status_route):
-    # A server started before _native_grant_backed existed: the handler must read it
-    # through a default rather than assume the attribute is there.
+    # A server started before the flag existed: read through a default, do not assume it.
     backend = _StatusBackend("org/A-GGUF")
     assert not hasattr(backend, "__dict__") or "_native_grant_backed" not in backend.__dict__
     status = status_route(backend)
@@ -103,8 +98,7 @@ def test_a_backend_without_the_flag_still_reports(status_route):
 
 
 def test_a_native_lease_load_reports_the_label_not_the_leased_path(status_route):
-    # A native-grant load must publish only the display label: the on-disk path it was
-    # leased is exactly what /status is not allowed to hand back.
+    # The leased on-disk path is exactly what /status must not hand back.
     leased = os.path.join(os.sep, "models", "private", "A-Q4_K_M.gguf")
     status = status_route(_StatusBackend(leased, native_grant_backed = True))
     assert status.model_identifier is None, "the leased path must not be published"
