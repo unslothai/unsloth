@@ -44,9 +44,10 @@ def test_defaults_refresh_when_hardware_is_redetected(monkeypatch):
     monkeypatch.setattr(defaults_mod, "get_default_models", lambda: ["full-a", "full-b"])
     monkeypatch.setattr(hw, "DETECTION_GENERATION", 2)
 
-    assert orch.default_models == ["full-a", "full-b"], (
-        "the orchestrator is still serving the pre-repair chat-only list"
-    )
+    assert orch.default_models == [
+        "full-a",
+        "full-b",
+    ], "the orchestrator is still serving the pre-repair chat-only list"
 
 
 def test_defaults_are_not_recomputed_without_a_redetect(monkeypatch):
