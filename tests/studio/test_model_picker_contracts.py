@@ -361,6 +361,32 @@ def test_local_picker_rows_require_chat_capability():
     assert "row.capabilities.canChat" in memo.group(0)
 
 
+def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
+    """The cached listing pins a snapshot when the repo's default ref reaches no copy
+    that loads, and it is the load that has to follow the pin. The id stays the repo
+    id everywhere it is shown, deduped or stored, so only model_path changes."""
+    inventory = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
+    for mapper in ("toCachedGgufRepo", "toCachedModelRepo"):
+        body = re.search(rf"function {mapper}\(.*?\n}}", inventory, re.S)
+        assert body, f"{mapper} not found"
+        assert "load_id: row.loadId" in body.group(0), f"{mapper} drops the pinned id"
+
+    meta = _read("features/model-picker/components/model-selector/types.ts")
+    assert "loadId?: string | null;" in meta
+
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
+    assert "loadId: c.load_id" in picker, "the safetensors row drops the pin"
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert (
+        '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
+    ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
+    # Staged metadata, validate and load: all three read the copy that loads.
+    assert runtime.count("model_path: loadPath,") == 3
+    assert "model_path: modelId," not in runtime
+
+
 def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
     """The content-sized section tabs and fixed-width dropdowns must reflow,
     while an oversized tab group must shrink labels but preserve its icons."""

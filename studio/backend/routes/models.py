@@ -2966,6 +2966,12 @@ def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
     return impl(repo_cache_dir)
 
 
+def _snapshot_has_gguf_projector(snapshot: str) -> bool:
+    """See hub.utils.inventory_scan; reads the same walk the variant lister reports from."""
+    from hub.utils.inventory_scan import snapshot_has_gguf_projector as impl
+    return impl(Path(snapshot))
+
+
 def _cached_repo_file_name(file_obj) -> str:
     """Snapshot-relative name for a cached file: huggingface_hub records the bare ``file_name``,
     which cannot tell an ``MTP/`` drafter from a quant."""
@@ -3151,13 +3157,20 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     existing = seen_lower.get(key)
                     last_modified = _repo_gguf_last_modified(repo_info)
                     if existing is None or total_size > existing["size_bytes"]:
+                        load_id = _repo_gguf_load_id(repo_info, active_root)
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
-                            "has_vision": _repo_has_mmproj(repo_info),
+                            # The loader looks for the projector beside the file it loads, so a
+                            # pinned row is judged on that directory rather than on any revision
+                            # that happens to hold one.
+                            "has_vision": (
+                                _snapshot_has_gguf_projector(load_id)
+                                if load_id
+                                else _repo_has_mmproj(repo_info)
+                            ),
                         }
-                        load_id = _repo_gguf_load_id(repo_info, active_root)
                         if load_id:
                             row["load_id"] = load_id
                         # Keep the newest timestamp across duplicate caches;

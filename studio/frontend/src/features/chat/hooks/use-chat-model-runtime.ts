@@ -75,6 +75,9 @@ import type {
 
 export type SelectedModelInput = {
   id: string;
+  /** Sent as model_path in place of the id. The id stays the identity the UI
+   *  shows, dedupes and stores, so pinning a snapshot does not rename a model. */
+  loadId?: string | null;
   isLora?: boolean;
   ggufVariant?: string;
   /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
@@ -491,6 +494,8 @@ export function useChatModelRuntime() {
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
+      const loadPath =
+        (typeof selection === "string" ? null : selection.loadId) || modelId;
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
       const forceReload =
@@ -710,7 +715,7 @@ export function useChatModelRuntime() {
             }
             isDiffusion = (
               await fetchGgufStagedMetadata({
-                model_path: modelId,
+                model_path: loadPath,
                 gguf_variant: ggufVariant ?? null,
                 hf_token: preparedToken.token,
                 nativePathToken: nativePathToken ?? null,
@@ -877,7 +882,7 @@ export function useChatModelRuntime() {
               }),
             );
             const validation = await validateModel({
-              model_path: modelId,
+              model_path: loadPath,
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
@@ -1053,7 +1058,7 @@ export function useChatModelRuntime() {
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             const loadResponse = await loadModel({
-              model_path: modelId,
+              model_path: loadPath,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,

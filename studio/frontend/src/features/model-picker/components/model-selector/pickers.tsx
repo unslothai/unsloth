@@ -717,6 +717,7 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
 
 function GgufVariantExpander({
   repoId,
+  loadId,
   onSelect,
   gpuGb,
   systemRamGb,
@@ -733,6 +734,8 @@ function GgufVariantExpander({
   onHasVision,
 }: {
   repoId: string;
+  /** Snapshot the cached listing pinned this repo to, when it pinned one. */
+  loadId?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
@@ -837,6 +840,7 @@ function GgufVariantExpander({
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
+        loadId,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
@@ -844,7 +848,7 @@ function GgufVariantExpander({
         isGguf: true,
       });
     },
-    [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
+    [repoId, loadId, isLocalPath, onSelect, sourceOverride, nativeContext],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -2910,6 +2914,7 @@ export function HubModelPicker({
         {isGgufExpanded(c.repo_id) && (
           <GgufVariantExpander
             repoId={c.repo_id}
+            loadId={c.load_id}
             onDevice={true}
             allowPin={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
@@ -2968,6 +2973,7 @@ export function HubModelPicker({
               onSelect(c.repo_id, {
                 source: "hub",
                 isLora: false,
+                loadId: c.load_id,
                 isDownloaded: true,
               })
             }
