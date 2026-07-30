@@ -61,6 +61,10 @@ class DownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
+    created: bool = Field(
+        ...,
+        description = "True only when this request claimed and launched a new download job.",
+    )
 
 
 class CancelDownloadResponse(BaseModel):

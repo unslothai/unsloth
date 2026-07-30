@@ -3334,7 +3334,42 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     )
 
     assert result["state"] == "cancelled"
+    assert result["created"] is True
     assert killed
+
+
+def test_model_download_response_marks_an_adopted_job_as_not_created(monkeypatch):
+    class _Registry:
+        def claim(self, *_args, **_kwargs):
+            return False, "running"
+
+        def current_generation(self, _key):
+            return 7
+
+        def adoptable(self, _key):
+            return True
+
+    monkeypatch.setattr(downloads, "_registry", _Registry())
+    monkeypatch.setattr(
+        downloads,
+        "resolve_cached_repo_id_case",
+        lambda repo_id, **_kwargs: repo_id,
+    )
+    monkeypatch.setattr(downloads, "_load_in_flight", lambda _repo_id: False)
+
+    result = asyncio.run(
+        downloads.download_model_response(
+            SimpleNamespace(repo_id = "Org/Model", gguf_variant = None, use_xet = False)
+        )
+    )
+
+    assert result == {
+        "job_key": downloads._download_job_key("Org/Model", None),
+        "state": "running",
+        "accepted": True,
+        "generation": 7,
+        "created": False,
+    }
 
 
 def test_model_cancel_registered_worker_requests_and_kills(monkeypatch):

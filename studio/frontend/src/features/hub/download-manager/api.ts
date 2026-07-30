@@ -52,6 +52,9 @@ export interface DownloadStartResult {
   state: DownloadStartState;
   accepted: boolean;
   generation?: number;
+  // Older backends omit this additive ownership signal. Treat omission as a
+  // fresh start so mixed-version desktop updates preserve existing behavior.
+  created?: boolean;
 }
 
 export interface ActiveModelDownload {

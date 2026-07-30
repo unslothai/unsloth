@@ -207,6 +207,7 @@ async def download_model_response(
             "state": claim_state,
             "accepted": _registry.adoptable(key),
             "generation": generation,
+            "created": False,
         }
     download_manifest.clear_cancel_marker(
         "model",
@@ -246,6 +247,7 @@ async def download_model_response(
         "state": state,
         "accepted": True,
         "generation": generation,
+        "created": True,
     }
 
 

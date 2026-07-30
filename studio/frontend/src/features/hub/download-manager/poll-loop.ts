@@ -587,6 +587,8 @@ function reissueDroppedStartCancel(
   }).catch(() => {});
 }
 
+export type JobStartOwnership = "started" | "existing" | "inactive";
+
 export async function startJob(
   req: DownloadRequest,
   opts: {
@@ -595,14 +597,14 @@ export async function startJob(
     generation?: number;
     state?: DownloadJobState;
   } = {},
-): Promise<void> {
+): Promise<JobStartOwnership> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   // Peer guard stops a FRESH start from double-starting a variant already
   // downloading (or colliding with a no-variant snapshot). Skipped when ADOPTING:
   // the restored own entry would look like a peer and freeze the bar; adoptJob's
   // `pollingStarted` guard already prevents double-polling the same key.
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
-    return;
+    return "inactive";
   }
   const nextEpoch = (runtimeRegistry.runtimes.get(key)?.epoch ?? 0) + 1;
   teardownRuntime(key);
@@ -658,7 +660,7 @@ export async function startJob(
     : undefined;
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
-    return;
+    return "inactive";
   }
   putJob({
     key,
@@ -680,32 +682,37 @@ export async function startJob(
   });
 
   if (!opts.adopt) {
+    let ownership: JobStartOwnership = "started";
     let result;
     try {
       result = await apiStart(req, mode === TRANSPORT.XET, hfToken);
     } catch (err) {
-      if (!isCurrent(key, epoch)) return;
+      if (!isCurrent(key, epoch)) return "inactive";
       finalize(key, "error", {
         error: normalizeDownloadError(err),
       });
-      return;
+      return "inactive";
     }
     // A cancel during this apiStart round-trip can land before the job is
     // claimable; re-issue against the accepted generation.
     if (rt.cancelRequested && result.accepted) {
       reissueDroppedStartCancel(req, result.generation);
     }
-    if (!isCurrent(key, epoch)) return;
+    if (!isCurrent(key, epoch)) return "inactive";
     if (!result.accepted) {
       finalize(key, "error", { error: describeUnacceptedStart(result.state) });
-      return;
+      return "inactive";
     }
     if (Number.isSafeInteger(result.generation)) {
       patchJob(key, { serverGeneration: result.generation });
     }
+    if (result.created === false) ownership = "existing";
+    beginPolling(key, rt);
+    return ownership;
   }
 
   beginPolling(key, rt);
+  return "existing";
 }
 
 function armCancelWatchdog(

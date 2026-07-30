@@ -102,7 +102,7 @@ function isJobActiveFor(req: DownloadRequest): boolean {
 
 async function runWithPendingStartGuard(
   req: DownloadRequest,
-  action: () => Promise<DownloadStartOutcome>,
+  action: () => Promise<DownloadStartOwnershipOutcome>,
 ): Promise<DownloadStartOwnershipOutcome> {
   const startKey = pendingStartKey(req);
   // Distinguish attaching to an exact live transfer from creating one so a
@@ -189,16 +189,22 @@ export function requestStartWithOwnership(
           description:
             "Starting with HTTP so an existing partial is not discarded. Switch transport to retry with Xet.",
         });
-        await startJob(req, { useXet: false });
-        return isJobActiveFor(req) ? "started" : "error";
+        const ownership = await startJob(req, { useXet: false });
+        return isJobActiveFor(req) && ownership !== "inactive"
+          ? ownership
+          : "error";
       }
       toast.warning("Couldn't verify existing partial download", {
         description:
           "Starting with the selected transport. If a partial from another transport exists, it may be restarted from the beginning.",
       });
     }
-    await startJob(req, { useXet: mode === TRANSPORT.XET });
-    return isJobActiveFor(req) ? "started" : "error";
+    const ownership = await startJob(req, {
+      useXet: mode === TRANSPORT.XET,
+    });
+    return isJobActiveFor(req) && ownership !== "inactive"
+      ? ownership
+      : "error";
   });
 }
 

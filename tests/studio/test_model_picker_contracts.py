@@ -991,7 +991,9 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     assert "nParallel: null," in non_gguf_branch
     assert "loadedNParallel: null," in non_gguf_branch
 
-    fresh_default = adapter.split("No downloaded models found. Fetching", 1)[1].split(
+    fresh_default = adapter.split("const downloadResult = await downloadModelWithManager", 1)[
+        1
+    ].split(
         'showAutoLoadSuccess("Loaded Qwen', 1
     )[0]
     # The fresh-default download omits the slots, so its success state clears both,
