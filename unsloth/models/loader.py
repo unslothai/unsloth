@@ -1664,7 +1664,8 @@ class FastModel(FastBaseModel):
             for disable_name in FORCE_FLOAT32:
                 # add comma to model_types_all matching in case of exact match for end
                 if (
-                    disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
+                    disable_name.lower()
+                    == model_type_arch.lower().replace("-", "").replace("_", "")
                     or disable_name.lower() in model_types_all
                 ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                     os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
