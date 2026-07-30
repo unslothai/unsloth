@@ -473,7 +473,6 @@ class TestFullCheckpointBaseKeepsTheProbe:
 
     def _checkpoint(self, tmp_path, config_json):
         import json
-
         (tmp_path / "config.json").write_text(json.dumps(config_json), encoding = "utf-8")
         return str(tmp_path)
 

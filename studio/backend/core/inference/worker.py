@@ -50,7 +50,6 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
     try:
         _ensure_backend_on_path()
         from utils.transformers_version import recorded_local_base
-
         return recorded_local_base(model_name)
     except Exception:
         return None, True
