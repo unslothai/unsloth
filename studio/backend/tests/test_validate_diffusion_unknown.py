@@ -39,7 +39,13 @@ async def _noop_gpu_ids(_config, gpu_ids, **_kwargs):
 
 
 class TestValidateReportsDiffusionUnknown(unittest.TestCase):
-    def _validate(self, route, *, diffusion_kind, is_gguf = True):
+    def _validate(
+        self,
+        route,
+        *,
+        diffusion_kind,
+        is_gguf = True,
+    ):
         # include_context_length mirrors the real staged-metadata preflight (and
         # skips the training guard, which allocates nothing to check here).
         request = ValidateModelRequest(

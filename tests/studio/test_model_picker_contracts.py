@@ -258,9 +258,7 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "} = resolveComparePlacement(" in src
     assert "shouldPinDiffusionPlacement(" in src
     placement = " ".join(_read("features/chat/lib/gpu-placement.ts").split())
-    assert (
-        'own.gpuMemoryMode ?? (treatAsDiffusion ? "auto" : shared.gpuMemoryMode)' in placement
-    )
+    assert 'own.gpuMemoryMode ?? (treatAsDiffusion ? "auto" : shared.gpuMemoryMode)' in placement
     assert "own.gpuLayers ?? (treatAsDiffusion ? GPU_LAYERS_AUTO : shared.gpuLayers)" in placement
     # An unclassified GGUF is pinned like a confirmed one: /load may still find a
     # diffusion header after the download and apply the inherited count.
