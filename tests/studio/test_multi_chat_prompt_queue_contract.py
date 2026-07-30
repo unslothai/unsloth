@@ -171,7 +171,10 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
         in CHAT_ADAPTER
     )
-    assert "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings" in CHAT_ADAPTER
+    assert (
+        "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"
+        in CHAT_ADAPTER
+    )
     assert "if (audioBase64 && !queuedRunSettings)" in CHAT_ADAPTER
 
 
