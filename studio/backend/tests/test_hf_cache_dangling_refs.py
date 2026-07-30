@@ -884,9 +884,7 @@ def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, project
             False,
             id = "a-whole-quant-beside-the-torn-one",
         ),
-        pytest.param(
-            {"Model-Q4_K_M.gguf": b"\0" * 256}, False, id = "one-unsplit-quant"
-        ),
+        pytest.param({"Model-Q4_K_M.gguf": b"\0" * 256}, False, id = "one-unsplit-quant"),
     ],
 )
 def test_a_manifestless_torn_quant_is_still_reported(tmp_path, monkeypatch, files, torn):
