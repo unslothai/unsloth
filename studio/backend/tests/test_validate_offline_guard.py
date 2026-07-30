@@ -16,7 +16,7 @@ from pathlib import Path
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
-_DRIVER = r'''
+_DRIVER = r"""
 import contextlib, importlib.util, sys
 sys.path.insert(0, ".")
 
@@ -73,7 +73,7 @@ except RuntimeError:
 assert closed == [True], closed
 
 print("OFFLINE_GUARDED_OK")
-'''
+"""
 
 
 def test_offline_guarded_runtime_contract():
@@ -84,6 +84,6 @@ def test_offline_guarded_runtime_contract():
         text = True,
         timeout = 300,
     )
-    assert "OFFLINE_GUARDED_OK" in proc.stdout, (
-        f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
-    )
+    assert (
+        "OFFLINE_GUARDED_OK" in proc.stdout
+    ), f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"

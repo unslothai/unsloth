@@ -260,6 +260,7 @@ def hf_unreachable(timeout: int = 3) -> bool:
             return cached[1]
         try:
             from utils.transformers_version import hf_endpoint_unreachable
+
             # Both flags off for the same reason: an ambiguous answer must not force
             # offline. Through a proxy a clean timeout only means slow, and the hub
             # client's longer request may well succeed, so an uncached load must not

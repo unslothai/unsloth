@@ -73,8 +73,14 @@ def _no_ambient_proxy(monkeypatch):
     request instead of hitting the patch, so results would track ambient CI connectivity.
     """
     for key in (
-        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
     ):
         monkeypatch.delenv(key, raising = False)
 

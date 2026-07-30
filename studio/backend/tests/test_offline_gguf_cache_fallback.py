@@ -1768,7 +1768,12 @@ class TestHfUnreachableProbe:
         # **_kwargs so the sibling ambiguity flag does not turn this into a TypeError
         # that the guard's fail-open would swallow. Both flags are asserted by
         # TestSlowProxyDoesNotForceOffline.
-        def _probe(timeout, *, gateway_errors_offline = True, **_kwargs):
+        def _probe(
+            timeout,
+            *,
+            gateway_errors_offline = True,
+            **_kwargs,
+        ):
             seen["gateway_errors_offline"] = gateway_errors_offline
             return gateway_errors_offline
 
@@ -2653,6 +2658,7 @@ class TestSlowProxyDoesNotForceOffline:
     @pytest.fixture(autouse = True)
     def _fresh(self, monkeypatch):
         from utils.utils import reset_hf_reachability_cache
+
         reset_hf_reachability_cache()
         monkeypatch.delenv("UNSLOTH_OFFLINE_PROBE", raising = False)
         yield
@@ -2666,14 +2672,12 @@ class TestSlowProxyDoesNotForceOffline:
             return False
 
         import utils.transformers_version as tv
+
         monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
         from utils.utils import hf_unreachable
 
         assert hf_unreachable(timeout = 1) is False
-        assert seen == {
-            "gateway_errors_offline": False,
-            "proxy_timeouts_offline": False,
-        }
+        assert seen == {"gateway_errors_offline": False, "proxy_timeouts_offline": False}
 
     def test_slow_proxy_reads_reachable_not_offline(self, monkeypatch):
         """End to end through the real classifier: a clean timeout behind a proxy."""
@@ -2684,7 +2688,11 @@ class TestSlowProxyDoesNotForceOffline:
         monkeypatch.delenv("NO_PROXY", raising = False)
 
         class _SlowOpener:
-            def open(self, req, timeout = None):
+            def open(
+                self,
+                req,
+                timeout = None,
+            ):
                 raise TimeoutError("proxy is up, upstream is slow")
 
         monkeypatch.setattr(tv, "_hf_proxy_opener", lambda _url: _SlowOpener())
@@ -2692,6 +2700,7 @@ class TestSlowProxyDoesNotForceOffline:
         assert tv.hf_endpoint_unreachable(1, proxy_timeouts_offline = True) is True
 
         from utils.utils import hf_unreachable
+
         assert hf_unreachable(timeout = 1) is False
 
 

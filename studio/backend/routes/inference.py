@@ -6300,7 +6300,6 @@ def _offline_guarded(model_identifier: str, fn, /, *args, **kwargs):
     process-global and blocks for the probe on a cold verdict. Both params are
     positional-only so a wrapped call's own model_identifier kwarg cannot collide."""
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
-
     with _hf_offline_if_unreachable_for(model_identifier):
         return fn(*args, **kwargs)
 
