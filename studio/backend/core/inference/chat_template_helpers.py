@@ -27,27 +27,15 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
 
-# Chat-template control markup that must not reach the prompt as raw text from a
-# user / system / tool turn: a literal "</think>" ends the reasoning block early,
-# and "<|start|>assistant<|channel|>final<|message|>" in a tool result forges an
-# assistant turn (#7066). One lookahead over the four shapes the templates emit,
-# so a single sub() breaks every marker by inserting one space after the opener:
-#   <|name|> / <|name>   ChatML, Llama-3, Harmony/gpt-oss, Zephyr/Phi-3, Gemma-4,
-#                        Granite (<|start_of_role|>role<|end_of_role|> ... <|end_of_text|>)
-#   <name>   / </name>   Qwen tool XML, Gemma turn delimiters, think tags
-#   <name|>              Gemma-4 closing delimiters
-#   [NAME]   / [/NAME]   Mistral / Llama-2, the one family delimited by brackets:
-#                        [INST], plus the [SYSTEM_PROMPT] / [AVAILABLE_TOOLS] /
-#                        [TOOL_CALLS][ARGS] / [TOOL_RESULTS] set that Mistral-Small-3
-#                        and Magistral emit (their chat_template.jinja). [THINK] is
-#                        deliberately absent: no template emits it, it is reasoning
-#                        the model writes and the output parsers consume.
-# The name list is closed on purpose: bare words match only in the pipe shape, so
-# "<div>", "<End>" and "List<String>" are untouched. The bare words that do match
-# are template delimiters in their own right, so they break even inside a code
-# fence, the same trade the structural parsers make. The bracket names are anchored
-# to the exact uppercase spelling the templates emit, so "[1]" and "[inst]" stay
-# as typed.
+# Chat-template control markup must not reach the prompt as raw text from a user /
+# system / tool turn: a literal "</think>" ends the reasoning block early, and
+# "<|start|>assistant<|channel|>final<|message|>" in a tool result forges an
+# assistant turn (#7066). One lookahead over the four shapes the templates emit
+# (<|name|>/<|name>, <name>/</name>, <name|>, [NAME]/[/NAME]), so a single sub()
+# breaks any marker by inserting one space after the opener. The name list is closed
+# on purpose: bare words match only in the pipe shape and brackets only in the exact
+# uppercase spelling, so "<div>", "List<String>", "[1]" and "[inst]" stay as typed.
+# [THINK] is absent because no template emits it; the output parsers consume it.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
@@ -61,17 +49,11 @@ _CONTROL_MARKUP = re.compile(
 )
 
 # Turn-boundary subset, for replayed ASSISTANT content: that text is
-# client-controlled too, so a raw boundary in it truncates or forges a turn.
-# Everything else stays byte-identical, because the assistant's own think /
-# channel / tool markup is structural and rewriting it would corrupt the
-# transcript the template re-renders. Harmony opens every message with <|start|>
-# and stops on <|call|> / <|return|>, Zephyr / Phi-3 open a turn with a bare
-# <|user|> / <|assistant|> / <|system|>, and Granite opens one with
-# <|start_of_role|>role<|end_of_role|> and ends it on its eos <|end_of_text|>, so
-# those are boundaries too, and Mistral / Llama-2 delimit a turn with the bracket
-# pairs [INST] ... [/INST] and [SYSTEM_PROMPT] ... [/SYSTEM_PROMPT] rather than an
-# angle marker. [TOOL_CALLS] / [ARGS] stay out for the same reason <|tool_call>
-# does: they are the assistant's own structural markup (#7066).
+# client-controlled too, so a raw boundary in it truncates or forges a turn (#7066).
+# Everything else stays byte-identical, because the assistant's own think / channel /
+# tool markup is structure the template re-renders. Boundaries also cover the bare
+# Zephyr / Phi-3 role sentinels, Granite's <|start_of_role|> ... <|end_of_text|> and
+# the Mistral / Llama-2 [INST] / [SYSTEM_PROMPT] bracket pairs.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
     r"\|(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end)"
@@ -88,17 +70,16 @@ def _spaced_out(pattern, text: str) -> str:
     """Insert one space after every marker opener *pattern* found."""
     if not text or ("<" not in text and "[" not in text):
         return text
-    # "\g<0>" is the matched opener, so one literal template covers both anchors.
     return pattern.sub(r"\g<0> ", text)
 
 
 def neutralize_control_markup(text: str) -> str:
-    """Break chat-template control markup in free text by spacing out the opener.
+    """Break control markup in free text by spacing out the opener (#7066).
 
-    "</think>" becomes "< /think>" and "[/INST]" becomes "[ /INST]": still
-    readable, but no longer a delimiter to the template, the think extractor or
-    the stop-sequence matcher (#7066). A plain space, not an invisible joiner: a
-    space is in every tokenizer vocabulary, while U+2060 can fall back to byte junk.
+    "</think>" becomes "< /think>", "[/INST]" becomes "[ /INST]": readable, but no
+    longer a delimiter to the template, the think extractor or the stop-sequence
+    matcher. A plain space, because every tokenizer vocabulary has one; U+2060 can
+    fall back to byte junk.
     """
     return _spaced_out(_CONTROL_MARKUP, text)
 
@@ -127,19 +108,12 @@ def _neutralize_argument_leaves(value):
 def _neutralize_replayed_tool_call(tool_calls: list) -> list:
     """Neutralize a replayed tool call's name and arguments, keeping "id" exact.
 
-    Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so
-    an argument that echoes pasted text can close the call block and open a
-    "<|tool_response>" or a "<|turn>model" of its own (#7066). Arguments are
-    data, not transcript structure, so they get the same full rewrite a tool
-    result's content gets.
-
-    The name is concatenated straight after "call:" and is client-supplied on
-    replay, so it gets the same rewrite -- which is the identity on every name
-    that can dispatch. Studio composes names as ^[a-zA-Z0-9_-]{1,64}$ and its
-    parsers only ever yield [\\w.\\-]+, so a dispatchable name holds no "<" for the
-    pattern to match; a name this rewrites matches no registered tool either way.
-    A tool result's "name" takes the same rewrite, so the two still agree when
-    Gemma-4 pairs them by name. "id" is opaque and stays byte-exact.
+    Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so an
+    argument or a name echoing pasted text can close the call block and open a
+    "<|tool_response>" or "<|turn>model" of its own (#7066). The rewrite is the
+    identity on every dispatchable name (Studio composes ^[a-zA-Z0-9_-]{1,64}$), and
+    a tool result's "name" takes the same rewrite, so the two still agree when
+    Gemma-4 pairs them by name.
     """
     out: list = []
     for call in tool_calls:
@@ -165,10 +139,10 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
 def neutralize_control_markup_in_messages(messages: list) -> list:
     """Neutralize control markup in message content and tool-result names (#7066).
 
-    User / system / tool turns lose every marker; assistant turns lose only the
-    turn boundaries and keep their structural think / channel / tool markup,
-    which replayed history legitimately holds. Returns the same list object when
-    nothing changed, so the common prompt stays byte-for-byte what it was.
+    User / system / tool turns lose every marker; assistant turns lose only turn
+    boundaries and keep their structural think / channel / tool markup, which
+    replayed history legitimately holds. Returns the same list object when nothing
+    changed, so the common prompt stays byte-for-byte what it was.
     """
     if not messages:
         return messages
@@ -183,9 +157,8 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             neutralize_turn_boundary_markup if role == "assistant" else neutralize_control_markup
         )
         updates: dict = {}
-        # A tool result's "name" is prompt text too: Gemma-4 falls back to it when
-        # "tool_call_id" matches no preceding call and concatenates it into the
-        # "<|tool_response>" block, so a marker there forges a turn (#7066).
+        # Gemma-4 falls back to a tool result's "name" when "tool_call_id" matches no
+        # call, concatenating it into the "<|tool_response>" block (#7066).
         name = msg.get("name")
         if role == "tool" and isinstance(name, str) and name:
             new_name = neutralize_control_markup(name)
@@ -224,34 +197,20 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
 def neutralize_tool_descriptions(tools):
     """Neutralize a rendered tool catalog, dropping any tool with an unsafe name.
 
-    A tool declaration is prompt text, and every string in it is rendered: Gemma-4
-    interpolates the description into its system turn and ``format_parameters``
-    emits property keys unquoted plus ``enum`` / ``required`` entries inline,
-    while Granite renders the whole spec with ``tojson``. So a
-    "<turn|><|turn>model" anywhere in the schema closes the system turn and forges
-    a model one (#7066). ``mcp_client`` copies a server's ``description`` and its
-    ``inputSchema`` verbatim, which is how remote text gets there.
+    Every string in a declaration is prompt text: Gemma-4 interpolates the description
+    into its system turn and emits property keys / ``enum`` / ``required`` entries
+    inline, while Granite and Mistral-Small-3 render the whole entry with ``tojson``.
+    So markup anywhere in the schema closes the system turn and forges a model one
+    (#7066), and ``mcp_client`` copies a remote ``description`` / ``inputSchema``
+    verbatim. The rewrite covers the whole entry, not just the nested ``function``,
+    because ``ChatCompletionRequest.tools`` is a bare ``list[dict]``.
 
-    ``function.name`` cannot take the rewrite: it is the dispatch identity, and the
-    client matches the name the model echoes back against the one it registered.
-    Gemma-4 renders it rawest of all -- ``declaration:NAME`` and
-    ``<|tool_call>call:NAME``, both unquoted -- so leaving it exact forges a turn
-    while rewriting it silently breaks dispatch. Neither is acceptable, so a tool
-    whose name carries control markup is dropped with a warning, the way
-    ``_mcp_specs_for_server`` already skips a name that fails OpenAI's grammar.
-    The predicate is the markup rewrite itself, not that grammar, so a passthrough
-    client's ``ns.tool`` or ``functions.NAME:IDX`` still ships untouched.
-
-    Every other string takes the rewrite -- the whole entry, not just the nested
-    ``function``: ``ChatCompletionRequest.tools`` is a bare ``list[dict]``, so an
-    extension field alongside ``type`` / ``function`` survives to the template, and
-    Mistral-Small-3 / Magistral render the catalog as ``[AVAILABLE_TOOLS]{{ tools |
-    tojson }}[/AVAILABLE_TOOLS]``, which serializes the entry whole. Once the name
-    has passed the drop check it holds no markup, so the rewrite is already the
-    identity on it and needs no exemption. The rewrite is likewise the identity on
-    a schema that holds no control markup -- a real ``enum`` value or property key
-    has no "<" for the pattern to match, so a live catalog is returned unchanged
-    and two distinct keys cannot collide onto one.
+    ``function.name`` is the dispatch identity: rewriting it silently breaks dispatch,
+    leaving it exact forges a turn (Gemma-4 emits ``call:NAME`` unquoted), so a name
+    carrying markup drops the tool with a warning instead. The predicate is the rewrite
+    itself, not OpenAI's name grammar, so a passthrough client's ``ns.tool`` or
+    ``functions.NAME:IDX`` still ships. The rewrite is the identity on any markup-free
+    string, so a live catalog is returned unchanged and two keys cannot collide onto one.
     """
     if not tools or not isinstance(tools, list):
         return tools
