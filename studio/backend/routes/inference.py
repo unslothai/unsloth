@@ -15779,10 +15779,9 @@ def _build_passthrough_payload(
         neutralize_tool_descriptions,
     )
 
-    # Every passthrough body ends up here, and llama-server applies the chat
-    # template itself, so this is the one place a client-tool request can be
-    # broken: /v1/messages builds its streaming and non-streaming bodies straight
-    # from here and never touches the OpenAI builder below (#7066).
+    # Every passthrough body ends up here and llama-server applies the chat template
+    # itself, so this is the one place to break markup: /v1/messages builds both its
+    # bodies from here, never touching the OpenAI builder below (#7066).
     body = {
         "messages": neutralize_control_markup_in_messages(openai_messages),
         "temperature": temperature,
@@ -15790,8 +15789,8 @@ def _build_passthrough_payload(
         "top_k": top_k,
         "stream": stream,
     }
-    # Tested after the rewrite, not before: a catalog whose every tool carries an
-    # injected name drops to empty, and "tools": [] would still advertise tool use.
+    # Tested after the rewrite: a catalog whose every name is injected drops to
+    # empty, and "tools": [] would still advertise tool use.
     safe_tools = neutralize_tool_descriptions(openai_tools)
     if safe_tools:
         body["tools"] = _llama_compatible_tools(safe_tools)

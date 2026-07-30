@@ -11944,9 +11944,8 @@ class LlamaCppBackend:
             )
 
             payload = {
-                # Re-run every iteration: tool results land in ``conversation`` as the
-                # loop goes, and a forged assistant turn in one would render for
-                # real (#7066).
+                # Re-run every iteration: tool results land in ``conversation`` as
+                # the loop goes, and a forged turn in one would render for real (#7066).
                 "messages": neutralize_control_markup_in_messages(conversation),
                 "stream": True,
                 "stream_options": {"include_usage": True},
@@ -11956,8 +11955,8 @@ class LlamaCppBackend:
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
-                # An MCP server's description and inputSchema are remote text that
-                # the template renders into the system turn (#7066).
+                # An MCP server's description and inputSchema are remote text the
+                # template renders into the system turn (#7066).
                 "tools": neutralize_tool_descriptions(active_tools),
                 "tool_choice": "auto",
             }
@@ -13284,7 +13283,7 @@ class LlamaCppBackend:
             system_text = _block_text(system)
 
         # Count the prompt generation actually sends: the chat paths neutralize
-        # before templating, so counting raw text budgets a prompt nobody uses (#7066).
+        # first, so counting raw text budgets a prompt nobody uses (#7066).
         from core.inference.chat_template_helpers import (
             neutralize_control_markup,
             neutralize_control_markup_in_messages,
