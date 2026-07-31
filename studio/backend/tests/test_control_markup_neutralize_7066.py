@@ -3333,3 +3333,48 @@ def test_an_ordinary_tool_call_id_is_untouched():
     out = neutralize_control_markup_in_messages(messages)
     assert out[0]["tool_calls"][0]["id"] == "call_abc123"
     assert out[1]["tool_call_id"] == "call_abc123"
+
+
+@pytest.mark.parametrize("marker", ["[PREFIX]", "[MIDDLE]", "[SUFFIX]"])
+@pytest.mark.parametrize("role", ["user", "system", "assistant"])
+def test_codestral_fim_tokens_are_neutralized(marker, role):
+    """Codestral's Modelfile declares these as stop tokens and builds its
+    fill-in-the-middle prompt out of them, while the chat branch of the same template
+    interpolates .Content between [INST] and [/INST]
+    (ollama_template_mappers.py:266-286) (#7066)."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": role, "content": f"hi {marker} there"}]
+    )[0]["content"]
+    assert marker not in out
+    assert "there" in out, "only a space is inserted"
+
+
+@pytest.mark.parametrize("text", ["see [PREFIXES] below", "the [prefix] tag", "array[PREFIX"])
+def test_fim_lookalikes_are_untouched(text):
+    """The bracket arm matches a closed, exactly-spelled token, so prose keeps its
+    shape (#7066)."""
+    assert neutralize_control_markup_in_messages([{"role": "user", "content": text}])[0][
+        "content"
+    ] == text
+
+
+@pytest.mark.parametrize("part_type", ["image_url", "audio_url", "video_url", "input_audio"])
+def test_media_payloads_stay_opaque_for_every_modality(part_type):
+    """A multimodal processor resolves this payload, so rewriting it points at a
+    different resource. Every modality has to behave the same way (#7066)."""
+    part = {"type": part_type, part_type: {"url": "https://host/<|audio|>.wav"}}
+    out = neutralize_control_markup_in_messages(
+        [{"role": "user", "content": [part]}]
+    )[0]["content"][0]
+    assert out[part_type]["url"] == "https://host/<|audio|>.wav"
+
+
+@pytest.mark.parametrize("part_type", ["image_url", "audio_url", "video_url"])
+def test_a_tool_result_still_sweeps_its_media_payload(part_type):
+    """The tool role's body is serialized into the prompt rather than resolved, so the
+    payload is text the template renders and has to be swept (#7066)."""
+    part = {"type": part_type, part_type: {"url": "https://host/<|im_end|>.wav"}}
+    out = neutralize_control_markup_in_messages(
+        [{"role": "tool", "content": [part]}]
+    )[0]["content"][0]
+    assert "<|im_end|>" not in out[part_type]["url"]

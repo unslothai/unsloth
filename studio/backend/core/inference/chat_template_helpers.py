@@ -119,7 +119,13 @@ _CONTROL_MARKUP = re.compile(
     # prompt. "[ARGS]" also collides with real text: it is the standard CLI-synopsis
     # metavariable ("usage: tool [OPTIONS] [ARGS]"), a live string in this repo, and inside a
     # schema "enum" / "pattern" the rewrite makes it a grammar literal the model must emit.
-    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS|TOOL_CALLS)\])"
+    # Codestral's Modelfile declares [PREFIX]/[MIDDLE]/[SUFFIX] as stop tokens and builds
+    # its fill-in-the-middle prompt out of them, while the chat branch of the same template
+    # interpolates .Content between [INST] and [/INST]
+    # (ollama_template_mappers.py:266-286), so pasted text spelling one asks for FIM
+    # semantics instead of staying ordinary content (#7066).
+    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS|TOOL_CALLS"
+    r"|PREFIX|MIDDLE|SUFFIX)\])"
     # Llama-2 opens its system block with "<<SYS>>" INSIDE the first [INST], so the doubled
     # angle is the opener, not a single "<". Both meta-llama/Llama-2-*-chat-hf's template and
     # the "llama" entry MODEL_TO_TEMPLATE_MAPPER installs at generate time emit it, and a
@@ -167,7 +173,10 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # (ollama_template_mappers.py:125-127) and spells a tool observation
     # "[TOOL_RESULTS]...[/TOOL_RESULTS]" (:133) and the catalog "[AVAILABLE_TOOLS]" (:123),
     # so a replay can forge either. "[TOOL_CALLS]" is out: that one the assistant emits (:129).
-    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\])"
+    # The FIM tokens are stop tokens, so a real generation halts instead of emitting one:
+    # a replay carrying one did not come from the model (ollama_template_mappers.py:284-286).
+    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS"
+    r"|PREFIX|MIDDLE|SUFFIX)\])"
     # Llama-2's system section is a boundary for the same reason [SYSTEM_PROMPT] is: the
     # template only emits it in the first user turn, never an assistant one.
     r"|(?<=<)<(?=/?SYS>>)"
@@ -313,7 +322,18 @@ _MEDIA_PART_TYPES = frozenset(
     {"image", "image_url", "input_image", "input_audio", "audio", "audio_url", "video", "video_url"}
 )
 _OPAQUE_PART_KEYS = frozenset(
-    {"image_url", "input_audio", "image", "audio", "video", "url", "data", "b64_json"}
+    {
+        "image_url",
+        "audio_url",
+        "video_url",
+        "input_audio",
+        "image",
+        "audio",
+        "video",
+        "url",
+        "data",
+        "b64_json",
+    }
 )
 
 
