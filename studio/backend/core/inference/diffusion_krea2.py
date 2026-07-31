@@ -84,7 +84,7 @@ def _load_model_index(repo_id: str, hf_token: Optional[str] = None) -> dict[str,
         is_local_dir = root.is_dir()
         local = root / "model_index.json"
         if local.is_file():
-            return json.loads(local.read_text())
+            return json.loads(local.read_text(encoding = "utf-8"))
     except OSError:
         pass
     if is_local_dir:
@@ -94,7 +94,7 @@ def _load_model_index(repo_id: str, hf_token: Optional[str] = None) -> dict[str,
     from huggingface_hub import hf_hub_download
 
     path = hf_hub_download(repo_id, "model_index.json", token = hf_token or None)
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding = "utf-8"))
 
 
 def load_krea2_pipeline(

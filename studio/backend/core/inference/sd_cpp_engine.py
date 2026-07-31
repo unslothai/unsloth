@@ -250,6 +250,7 @@ class SdCppEngine:
                 [self.binary, "--version"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
                 errors = "replace",
                 timeout = timeout,
                 check = False,
@@ -381,6 +382,7 @@ class SdCppEngine:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            encoding = "utf-8",
             errors = "replace",
             env = run_env,
             # Own session/process group so cancellation/timeout kills the whole tree (POSIX).

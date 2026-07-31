@@ -277,7 +277,7 @@ def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> 
 
 def _try_load(ctx: CacheContext, logger: Any) -> bool:
     try:
-        manifest = json.loads(ctx.manifest_path.read_text())
+        manifest = json.loads(ctx.manifest_path.read_text(encoding = "utf-8"))
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: unreadable manifest: {exc}")
         return False
@@ -353,7 +353,9 @@ def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
             # Static-compile shape coverage (register_shape); unused by dynamic compiles.
             "shapes": sorted(list(s) for s in ctx.shapes),
         }
-        ctx.manifest_path.write_text(json.dumps(manifest, indent = 2, sort_keys = True, default = str))
+        ctx.manifest_path.write_text(
+            json.dumps(manifest, indent = 2, sort_keys = True, default = str), encoding = "utf-8"
+        )
         ctx.saved = True
         _info(logger, f"compile-cache: saved bundle ({len(data)} bytes) for key {ctx.key}")
         return True

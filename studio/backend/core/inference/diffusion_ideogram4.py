@@ -89,7 +89,7 @@ def _transformer_shard_paths(repo_id: str, subfolder: str, token: Optional[str])
         sub = local_root / subfolder
         index = sub / "diffusion_pytorch_model.safetensors.index.json"
         if index.is_file():
-            weight_map = json.loads(index.read_text())["weight_map"]
+            weight_map = json.loads(index.read_text(encoding = "utf-8"))["weight_map"]
             return [str(sub / name) for name in sorted(set(weight_map.values()))]
         single = sub / "diffusion_pytorch_model.safetensors"
         if single.is_file():
@@ -99,7 +99,7 @@ def _transformer_shard_paths(repo_id: str, subfolder: str, token: Optional[str])
     index_name = f"{subfolder}/diffusion_pytorch_model.safetensors.index.json"
     try:
         index_path = hf_hub_download(repo_id, index_name, token = token)
-        weight_map = json.loads(Path(index_path).read_text())["weight_map"]
+        weight_map = json.loads(Path(index_path).read_text(encoding = "utf-8"))["weight_map"]
         shards = sorted(set(weight_map.values()))
     except Exception:  # noqa: BLE001 -- single-file subfolder has no index
         shards = ["diffusion_pytorch_model.safetensors"]
@@ -110,11 +110,11 @@ def _read_transformer_config(repo_id: str, subfolder: str, token: Optional[str])
     """``subfolder/config.json`` as a dict, from a local path or the Hub cache."""
     local = Path(repo_id).expanduser() / subfolder / "config.json"
     if local.is_file():
-        return json.loads(local.read_text())
+        return json.loads(local.read_text(encoding = "utf-8"))
     from huggingface_hub import hf_hub_download
 
     path = hf_hub_download(repo_id, f"{subfolder}/config.json", token = token)
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding = "utf-8"))
 
 
 def _convert_fp8_state_dict(raw: dict, hidden_size: int, dtype) -> dict:
@@ -168,7 +168,7 @@ def _text_encoder_shard_paths(repo_id: str, token: Optional[str]) -> list[str]:
         sub = local_root / "text_encoder"
         index = sub / "model.safetensors.index.json"
         if index.is_file():
-            weight_map = json.loads(index.read_text())["weight_map"]
+            weight_map = json.loads(index.read_text(encoding = "utf-8"))["weight_map"]
             return [str(sub / name) for name in sorted(set(weight_map.values()))]
         single = sub / "model.safetensors"
         if single.is_file():
@@ -179,7 +179,7 @@ def _text_encoder_shard_paths(repo_id: str, token: Optional[str]) -> list[str]:
         index_path = hf_hub_download(
             repo_id, "text_encoder/model.safetensors.index.json", token = token
         )
-        weight_map = json.loads(Path(index_path).read_text())["weight_map"]
+        weight_map = json.loads(Path(index_path).read_text(encoding = "utf-8"))["weight_map"]
         shards = sorted(set(weight_map.values()))
     except Exception:  # noqa: BLE001 -- single-file text encoder has no index
         shards = ["model.safetensors"]
@@ -194,13 +194,13 @@ def _text_encoder_is_fp8(repo_id: str, token: Optional[str]) -> bool:
     if local_root.is_dir():
         index = local_root / "text_encoder" / "model.safetensors.index.json"
         if index.is_file():
-            return any(k.endswith("_scale") for k in json.loads(index.read_text())["weight_map"])
+            return any(k.endswith("_scale") for k in json.loads(index.read_text(encoding = "utf-8"))["weight_map"])
     else:
         try:
             index_path = hf_hub_download(
                 repo_id, "text_encoder/model.safetensors.index.json", token = token
             )
-            weight_map = json.loads(Path(index_path).read_text())["weight_map"]
+            weight_map = json.loads(Path(index_path).read_text(encoding = "utf-8"))["weight_map"]
             return any(k.endswith("_scale") for k in weight_map)
         except Exception:  # noqa: BLE001 -- single-file (nf4) text encoder, not fp8
             return False

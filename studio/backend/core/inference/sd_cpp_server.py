@@ -245,6 +245,7 @@ class SdCppServer:
                         stdout = subprocess.PIPE,
                         stderr = subprocess.STDOUT,
                         text = True,
+                        encoding = "utf-8",
                         errors = "replace",
                         env = run_env,
                         **windows_hidden_subprocess_kwargs(),
