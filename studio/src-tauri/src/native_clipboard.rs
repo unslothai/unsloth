@@ -79,6 +79,7 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "gif" => "image/gif",
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
         "mp3" => "audio/mpeg",
@@ -359,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_file_mime_types_cover_text_attachments() {
+    fn clipboard_file_mime_types_cover_chat_attachments() {
         assert_eq!(
             clipboard_file_mime_type(Path::new("data.json")),
             Some("application/json")
@@ -367,6 +368,12 @@ mod tests {
         assert_eq!(
             clipboard_file_mime_type(Path::new("notes.md")),
             Some("text/markdown")
+        );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("workbook.xlsx")),
+            Some(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         );
         assert_eq!(clipboard_file_mime_type(Path::new("unknown.bin")), None);
     }

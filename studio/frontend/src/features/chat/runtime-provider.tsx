@@ -57,6 +57,11 @@ import {
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import {
+  XLSX_WORKBOOK_MIME,
+  readActiveXlsxAttachmentText,
+  readXlsxAttachmentText,
+} from "./xlsx-attachment";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
@@ -412,6 +417,83 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
         contentType: attachment.contentType,
         content: [
           { type: "text", text: `[${label}: ${attachment.name}]\n${text}` },
+        ],
+        status: { type: "complete" },
+      };
+    } finally {
+      this.active.delete(attachment.id);
+      this.content.delete(attachment.id);
+      this.sending.delete(attachment.id);
+    }
+  }
+
+  remove(attachment: { id: string }): Promise<void> {
+    this.active.delete(attachment.id);
+    this.sending.delete(attachment.id);
+    this.content.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
+class XlsxAttachmentAdapter implements AttachmentAdapter {
+  private readonly active = new Set<string>();
+  private readonly sending = new Set<string>();
+  private readonly content = new Map<string, Promise<string | null>>();
+
+  accept = [".xlsx", XLSX_WORKBOOK_MIME].join(",");
+
+  async *add({
+    file,
+  }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    const id = crypto.randomUUID();
+    this.active.add(id);
+    const attachment = {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+
+    yield attachment;
+    const content = readActiveXlsxAttachmentText(file, () =>
+      this.active.has(id),
+    );
+    this.content.set(id, content);
+
+    try {
+      if ((await content) && this.active.has(id) && !this.sending.has(id)) {
+        yield {
+          ...attachment,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+      }
+    } catch {
+      this.active.delete(id);
+      this.content.delete(id);
+      if (!this.sending.has(id)) {
+        yield {
+          ...attachment,
+          status: { type: "incomplete", reason: "error" },
+        };
+      }
+    }
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    this.sending.add(attachment.id);
+    try {
+      const text =
+        (await this.content.get(attachment.id)) ??
+        (await readXlsxAttachmentText(attachment.file));
+      return {
+        id: attachment.id,
+        type: "document",
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: [
+          { type: "text", text: `[XLSX: ${attachment.name}]\n${text}` },
         ],
         status: { type: "complete" },
       };
@@ -1302,6 +1384,7 @@ function useStudioRuntimeAdapters(
         new PDFAttachmentAdapter(),
         new DocxAttachmentAdapter(),
         new OpenDocumentAttachmentAdapter(),
+        new XlsxAttachmentAdapter(),
       ]),
     [],
   );
