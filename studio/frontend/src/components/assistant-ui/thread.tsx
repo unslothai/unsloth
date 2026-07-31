@@ -106,7 +106,9 @@ import {
   addQueuedChatRunSettingsThreadIds,
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
+  localPromptQueueModelBoundary,
   registerQueuedChatRunSettings,
+  shouldAbortPendingQueueForModelBoundary,
   snapshotQueuedChatRunSettings,
   composerDraftKey,
   markThreadIncognito,
@@ -2085,7 +2087,11 @@ const Composer: FC<{
   const promptQueueStartPendingRef = useRef(
     new Map<
       string,
-      { temporary: boolean; cancelled: boolean }
+      {
+        temporary: boolean;
+        cancelled: boolean;
+        localModelBoundaryGeneration: number;
+      }
     >(),
   );
   useEffect(() => {
@@ -2347,13 +2353,24 @@ const Composer: FC<{
       const reservation = {
         temporary: useChatRuntimeStore.getState().incognito,
         cancelled: false,
+        localModelBoundaryGeneration:
+          localPromptQueueModelBoundary.capture(),
       };
       promptQueueStartPendingRef.current.set(reservationKey, reservation);
       void createPromptQueueTarget()
         .then((target) => {
+          const modelBoundaryInvalidated = target
+            ? shouldAbortPendingQueueForModelBoundary({
+                capturedGeneration:
+                  reservation.localModelBoundaryGeneration,
+                usesLocalModel: target.usesLocalModel,
+                modelLoading: useChatRuntimeStore.getState().modelLoading,
+              })
+            : false;
           if (
             target &&
             !reservation.cancelled &&
+            !modelBoundaryInvalidated &&
             promptQueueStartPendingRef.current.get(reservationKey) ===
               reservation
           ) {

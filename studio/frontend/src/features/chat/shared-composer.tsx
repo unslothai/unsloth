@@ -36,11 +36,9 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
-import {
-  confirmStopRunningChatsIfNeeded,
-  getLocalPromptQueueThreadIds,
-} from "./utils/confirm-stop-running-chats";
-import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
+import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
+import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
@@ -1009,6 +1007,18 @@ export function SharedComposer({
     if (compareStopDecision && !compareStopDecision.proceed) {
       return;
     }
+    let compareLifecycleLease: ModelLifecycleLease | null = null;
+    if (isGeneralizedCompare) {
+      compareLifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading();
+      if (compareLifecycleLease === null) {
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+    }
 
     setText("");
     setPendingImages([]);
@@ -1233,16 +1243,9 @@ export function SharedComposer({
             );
           }
         }
-        const latePromptQueueThreadIds = getLocalPromptQueueThreadIds();
-        const promptQueueThreadIds = Array.from(
-          new Set([
-            ...(compareStopDecision?.promptQueueThreadIds ?? []),
-            ...latePromptQueueThreadIds,
-          ]),
+        requestLocalPromptQueueStop(
+          compareStopDecision?.promptQueueThreadIds,
         );
-        if (promptQueueThreadIds.length > 0) {
-          requestPromptQueueStop(promptQueueThreadIds);
-        }
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
@@ -1401,7 +1404,6 @@ export function SharedComposer({
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
-      useChatRuntimeStore.getState().setModelLoading(true);
       setComparing(true);
       try {
         // Side 1: load → generate → wait
@@ -1460,7 +1462,11 @@ export function SharedComposer({
           duration: 4000,
         });
       } finally {
-        useChatRuntimeStore.getState().setModelLoading(false);
+        if (compareLifecycleLease !== null) {
+          useChatRuntimeStore
+            .getState()
+            .endModelLoading(compareLifecycleLease);
+        }
         setComparing(false);
       }
     } else {

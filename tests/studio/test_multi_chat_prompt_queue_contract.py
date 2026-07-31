@@ -145,6 +145,8 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
     assert "temporary: useChatRuntimeStore.getState().incognito" in THREAD
+    assert "localPromptQueueModelBoundary.capture()" in THREAD
+    assert "shouldAbortPendingQueueForModelBoundary" in THREAD
     assert "reservation.cancelled = true" in THREAD
     assert "temporaryOnly && !reservation.temporary" in THREAD
     assert "onAborted?.()" in THREAD
@@ -250,9 +252,19 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "{ trackQueuedSettings: false }" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel(abortSignal)") >= 2
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
-    assert "const runSerializedAutoLoad = async" in CHAT_ADAPTER
-    assert "store.setModelLoading(true)" in CHAT_ADAPTER
-    assert "store.setModelLoading(false)" in CHAT_ADAPTER
+    assert "beginModelLoading()" in CHAT_ADAPTER
+    assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER
+    lifecycle = _between(
+        CHAT_ADAPTER,
+        "async function resolveQueuedEmptyLocalModel(",
+        "export function createOpenAIStreamAdapter",
+    )
+    assert lifecycle.index("beginModelLoading()") < lifecycle.index(
+        "await getInferenceStatus()"
+    )
+    assert lifecycle.index("await getInferenceStatus()") < lifecycle.index(
+        "await autoLoadSmallestModel("
+    )
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await persistResolvedQueuedModel(params.checkpoint)") >= 2
     assert "notifyQueuedRunFailed();\n          throw error;" in CHAT_ADAPTER
@@ -270,23 +282,20 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
     assert "getLocalPromptQueueThreadIds" in CONFIRM_MODEL_SWAP
     assert "promptQueueThreadIds" in MODEL_RUNTIME
-    assert "const promptQueueThreadIds = getLocalPromptQueueThreadIds()" in MODEL_RUNTIME
-    assert "requestPromptQueueStop(promptQueueThreadIds)" in MODEL_RUNTIME
-    assert "const latePromptQueueThreadIds = getLocalPromptQueueThreadIds()" in MODEL_RUNTIME
-    assert "requestPromptQueueStop(latePromptQueueThreadIds)" in MODEL_RUNTIME
+    assert MODEL_RUNTIME.count("requestLocalPromptQueueStop(") >= 4
     assert MODEL_RUNTIME.index(
-        "requestPromptQueueStop(latePromptQueueThreadIds)"
+        "requestLocalPromptQueueStop();"
     ) < MODEL_RUNTIME.index("const loadResponse = await loadModel(")
     eject = _between(
         MODEL_RUNTIME,
         "const ejectModel = useCallback(",
         "return {",
     )
-    assert "setModelLoading(true)" in eject
-    assert "setModelLoading(false)" in eject
-    assert SHARED_COMPOSER.count("setModelLoading(true)") >= 1
-    assert SHARED_COMPOSER.count("setModelLoading(false)") >= 1
-    assert "const latePromptQueueThreadIds = getLocalPromptQueueThreadIds()" in eject
+    assert "beginModelLoading()" in eject
+    assert "endModelLoading(lifecycleLease)" in eject
+    assert "beginModelLoading()" in SHARED_COMPOSER
+    assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
+    assert "requestLocalPromptQueueStop" in eject
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
     assert ".slice(Math.max(run.index, 0))" in THREAD
     assert ".some((item) => item.target.usesLocalModel)" in THREAD
@@ -297,6 +306,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "queueEntry?.dispatched" in THREAD
     assert 'aria-label="Stop queued message"' in THREAD
     assert "entry.temporary" in QUEUE_BOUNDARY
+    assert "localPromptQueueModelBoundary.advance()" in QUEUE_BOUNDARY
+    assert "entry.local" in QUEUE_BOUNDARY
     assert "queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
     assert "!runningByThreadId[threadId] && !cancel" in STOP_CHAT_THREAD
     assert "serverCancels.length === 0" in STOP_CHAT_THREAD
@@ -304,10 +315,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert SHARED_COMPOSER.index("await confirmStopRunningChatsIfNeeded(") < SHARED_COMPOSER.index(
         'setText("");'
     )
-    assert "const latePromptQueueThreadIds = getLocalPromptQueueThreadIds()" in SHARED_COMPOSER
-    assert "requestPromptQueueStop(promptQueueThreadIds)" in SHARED_COMPOSER
+    assert "requestLocalPromptQueueStop(" in SHARED_COMPOSER
     assert SHARED_COMPOSER.index(
-        "requestPromptQueueStop(promptQueueThreadIds)"
+        "requestLocalPromptQueueStop("
     ) < SHARED_COMPOSER.index("const resp = await loadModel(")
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (

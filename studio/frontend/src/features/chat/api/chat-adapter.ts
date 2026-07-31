@@ -2223,97 +2223,105 @@ async function resolveQueuedEmptyLocalModel(
   blockedByTrustRemoteCode: boolean;
   modelRuntime: QueuedResolvedModelRuntime | null;
 }> {
-  abortSignal.throwIfAborted();
-  if (useChatRuntimeStore.getState().modelLoading) {
+  let lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+  while (lifecycleLease === null) {
     await waitForModelReady(abortSignal);
     abortSignal.throwIfAborted();
+    lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
   }
-  const runSerializedAutoLoad = async (options?: AutoLoadOptions) => {
-    const store = useChatRuntimeStore.getState();
-    store.setModelLoading(true);
-    try {
-      return await autoLoadSmallestModel({
-        ...options,
-        abortSignal,
-      });
-    } finally {
-      store.setModelLoading(false);
+
+  try {
+    abortSignal.throwIfAborted();
+    const visibleState = useChatRuntimeStore.getState();
+    if (isExternalModelId(visibleState.params.checkpoint)) {
+      // Hold the lifecycle lease across the probe. Its response cannot become
+      // stale behind a foreground or sibling queued load, and only this owner
+      // may clear modelLoading afterward.
+      const status = await getInferenceStatus().catch(() => null);
+      abortSignal.throwIfAborted();
+      const checkpoint = status ? resolveInferenceCheckpointId(status) : null;
+      if (status && checkpoint) {
+        return {
+          loaded: true,
+          blockedByTrustRemoteCode: false,
+          modelRuntime: {
+            checkpoint,
+            supportsTools: status.supports_tools ?? false,
+            supportsReasoning: status.supports_reasoning ?? false,
+            reasoningAlwaysOn: status.reasoning_always_on ?? false,
+            ...reasoningCapsFromLoad(status),
+            supportsPreserveThinking:
+              status.supports_preserve_thinking ?? false,
+            ggufContextLength: status.is_gguf
+              ? (status.context_length ?? null)
+              : null,
+          },
+        };
+      }
+
+      const visibleExternalSettings =
+        snapshotQueuedChatRunSettings(visibleState);
+      const visibleThreadEpoch = visibleState.activeThreadEpoch;
+      const visibleSettingsEpoch = visibleState.queuedSettingsEpoch;
+      const visibleRoute = window.location.href;
+      let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
+      let modelRuntime: QueuedResolvedModelRuntime | null = null;
+      try {
+        result = await autoLoadSmallestModel({
+          skipAdoptServerModel: true,
+          preserveVisibleSettings: true,
+          captureResolvedRuntime: (runtime) => {
+            modelRuntime = runtime;
+          },
+          abortSignal,
+        });
+        if (result.loaded && !modelRuntime) {
+          modelRuntime = queuedResolvedModelFromStore(
+            useChatRuntimeStore.getState(),
+          );
+        }
+      } finally {
+        if (
+          useChatRuntimeStore.getState().activeThreadEpoch ===
+            visibleThreadEpoch &&
+          useChatRuntimeStore.getState().queuedSettingsEpoch ===
+            visibleSettingsEpoch &&
+          window.location.href === visibleRoute
+        ) {
+          useChatRuntimeStore
+            .getState()
+            .setCheckpoint(
+              visibleExternalSettings.params.checkpoint,
+              undefined,
+              { trackQueuedSettings: false },
+            );
+          useChatRuntimeStore.setState({
+            ...visibleExternalSettings,
+            params: { ...visibleExternalSettings.params },
+          });
+        }
+      }
+      return { ...result, modelRuntime };
     }
-  };
-  const visibleState = useChatRuntimeStore.getState();
-  if (isExternalModelId(visibleState.params.checkpoint)) {
-    const status = await getInferenceStatus().catch(() => null);
-    const checkpoint = status ? resolveInferenceCheckpointId(status) : null;
-    if (status && checkpoint) {
+
+    if (visibleState.params.checkpoint) {
       return {
         loaded: true,
         blockedByTrustRemoteCode: false,
-        modelRuntime: {
-          checkpoint,
-          supportsTools: status.supports_tools ?? false,
-          supportsReasoning: status.supports_reasoning ?? false,
-          reasoningAlwaysOn: status.reasoning_always_on ?? false,
-          ...reasoningCapsFromLoad(status),
-          supportsPreserveThinking:
-            status.supports_preserve_thinking ?? false,
-          ggufContextLength: status.is_gguf
-            ? (status.context_length ?? null)
-            : null,
-        },
+        modelRuntime: queuedResolvedModelFromStore(visibleState),
       };
     }
 
-    const visibleExternalSettings =
-      snapshotQueuedChatRunSettings(visibleState);
-    const visibleThreadEpoch = visibleState.activeThreadEpoch;
-    const visibleSettingsEpoch = visibleState.queuedSettingsEpoch;
-    const visibleRoute = window.location.href;
-    let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
-    let modelRuntime: QueuedResolvedModelRuntime | null = null;
-    try {
-      result = await runSerializedAutoLoad({
-        skipAdoptServerModel: true,
-        preserveVisibleSettings: true,
-        captureResolvedRuntime: (runtime) => {
-          modelRuntime = runtime;
-        },
-      });
-      if (result.loaded && !modelRuntime) {
-        modelRuntime = queuedResolvedModelFromStore(
-          useChatRuntimeStore.getState(),
-        );
-      }
-    } finally {
-      if (
-        useChatRuntimeStore.getState().activeThreadEpoch ===
-          visibleThreadEpoch &&
-        useChatRuntimeStore.getState().queuedSettingsEpoch ===
-          visibleSettingsEpoch &&
-        window.location.href === visibleRoute
-      ) {
-        useChatRuntimeStore
-          .getState()
-          .setCheckpoint(
-            visibleExternalSettings.params.checkpoint,
-            undefined,
-            { trackQueuedSettings: false },
-          );
-        useChatRuntimeStore.setState({
-          ...visibleExternalSettings,
-          params: { ...visibleExternalSettings.params },
-        });
-      }
-    }
-    return { ...result, modelRuntime };
+    const result = await autoLoadSmallestModel({ abortSignal });
+    return {
+      ...result,
+      modelRuntime: result.loaded
+        ? queuedResolvedModelFromStore(useChatRuntimeStore.getState())
+        : null,
+    };
+  } finally {
+    useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
   }
-
-  const result = await runSerializedAutoLoad();
-  return {
-    ...result,
-    modelRuntime: result.loaded
-      ? queuedResolvedModelFromStore(useChatRuntimeStore.getState())
-      : null,
-  };
 }
 
 export function createOpenAIStreamAdapter(

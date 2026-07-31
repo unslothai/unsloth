@@ -1,4 +1,5 @@
 import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
+import { localPromptQueueModelBoundary } from "./prompt-queue-model-boundary";
 
 export const PROMPT_QUEUE_STOP_EVENT = "unsloth:prompt-queue-stop";
 export const PROMPT_QUEUE_RUN_FAILED_EVENT = "unsloth:prompt-queue-run-failed";
@@ -24,6 +25,25 @@ export function requestPromptQueueStop(threadIds?: string[]) {
       detail: threadIds ? { threadIds } : undefined,
     }),
   );
+}
+
+/**
+ * Stop every materialized local queue and invalidate local queue factories
+ * that are still waiting for settings hydration.
+ */
+export function requestLocalPromptQueueStop(
+  additionalThreadIds: string[] = [],
+) {
+  localPromptQueueModelBoundary.advance();
+  const threadIds = [
+    ...new Set([
+      ...additionalThreadIds,
+      ...Object.entries(usePromptQueueUI.getState().byThreadId)
+        .filter(([, entry]) => entry.local)
+        .map(([threadId]) => threadId),
+    ]),
+  ];
+  requestPromptQueueStop(threadIds);
 }
 
 export function requestTemporaryPromptQueueStop() {

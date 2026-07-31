@@ -28,6 +28,10 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "../utils/model-lifecycle-gate";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -1113,7 +1117,8 @@ type ChatRuntimeStore = {
   // re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
-  setModelLoading: (loading: boolean) => void;
+  beginModelLoading: () => ModelLifecycleLease | null;
+  endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -1643,7 +1648,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  setModelLoading: (loading) => set({ modelLoading: loading }),
+  beginModelLoading: () => {
+    const lease = chatModelLifecycleGate.tryAcquire();
+    if (lease !== null) {
+      set({ modelLoading: true });
+    }
+    return lease;
+  },
+  endModelLoading: (lease) => {
+    if (chatModelLifecycleGate.release(lease)) {
+      set({ modelLoading: false });
+    }
+  },
   setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
   clearLoadingModelPick: (expected) =>
     set((state) => {

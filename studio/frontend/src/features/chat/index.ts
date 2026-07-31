@@ -77,9 +77,14 @@ export {
 export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
+  requestLocalPromptQueueStop,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
+export {
+  localPromptQueueModelBoundary,
+  shouldAbortPendingQueueForModelBoundary,
+} from "./utils/prompt-queue-model-boundary";
 export {
   addQueuedChatRunSettingsThreadIds,
   consumeQueuedChatRunSettings,
