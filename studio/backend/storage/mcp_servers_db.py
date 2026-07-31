@@ -140,19 +140,38 @@ def delete_server(id: str) -> bool:
         conn.close()
 
 
-def get_server(id: str) -> Optional[dict]:
+def get_server(id: str, *, decrypt_secret: bool = True) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM mcp_servers WHERE id = ?", (id,)).fetchone()
         if not row:
             return None
-        result = dict(row)
-        result["oauth_client_secret"] = decrypt_client_secret(
-            result.pop("oauth_client_secret_encrypted", None)
-        )
-        return result
+        return _server_result(row, decrypt_secret = decrypt_secret)
     finally:
         conn.close()
+
+
+def get_enabled_server(id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM mcp_servers WHERE id = ? AND is_enabled = 1",
+            (id,),
+        ).fetchone()
+        return _server_result(row, decrypt_secret = True) if row else None
+    finally:
+        conn.close()
+
+
+def _server_result(row, *, decrypt_secret: bool) -> dict:
+    result = dict(row)
+    encrypted_secret = result.pop("oauth_client_secret_encrypted", None)
+    result["oauth_client_secret"] = (
+        decrypt_client_secret(encrypted_secret)
+        if decrypt_secret
+        else (True if encrypted_secret else None)
+    )
+    return result
 
 
 def list_servers(*, decrypt_secrets: bool = True) -> list[dict]:
@@ -161,14 +180,7 @@ def list_servers(*, decrypt_secrets: bool = True) -> list[dict]:
         rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
         results = []
         for row in rows:
-            result = dict(row)
-            encrypted_secret = result.pop("oauth_client_secret_encrypted", None)
-            result["oauth_client_secret"] = (
-                decrypt_client_secret(encrypted_secret)
-                if decrypt_secrets
-                else bool(encrypted_secret)
-            )
-            results.append(result)
+            results.append(_server_result(row, decrypt_secret = decrypt_secrets))
         return results
     finally:
         conn.close()

@@ -338,6 +338,83 @@ def test_server_listing_does_not_decrypt_stored_secrets(tmp_path, monkeypatch):
     assert response[0].has_oauth_client_secret is True
 
 
+def test_delete_does_not_decrypt_stored_secret(tmp_path, monkeypatch):
+    from routes import mcp_servers as routes
+
+    _store_calendar_server(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        mcp_servers_db,
+        "decrypt_client_secret",
+        lambda _value: (_ for _ in ()).throw(ValueError("corrupt secret")),
+    )
+
+    async def clear_tokens(*_args):
+        return None
+
+    monkeypatch.setattr(routes, "clear_oauth_tokens_async", clear_tokens)
+    asyncio.run(routes.delete_mcp_server("calendar", current_subject = "test-user"))
+
+    assert mcp_servers_db.get_server("calendar") is None
+
+
+def test_metadata_update_can_clear_corrupt_stored_secret(tmp_path, monkeypatch):
+    from models.mcp_servers import McpServerUpdate
+    from routes import mcp_servers as routes
+
+    _store_calendar_server(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        mcp_servers_db,
+        "decrypt_client_secret",
+        lambda _value: (_ for _ in ()).throw(ValueError("corrupt secret")),
+    )
+
+    response = asyncio.run(
+        routes.update_mcp_server(
+            "calendar",
+            McpServerUpdate(display_name = "Recovered", oauth_client_secret = None),
+            current_subject = "test-user",
+        )
+    )
+
+    assert response.display_name == "Recovered"
+    assert response.has_oauth_client_secret is False
+
+
+def test_disabled_server_secret_is_not_decrypted_during_chat_discovery(tmp_path, monkeypatch):
+    from core.inference import tools
+
+    _store_calendar_server(tmp_path, monkeypatch)
+    mcp_servers_db.update_server("calendar", {"is_enabled": False})
+    monkeypatch.setattr(
+        mcp_servers_db,
+        "decrypt_client_secret",
+        lambda _value: (_ for _ in ()).throw(ValueError("corrupt secret")),
+    )
+
+    assert asyncio.run(tools.get_enabled_mcp_tools()) == []
+
+
+def test_server_disabled_after_metadata_snapshot_is_not_decrypted(tmp_path, monkeypatch):
+    from core.inference import tools
+
+    _store_calendar_server(tmp_path, monkeypatch)
+    real_list_servers = mcp_servers_db.list_servers
+
+    def list_then_disable(*, decrypt_secrets = True):
+        rows = real_list_servers(decrypt_secrets = decrypt_secrets)
+        mcp_servers_db.update_server("calendar", {"is_enabled": False})
+        return rows
+
+    monkeypatch.setattr(mcp_servers_db, "list_servers", list_then_disable)
+    monkeypatch.setattr(
+        mcp_servers_db,
+        "decrypt_client_secret",
+        lambda _value: (_ for _ in ()).throw(ValueError("disabled secret was decrypted")),
+    )
+
+    assert asyncio.run(tools.get_enabled_mcp_tools()) == []
+
+
 def test_changing_client_id_clears_stored_secret(tmp_path, monkeypatch):
     from models.mcp_servers import McpServerUpdate
     from routes import mcp_servers as routes
