@@ -57,9 +57,7 @@ def _sanitize_filename(name: str) -> str:
     return stem[: 200 - len(ext)] + ext
 
 
-def _persist_upload_stream(
-    source, filename: str, *, empty_detail: str
-) -> tuple[str, str]:
+def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str]:
     """Copy a validated document stream into the managed uploads root."""
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
