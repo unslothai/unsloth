@@ -332,6 +332,7 @@ fn main() {
             native_file_dialogs::pick_native_chat_import,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
+            native_intents::register_native_attachment_path,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -356,6 +357,13 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Record real drops here, in Rust, so the renderer can only register paths the
+            // OS actually handed us (see native_intents::register_native_attachment_path).
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                window
+                    .state::<native_intents::NativeIntakeState>()
+                    .note_dropped_paths(paths);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide window instead of closing, because this is a tray app.
                 // Processes keep running so the backend stays available.
