@@ -738,6 +738,7 @@ export function useChatModelRuntime() {
             stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          const previousActiveLoadId = stateBeforeUnload.activeLoadId;
           const previousIsGguf =
             previousModel?.isGguf === true
             || previousVariant != null
@@ -1295,7 +1296,9 @@ export function useChatModelRuntime() {
               }
               try {
                 const rollbackResponse = await loadModel({
-                  model_path: previousCheckpoint,
+                  // The pin the rolled-back model loaded from: without it this retries the ref
+                  // that needed pinning and leaves nothing resident.
+                  model_path: previousActiveLoadId || previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
@@ -1332,6 +1335,7 @@ export function useChatModelRuntime() {
                 );
                 useChatRuntimeStore.setState({
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
+                  activeLoadId: previousActiveLoadId ?? null,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                   // Restore the previous token's lease together with the token so a
                   // rollback never pairs restored token A with failed load B's expiry.

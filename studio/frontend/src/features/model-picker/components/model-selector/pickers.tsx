@@ -846,7 +846,9 @@ function GgufVariantExpander({
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
-        loadId,
+        // Only for a quant already in the pinned snapshot. The download manager writes a new one
+        // into a new snapshot, and this selection is reused verbatim once it lands.
+        loadId: downloaded === true ? loadId : undefined,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,

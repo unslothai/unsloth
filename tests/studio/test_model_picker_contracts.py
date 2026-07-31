@@ -381,9 +381,12 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # Both rows, and the settings gear beside each: Run reloads through the same meta, so a pin
     # missing there sends the load back down the ref the row stepped around.
     assert picker.count("loadId: c.load_id") == 2, "the safetensors row and its gear need the pin"
-    for call in ("onSelect(repoId, {", "onConfigure(repoId, {"):
-        block = re.search(re.escape(call) + r".*?\n\s*\}", picker, re.S)
-        assert block and "loadId," in block.group(0), f"{call} drops the pin"
+    block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
+    assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
+    # The variant click is the one case that has to withhold it: a quant not in the pinned
+    # snapshot is about to be downloaded into a different one.
+    block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
+    assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
     # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants
     # this repo still offers, which is the whole point of the expanded list.
     assert (
@@ -400,6 +403,10 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
+    # A failed swap already unloaded the pinned model, so the rollback has to reload it from the
+    # same place and put the pin back, or it retries the ref that needed pinning.
+    assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
+    assert "activeLoadId: previousActiveLoadId ?? null," in runtime
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
