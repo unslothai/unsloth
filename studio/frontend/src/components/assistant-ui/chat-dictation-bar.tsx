@@ -7,7 +7,7 @@ import {
   subscribeDictationLevel,
 } from "@/features/chat";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { CheckIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, SquareIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";
 import { TooltipIconButton } from "./tooltip-icon-button";
 
@@ -35,14 +35,20 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * Recording UI shown in place of the composer input: a live waveform with
- * discard and confirm on the right. Confirm transcribes; discard keeps the
- * existing composer text.
+ * Recording UI shown in place of the composer input: a live waveform with stop
+ * and send on the right. Stop transcribes into the composer for editing; send
+ * transcribes and submits. Escape discards without transcribing.
  */
-export const ChatDictationBar: FC = () => {
+export const ChatDictationBar: FC<{
+  /** Transcribe, then submit the composer. Falls back to stop when absent. */
+  onSend?: () => void;
+}> = ({ onSend }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
-  const [transcribing, setTranscribing] = useState(false);
+  // Which button started transcription, so only it shows the spinner.
+  const [transcribing, setTranscribing] = useState<"stop" | "send" | null>(
+    null,
+  );
   const [elapsed, setElapsed] = useState(0);
   const transcribingRef = useRef(false);
   // Extra slot: newest sample lands here; the last visible bar slides toward it.
@@ -152,26 +158,52 @@ export const ChatDictationBar: FC = () => {
       unsub();
       cancelAnimationFrame(raf);
       transcribingRef.current = false;
-      setTranscribing(false);
+      setTranscribing(null);
       setElapsed(0);
       barsRef.current = new Array(BAR_COUNT + 1).fill(0);
     };
+  }, [isDictating]);
+
+  // No discard button, so Escape drops a recording without transcribing.
+  useEffect(() => {
+    if (!isDictating) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || transcribingRef.current) {
+        return;
+      }
+      event.preventDefault();
+      cancelActiveStudioDictation();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [isDictating]);
 
   if (!isDictating) {
     return null;
   }
 
-  const discard = () => {
-    cancelActiveStudioDictation();
+  // Freeze the timer + waveform while the transcription round trip runs.
+  const freeze = (source: "stop" | "send") => {
+    transcribingRef.current = true;
+    setTranscribing(source);
   };
 
-  const confirm = () => {
-    // Freeze the timer + waveform before the transcription round trip completes
-    // and the session ends.
-    transcribingRef.current = true;
-    setTranscribing(true);
+  // Transcript lands in the composer, ready to edit.
+  const stop = () => {
+    freeze("stop");
     aui.composer().stopDictation();
+  };
+
+  // Same transcription, then the message submits on its own.
+  const send = () => {
+    if (!onSend) {
+      stop();
+      return;
+    }
+    freeze("send");
+    onSend();
   };
 
   return (
@@ -199,30 +231,35 @@ export const ChatDictationBar: FC = () => {
       <span className="shrink-0 tabular-nums text-sm text-muted-foreground">
         {formatElapsed(elapsed)}
       </span>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1.5">
         <TooltipIconButton
           type="button"
-          tooltip="Discard recording"
-          aria-label="Discard recording"
-          variant="ghost"
-          onClick={discard}
-          className="size-8 rounded-full text-muted-foreground hover:text-foreground"
+          tooltip={transcribing === "stop" ? "Transcribing…" : "Stop recording"}
+          aria-label="Stop recording"
+          variant="secondary"
+          onClick={stop}
+          disabled={transcribing !== null}
+          className="size-8 rounded-full"
         >
-          <XIcon className="size-5" />
+          {transcribing === "stop" ? (
+            <Spinner className="size-3.5" />
+          ) : (
+            <SquareIcon className="size-3 fill-current" />
+          )}
         </TooltipIconButton>
         <TooltipIconButton
           type="button"
-          tooltip={transcribing ? "Transcribing…" : "Stop and transcribe"}
-          aria-label="Stop and transcribe"
+          tooltip={transcribing === "send" ? "Transcribing…" : "Send message"}
+          aria-label="Send message"
           variant="default"
-          onClick={confirm}
-          disabled={transcribing}
-          className="size-8 rounded-full"
+          onClick={send}
+          disabled={transcribing !== null}
+          className="aui-composer-send size-8 rounded-full"
         >
-          {transcribing ? (
-            <Spinner className="size-4" />
+          {transcribing === "send" ? (
+            <Spinner className="size-[18px]" />
           ) : (
-            <CheckIcon className="size-5" />
+            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
           )}
         </TooltipIconButton>
       </div>

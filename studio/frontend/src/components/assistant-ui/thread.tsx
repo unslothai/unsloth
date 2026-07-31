@@ -1835,6 +1835,25 @@ const Composer: FC<{
     [],
   );
 
+  // Recording bar's send: stop dictating, then submit once the transcript
+  // lands. Going through the form keeps queueing, indexing holds and draft
+  // clearing identical to a typed send.
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const sendAfterDictationRef = useRef(false);
+  const sendAfterDictation = useCallback(() => {
+    sendAfterDictationRef.current = true;
+    aui.composer().stopDictation();
+  }, [aui]);
+
+  useEffect(() => {
+    if (isDictating || !sendAfterDictationRef.current) return;
+    sendAfterDictationRef.current = false;
+    // Silence or a failed transcription: leave the composer untouched.
+    const { text, attachments } = aui.composer().getState();
+    if (text.trim().length === 0 && attachments.length === 0) return;
+    formRef.current?.requestSubmit();
+  }, [isDictating, aui]);
+
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
       if (isResearchActive) {
@@ -2024,7 +2043,7 @@ const Composer: FC<{
         {isDictating ? (
           // The recording UI replaces the input and send controls; only the
           // left plus stays visible alongside it.
-          <ChatDictationBar />
+          <ChatDictationBar onSend={sendAfterDictation} />
         ) : (
           <>
             <ComposerPrimitive.Input
@@ -2086,6 +2105,7 @@ const Composer: FC<{
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
+      ref={formRef}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
