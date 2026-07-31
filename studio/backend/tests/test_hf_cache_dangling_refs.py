@@ -1850,6 +1850,30 @@ def test_an_empty_weight_of_the_rows_own_kind_still_vetoes(tmp_path, monkeypatch
     assert _autoload_rows(tmp_path, monkeypatch) == []
 
 
+@pytest.mark.parametrize(
+    "weight",
+    [
+        "model-00000-of-00002.safetensors",
+        "model-00003-of-00002.safetensors",
+        "model-00001-of-00000.safetensors",
+    ],
+    ids = ["index-zero", "index-past-total", "total-zero"],
+)
+def test_numbering_no_set_of_shards_can_satisfy_is_a_family_short(tmp_path, monkeypatch, weight):
+    """The name still classifies the snapshot, so dropping the family left nothing to be short of
+    and it read as complete. Neither transformers nor peft can assemble one of these."""
+    _repo_with(
+        tmp_path,
+        snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', weight: b"\0" * 256}},
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
 def test_a_config_that_parses_still_proves_a_payload(tmp_path, monkeypatch):
     """Negative control for the test above: the same shape with a readable config."""
     _repo_with(

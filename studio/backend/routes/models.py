@@ -2966,6 +2966,23 @@ def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
     return impl(repo_cache_dir)
 
 
+def _gguf_copy_is_usable(repo_info, load_id: Optional[str]) -> bool:
+    """Whether this copy of the repo holds a quant a load can reach.
+
+    A pinned copy names a complete snapshot. An unpinned one is usable when its id resolves onto a
+    whole quant, which is exactly what withheld the pin.
+    """
+    if load_id:
+        return True
+    try:
+        repo_path = Path(repo_info.repo_path)
+        return not _repo_id_will_not_resolve(repo_path) and not _default_ref_offers_no_whole_quant(
+            repo_path
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _snapshot_has_gguf_projector(snapshot: str) -> bool:
     """See hub.utils.inventory_scan; reads the same walk the variant lister reports from."""
     from hub.utils.inventory_scan import snapshot_has_gguf_projector as impl
@@ -3154,6 +3171,25 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     return None
 
 
+def _preferred_gguf_copy(
+    rows: dict, ranks: dict, key: str, candidate: tuple[bool, bool], size: int
+) -> bool:
+    """Whether this copy should replace the one already kept for *key*.
+
+    Same order the Hub inventory deduplicates by: a copy that cannot load loses to one that can,
+    whichever cache holds it, then the active cache wins, then the larger download.
+    """
+    existing = rows.get(key)
+    if existing is None:
+        return True
+    kept = ranks.get(key, (True, True))
+    if candidate[0] != kept[0]:
+        return candidate[0]
+    if candidate[1] != kept[1]:
+        return candidate[1]
+    return size > int(existing.get("size_bytes") or 0)
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
@@ -3165,6 +3201,8 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
             active_root = None
 
         seen_lower: dict[str, dict] = {}
+        # How each kept row's copy ranks, since the compatibility schema carries neither field.
+        seen_rank: dict[str, tuple[bool, bool]] = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 try:
@@ -3181,8 +3219,14 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     last_modified = _repo_gguf_last_modified(repo_info)
-                    if existing is None or total_size > existing["size_bytes"]:
-                        load_id = _repo_gguf_load_id(repo_info, active_root)
+                    load_id = _repo_gguf_load_id(repo_info, active_root)
+                    rank = (
+                        _gguf_copy_is_usable(repo_info, load_id),
+                        active_root is not None
+                        and Path(repo_info.repo_path).parent.resolve(strict = False)
+                        == active_root,
+                    )
+                    if _preferred_gguf_copy(seen_lower, seen_rank, key, rank, total_size):
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
@@ -3197,6 +3241,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                         if lm > 0:
                             row["last_modified"] = lm
                         seen_lower[key] = row
+                        seen_rank[key] = rank
                     elif last_modified > existing.get("last_modified", 0.0):
                         existing["last_modified"] = last_modified
                 except Exception as e:

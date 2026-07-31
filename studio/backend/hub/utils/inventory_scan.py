@@ -826,19 +826,28 @@ def _required_config_is_unreadable(path: Path, empty: bool) -> bool:
         return True
 
 
-def _weight_shard_family(snapshot_dir: Path, path: Path, match) -> Optional[tuple]:
-    """The key grouping ``path`` with its siblings, or None when the numbering is nonsense.
+def _shard_family_is_whole(family: tuple, indices: set) -> bool:
+    """Whether *indices* is exactly 1..total for *family*.
+
+    Compared without building the range: the total comes out of a filename, so it can name a set
+    far larger than anything on disk.
+    """
+    total = family[2]
+    return bool(indices) and len(indices) == total and min(indices) == 1 and max(indices) == total
+
+
+def _weight_shard_family(snapshot_dir: Path, path: Path, match) -> tuple:
+    """The key grouping ``path`` with its siblings.
 
     The suffix is part of the key: a .safetensors shard and a .bin shard sharing a prefix and a
     total are different sets, and merging them made two half sets look like one whole one.
+    Numbering that cannot be satisfied (index 0, or one past the total) still names a family:
+    dropping it left a snapshot that classifies by filename with no family to be short of.
     """
-    index, total = int(match.group(1)), int(match.group(2))
-    if index <= 0 or total <= 0 or index > total:
-        return None
     return (
         path.parent.relative_to(snapshot_dir).as_posix(),
         path.name[: match.start()],
-        total,
+        int(match.group(2)),
         path.suffix.lower(),
     )
 
@@ -913,9 +922,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             # still has to be named: a snapshot whose every shard is empty would otherwise name
             # none at all and read as one with nothing missing.
             empty_family = _weight_shard_family(snapshot_dir, path, empty_match)
-            if empty_family is not None:
-                groups[empty_kind].setdefault(empty_family, set())
-                shard_names.setdefault(empty_family, set()).add(path.name)
+            groups[empty_kind].setdefault(empty_family, set())
+            shard_names.setdefault(empty_family, set()).add(path.name)
             continue
         is_adapter = _is_adapter_weight_name(name)
         base_evidence = False
@@ -941,8 +949,6 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             whole[kind].add(path.suffix.lower())
             continue
         family = _weight_shard_family(snapshot_dir, path, match)
-        if family is None:
-            continue
         groups[kind].setdefault(family, set()).add(int(match.group(1)))
         shard_names.setdefault(family, set()).add(path.name)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
@@ -1064,7 +1070,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             # An unloadable family counts as incomplete rather than vetoing the snapshot: a whole
             # unsharded one beside it still serves.
             return all(
-                indices != set(range(1, family[2] + 1)) or family in payload.unloadable_families
+                not _shard_family_is_whole(family, indices)
+                or family in payload.unloadable_families
                 for family, indices in families.items()
             )
         if unreachable:

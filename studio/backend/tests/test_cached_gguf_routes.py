@@ -538,6 +538,56 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     assert all(v.partial for v in unpinned.variants)
 
 
+def test_a_copy_that_loads_beats_a_bigger_one_that_does_not(monkeypatch, tmp_path):
+    """Two caches holding one repo are two directories, and only one of them loads. Keeping the
+    larger download put an unusable copy on the row while a whole one sat in the other cache."""
+    active, legacy = tmp_path / "active", tmp_path / "legacy"
+    torn = active / "models--Org--Quant" / "snapshots" / ("d" * 40)
+    whole = legacy / "models--Org--Quant" / "snapshots" / ("e" * 40)
+    for path in (torn, whole):
+        path.mkdir(parents = True)
+    # Bigger, and half a split: size alone would keep this one.
+    (torn / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 4096)
+    for shard in ("00001", "00002"):
+        (whole / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
+    for repo_dir, ref in ((torn.parent.parent, "c" * 40), (whole.parent.parent, "e" * 40)):
+        (repo_dir / "refs").mkdir(parents = True)
+        (repo_dir / "refs" / "main").write_text(ref, encoding = "utf-8")
+
+    def _repo_for(snapshot, size, repo_dir):
+        return _repo(
+            "Org/Quant",
+            [],
+            repo_dir,
+            revisions = [
+                SimpleNamespace(
+                    files = [
+                        _file(f.name, size)
+                        for f in sorted(snapshot.iterdir())
+                    ],
+                    snapshot_path = snapshot,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [
+            SimpleNamespace(repos = [_repo_for(torn, 4096, torn.parent.parent)]),
+            SimpleNamespace(repos = [_repo_for(whole, 256, whole.parent.parent)]),
+        ],
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    row = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }["Org/Quant"]
+    assert row["cache_path"] == str(whole.parent.parent)
+    assert row["load_id"] == str(whole)
+
+
 def test_list_cached_gguf_pins_a_snapshot_when_the_default_ref_quant_is_torn(monkeypatch, tmp_path):
     """The repo id resolving is not enough: refs/main can land on a revision holding half a split
     while an older one is whole. The compat schema carries no partial flag, so a client loading the
