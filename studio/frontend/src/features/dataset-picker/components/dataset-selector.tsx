@@ -36,7 +36,7 @@ import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { datasetSelectionDisplayName } from "../lib/display";
 import {
   type DatasetDeviceItem,
@@ -182,17 +182,6 @@ export function DatasetSelector() {
     isDeviceInventorySettled: inventorySettled,
   });
   const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
-  const settleInferredTab = picker.settleInferredTab;
-
-  useEffect(() => {
-    if (!picker.open) {
-      return;
-    }
-    settleInferredTab({
-      hasDeviceItems,
-      isDeviceInventorySettled: inventorySettled,
-    });
-  }, [hasDeviceItems, inventorySettled, picker.open, settleInferredTab]);
 
   const {
     results: hfResults,

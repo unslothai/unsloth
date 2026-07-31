@@ -11,12 +11,6 @@ import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 
-export function selectableOptionStateClassName(selected: boolean): string {
-  return selected
-    ? "border-ring-strong bg-primary/5"
-    : "border-border hover:border-foreground/20";
-}
-
 export function ParamsRow({
   label,
   tooltip,

@@ -365,7 +365,7 @@ function applyDetectedDatasetModality(
         "studio.dataset.streaming.notifications.disabledForDetectedModality",
       ),
     );
-    return attempt.cancel(TRAINING_SETUP_CHANGED_ERROR);
+    return attempt.cancel();
   }
   if (
     isImage === attempt.config.isDatasetImage &&

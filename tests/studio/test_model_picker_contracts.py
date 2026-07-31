@@ -1675,14 +1675,15 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "knownCached: selection.knownCached" in restore
     assert "localPath: selection.localPath" in restore
 
-    assert "version: 16," in store
-    migration = store.split("if (version < 14)", 1)[1]
-    migration = migration.split("return s as unknown as TrainingConfigStore", 1)[0]
+    persistence = _read("features/training/stores/training-config-persistence.ts")
+    assert "TRAINING_CONFIG_PERSISTENCE_VERSION = 16" in persistence
+    migration = persistence.split("if (version < 14)", 1)[1]
+    migration = migration.split("export function migrateTrainingConfig", 1)[0]
     assert "createUploadBrowseDatasetSelection(uploadedFile)" in migration
     assert "createHfBrowseDatasetSelection(dataset" in migration
-    assert 's.isEmbeddingModel = s.modelType === "embeddings";' in store
-    assert "delete s.datasetUserTemplate;" in store
-    assert "delete s.datasetAssistantTemplate;" in store
+    assert 'state.isEmbeddingModel = state.modelType === "embeddings";' in migration
+    assert "state.datasetUserTemplate = undefined;" in migration
+    assert "state.datasetAssistantTemplate = undefined;" in migration
 
     toggle = _read("features/studio/sections/dataset-panel-controls.tsx")
     assert "restoreBrowseDatasetSource();" in toggle
@@ -1815,10 +1816,10 @@ def test_training_auto_method_selection_settles_before_readiness():
 
 
 def test_training_persistence_excludes_actions_and_sanitizes_method():
-    source = _read("features/training/stores/training-config-store.ts")
+    source = _read("features/training/stores/training-config-persistence.ts")
     preview = _read("features/studio/wizard/run-preview-card.tsx")
-    partialize = source.split("function partializePersistedState", 1)[1]
-    partialize = partialize.split("function clampStep", 1)[0]
+    partialize = source.split("export function partializeTrainingConfig", 1)[1]
+    partialize = partialize.split("type PersistedTrainingConfig", 1)[0]
 
     assert 'typeof value === "function"' in partialize
     assert "isTrainingMethod(persistedState.trainingMethod)" in source
@@ -2009,6 +2010,23 @@ def test_train_hub_selections_preserve_canonical_identity():
     assert "hubResourceIdsEqual(candidate.id, query)" in dataset_selector
 
 
+def test_pinned_training_model_retains_size_and_vram_metadata():
+    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    helper = selector.split("function buildTrainModelVramViews", 1)[1].split(
+        "export function TrainModelSelector", 1
+    )[0]
+    vram_map = selector.split("const vramMap = useMemo", 1)[1].split(
+        "const hubPagination", 1
+    )[0]
+
+    assert "ids.map((id)" in helper
+    assert "parseParamCountB(id)" in helper
+    assert "buildModelVramMap(models" in helper
+    assert "extractParamLabel(model.id)" in helper
+    assert "buildTrainModelVramViews(" in vram_map
+    assert "hubResultIds," in vram_map
+
+
 def test_persisted_invalid_hub_selections_are_blocked_with_picker_errors():
     validation = _read("features/training/lib/validation.ts")
     assert "isLocalTrainingModelSelection({" in validation
@@ -2031,6 +2049,7 @@ def test_new_model_selection_replaces_the_previous_model_type():
 def test_picker_capabilities_survive_model_config_probe_failures():
     selector = _read("features/model-picker/components/train-model-selector.tsx")
     store = _read("features/training/stores/training-config-store.ts")
+    persistence = _read("features/training/stores/training-config-persistence.ts")
     api = _read("features/training/api/models-api.ts")
     vision_probe = api.split("export async function checkVisionModel", 1)[1].split(
         "export async function checkEmbeddingModel", 1
@@ -2043,8 +2062,8 @@ def test_picker_capabilities_survive_model_config_probe_failures():
     assert 'options?.isVision ?? effectiveModelType === "vision"' in store
     assert 'options?.isAudio ?? effectiveModelType === "audio"' in store
     assert 'options?.isEmbedding ?? effectiveModelType === "embeddings"' in store
-    non_persisted = store.split("const NON_PERSISTED_STATE_KEYS", 1)[1].split(
-        "function partializePersistedState", 1
+    non_persisted = persistence.split("const NON_PERSISTED_STATE_KEYS", 1)[1].split(
+        "export function partializeTrainingConfig", 1
     )[0]
     assert '"isEmbeddingModel"' not in non_persisted
     assert "inferTrainingModelTypeFromFlags({" in failure
@@ -2228,6 +2247,17 @@ def test_training_transport_failures_reconcile_with_the_backend_before_failing()
     )
     assert 'state = "accepted"' in backend_route
     assert 'state = "rejected"' in backend_route
+    backend_start = start_route.split("def _run_backend_start()", 1)[1].split(
+        "start_task = asyncio.create_task", 1
+    )[0]
+    failed_backend_start = backend_start.split("if success:", 1)[1].split(
+        "return success", 1
+    )[0]
+    assert failed_backend_start.count("_reject_start_request(") == 1
+    failed_response = start_route.split("if not success:", 1)[1].split(
+        "return TrainingJobResponse", 1
+    )[0]
+    assert "_reject_start_request(" not in failed_response
     assert "start_request_id = request.start_request_id" in backend_route
     assert "start_request_id = start_request_id" in backend_route
     assert "self._pending_start_request_id" in backend_runtime

@@ -26,16 +26,20 @@ export function resolvePickerTab({
   const shouldUseHubTab = online && isDeviceInventorySettled && !hasDeviceItems;
   const inferredTab = hasExplicitTabPreference
     ? selectedTab
-    : shouldUseHubTab
-      ? PICKER_TAB.hub
-      : PICKER_TAB.device;
+    : isDeviceInventorySettled
+      ? shouldUseHubTab
+        ? PICKER_TAB.hub
+        : PICKER_TAB.device
+      : online
+        ? PICKER_TAB.hub
+        : PICKER_TAB.device;
   return lockedInferredTab ?? inferredTab;
 }
 
 export function resolveInferredPickerTabLock(
   input: Omit<PickerTabResolutionInput, "lockedInferredTab">,
 ): PickerTab | null {
-  if (input.hasExplicitTabPreference || !input.isDeviceInventorySettled) {
+  if (input.hasExplicitTabPreference) {
     return null;
   }
   return resolvePickerTab({ ...input, lockedInferredTab: null });

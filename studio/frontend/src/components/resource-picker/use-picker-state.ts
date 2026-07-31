@@ -67,23 +67,6 @@ export function usePickerState({
     setLockedInferredTab(null);
   }, []);
 
-  const settleInferredTab = useCallback(
-    ({ hasDeviceItems, isDeviceInventorySettled }: PickerViewInput) => {
-      const inferredTab = resolveInferredPickerTabLock({
-        hasDeviceItems,
-        hasExplicitTabPreference,
-        isDeviceInventorySettled,
-        online,
-        selectedTab,
-      });
-      if (inferredTab === null) {
-        return;
-      }
-      setLockedInferredTab((current) => current ?? inferredTab);
-    },
-    [hasExplicitTabPreference, online, selectedTab],
-  );
-
   const getViewState = useCallback(
     ({
       hasDeviceItems,
@@ -148,6 +131,5 @@ export function usePickerState({
     handleTabChange,
     hubQuery,
     open,
-    settleInferredTab,
   };
 }

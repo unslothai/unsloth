@@ -16,10 +16,8 @@ import { isAdapterMethod } from "@/types/training";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import {
-  ParamsSliderRow,
-  selectableOptionStateClassName,
-} from "./params-section-controls";
+import { ParamsSliderRow } from "./params-section-controls";
+import { selectableOptionStateClassName } from "./params-section-styles";
 
 export function LoraParamsSection(): ReactElement | null {
   const t = useT();

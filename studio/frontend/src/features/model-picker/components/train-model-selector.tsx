@@ -49,7 +49,7 @@ import {
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
 import { type TranslationKey, useT } from "@/i18n";
-import { extractParamLabel } from "@/lib/model-size";
+import { extractParamLabel, parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import {
@@ -58,7 +58,7 @@ import {
 } from "@/lib/vram";
 import { ArrowDown01Icon, ChipIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   toCachedTrainModelDisplayCandidate,
@@ -104,6 +104,38 @@ function localModelSourceLabelKey(source: LocalSource): TranslationKey {
     default:
       return "studio.modelPicker.sourceLocalModel";
   }
+}
+
+function buildTrainModelVramViews(
+  ids: readonly string[],
+  resultsById: ReadonlyMap<string, HfModelResult>,
+  trainingMethod: VramTrainingMethod,
+  gpu: { available: boolean; memoryTotalGb: number },
+): Map<string, TrainModelVramView> {
+  const models = ids.map((id) => {
+    const result = resultsById.get(id.toLowerCase());
+    const parsedParamCount = parseParamCountB(id);
+    return {
+      id,
+      totalParams:
+        result?.totalParams ??
+        (parsedParamCount === null ? undefined : parsedParamCount * 1e9),
+    };
+  });
+  const fitMap = buildModelVramMap(models, trainingMethod, gpu);
+  const views = new Map<string, TrainModelVramView>();
+  for (const model of models) {
+    const result = resultsById.get(model.id.toLowerCase());
+    const fit = fitMap.get(model.id);
+    views.set(model.id, {
+      est: fit?.est ?? 0,
+      status: fit?.status ?? null,
+      detail: result?.totalParams
+        ? formatCompact(result.totalParams)
+        : extractParamLabel(model.id),
+    });
+  }
+  return views;
 }
 
 export function TrainModelSelector() {
@@ -262,17 +294,6 @@ export function TrainModelSelector() {
     isDeviceInventorySettled: inventorySettled,
   });
   const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
-  const settleInferredTab = picker.settleInferredTab;
-
-  useEffect(() => {
-    if (!picker.open) {
-      return;
-    }
-    settleInferredTab({
-      hasDeviceItems,
-      isDeviceInventorySettled: inventorySettled,
-    });
-  }, [hasDeviceItems, inventorySettled, picker.open, settleInferredTab]);
 
   const filteredLocalModels = useMemo(() => {
     const tokens = tokenizeQuery(picker.deviceQuery);
@@ -359,26 +380,16 @@ export function TrainModelSelector() {
     return map;
   }, [hfResults]);
 
-  const vramMap = useMemo(() => {
-    const fitMap = buildModelVramMap(
-      hfResults,
-      trainingMethod as VramTrainingMethod,
-      gpu,
-    );
-    const map = new Map<string, TrainModelVramView>();
-    for (const r of hfResults) {
-      const detail = r.totalParams
-        ? formatCompact(r.totalParams)
-        : extractParamLabel(r.id);
-      const fit = fitMap.get(r.id);
-      map.set(r.id, {
-        est: fit?.est ?? 0,
-        status: fit?.status ?? null,
-        detail,
-      });
-    }
-    return map;
-  }, [hfResults, gpu, trainingMethod]);
+  const vramMap = useMemo(
+    () =>
+      buildTrainModelVramViews(
+        hubResultIds,
+        hfResultById,
+        trainingMethod as VramTrainingMethod,
+        gpu,
+      ),
+    [gpu, hfResultById, hubResultIds, trainingMethod],
+  );
 
   const hubPagination = usePickerHubPagination({
     enabled: hubSearchActive,

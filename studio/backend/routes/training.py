@@ -1168,11 +1168,6 @@ async def start_training(
         if not success:
             progress_error = backend.trainer.training_progress.error
             failure_message = progress_error or "Failed to start training subprocess"
-            _reject_start_request(
-                backend,
-                reserved_start_request_id,
-                failure_message,
-            )
             return TrainingJobResponse(
                 job_id = backend.current_job_id or "",
                 status = "error",
