@@ -2645,6 +2645,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
+
             # Triton importing isn't enough on AMD: its clang-cl JIT needs the MSVC
             # CRT headers, or the first compile dies on 'stdlib.h' not found (#7595).
             from core._msvc_env import ensure_msvc_env_for_triton

@@ -37,8 +37,11 @@ def test_have_crt_headers_false_when_include_unset(monkeypatch):
 def test_ensure_is_noop_off_win32(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     # Must not touch discovery on non-Windows.
-    monkeypatch.setattr(_msvc_env, "_find_vcvarsall",
-                        lambda: (_ for _ in ()).throw(AssertionError("discovery ran off win32")))
+    monkeypatch.setattr(
+        _msvc_env,
+        "_find_vcvarsall",
+        lambda: (_ for _ in ()).throw(AssertionError("discovery ran off win32")),
+    )
     assert _msvc_env.ensure_msvc_env_for_triton() is True
 
 
@@ -46,8 +49,11 @@ def test_ensure_true_when_headers_already_present(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     (tmp_path / "stdlib.h").write_text("/* stub */")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
-    monkeypatch.setattr(_msvc_env, "_find_vcvarsall",
-                        lambda: (_ for _ in ()).throw(AssertionError("discovery ran with headers present")))
+    monkeypatch.setattr(
+        _msvc_env,
+        "_find_vcvarsall",
+        lambda: (_ for _ in ()).throw(AssertionError("discovery ran with headers present")),
+    )
     assert _msvc_env.ensure_msvc_env_for_triton() is True
 
 
@@ -60,8 +66,11 @@ def test_ensure_false_when_no_vs_found(tmp_path, monkeypatch):
 
 def test_ensure_imports_env_then_rechecks(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    empty = tmp_path / "empty"; empty.mkdir()
-    crt = tmp_path / "crt"; crt.mkdir(); (crt / "stdlib.h").write_text("/* stub */")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    crt = tmp_path / "crt"
+    crt.mkdir()
+    (crt / "stdlib.h").write_text("/* stub */")
     monkeypatch.setenv("INCLUDE", str(empty))
     monkeypatch.setattr(_msvc_env, "_find_vcvarsall", lambda: r"C:\fake\vcvarsall.bat")
 

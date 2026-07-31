@@ -56,9 +56,18 @@ def _find_vcvarsall() -> str | None:
     if os.path.isfile(vswhere):
         try:
             out = subprocess.run(
-                [vswhere, "-products", "*", "-latest", "-prerelease",
-                 "-property", "installationPath"],
-                capture_output = True, text = True, timeout = 30,
+                [
+                    vswhere,
+                    "-products",
+                    "*",
+                    "-latest",
+                    "-prerelease",
+                    "-property",
+                    "installationPath",
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 30,
             ).stdout.strip()
             if out:
                 cand = os.path.join(out, "VC", "Auxiliary", "Build", "vcvarsall.bat")
@@ -71,14 +80,31 @@ def _find_vcvarsall() -> str | None:
     for root in (program_files, program_files_x86):
         for year in _VS_YEAR_DIRS:
             for edition in _VS_EDITIONS:
-                cand = os.path.join(root, "Microsoft Visual Studio", year, edition,
-                                    "VC", "Auxiliary", "Build", "vcvarsall.bat")
+                cand = os.path.join(
+                    root,
+                    "Microsoft Visual Studio",
+                    year,
+                    edition,
+                    "VC",
+                    "Auxiliary",
+                    "Build",
+                    "vcvarsall.bat",
+                )
                 if os.path.isfile(cand):
                     return cand
         # Some layouts nest the year under the edition; glob as a last resort.
-        for cand in glob.glob(os.path.join(
-                root, "Microsoft Visual Studio", "*", "*",
-                "VC", "Auxiliary", "Build", "vcvarsall.bat")):
+        for cand in glob.glob(
+            os.path.join(
+                root,
+                "Microsoft Visual Studio",
+                "*",
+                "*",
+                "VC",
+                "Auxiliary",
+                "Build",
+                "vcvarsall.bat",
+            )
+        ):
             if os.path.isfile(cand):
                 return cand
     return None
@@ -90,7 +116,9 @@ def _import_vcvars_env(vcvarsall: str, arch: str = "x64") -> bool:
         # `set` after the call dumps the fully-populated developer environment.
         proc = subprocess.run(
             ["cmd", "/c", f'call "{vcvarsall}" {arch} >nul 2>&1 && set'],
-            capture_output = True, text = True, timeout = 120,
+            capture_output = True,
+            text = True,
+            timeout = 120,
         )
     except (OSError, subprocess.SubprocessError) as e:
         logger.warning("vcvarsall invocation failed: %s", e)
