@@ -215,7 +215,7 @@ export const ChatDictationBar: FC<{
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden px-2"
+        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden px-4"
         style={{
           gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(1px, 3px))`,
           justifyContent: "space-between",
@@ -231,15 +231,17 @@ export const ChatDictationBar: FC<{
       <span className="shrink-0 tabular-nums text-sm text-muted-foreground">
         {formatElapsed(elapsed)}
       </span>
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-3">
         <TooltipIconButton
           type="button"
           tooltip={transcribing === "stop" ? "Transcribing…" : "Stop recording"}
           aria-label="Stop recording"
-          variant="secondary"
+          variant="ghost"
           onClick={stop}
           disabled={transcribing !== null}
-          className="size-8 rounded-full"
+          // Neutral grey in both themes: --secondary is brand green on the
+          // default light palette, and too close to --card on dark.
+          className="size-8 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-white/10 dark:hover:bg-white/[0.16]"
         >
           {transcribing === "stop" ? (
             <Spinner className="size-3.5" />
