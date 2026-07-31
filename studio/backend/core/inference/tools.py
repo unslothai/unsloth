@@ -7154,6 +7154,25 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _load_enabled_mcp_servers(server_metadata: list[dict]) -> list[dict]:
+    servers = []
+    for row in server_metadata:
+        if not row.get("is_enabled"):
+            continue
+        try:
+            server = mcp_servers_db.get_enabled_server(row["id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Skipping MCP server '%s': credentials could not be loaded: %s",
+                row["id"],
+                exc,
+            )
+            continue
+        if server is not None:
+            servers.append(server)
+    return servers
+
+
 def cached_mcp_tools() -> tuple[list[dict], bool]:
     """The MCP schemas already in cache, and whether that is the whole set.
 
@@ -7167,7 +7186,8 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     price. A cool-off server renders nothing on the completion path either, so skipping that one
     is exact rather than short. Callers that must not undercount should decline on False.
     """
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    server_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
+    servers = _load_enabled_mcp_servers(server_metadata)
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
 
@@ -7185,12 +7205,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
 async def get_enabled_mcp_tools() -> list[dict]:
     server_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
-    servers = [
-        server
-        for row in server_metadata
-        if row.get("is_enabled")
-        and (server := mcp_servers_db.get_enabled_server(row["id"])) is not None
-    ]
+    servers = _load_enabled_mcp_servers(server_metadata)
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -7222,10 +7237,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
         # tool list (or cool-off on a just-fixed server) persists.
         current_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
         current = {
-            server["id"]: server
-            for row in current_metadata
-            if row.get("is_enabled")
-            and (server := mcp_servers_db.get_enabled_server(row["id"])) is not None
+            server["id"]: server for server in _load_enabled_mcp_servers(current_metadata)
         }
         for server, payload in zip(uncached, results):
             fresh = current.get(server["id"])

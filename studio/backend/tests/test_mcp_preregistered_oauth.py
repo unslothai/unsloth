@@ -70,6 +70,64 @@ def test_preregistered_clients_use_isolated_token_stores(tmp_path, monkeypatch):
     assert first._data_directory != second._data_directory
 
 
+def test_preregistered_oauth_client_info_is_encrypted_at_rest(tmp_path, monkeypatch):
+    from fastmcp.client.auth import OAuth
+    from mcp.shared.auth import OAuthClientInformationFull
+
+    client_secret = "configured-client-secret"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_client, "_oauth_client_token_stores", {})
+    auth = OAuth(
+        mcp_url = "https://calendarmcp.googleapis.com/mcp/v1",
+        token_storage = mcp_client._oauth_store("configured-client-id"),
+    )
+    client_info = OAuthClientInformationFull(
+        client_id = "configured-client-id",
+        client_secret = client_secret,
+        redirect_uris = ["http://localhost/callback"],
+    )
+
+    asyncio.run(auth.token_storage_adapter.set_client_info(client_info))
+
+    token_directory = tmp_path / "mcp-oauth-tokens"
+    persisted = b"".join(path.read_bytes() for path in token_directory.rglob("*") if path.is_file())
+    assert client_secret.encode() not in persisted
+    restored = asyncio.run(auth.token_storage_adapter.get_client_info())
+    assert restored == client_info
+
+
+def test_oauth_store_reads_legacy_values_and_rejects_empty_ciphertext():
+    adapter = mcp_client._encrypted_oauth_serialization_adapter()
+    legacy = {"value": {"access_token": "legacy-token"}}
+
+    assert adapter.prepare_load(legacy) == legacy
+    with pytest.raises(ValueError, match = "encrypted OAuth store value is empty"):
+        adapter.prepare_load({"value": None})
+
+
+def test_dynamic_oauth_tokens_are_encrypted_at_rest(tmp_path, monkeypatch):
+    from fastmcp.client.auth import OAuth
+    from mcp.shared.auth import OAuthToken
+
+    access_token = "distinctive-access-token"
+    refresh_token = "distinctive-refresh-token"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+    auth = OAuth(
+        mcp_url = "https://dynamic.example/mcp",
+        token_storage = mcp_client._oauth_store(),
+    )
+    tokens = OAuthToken(access_token = access_token, refresh_token = refresh_token)
+
+    asyncio.run(auth.token_storage_adapter.set_tokens(tokens))
+
+    token_directory = tmp_path / "mcp-oauth-tokens"
+    persisted = b"".join(path.read_bytes() for path in token_directory.rglob("*") if path.is_file())
+    assert access_token.encode() not in persisted
+    assert refresh_token.encode() not in persisted
+    assert asyncio.run(auth.token_storage_adapter.get_tokens()) == tokens
+
+
 def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
     captured = []
 
@@ -413,6 +471,40 @@ def test_server_disabled_after_metadata_snapshot_is_not_decrypted(tmp_path, monk
     )
 
     assert asyncio.run(tools.get_enabled_mcp_tools()) == []
+
+
+def test_corrupt_enabled_server_does_not_hide_healthy_tools(monkeypatch):
+    from core.inference import tools
+
+    corrupt_id = "corrupt"
+    healthy = {
+        "id": "healthy",
+        "display_name": "Healthy",
+        "url": "https://healthy.example/mcp",
+        "is_enabled": True,
+        "use_oauth": False,
+    }
+    metadata = [{"id": corrupt_id, "is_enabled": True}, healthy]
+
+    def get_enabled_server(server_id):
+        if server_id == corrupt_id:
+            raise ValueError("corrupt secret")
+        return healthy
+
+    async def list_tools(**_kwargs):
+        return [{"name": "ping", "description": "Ping", "inputSchema": {}}]
+
+    cached_tools = {}
+    monkeypatch.setattr(mcp_servers_db, "list_servers", lambda **_kwargs: metadata)
+    monkeypatch.setattr(mcp_servers_db, "get_enabled_server", get_enabled_server)
+    monkeypatch.setattr(tools, "get_cached_tools", cached_tools.get)
+    monkeypatch.setattr(tools, "cache_tools", cached_tools.__setitem__)
+    monkeypatch.setattr(tools, "in_failure_cooloff", lambda _server_id: False)
+    monkeypatch.setattr(tools, "list_tools_async", list_tools)
+
+    specs = asyncio.run(tools.get_enabled_mcp_tools())
+
+    assert [spec["function"]["name"] for spec in specs] == ["mcp__healthy__ping"]
 
 
 def test_changing_client_id_clears_stored_secret(tmp_path, monkeypatch):

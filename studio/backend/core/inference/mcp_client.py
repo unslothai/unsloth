@@ -32,6 +32,35 @@ OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 _oauth_client_token_stores: dict[str, Any] = {}
+_SERIALIZED_VALUE_FIELD = "value"
+
+
+def _encrypted_oauth_serialization_adapter():
+    """Encrypt OAuth store values while leaving non-sensitive file metadata readable."""
+    from key_value.aio._utils.serialization import BasicSerializationAdapter
+    from storage.mcp_oauth_secret_crypto import decrypt_client_secret, encrypt_client_secret
+
+    class EncryptedOAuthSerializationAdapter(BasicSerializationAdapter):
+        def prepare_dump(self, data: dict[str, Any]) -> dict[str, Any]:
+            prepared = dict(data)
+            serialized = json.dumps(prepared[_SERIALIZED_VALUE_FIELD], separators = (",", ":"))
+            prepared[_SERIALIZED_VALUE_FIELD] = encrypt_client_secret(serialized)
+            return prepared
+
+        def prepare_load(self, data: dict[str, Any]) -> dict[str, Any]:
+            prepared = dict(data)
+            stored_value = prepared[_SERIALIZED_VALUE_FIELD]
+            # OAuth tokens created before encrypted storage shipped are JSON
+            # objects. Keep them readable; every subsequent write encrypts them.
+            if isinstance(stored_value, dict):
+                return prepared
+            serialized = decrypt_client_secret(stored_value)
+            if serialized is None:
+                raise ValueError("encrypted OAuth store value is empty")
+            prepared[_SERIALIZED_VALUE_FIELD] = json.loads(serialized)
+            return prepared
+
+    return EncryptedOAuthSerializationAdapter()
 
 
 def is_stdio(address: str) -> bool:
@@ -196,6 +225,7 @@ def _oauth_store(oauth_client_id: Optional[str] = None):
 
         store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens" / namespace),
+            serialization_adapter = _encrypted_oauth_serialization_adapter(),
             key_sanitization_strategy = AlwaysHashStrategy(),
             collection_sanitization_strategy = AlwaysHashStrategy(),
         )
@@ -210,6 +240,7 @@ def _oauth_store(oauth_client_id: Optional[str] = None):
         # would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
+            serialization_adapter = _encrypted_oauth_serialization_adapter(),
             key_sanitization_strategy = AlwaysHashStrategy(),
             collection_sanitization_strategy = AlwaysHashStrategy(),
         )
