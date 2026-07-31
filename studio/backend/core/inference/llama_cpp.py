@@ -505,8 +505,8 @@ def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> boo
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
-_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
-_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
+_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{3,})-of-(\d{3,})\.gguf$", re.IGNORECASE)
+_SHARD_RE = re.compile(r"^(.*)-\d{3,}-of-\d{3,}\.gguf$", re.IGNORECASE)
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
@@ -564,29 +564,47 @@ def _hf_env_offline() -> bool:
         return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+_HF_OFFLINE_ENV_LOCK = threading.RLock()
+
+
 @contextlib.contextmanager
 def _hf_offline_if_dns_dead():
     """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
     restores env on exit so a transient hiccup can't quarantine the process.
-    No-op if the user already set it."""
-    if "HF_HUB_OFFLINE" in os.environ:
+    No-op if the user already set it. Temporary process-global overrides are
+    serialized so concurrent metadata resolutions cannot observe or remove one
+    another's environment."""
+    with _HF_OFFLINE_ENV_LOCK:
+        caller_offline = "HF_HUB_OFFLINE" in os.environ
+    if caller_offline:
         yield False
         return
     if not _probe_dns_dead():
         yield False
         return
 
+    # Hold the lock for the full override lifetime. A waiter re-checks the
+    # environment only after the preceding temporary override has been restored,
+    # so it cannot mistake that override for a caller-owned setting.
+    _HF_OFFLINE_ENV_LOCK.acquire()
+    if "HF_HUB_OFFLINE" in os.environ:
+        _HF_OFFLINE_ENV_LOCK.release()
+        yield False
+        return
     transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    if not transformers_was_set:
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    logger.warning("huggingface.co unreachable; using local HF cache for this load.")
     try:
-        yield True
-    finally:
-        os.environ.pop("HF_HUB_OFFLINE", None)
+        os.environ["HF_HUB_OFFLINE"] = "1"
         if not transformers_was_set:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        logger.warning("huggingface.co unreachable; using local HF cache for this load.")
+        try:
+            yield True
+        finally:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            if not transformers_was_set:
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+    finally:
+        _HF_OFFLINE_ENV_LOCK.release()
 
 
 try:
@@ -1222,7 +1240,13 @@ def _cached_variant_candidates(
                     for path in [main, *shards]
                     if (match := _SHARD_FULL_RE.match(path))
                 }
-                if numbers != set(range(1, int(split.group(3)) + 1)):
+                total = int(split.group(3))
+                if (
+                    not numbers
+                    or min(numbers) != 1
+                    or max(numbers) != total
+                    or len(numbers) != total
+                ):
                     continue
             main_path = snap.joinpath(*main.replace("\\", "/").split("/"))
             if not main_path.is_file() or not _snapshot_has_all_shards(
@@ -1234,6 +1258,16 @@ def _cached_variant_candidates(
             yield str(main_path), main, shards, snap
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
+
+
+def _cached_candidate_has_required_mmproj(
+    candidate: Optional[tuple[str, str, list[str], Path]],
+    require_mmproj: bool,
+) -> bool:
+    """Whether an exact cached candidate carries its projector in that snapshot."""
+    if candidate is None:
+        return False
+    return not require_mmproj or _pick_mmproj(_gguf_snapshot_files(candidate[3])) is not None
 
 
 def _cached_candidate_matches_revision_size(
@@ -1389,6 +1423,7 @@ def _hub_download_blocks_gguf_load(
     hf_variant: Optional[str],
     *,
     require_mmproj: bool = False,
+    mmproj_path: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> bool:
     """Whether an active Hub job makes this GGUF load unsafe.
@@ -1407,16 +1442,48 @@ def _hub_download_blocks_gguf_load(
             return True
     except Exception:
         return False
-    return (
-        cached_gguf_for_load(
-            hf_repo,
-            hf_variant,
-            require_mmproj = require_mmproj,
-            verify_sizes = True,
-            hf_token = hf_token,
-        )
-        is None
+    cached_main = cached_gguf_for_load(
+        hf_repo,
+        hf_variant,
+        require_mmproj = require_mmproj,
+        verify_sizes = True,
+        hf_token = hf_token,
     )
+    if cached_main is not None:
+        return False
+    if not require_mmproj or not mmproj_path:
+        return True
+
+    # ModelConfig can deliberately pair a verified main GGUF with a compatible
+    # projector from a newer cache snapshot. That load is still cache-only, so
+    # an unrelated download must not block it merely because the stricter
+    # same-snapshot probe above cannot see the supplied companion.
+    cached_main = cached_gguf_for_load(
+        hf_repo,
+        hf_variant,
+        verify_sizes = True,
+        hf_token = hf_token,
+    )
+    if cached_main is None or not Path(mmproj_path).is_file():
+        return True
+    try:
+        from utils.models.model_config import mmproj_matches_model_family
+        return not mmproj_matches_model_family(cached_main, mmproj_path)
+    except Exception:
+        return True
+
+
+def _supplied_mmproj_for_loaded_model(
+    *, cached_model_path: Optional[str], loaded_model_path: str, mmproj_path: Optional[str]
+) -> Optional[str]:
+    """Keep a pre-resolved projector only when its cached main was reused."""
+    if not cached_model_path or not mmproj_path:
+        return None
+    try:
+        same_model = os.path.samefile(cached_model_path, loaded_model_path)
+    except OSError:
+        same_model = os.path.realpath(cached_model_path) == os.path.realpath(loaded_model_path)
+    return mmproj_path if same_model else None
 
 
 # Active GGUF loads by normalized repo ID.
@@ -1464,9 +1531,10 @@ def _with_gguf_load_marker(load: Callable):
                 hf_repo,
                 kwargs.get("hf_variant"),
                 require_mmproj = bool(
-                    kwargs.get("is_vision")
+                    (kwargs.get("is_vision") or kwargs.get("has_audio_input"))
                     and not extra_args_disable_mmproj(kwargs.get("extra_args"))
                 ),
+                mmproj_path = kwargs.get("mmproj_path"),
                 hf_token = kwargs.get("hf_token"),
             ):
                 raise RuntimeError(
@@ -1482,9 +1550,10 @@ def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     if not m:
         return []
     prefix = m.group(1)
+    index_width = len(m.group(2))
     total = m.group(3)
     sibling_pat = re.compile(
-        r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$",
+        r"^" + re.escape(prefix) + rf"-\d{{{index_width}}}-of-" + re.escape(total) + r"\.gguf$",
         re.IGNORECASE,
     )
     return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
@@ -2408,6 +2477,8 @@ class LlamaCppBackend:
         self._audio_probed: bool = False
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
+        self._expects_audio_input: bool = False
+        self._is_chat_capable: bool = True
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # Monotonic timestamp set in _kill_process; read by load_model
         # to decide whether to wait for the VRAM reclaim to finish.
@@ -2448,6 +2519,10 @@ class LlamaCppBackend:
     @property
     def is_vision(self) -> bool:
         return self._is_vision
+
+    @property
+    def is_chat_capable(self) -> bool:
+        return self._is_chat_capable
 
     @property
     def is_diffusion(self) -> bool:
@@ -3293,9 +3368,14 @@ class LlamaCppBackend:
         # Check for split shards (e.g. model-00001-of-00003.gguf)
         m = _SHARD_FULL_RE.match(main.name)
         if m:
-            prefix, _, num_total = m.group(1), m.group(2), m.group(3)
+            prefix, first_index, num_total = m.group(1), m.group(2), m.group(3)
+            index_width = len(first_index)
             sibling_pat = re.compile(
-                r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(num_total) + r"\.gguf$",
+                r"^"
+                + re.escape(prefix)
+                + rf"-\d{{{index_width}}}-of-"
+                + re.escape(num_total)
+                + r"\.gguf$",
                 re.IGNORECASE,
             )
             for sibling in main.parent.iterdir():
@@ -5085,7 +5165,7 @@ class LlamaCppBackend:
             path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
-            # Group by variant: shards share a prefix before -NNNNN-of-NNNNN
+            # Group by variant: shards share a prefix before -NNN+-of-NNN+.
             variants: dict[str, list[str]] = {}
             for f in gguf_files:
                 m = _SHARD_RE.match(f)
@@ -5740,6 +5820,7 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         force: bool = False,
         allow_smaller_fallback: bool = True,
+        require_mmproj: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Download GGUF file(s) from HuggingFace. Returns local path.
@@ -5749,9 +5830,10 @@ class LlamaCppBackend:
 
         ``force`` re-fetches even when a (possibly stale) blob is cached.
         ``allow_smaller_fallback=False`` raises on low disk instead of silently
-        switching to a smaller quant. ``cancel_event`` overrides
-        ``self._cancel_event`` so an update can use a private event without
-        touching the shared one; defaults to the shared event.
+        switching to a smaller quant. ``require_mmproj`` prevents reusing a
+        cached weight snapshot that lacks its matching projector. ``cancel_event``
+        overrides ``self._cancel_event`` so an update can use a private event
+        without touching the shared one; defaults to the shared event.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         from utils.hf_cache_settings import get_hf_cache_paths
@@ -5814,6 +5896,7 @@ class LlamaCppBackend:
                 cached_main = cached_gguf_for_load(
                     hf_repo,
                     hf_variant,
+                    require_mmproj = require_mmproj,
                     verify_sizes = True,
                     hf_token = hf_token,
                 )
@@ -5821,7 +5904,7 @@ class LlamaCppBackend:
                 candidate = _cached_complete_candidate(hf_repo, gguf_filename, gguf_extra_shards)
                 cached_main = (
                     candidate[0]
-                    if candidate is not None
+                    if _cached_candidate_has_required_mmproj(candidate, require_mmproj)
                     and _cached_candidate_matches_revision_size(hf_repo, candidate, hf_token)
                     else None
                 )
@@ -5921,10 +6004,10 @@ class LlamaCppBackend:
                         fallback_candidate = _cached_complete_candidate(
                             hf_repo, gguf_filename, gguf_extra_shards
                         )
-                        if fallback_candidate is not None and (
-                            _cached_candidate_matches_revision_size(
-                                hf_repo, fallback_candidate, hf_token
-                            )
+                        if _cached_candidate_has_required_mmproj(
+                            fallback_candidate, require_mmproj
+                        ) and _cached_candidate_matches_revision_size(
+                            hf_repo, fallback_candidate, hf_token
                         ):
                             logger.info(f"Reusing cached fallback GGUF: {fallback_candidate[0]}")
                             return fallback_candidate[0]
@@ -6005,8 +6088,12 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
-        # Keep companion files in the main GGUF's snapshot.
+        # Keep companion files in the main GGUF's snapshot and pin any missing
+        # companion download to that exact revision.
+        near_revision: Optional[str] = None
         if near_path:
+            snapshot = _snapshot_dir_of(near_path)
+            near_revision = snapshot.name if snapshot is not None else None
             cached = _companion_snapshot_sibling(near_path, pick)
             if cached:
                 logger.info("Reusing cached %s: %s", label, cached)
@@ -6031,7 +6118,13 @@ class LlamaCppBackend:
             if cancel_event.is_set():
                 return None
             try:
-                target = pick(list_repo_files(hf_repo, token = hf_token))
+                target = pick(
+                    list_repo_files(
+                        hf_repo,
+                        token = hf_token,
+                        revision = near_revision,
+                    )
+                )
                 break
             except Exception as e:
                 if type(e).__name__ in (
@@ -6087,6 +6180,7 @@ class LlamaCppBackend:
                 target,
                 hf_token,
                 cancel_event = cancel_event,
+                revision = near_revision,
                 cache_dir = companion_cache_dir,
             )
         except Exception as e:
@@ -6108,6 +6202,18 @@ class LlamaCppBackend:
         ``self._cancel_event`` (defaults to it). ``near_path`` prefers a
         copy co-located with the main GGUF's cache snapshot.
         """
+        if _hf_env_offline() and near_path:
+            # Do not pair cached weights with an arbitrary projector from a
+            # different repo revision. A same-snapshot companion is safe; a
+            # cross-snapshot companion must pass the stricter identity check
+            # used by ModelConfig (including the same cached weight blob).
+            cached = _companion_snapshot_sibling(near_path, _pick_mmproj)
+            if cached:
+                logger.info("Reusing cached mmproj: %s", cached)
+                return cached
+            from utils.models.model_config import _compatible_cached_mmproj
+
+            return _compatible_cached_mmproj(hf_repo, near_path)
 
         return self._download_companion_gguf(
             hf_repo = hf_repo,
@@ -6893,6 +6999,8 @@ class LlamaCppBackend:
         # Common
         model_identifier: str,
         is_vision: bool = False,
+        has_audio_input: bool = False,
+        is_chat_capable: bool = True,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
@@ -6933,6 +7041,8 @@ class LlamaCppBackend:
             "hf_token": hf_token,
             "model_identifier": model_identifier,
             "is_vision": is_vision,
+            "has_audio_input": has_audio_input,
+            "is_chat_capable": is_chat_capable,
             "n_ctx": n_ctx,
             "chat_template_override": chat_template_override,
             "cache_type_kv": cache_type_kv,
@@ -6982,6 +7092,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                has_audio_input = has_audio_input,
                 n_parallel = n_parallel,
                 preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
             ):
@@ -7057,6 +7168,11 @@ class LlamaCppBackend:
             # Classify before killing the healthy server (#7205); Phase 2 reuses this
             # path. Diffusion changes the meaning or validity of requested placement,
             # so both the remote and the local branch settle it above the teardown.
+            needs_mmproj = bool(
+                (is_vision or has_audio_input) and not extra_args_disable_mmproj(extra_args)
+            )
+            require_download_mmproj = needs_mmproj and not mmproj_path
+
             _preflight_model_path = None
             if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
@@ -7072,6 +7188,7 @@ class LlamaCppBackend:
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        require_mmproj = require_download_mmproj,
                     )
                 _preflight_is_diffusion = self._gguf_path_is_diffusion(
                     _preflight_model_path, model_identifier
@@ -7121,19 +7238,36 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
+                # ``needs_mmproj`` was settled before the optional preflight so
+                # both download paths apply the same revision-pairing policy.
+                cached_main_for_supplied_mmproj = None
+                if needs_mmproj and mmproj_path:
+                    cached_main_for_supplied_mmproj = cached_gguf_for_load(
+                        hf_repo,
+                        hf_variant,
+                        verify_sizes = True,
+                        hf_token = hf_token,
+                    )
                 with _hf_offline_if_dns_dead():
                     model_path = _preflight_model_path or self._download_gguf(
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        require_mmproj = require_download_mmproj,
                     )
-                    # Auto-download mmproj for vision models unless opted out.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
-                        mmproj_path = self._download_mmproj(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            near_path = model_path,
+                    # Vision and audio-input GGUFs both need their projector.
+                    if needs_mmproj:
+                        mmproj_path = _supplied_mmproj_for_loaded_model(
+                            cached_model_path = cached_main_for_supplied_mmproj,
+                            loaded_model_path = model_path,
+                            mmproj_path = mmproj_path,
                         )
+                        if not mmproj_path:
+                            mmproj_path = self._download_mmproj(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                near_path = model_path,
+                            )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
                     # baked into the main GGUF (Qwen) have no mtp- sibling and
@@ -7161,6 +7295,8 @@ class LlamaCppBackend:
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
+            self._expects_audio_input = bool(has_audio_input)
+            self._is_chat_capable = bool(is_chat_capable)
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
@@ -7393,10 +7529,37 @@ class LlamaCppBackend:
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     )
+                projector_has_audio = None
+                projector_has_vision = None
+                if launch_mmproj_path:
+                    try:
+                        from utils.models.gguf_metadata import (
+                            read_mmproj_audio_capability,
+                            read_mmproj_vision_capability,
+                        )
+                        projector_has_audio = read_mmproj_audio_capability(
+                            launch_mmproj_path
+                        )
+                        projector_has_vision = read_mmproj_vision_capability(launch_mmproj_path)
+                    except Exception as e:
+                        logger.debug(f"mmproj capability read failed: {e}")
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
-                # GGUF into vision mode.
-                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                # GGUF into vision mode. Explicit projector metadata can still
+                # narrow a coarse repo-level vision classification.
+                effective_is_vision = (
+                    bool(launch_mmproj_path)
+                    and bool(is_vision)
+                    and projector_has_vision is not False
+                )
+                effective_audio_mmproj = (
+                    bool(launch_mmproj_path)
+                    and (
+                        projector_has_audio is True
+                        or (bool(has_audio_input) and projector_has_audio is not False)
+                    )
+                )
+                effective_uses_mmproj = effective_is_vision or effective_audio_mmproj
                 if is_vision and not effective_is_vision:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
@@ -7423,7 +7586,7 @@ class LlamaCppBackend:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_uses_mmproj else 0
                     )
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
@@ -8357,17 +8520,7 @@ class LlamaCppBackend:
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.
-                self._mmproj_has_audio = False
-                if launch_mmproj_path:
-                    try:
-                        from utils.models.gguf_metadata import (
-                            read_mmproj_audio_capability,
-                        )
-                        self._mmproj_has_audio = bool(
-                            read_mmproj_audio_capability(launch_mmproj_path)
-                        )
-                    except Exception as e:
-                        logger.debug(f"mmproj audio-capability read failed: {e}")
+                self._mmproj_has_audio = effective_audio_mmproj
 
                 cmd = [
                     binary,
@@ -8690,9 +8843,9 @@ class LlamaCppBackend:
                     )
                     logger.info(f"Reasoning model: {reasoning_kw} by default")
 
-                if launch_mmproj_path and effective_is_vision:
+                if launch_mmproj_path and effective_uses_mmproj:
                     cmd.extend(["--mmproj", launch_mmproj_path])
-                    logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
+                    logger.info(f"Using multimodal projector: {launch_mmproj_path}")
 
                 # Option C: --api-key for direct client access when enabled
                 import secrets as _secrets
@@ -9750,6 +9903,7 @@ class LlamaCppBackend:
         chat_template_override: Optional[str],
         extra_args: Optional[List[str]],
         is_vision: bool,
+        has_audio_input: bool = False,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
@@ -9769,6 +9923,15 @@ class LlamaCppBackend:
         /load that raced past the route-level check (#5401).
         """
         if not self.is_loaded:
+            return False
+        # A previous HF load may have started text-only while its audio
+        # projector was unavailable. Retry once the request knows audio input
+        # is required instead of deduping to that degraded session forever.
+        if (
+            has_audio_input
+            and not self._has_audio_input
+            and not extra_args_disable_mmproj(extra_args)
+        ):
             return False
         if (self._model_identifier or "").lower() != (model_identifier or "").lower():
             return False
@@ -10019,6 +10182,8 @@ class LlamaCppBackend:
             self._audio_type = None
             self._audio_probed = False
             self._has_audio_input = False
+            self._expects_audio_input = False
+            self._is_chat_capable = True
             self._mmproj_has_audio = False
             self._port = None
             self._healthy = False
@@ -10598,10 +10763,25 @@ class LlamaCppBackend:
         m = _SHARD_FULL_RE.match(p.name)
         if m:
             prefix, _first, total = m.groups()
-            paths = [
-                p.with_name(f"{prefix}-{i:05d}-of-{total}{p.suffix}")
-                for i in range(1, int(total) + 1)
-            ]
+            declared_total = int(total)
+            siblings: dict[int, Path] = {}
+            try:
+                for sibling in p.parent.iterdir():
+                    match = _SHARD_FULL_RE.match(sibling.name)
+                    if (
+                        match is None
+                        or match.group(1) != prefix
+                        or match.group(3) != total
+                    ):
+                        continue
+                    index = int(match.group(2))
+                    if 1 <= index <= declared_total:
+                        siblings[index] = sibling
+            except OSError:
+                return None
+            if len(siblings) != declared_total:
+                return None
+            paths = [siblings[index] for index in sorted(siblings)]
         try:
             return tuple((sp.stat().st_size, sp.stat().st_mtime_ns) for sp in paths)
         except OSError:
@@ -13441,11 +13621,16 @@ class LlamaCppBackend:
                     return False
                 self._audio_type = detected
         # Audio input = token probe (audio_vlm/whisper) OR mmproj encoder.
-        from utils.models.model_config import is_audio_input_type
+        # A structured preflight can already prove a model is non-chat. Keep that
+        # conservative result, and let a later runtime probe only narrow an
+        # optimistic/unknown preflight when it discovers an ASR or TTS identity.
+        from utils.models.model_config import _NON_CHAT_AUDIO_TYPES, is_audio_input_type
 
         self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
             self._mmproj_has_audio
         )
+        if detected in _NON_CHAT_AUDIO_TYPES:
+            self._is_chat_capable = False
         return True
 
     def _detect_audio_type_strict(self) -> Optional[str]:
@@ -13475,7 +13660,19 @@ class LlamaCppBackend:
             if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(128259):
                 return "snac"
             if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
-                return "csm"
+                # The marker pair is shared by codec-backed CSM and
+                # chat-capable audio families. Match the bounded GGUF-header
+                # classifier so runtime startup cannot reverse the preflight
+                # capability decision.
+                try:
+                    from utils.models.gguf_metadata import detect_gguf_audio_type
+                    metadata_type = (
+                        detect_gguf_audio_type(self._gguf_path) if self._gguf_path else None
+                    )
+                except Exception as exc:
+                    logger.debug("GGUF audio identity probe failed: %s", exc)
+                    metadata_type = None
+                return "csm" if metadata_type == "csm" else "audio_vlm"
             if len(_tok("<|startoftranscript|>")) == 1:
                 return "whisper"
             # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).

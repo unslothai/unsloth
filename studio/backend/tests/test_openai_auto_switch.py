@@ -2837,10 +2837,8 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
 
 
 def test_chat_audio_input_guards_target_before_switch(monkeypatch):
-    # Codex P2: a chat request carrying audio_base64 must guard the target before the
-    # switch -- audio rides the same companion mmproj as vision -- so a text-only
-    # target can't be loaded and evict the working audio model. Assert the handler
-    # flags require_vision so the hook's multimodal probe runs.
+    # Audio and image requirements must remain distinct: an audio-only GGUF is not a
+    # vision model, but can still accept this request when ModelConfig says it has audio input.
     class _Reached(Exception):
         pass
 
@@ -2852,8 +2850,10 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        require_audio = False,
     ):
         captured["require_vision"] = require_vision
+        captured["require_audio"] = require_audio
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -2861,7 +2861,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured["require_vision"] is True
+    assert captured == {"require_vision": False, "require_audio": True}
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
@@ -2958,6 +2958,90 @@ def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_require_audio_allows_audio_only_target_before_switch(monkeypatch):
+    from types import SimpleNamespace
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/audio-only.gguf", "Q8_0", "org/audio-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route.ModelConfig,
+        "from_identifier",
+        lambda **_kw: SimpleNamespace(has_audio_input = True),
+    )
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: False)
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/audio-GGUF", object(), "t", require_audio = True
+        )
+    )
+
+    assert len(rec.calls) == 1
+
+
+def test_require_audio_rejects_text_only_target_before_switch(monkeypatch):
+    from types import SimpleNamespace
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/text-only.gguf", "Q8_0", "org/text-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route.ModelConfig,
+        "from_identifier",
+        lambda **_kw: SimpleNamespace(has_audio_input = False),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/text-GGUF", object(), "t", require_audio = True
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_require_audio_keeps_mmproj_auto_download_preflight(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = None,
+        backend = backend,
+        recorder = rec,
+    )
+    captured = {}
+
+    async def _capture_download(model, request, *, require_vision = False):
+        captured.update(model = model, require_vision = require_vision)
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_download_model", _capture_download)
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/audio-GGUF", object(), "t", require_audio = True
+        )
+    )
+
+    assert captured == {"model": "org/audio-GGUF", "require_vision": True}
     assert rec.calls == []
 
 

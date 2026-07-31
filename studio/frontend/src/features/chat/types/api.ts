@@ -98,6 +98,10 @@ export interface ValidateModelResponse {
   is_diffusion?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
+  is_audio?: boolean;
+  audio_type?: string | null;
+  has_audio_input?: boolean;
+  is_chat_capable?: boolean;
   requires_trust_remote_code?: boolean;
   // HF flagged unsafe files, so the load is hard-blocked pending dialog review.
   requires_security_review?: boolean;
@@ -235,6 +239,7 @@ export interface InferenceStatusResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  is_chat_capable?: boolean;
   loading: string[];
   loaded: string[];
   inference?: {

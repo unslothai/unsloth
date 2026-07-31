@@ -445,7 +445,11 @@ export function applyActiveModelStatusToStore(
  * ``unsloth studio run -m``) into the chat UI checkpoint without
  * triggering a new /api/inference/load.
  */
-export async function tryAdoptServerActiveModel(): Promise<boolean> {
+export async function tryAdoptServerActiveModel(options: {
+  acceptStatus?: (
+    status: InferenceStatusResponse,
+  ) => boolean | Promise<boolean>;
+} = {}): Promise<boolean> {
   const store = useChatRuntimeStore.getState();
   if (store.params.checkpoint) {
     return true;
@@ -464,6 +468,9 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
 
   const checkpointId = resolveInferenceCheckpointId(status);
   if (!checkpointId) {
+    return false;
+  }
+  if (options.acceptStatus && !(await options.acceptStatus(status))) {
     return false;
   }
 

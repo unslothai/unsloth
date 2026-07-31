@@ -270,13 +270,17 @@ def test_functional_equivalence_snac_match():
     assert sync_result == threaded
 
 
-def test_functional_equivalence_csm_match():
+def test_functional_equivalence_csm_match(monkeypatch):
     # csm: snac fails, then both <|AUDIO|> and <|audio_eos|> are 1 token.
+    from utils.models import gguf_metadata
+
+    monkeypatch.setattr(gguf_metadata, "detect_gguf_audio_type", lambda _path: "csm")
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {"<|AUDIO|>": [0], "<|audio_eos|>": [0]},
     ) as srv:
         backend = _make_backend(srv.port)
+        backend._gguf_path = "/fake/csm.gguf"
         sync_result = backend.detect_audio_type()
         threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
     assert sync_result == "csm"

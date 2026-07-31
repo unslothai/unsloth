@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import threading
 import types as _types
 from pathlib import Path
 from unittest.mock import patch
@@ -85,7 +86,11 @@ from core.inference.llama_cpp import (
     _probe_dns_dead,
     _resolve_repo_id_casing,
 )
+from hub.utils.gguf import (
+    list_gguf_variants_from_hf_cache as list_hub_gguf_variants_from_hf_cache,
+)
 from utils.models.model_config import (
+    _compatible_cached_mmproj,
     _detect_gguf_from_hf_cache,
     _extract_quant_label,
     _iter_hf_cache_snapshots,
@@ -644,6 +649,21 @@ class TestListGgufVariantsFromCache:
     def test_returns_none_when_not_cached(self, hf_cache):
         assert _list_gguf_variants_from_hf_cache("unsloth/absent") is None
 
+    def test_keeps_complete_uppercase_split_variant(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/uppercase-split-GGUF",
+            {
+                "model-Q4_K_M-00001-of-00002.GGUF": 100,
+                "model-Q4_K_M-00002-of-00002.GGUF": 100,
+            },
+        )
+
+        out = _list_gguf_variants_from_hf_cache("unsloth/uppercase-split-GGUF")
+        assert out is not None
+        variants, _ = out
+        assert [variant.quant for variant in variants] == ["Q4_K_M"]
+
 
 class TestCachedColocatedSplitMain:
     def test_prefers_older_complete_snapshot_over_newer_partial(self, hf_cache):
@@ -724,6 +744,136 @@ class TestResolveRepoIdCasing:
         variants, has_vision = out
         assert variants == []
         assert has_vision is True
+
+    def test_older_projector_does_not_mark_newer_weights_as_vision(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        out = _list_gguf_variants_from_hf_cache("unsloth/qwen-GGUF")
+        assert out is not None
+        variants, has_vision = out
+        assert [v.quant for v in variants] == ["Q4_K_M"]
+        assert has_vision is False
+
+    def test_cross_snapshot_projector_must_not_predate_weights(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        assert (
+            _compatible_cached_mmproj(
+                "unsloth/qwen-GGUF",
+                str(new / "qwen-Q4_K_M.gguf"),
+            )
+            is None
+        )
+
+    def test_newer_matching_projector_without_same_weight_blob_is_rejected(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        assert (
+            _compatible_cached_mmproj(
+                "unsloth/qwen-GGUF",
+                str(old / "qwen-Q4_K_M.gguf"),
+            )
+            is None
+        )
+
+    def test_newer_matching_projector_can_pair_with_same_cached_weight_blob(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "b" * 40,
+        )
+        os.link(old / "qwen-Q4_K_M.gguf", new / "qwen-Q4_K_M.gguf")
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        assert _compatible_cached_mmproj(
+            "unsloth/qwen-GGUF",
+            str(old / "qwen-Q4_K_M.gguf"),
+        ) == str(new / "mmproj-qwen-F16.gguf")
+
+    def test_older_matching_projector_can_pair_with_same_cached_weight_blob(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "b" * 40,
+        )
+        os.link(new / "qwen-Q4_K_M.gguf", old / "qwen-Q4_K_M.gguf")
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        assert _compatible_cached_mmproj(
+            "unsloth/qwen-GGUF",
+            str(new / "qwen-Q4_K_M.gguf"),
+        ) == str(old / "mmproj-qwen-F16.gguf")
+
+    def test_implausible_split_total_does_not_expand_declared_range(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/hostile-GGUF",
+            {"model-Q4_K_M-001-of-100000000000.gguf": 1},
+        )
+
+        assert _list_gguf_variants_from_hf_cache("unsloth/hostile-GGUF") is None
+        assert (
+            list_hub_gguf_variants_from_hf_cache(
+                "unsloth/hostile-GGUF",
+                root = hf_cache,
+            )
+            is None
+        )
 
 
 class TestListGgufVariantsOffline:
@@ -979,6 +1129,53 @@ class TestHfOfflineIfDnsDead:
         assert "HF_HUB_OFFLINE" not in os.environ
         assert "TRANSFORMERS_OFFLINE" not in os.environ
 
+    def test_concurrent_temporary_overrides_are_serialized(self, dns, clean_offline_env):
+        dns.fail()
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+        errors = []
+
+        def first():
+            try:
+                with _hf_offline_if_dns_dead() as did_set:
+                    assert did_set is True
+                    first_entered.set()
+                    assert release_first.wait(2)
+                    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+            except BaseException as exc:
+                errors.append(exc)
+
+        def second():
+            try:
+                with _hf_offline_if_dns_dead() as did_set:
+                    assert did_set is True
+                    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+                    second_entered.set()
+            except BaseException as exc:
+                errors.append(exc)
+
+        first_thread = threading.Thread(target = first)
+        second_thread = threading.Thread(target = second)
+        first_thread.start()
+        assert first_entered.wait(2)
+        second_thread.start()
+        try:
+            # The second resolver must not run inside the first resolver's
+            # temporary process-global environment.
+            assert not second_entered.wait(0.1)
+        finally:
+            release_first.set()
+        first_thread.join(2)
+        second_thread.join(2)
+
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        assert second_entered.is_set()
+        assert errors == []
+        assert "HF_HUB_OFFLINE" not in os.environ
+        assert "TRANSFORMERS_OFFLINE" not in os.environ
+
 
 class TestExtractQuantLabelSubdir:
     """``_extract_quant_label`` must consider parent dirs when the basename has
@@ -1039,6 +1236,46 @@ class TestDownloadMmprojOfflineCacheFallback:
             )
         assert out is not None, "mmproj must resolve from cache when offline"
         assert "mmproj-vision-F16.gguf" in out
+
+    def test_offline_lookup_rejects_projector_from_unrelated_snapshot(self, hf_cache, monkeypatch):
+        weights = _build_cache(
+            hf_cache,
+            "unsloth/audio-GGUF",
+            {"audio-Q4_K_M.gguf": 1},
+            snapshot_sha = "a" * 40,
+        )
+        _build_cache(
+            hf_cache,
+            "unsloth/audio-GGUF",
+            {"mmproj.gguf": 1},
+            snapshot_sha = "b" * 40,
+        )
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+        out = LlamaCppBackend()._download_mmproj(
+            hf_repo = "unsloth/audio-GGUF",
+            near_path = str(weights / "audio-Q4_K_M.gguf"),
+        )
+
+        assert out is None
+
+    def test_offline_lookup_keeps_same_snapshot_projector(self, hf_cache, monkeypatch):
+        snapshot = _build_cache(
+            hf_cache,
+            "unsloth/audio-GGUF",
+            {
+                "audio-Q4_K_M.gguf": 1,
+                "mmproj-audio-F16.gguf": 1,
+            },
+        )
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+        out = LlamaCppBackend()._download_mmproj(
+            hf_repo = "unsloth/audio-GGUF",
+            near_path = str(snapshot / "audio-Q4_K_M.gguf"),
+        )
+
+        assert out == str(snapshot / "mmproj-audio-F16.gguf")
 
     def test_prefers_f16_variant_when_multiple_mmproj_in_cache(self, hf_cache):
         _build_cache(

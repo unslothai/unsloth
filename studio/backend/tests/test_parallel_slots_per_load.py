@@ -304,12 +304,14 @@ def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     guard = load_impl.index("_guard_chat_load_against_training")
     # The GGUF launch kwargs, not the guard's own kwarg (which shares the spelling).
     load_kwargs = load_impl.index("_common_load_kwargs = dict(")
+    load_kwargs_end = load_impl.index("if config.gguf_hf_repo:", load_kwargs)
+    common_load_kwargs = load_impl[load_kwargs:load_kwargs_end]
     assert resolve < dedupe, "resolution must precede the reload dedupe"
     assert fallback < dedupe
     assert resolve < guard < load_kwargs
     # Guard and load kwargs share the resolved value; app.state is read once.
     assert load_impl.count("n_parallel = _n_parallel") == 2
-    assert "n_parallel = _n_parallel" in load_impl[load_kwargs : load_kwargs + 800]
+    assert "n_parallel = _n_parallel" in common_load_kwargs
     assert load_impl.count('getattr(_app_state, "llama_parallel_slots", 1)') == 1
     # getattr, so a direct caller without an app cannot raise, and no re-read.
     assert "fastapi_request.app.state" not in load_impl

@@ -79,6 +79,8 @@ from huggingface_hub import constants as hf_constants
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _hub_download_blocks_gguf_load,
+    _supplied_mmproj_for_loaded_model,
     cached_gguf_for_load,
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
@@ -215,6 +217,60 @@ class TestLoadReusesCachedCopy:
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
         assert out == str(snap / MAIN)
+
+    def test_required_projector_fetches_main_and_projector_from_one_revision(
+        self, hf_cache
+    ):
+        """A main-only old snapshot must not be paired with the live projector."""
+        backend = LlamaCppBackend()
+        _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha = "a" * 40)
+        new_revision = "b" * 40
+        new_snapshot = (
+            hf_cache
+            / f"models--{REPO.replace('/', '--')}"
+            / "snapshots"
+            / new_revision
+        )
+        listed_revisions: list[str | None] = []
+        downloaded: list[tuple[str, str | None]] = []
+
+        def fake_list_repo_files(_repo, *, token = None, revision = None):
+            listed_revisions.append(revision)
+            return [MAIN, "mmproj-F16.gguf"]
+
+        def fake_download(_repo, filename, _token = None, **kwargs):
+            revision = kwargs.get("revision")
+            downloaded.append((filename, revision))
+            target = new_snapshot / filename
+            target.parent.mkdir(parents = True, exist_ok = True)
+            target.write_bytes(b"new")
+            return str(target)
+
+        with (
+            patch("huggingface_hub.list_repo_files", fake_list_repo_files),
+            patch(
+                "huggingface_hub.get_paths_info",
+                lambda _repo, paths, **_kwargs: [
+                    _types.SimpleNamespace(path = path, size = 4) for path in paths
+                ],
+            ),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                fake_download,
+            ),
+        ):
+            main = backend._download_gguf(
+                hf_repo = REPO,
+                hf_variant = VARIANT,
+                require_mmproj = True,
+            )
+            projector = backend._download_mmproj(hf_repo = REPO, near_path = main)
+
+        assert main == str(new_snapshot / MAIN)
+        assert projector == str(new_snapshot / "mmproj-F16.gguf")
+        assert listed_revisions == [None, new_revision]
+        assert downloaded == [(MAIN, None), ("mmproj-F16.gguf", new_revision)]
 
     def test_reuse_size_check_uses_cached_snapshot_revision(self, hf_cache):
         """Current-revision size changes do not invalidate an older complete copy."""
@@ -422,6 +478,21 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / shard1)
 
+    def test_three_digit_split_reused_only_when_colocated(self, hf_cache):
+        backend = LlamaCppBackend()
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-002-of-002.gguf"
+        snap = _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
+            patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(snap / shard1)
+
     def test_partial_split_set_downloads(self, hf_cache):
         """A partial split set is not reused."""
         backend = LlamaCppBackend()
@@ -566,6 +637,17 @@ class TestCachedGgufForLoadProbe:
         shard1 = f"gemma-test-{VARIANT}-00001-of-00002.gguf"
         _build_cache(hf_cache, REPO, {shard1: 4})
         assert cached_gguf_for_load(REPO, VARIANT) is None
+
+    def test_partial_three_digit_split_is_none(self, hf_cache):
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        _build_cache(hf_cache, REPO, {shard1: 4})
+        assert cached_gguf_for_load(REPO, VARIANT) is None
+
+    def test_complete_three_digit_split_is_found(self, hf_cache):
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-002-of-002.gguf"
+        snap = _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
+        assert cached_gguf_for_load(REPO, VARIANT) == str(snap / shard1)
 
     def test_partial_new_snapshot_does_not_hide_complete_split(self, hf_cache):
         import os
@@ -742,7 +824,6 @@ class TestLoadHubDownloadExclusion:
         assert registry.has_active_variant(REPO, VARIANT) is False
 
     def test_other_variant_job_still_allows_complete_cached_load(self):
-        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
         from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
 
         registry = DownloadRegistry()
@@ -768,6 +849,72 @@ class TestLoadHubDownloadExclusion:
             require_mmproj = False,
             verify_sizes = True,
             hf_token = None,
+        )
+
+    def test_other_variant_job_allows_compatible_cross_snapshot_projector(self, tmp_path):
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        main = tmp_path / "gemma-main.gguf"
+        mmproj = tmp_path / "gemma-mmproj.gguf"
+        main.touch()
+        mmproj.touch()
+        registry = DownloadRegistry()
+        registry.claim(
+            f"{REPO}::Q8_0",
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = "Q8_0",
+        )
+
+        def cached_probe(
+            *_args,
+            require_mmproj = False,
+            **_kwargs,
+        ):
+            return None if require_mmproj else str(main)
+
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                side_effect = cached_probe,
+            ),
+            patch(
+                "utils.models.model_config.mmproj_matches_model_family",
+                return_value = True,
+            ),
+        ):
+            assert (
+                _hub_download_blocks_gguf_load(
+                    REPO,
+                    VARIANT,
+                    require_mmproj = True,
+                    mmproj_path = str(mmproj),
+                )
+                is False
+            )
+
+    def test_supplied_projector_is_kept_only_for_the_reused_cached_main(self, tmp_path):
+        cached_main = tmp_path / "old" / MAIN
+        downloaded_main = tmp_path / "new" / MAIN
+        mmproj = tmp_path / "projector" / "gemma-mmproj.gguf"
+        for path in (cached_main, downloaded_main, mmproj):
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.touch()
+
+        assert _supplied_mmproj_for_loaded_model(
+            cached_model_path = str(cached_main),
+            loaded_model_path = str(cached_main),
+            mmproj_path = str(mmproj),
+        ) == str(mmproj)
+        assert (
+            _supplied_mmproj_for_loaded_model(
+                cached_model_path = str(cached_main),
+                loaded_model_path = str(downloaded_main),
+                mmproj_path = str(mmproj),
+            )
+            is None
         )
 
     def test_cancelled_request_keeps_marker_until_load_thread_finishes(self):
@@ -808,6 +955,32 @@ class TestLoadHubDownloadExclusion:
                 assert not hf_gguf_load_in_flight(REPO)
 
         asyncio.run(scenario())
+
+    def test_audio_input_requires_projector_in_decorator_conflict_probe(self):
+        from core.inference.llama_cpp import _with_gguf_load_marker
+
+        class FakeBackend:
+            @_with_gguf_load_marker
+            def load_model(
+                self,
+                *,
+                hf_repo,
+                hf_variant,
+                has_audio_input = False,
+            ):
+                return True
+
+        with patch(
+            "core.inference.llama_cpp._hub_download_blocks_gguf_load",
+            return_value = False,
+        ) as blocked:
+            assert FakeBackend().load_model(
+                hf_repo = REPO,
+                hf_variant = VARIANT,
+                has_audio_input = True,
+            )
+
+        assert blocked.call_args.kwargs["require_mmproj"] is True
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
@@ -864,6 +1037,7 @@ class TestLoadHubDownloadExclusion:
             variant,
             *,
             require_mmproj,
+            mmproj_path = None,
             hf_token = None,
         ):
             captured["repo"] = repo

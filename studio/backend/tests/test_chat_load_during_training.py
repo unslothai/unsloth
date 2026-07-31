@@ -1139,6 +1139,94 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
+    def test_remote_mmproj_opt_out_keeps_mtp_and_honors_last_wins(self):
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+            has_audio_input = True,
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+
+        def companion_bytes(_repo, *, hf_token, include_mmproj):
+            # One GiB of MTP is always loaded; the second GiB is mmproj.
+            return (1 + int(include_mmproj)) * 1024**3
+
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", side_effect = companion_bytes) as comp,
+        ):
+            disabled_gb = self.route._estimate_gguf_required_gb(
+                cfg, llama_extra_args = ["--mmproj-auto", "--no-mmproj-auto"]
+            )
+            self.assertAlmostEqual(disabled_gb, 11.0, places = 6)
+            self.assertFalse(comp.call_args.kwargs["include_mmproj"])
+
+            enabled_gb = self.route._estimate_gguf_required_gb(
+                cfg, llama_extra_args = ["--no-mmproj", "--mmproj-auto"]
+            )
+            self.assertAlmostEqual(enabled_gb, 12.0, places = 6)
+            self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+
+    def test_local_mmproj_opt_out_keeps_mtp_weights_and_kv(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            main = p / "model.gguf"
+            mmproj = p / "mmproj-model.gguf"
+            mtp = p / "mtp-model.gguf"
+            main.write_bytes(b"w" * 1000)
+            mmproj.write_bytes(b"p" * 2000)
+            mtp.write_bytes(b"m" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(main),
+                gguf_mmproj_file = str(mmproj),
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
+                disabled_gb = self.route._estimate_gguf_required_gb(
+                    cfg, llama_extra_args = ["--no-mmproj"]
+                )
+                enabled_gb = self.route._estimate_gguf_required_gb(
+                    cfg, llama_extra_args = ["--no-mmproj", "--mmproj-auto"]
+                )
+
+        self.assertAlmostEqual(disabled_gb, (1000 + 3000) / (1024**3) + 2.0, places = 9)
+        self.assertAlmostEqual(enabled_gb, (1000 + 2000 + 3000) / (1024**3) + 2.0, places = 9)
+
+    def test_cached_remote_projector_does_not_hide_main_download(self):
+        import tempfile
+        import utils.models.model_config as mc
+
+        with tempfile.TemporaryDirectory() as d:
+            mmproj = Path(d) / "mmproj.gguf"
+            mmproj.write_bytes(b"x" * 1000)
+            cfg = SimpleNamespace(
+                gguf_file = None,
+                gguf_mmproj_file = str(mmproj),
+                gguf_mtp_file = None,
+                gguf_hf_repo = "org/audio-repo",
+                gguf_variant = "Q4_K_M",
+                has_audio_input = True,
+            )
+            variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+            with (
+                patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 1000) as comp,
+            ):
+                gb = self.route._estimate_gguf_required_gb(cfg)
+
+        self.assertAlmostEqual(gb, (10 * 1024**3 + 1000) / (1024**3), places = 9)
+        self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(
