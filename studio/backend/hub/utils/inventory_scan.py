@@ -772,6 +772,14 @@ def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
         return set()
 
 
+# The single-file name each loader opens first, from _get_resolved_checkpoint_files. Nothing else
+# under the same suffix is a fallback once one of these exists.
+_LOADER_WEIGHT_NAMES = {
+    "base": {".safetensors": "model.safetensors", ".bin": "pytorch_model.bin"},
+    "adapter": {".safetensors": "adapter_model.safetensors", ".bin": "adapter_model.bin"},
+}
+
+
 def _weight_family_kind(name: str) -> Optional[str]:
     """``"base"``, ``"adapter"``, or ``None`` for a training artefact such as ``optimizer.bin`` that
     no row loads, so an auxiliary set is never counted as a runnable family."""
@@ -936,7 +944,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             if empty_match is None:
                 # Same rule as the whole file below: only the root name is one the loader opens.
                 if at_root:
-                    empty_whole[empty_kind].add(path.suffix.lower())
+                    empty_whole[empty_kind].add(name)
                 else:
                     nested.add(empty_kind)
                 continue
@@ -970,7 +978,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         if match is None:
             # Only the root copy is the name the loader opens, so a nested one proves nothing.
             if at_root:
-                whole[kind].add(path.suffix.lower())
+                whole[kind].add(name)
             else:
                 nested.add(kind)
             continue
@@ -1070,11 +1078,16 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         # Both loaders try safetensors before pickle and never fall back, so judge in that order.
         unreachable = False
         for suffix in (".safetensors", ".bin"):
-            if suffix in payload.whole[kind]:
+            selected = _LOADER_WEIGHT_NAMES[kind][suffix]
+            if selected in payload.empty_whole[kind]:
+                # The loader opens this name first and finds nothing in it, and no other root file
+                # under the same suffix is one it falls back to. Same exemption as below.
+                return kind == wanted or wanted not in payload.ungrouped
+            if any(root.endswith(suffix) for root in payload.whole[kind]):
                 # Only the row's own kind proves it loads: a lone adapter_model.bin reads as checkpoint-like.
                 # It vetoes nothing once the row's own payload is here but names no family.
                 return kind != wanted and wanted not in payload.ungrouped
-            if suffix in payload.empty_whole[kind]:
+            if any(root.endswith(suffix) for root in payload.empty_whole[kind]):
                 # The name exists, so the loader stops here and opens nothing. Same exemption as above.
                 return kind == wanted or wanted not in payload.ungrouped
             # from_pretrained reads the snapshot root, so only families named there are judged; a

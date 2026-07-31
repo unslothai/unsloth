@@ -1978,6 +1978,54 @@ def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_pa
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+def test_an_empty_canonical_weight_is_not_excused_by_another_root_file(tmp_path, monkeypatch):
+    """_get_resolved_checkpoint_files opens model.safetensors first and pytorch_model.bin next, and
+    falls back to neither once the name it picked exists. A whole consolidated.safetensors beside an
+    empty model.safetensors therefore vouches for nothing."""
+    for empty, whole in (
+        ("model.safetensors", "consolidated.safetensors"),
+        ("pytorch_model.bin", "consolidated.bin"),
+    ):
+        root = tmp_path / empty.replace(".", "_")
+        _repo_with(
+            root,
+            snapshots = {
+                OLDER: {
+                    "config.json": b'{"model_type":"llama"}',
+                    empty: b"",
+                    whole: b"\0" * 256,
+                }
+            },
+            refs = {"main": UPSTREAM_HEAD},
+        )
+
+        rows = _autoload_rows(root, monkeypatch)
+
+        assert rows[0]["partial"] is True
+        assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_whole_canonical_weight_beside_another_root_file_still_serves(tmp_path, monkeypatch):
+    """Control for the test above: with the name the loader picks whole, the second root file is
+    beside the point."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "consolidated.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_an_ungroupable_payload_under_a_subdirectory_does_not_serve_the_root(tmp_path, monkeypatch):
     """A .ckpt or diffusion weight names no family this walk groups, which exempts it from the
     family checks. That exemption only holds at the snapshot root: the loader cannot discover one
