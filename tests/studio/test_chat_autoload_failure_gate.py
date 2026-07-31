@@ -205,8 +205,7 @@ def _require_node():
             ["node", "--experimental-strip-types", "--version"],
             capture_output = True,
             text = True,
-            # A cold Windows runner can take seconds just to start node, so an impatient probe means the
-            # runtime is unusable here, not that the gate is broken.
+            # A cold Windows runner is slow to start node; an impatient probe would fail the gate.
             timeout = 60,
         )
     except (OSError, subprocess.SubprocessError):
@@ -243,7 +242,7 @@ def _build_harness(run_dir: Path):
 
 def _run(scenario_expr: str) -> dict:
     _require_node()
-    # Its own directory per invocation: a shared file lets one runner read what another is rewriting.
+    # Its own directory per invocation: a shared file lets one runner read another's rewrite.
     TEMP.mkdir(parents = True, exist_ok = True)
     run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     _build_harness(run_dir)

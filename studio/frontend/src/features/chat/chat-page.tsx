@@ -2804,7 +2804,7 @@ export function ChatPage({
       handleCheckpointChange(checkpoint, {
         source: "local",
         isLora: activeModelIsLora,
-        // The checkpoint is the id, so a model loaded from a pin reloads from that same snapshot.
+        // The checkpoint is the id, so a pinned model reloads from that same snapshot.
         loadId: activeLoadId,
         ggufVariant: activeGgufVariant ?? undefined,
         // Without the native token the reload validates the display label as a

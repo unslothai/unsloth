@@ -3030,7 +3030,7 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
     """
     if load_id:
         return _snapshot_has_gguf_projector(load_id)
-    # No projector in any revision means none to reach, and saves walking the cache for it.
+    # No projector in any revision means none to reach, and saves a cache walk.
     if not _repo_has_mmproj(repo_info):
         return False
     try:
@@ -3041,7 +3041,7 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
                 return bool(has_vision)
     except Exception:
         pass
-    # Nothing on disk to load, so the row is describing the repo rather than a copy of it.
+    # Nothing on disk to load, so the row describes the repo rather than a copy of it.
     return True
 
 
@@ -3158,7 +3158,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
-    # Newest first, skipping any holding no whole quant, else an interrupted download beats a loadable one.
+    # Newest first, skipping any holding no whole quant, else a torn download beats a loadable one.
     for snapshot in candidates:
         if snapshot_has_complete_variants(str(snapshot)):
             return str(snapshot)

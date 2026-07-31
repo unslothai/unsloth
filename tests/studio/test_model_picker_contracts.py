@@ -370,7 +370,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
         body = re.search(rf"function {mapper}\(.*?\n}}", inventory, re.S)
         assert body, f"{mapper} not found"
         assert "load_id: row.loadId" in body.group(0), f"{mapper} drops the pinned id"
-        # Delete sends this so it removes the copy on screen, not whichever the active cache holds.
+        # Delete sends this to remove the copy on screen, not the active cache's.
         assert "cache_path: row.cachePath" in body.group(0), f"{mapper} drops the cache path"
 
     meta = _read("features/model-picker/components/model-selector/types.ts")
@@ -378,13 +378,11 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
-    # Both rows, and the settings gear beside each: Run reloads through the same meta, so a pin
-    # missing there sends the load back down the ref the row stepped around.
+    # Both rows and the gear beside each: Run reloads through the same meta.
     assert picker.count("loadId: c.load_id") == 2, "the safetensors row and its gear need the pin"
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
-    # The variant click is the one case that must withhold it: a quant outside the pinned snapshot
-    # is about to be downloaded into a different one.
+    # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
     # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
@@ -394,23 +392,20 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     )
     assert "cachePath={c.cache_path}" in picker
 
-    # A reload rebuilds its target from the checkpoint id, so the pin has to be remembered on the
-    # resident model or Apply sends the load back down the repo's ref.
+    # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
     page = _read("features/chat/chat-page.tsx")
     assert "loadId: activeLoadId," in page
     assert "activeLoadId: string | null;" in _read("features/chat/stores/chat-runtime-store.ts")
 
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
-    # A failed swap already unloaded the pinned model, so the rollback has to reload it from the
-    # same place and put the pin back.
+    # A failed swap already unloaded the pinned model: reload it from the same place, pin and all.
     assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
     assert "activeLoadId: previousActiveLoadId ?? null," in runtime
     # A model loaded outside this tab replaces the resident one, and the pin belonged to the old.
     assert "useChatRuntimeStore.setState({ activeLoadId: null });" in runtime
 
-    # The auto-load keys identity off the backend, so the pin is recorded beside it rather than
-    # replacing it, and a reload finds the same directory.
+    # Auto-load keys identity off the backend, so the pin is recorded beside it, not in place of it.
     adapter = _read("features/chat/api/chat-adapter.ts")
     assert "activeLoadId: modelPath === candidate.id ? null : modelPath," in adapter
     assert (
@@ -419,8 +414,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # Staged metadata, validate and load: all three read the copy that loads.
     assert runtime.count("model_path: loadPath,") == 3
     assert "model_path: modelId," not in runtime
-    # A pinned load reports the snapshot path as its identity, so the rollback reads the approval
-    # under that path. Store it under both or the worker blocks the restore.
+    # A rollback reads the approval under the snapshot path, so store it under both keys.
     assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime
     assert "approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null," in runtime
 
@@ -916,7 +910,7 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
     assert "hf_token: preparedToken.token" in autoload
-    # The throw carries the cancellation marker, so the sweep stops instead of reopening the dialog.
+    # The throw carries the cancellation marker, so the sweep stops rather than reopen the dialog.
     assert 'new Error("Model load cancelled.")' in autoload
     assert "unslothUserCancelled: true" in autoload
     assert "recordTerminalFailure(failureLabel, cancelled)" in autoload
@@ -1287,8 +1281,7 @@ def test_chat_autoload_records_a_terminal_validation_failure():
     assert "unslothTransportFailure === true" in recorder
     assert "unslothUserCancelled === true" in recorder
     assert recorder.count("noteLoadFailure(label, error)") == 2
-    # A declined dialog halts the sweep, since retrying reopens it per candidate; a transport failure
-    # deliberately does not.
+    # A declined dialog halts the sweep (retrying reopens it); a transport failure does not.
     assert "autoLoadCancelled = true;" in recorder
     assert recorder.index("autoLoadCancelled = true;") < recorder.index(
         "unslothTransportFailure === true"
@@ -1300,8 +1293,7 @@ def test_chat_autoload_records_a_terminal_validation_failure():
     assert "throw error;" in wrapper
     autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
-    # The preflight goes through the wrapper, the GGUF metadata probe records too, and a cancelled
-    # sweep skips every later candidate.
+    # The preflight and the GGUF metadata probe both record, and a cancelled sweep skips the rest.
     assert "canAutoLoadRecordingTerminalFailures(failureLabel, {" in autoload
     assert "recordTerminalFailure(failureLabel, error)" in autoload
     # The preflight's own cancellation goes through the helper too, or it records without halting.

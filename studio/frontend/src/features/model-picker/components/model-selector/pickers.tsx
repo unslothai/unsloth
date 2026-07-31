@@ -735,9 +735,9 @@ function GgufVariantExpander({
   onHasVision,
 }: {
   repoId: string;
-  /** Snapshot the cached listing pinned this repo to, when it pinned one. */
+  /** Snapshot the cached listing pinned this repo to, if any. */
   loadId?: string | null;
-  /** Cache directory this downloaded row represents, when it is one. */
+  /** Cache directory this downloaded row represents, if any. */
   cachePath?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
@@ -808,8 +808,8 @@ function GgufVariantExpander({
       setError(null);
     });
 
-    // The row's own directory, so disk contents count against that cache rather than the active
-    // one. No preferLocalCache: that answers from disk alone and drops the undownloaded.
+    // The row's own directory, so disk contents count against that cache, not the active one. No
+    // preferLocalCache: it answers from disk alone and drops the undownloaded.
     listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)
       .then((res) => {
         if (canceled) return;
@@ -846,8 +846,7 @@ function GgufVariantExpander({
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
-        // Only for a quant already in the pinned snapshot. The download manager writes a new one
-        // into a new snapshot, and this selection is reused verbatim once it lands.
+        // Only for a quant already in the pinned snapshot: a new download lands elsewhere.
         loadId: downloaded === true ? loadId : undefined,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
@@ -1015,7 +1014,7 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
-        // A folder has no download to resume, and a quant short a shard has no files to load.
+        // A folder has no download to resume; a quant short a shard has no files to load.
         const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);

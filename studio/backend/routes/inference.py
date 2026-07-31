@@ -6935,7 +6935,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             and hasattr(backend, "cancel_load")
             and _names_the_loading_model(loading, request.model_path)
         ):
-            # Cancel under the name the load is running as, which a pinned row states as a path.
+            # Cancel under the name the load runs as, which a pinned row states as a path.
             if await asyncio.to_thread(backend.cancel_load, loading):
                 note_model_unloaded()
                 logger.info(f"Cancelled in-flight load: {request.model_path}")

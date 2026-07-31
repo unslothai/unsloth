@@ -91,7 +91,7 @@ async function redirectToAuth(): Promise<void> {
 
 function asTransportFailure(err: unknown): unknown {
   // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always backend-down; the web
-  // build distinguishes offline. Tagged so callers tell "never reached" from "rejected this".
+  // build distinguishes offline. Tagged so callers tell "never reached" from "rejected".
   if (!(err instanceof TypeError)) return err;
   if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
     return Object.assign(
@@ -114,8 +114,8 @@ async function retryWithCurrentToken(
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  // Every retry funnels through here, so retries are tagged like the first attempt; an untagged
-  // TypeError reads as a rejection and lets auto-load fall through to the default download.
+  // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection and
+  // lets auto-load fall through to the default download.
   try {
     return await fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
   } catch (err) {

@@ -310,7 +310,7 @@ export interface CachedGgufRepo {
   capabilities?: CachedRepoCapabilities | null;
 }
 
-/** The subset of the row's capabilities auto-load acts on; the Hub view models have a wider type. */
+/** The subset of a row's capabilities auto-load acts on; Hub view models have a wider type. */
 export interface CachedRepoCapabilities {
   can_chat?: boolean;
 }

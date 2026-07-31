@@ -313,8 +313,8 @@ async function syncInferenceStatusToStore(options?: {
       if (checkpointId) {
         const previousGgufVariant =
           useChatRuntimeStore.getState().activeGgufVariant;
-        // A model loaded outside this tab replaces the resident one, and the pin was taken for the old
-        // one. Keeping it would reload that one from another's settings.
+        // A model loaded outside this tab replaces the resident one, and the pin belonged to the
+        // old one: keeping it reloads that one from another's settings.
         if (
           checkpointId !== selectedCheckpoint ||
           (statusRes.gguf_variant ?? null) !== (previousGgufVariant ?? null)
@@ -1184,8 +1184,7 @@ export function useChatModelRuntime() {
                 ? stateBeforeUnload.reasoningEnabled
                 : reasoningDefault;
             rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
-            // A pinned load reports the snapshot path as its identity, so the checkpoint a later
-            // rollback reads is that path rather than the id the approval was stored under.
+            // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
@@ -1306,7 +1305,7 @@ export function useChatModelRuntime() {
               }
               try {
                 const rollbackResponse = await loadModel({
-                  // The pin the rolled-back model loaded from: without it this retries the ref that needed pinning.
+                  // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,

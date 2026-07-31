@@ -1106,7 +1106,7 @@ type ChatRuntimeStore = {
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
   // What the resident model loaded from, when that is not its id. A reload rebuilds its target
-  // from the checkpoint, so without this it would go back down the ref the pin stepped around.
+  // from the checkpoint, so without this it goes back down the ref the pin avoided.
   activeLoadId: string | null;
   activeNativePathToken: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host

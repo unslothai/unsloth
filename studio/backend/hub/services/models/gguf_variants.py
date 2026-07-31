@@ -842,12 +842,12 @@ async def get_gguf_variants_response(
             repo_id,
             repo_cache_dir,
         )
-        # A marker or manifest carries no revision, so attribute it the way the inventory row does.
+        # A marker or manifest carries no revision, so attribute it like the inventory row.
         repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
             repo_cache_dir, scan_snapshot_dir
         )
-        # The excuse is that this snapshot holds the quant whole, so it covers only those quants: a
-        # quant it lacks is still the cancelled download, and needs its resume and delete affordances.
+        # The excuse is that this snapshot holds the quant whole, so a quant it lacks stays the
+        # cancelled download and keeps its resume and delete affordances.
         excused_quants = (
             frozenset()
             if repo_signal_applies or scan_snapshot_dir is None

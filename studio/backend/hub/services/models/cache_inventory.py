@@ -315,11 +315,11 @@ def _resolve_load_identity(
         and (payload_snapshots is None or str(snapshot_path) in payload_snapshots)
     ):
         default_snapshot = hf_cache_scan.default_ref_snapshot(repo_path)
-        # No usable refs/main: from_pretrained would fail offline or fetch upstream HEAD, so pin the payload.
+        # No usable refs/main: from_pretrained would fail offline or fetch HEAD, so pin the payload.
         if (
             default_snapshot is None
             or (payload_snapshots and str(default_snapshot) not in payload_snapshots)
-            # refs/main can land on a torn revision beside a complete payload, so keep the id only if it lands on one.
+            # refs/main can land on a torn revision, so keep the id only if it lands on a complete one.
             or (
                 default_snapshot != snapshot_path
                 and not hf_cache_scan.snapshot_holds_a_complete_payload(default_snapshot)
@@ -367,7 +367,7 @@ def _cache_inventory_fields(
         partial = partial,
         requires_variant = requires_variant,
     ).model_dump()
-    # The projector must sit in the quants' snapshot: the loader's companion search never leaves it.
+    # The loader's companion search never leaves the quants' snapshot.
     if model_format == "gguf" and (
         hf_cache_scan.snapshot_has_gguf_projector(gguf_snapshot)
         if gguf_snapshot is not None
@@ -508,7 +508,7 @@ class _CachedNonGgufPayload(NamedTuple):
     payload_snapshots: frozenset[str]
 
 
-# Keys mirror _classify_non_gguf_model_format's kwargs so a revision classifies as the repo does.
+# Keys mirror _classify_non_gguf_model_format's kwargs, so a revision classifies like the repo.
 _PAYLOAD_FLAGS = (
     "has_config",
     "has_adapter_config",
@@ -597,8 +597,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
             name = lower.replace("\\", "/").rsplit("/", 1)[-1]
             if _is_gguf_filename(lower):
                 continue
-            # from_pretrained opens the config at the pinned snapshot root, by its exact name, so
-            # a nested or differently cased copy does not count. Probed off the snapshot below.
+            # Configs are opened by exact name at the snapshot root: probed below, not here.
             if name in ("config.json", "adapter_config.json"):
                 continue
             is_adapter = _is_adapter_weight_name(name)
@@ -650,14 +649,14 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     else:
         selected_blobs = all_weight_blobs
 
-    # Weights pool across revisions, so the pinned snapshot must classify alone; trusted=False because
-    # from_pretrained needs config.json in that one directory.
+    # Weights pool across revisions, so the pinned snapshot must classify alone; trusted=False
+    # because from_pretrained needs config.json in that one directory.
     payload_snapshots = [
         snapshot
         for snapshot, flags in revision_flags
         if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == model_format
     ]
-    # Filename classification also matches torn revisions, so prefer the newest with every shard present.
+    # Filename classification also matches torn revisions, so prefer the newest whole one.
     complete = [s for s in payload_snapshots if hf_cache_scan.snapshot_holds_a_complete_payload(s)]
     return _CachedNonGgufPayload(
         size_bytes = sum(size for size, _mtime in selected_blobs.values()),
@@ -795,7 +794,7 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
-                # Resolved once so the metadata probe, partial walk and load id agree on the revision.
+                # Resolved once so the metadata probe, partial walk and load id agree.
                 identity = _resolve_load_identity(
                     repo_id,
                     repo_path = repo_path,
@@ -815,8 +814,8 @@ def _scan_cached_models() -> list[dict]:
                     repo_path,
                     snapshot_dir = load_snapshot,
                 )
-                # Flags are OR-ed over revisions, so no payload snapshot means no single directory
-                # can serve the row and it would reach for the Hub.
+                # Flags are OR-ed over revisions, so no payload snapshot means no directory
+                # serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
                 row = {

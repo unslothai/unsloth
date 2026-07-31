@@ -150,8 +150,8 @@ _CACHE_ENTRIES_TO_IGNORE = _cache_entries_to_ignore()
 _HF_REPO_TYPES = frozenset({"model", "dataset", "space"})
 
 
-# Mirror huggingface_hub's Cached{File,Revision,Repo}Info field-for-field so an upstream field change
-# cannot break construction. Frozen because HFCacheInfo.delete_revisions() set-diffs ``revisions``.
+# Mirrors huggingface_hub's Cached{File,Revision,Repo}Info field-for-field; frozen because
+# HFCacheInfo.delete_revisions() set-diffs ``revisions``.
 @dataclass(frozen = True)
 class _RecoveredFileInfo:
     file_name: str
@@ -372,7 +372,7 @@ def _compute_all_hf_cache_scans() -> list:
     for cache_root in hf_cache_roots():
         try:
             scan = scan_cache_dir(cache_dir = str(cache_root))
-            # Only a warned-about scan can hide a repo, so a healthy cache is never walked twice.
+            # Only a warned-about scan can hide a repo, so never walk a healthy cache twice.
             if getattr(scan, "warnings", None):
                 scan = _with_repos_hidden_by_dangling_refs(scan, cache_root)
             scans.append(scan)
@@ -704,14 +704,14 @@ _UNJUDGEABLE_FAMILY = object()
 def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     if snapshot_dir is None:
         return set()
-    # A load id can name the .gguf file itself, so resolve to its parent as the lister does.
+    # A load id can name the .gguf file itself, so resolve to its parent like the lister.
     from hub.utils.gguf import _resolve_gguf_dir
 
     snapshot_dir = _resolve_gguf_dir(snapshot_dir) or snapshot_dir
     # Keyed on quant, then on shard family (directory, prefix, total); one quant can cover several.
     split_groups: dict[str, dict[tuple[str, str, int], set[int]]] = {}
-    # Judge only the family the lister offers and the loader loads: both take the lexicographically
-    # first file under the label, hence the sort. None = no total named; _UNJUDGEABLE_FAMILY = bad spec.
+    # Lister and loader both take the lexicographically first file, hence the sort.
+    # None = no total named; _UNJUDGEABLE_FAMILY = bad spec.
     selected: dict[str, object] = {}
     try:
         paths = sorted(snapshot_dir.rglob("*"))
@@ -808,7 +808,7 @@ class _SnapshotPayload(NamedTuple):
     unreadable_config_formats: frozenset
     # Shard families the loader picks and then fails on.
     unloadable_families: frozenset
-    # Shard families the loader never looks for, so it moves on to the next name instead.
+    # Shard families the loader never looks for, so it moves on to the next name.
     invisible_families: frozenset
     # Kinds whose payload is here but names no family this walk groups.
     ungrouped: frozenset
@@ -816,7 +816,7 @@ class _SnapshotPayload(NamedTuple):
     empty_ungrouped: frozenset
     # Suffixes per kind whose unsharded name is present but empty.
     empty_whole: dict
-    # Kinds whose weights are here but only under a subdirectory the loader never opens.
+    # Kinds whose weights are here but only under a subdirectory no loader opens.
     nested: frozenset
     # Suffixes whose canonical root index exists, shards recovered or not.
     root_indexes: frozenset
@@ -929,8 +929,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         name = path.name.lower()
         if is_gguf_filename(name):
             continue
-        # Both loaders open the config at the directory they are handed, never a nested one, and
-        # by its exact name: probed below rather than matched here.
+        # Configs are opened by exact name at the handed directory: probed below, not matched here.
         at_root = path.parent == snapshot_dir
         if name in ("config.json", "adapter_config.json"):
             continue
@@ -939,8 +938,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             empty_kind = _weight_family_kind(path.name)
             empty_match = _WEIGHT_SHARD_RE.search(path.name)
             if empty_kind is None:
-                # An ungroupable payload is judged on nothing else, so an empty one must be
-                # remembered. Same set the walk below counts, diffusion .safetensors included.
+                # Judged on nothing else, so remember it. Same set the walk below counts.
                 if (
                     not _is_adapter_weight_name(name)
                     and not _is_training_artefact_name(name)
@@ -958,7 +956,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
                 else:
                     nested.add(empty_kind)
                 continue
-            # A numbered shard is absent from its family, not unreadable, but the family still needs naming.
+            # An empty numbered shard is absent from its family, but the family still needs naming.
             empty_family = _weight_shard_family(snapshot_dir, path, empty_match)
             groups[empty_kind].setdefault(empty_family, set())
             shard_names.setdefault(empty_family, set()).add(path.name)
@@ -1008,12 +1006,12 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         if _required_config_is_unreadable(snapshot_dir / config_name, config_empty):
             unreadable.update(formats)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
-    # from_pretrained reads the shard map from the index and never globs, so shards without one are
-    # invisible and neither serve nor veto the row; an unusable index is picked and failed on instead.
+    # from_pretrained never globs, so shards with no index are invisible and neither serve nor veto.
+    # An unusable index is picked and failed on instead.
     unloadable: set = set()
     invisible: set = set()
-    # The index is selected by its own name, so it counts even when the walk grouped no shard of it,
-    # and it carries its own paths: the loader resolves every weight_map entry against the index.
+    # Selected by its own name, so it counts even when the walk grouped no shard of it, and it
+    # carries its own paths: every weight_map entry resolves against the index.
     root_indexes: set[str] = set()
     unusable_root_indexes: set[str] = set()
     for suffix, canonical in _LOADER_WEIGHT_NAMES["base"].items():
@@ -1122,14 +1120,14 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 # The loader opens this name first and finds it empty. Same exemption as below.
                 return kind == wanted or wanted not in payload.ungrouped
             if any(root.endswith(suffix) for root in payload.whole[kind]):
-                # Only the row's own kind proves it loads: a lone adapter_model.bin reads as checkpoint-like.
-                # It vetoes nothing once the row's own payload is here but names no family.
+                # Only the row's own kind proves it loads, and it vetoes nothing once that kind's
+                # payload is here but names no family.
                 return kind != wanted and wanted not in payload.ungrouped
             if any(root.endswith(suffix) for root in payload.empty_whole[kind]):
                 # The name exists, so the loader stops here and opens nothing. Same exemption as above.
                 return kind == wanted or wanted not in payload.ungrouped
             # from_pretrained reads the snapshot root, so only families named there are judged; a
-            # subdirectory layout names no family here and is carried by ungrouped instead.
+            # subdirectory layout is carried by ungrouped instead.
             families = {
                 family: indices
                 for family, indices in payload.groups[kind].items()
@@ -1137,18 +1135,17 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             }
             if not families:
                 if kind == "base" and suffix in payload.root_indexes:
-                    # The loader selects this index and loads exactly what it names, wherever those
-                    # paths point, so it is judged on its own contents rather than on this walk's
-                    # families. It stops here either way: the next name is never tried.
+                    # Selected and loaded for exactly what it names, wherever those paths point, so
+                    # judge its contents, not this walk's families. The next name is never tried.
                     if suffix in payload.unusable_root_indexes:
                         return kind == wanted or wanted not in payload.ungrouped
                     return kind != wanted and wanted not in payload.ungrouped
                 continue
             if all(family in payload.invisible_families for family in families):
-                # Nothing names these shards, so the loader looks past them: they neither serve nor veto.
+                # Nothing names these shards, so they neither serve nor veto.
                 unreachable = True
                 continue
-            # An unloadable family is incomplete, not a veto: a whole unsharded one beside it still serves.
+            # An unloadable family is incomplete, not a veto: a whole one beside it still serves.
             return all(
                 not _shard_family_is_whole(family, indices) or family in payload.unloadable_families
                 for family, indices in families.items()
@@ -1159,8 +1156,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         ):
             # This kind's weights are here but no name the loader tries reaches them.
             return True
-    # No family either way. A diffusion or .ckpt payload classifies from its suffix while naming no
-    # family here, so only an empty one is evidence, and only with nothing whole beside it.
+    # No family either way: an ungroupable payload is evidence only when empty and alone.
     return wanted in payload.empty_ungrouped and wanted not in payload.ungrouped
 
 
@@ -1437,7 +1433,7 @@ def is_variant_partial(
             variant,
             hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
         ),
-        # blobs/ is repo-wide, so a retry's .incomplete belongs to the newest snapshot, like a marker.
+        # blobs/ is repo-wide, so a retry's .incomplete belongs to the newest snapshot.
         lambda: repo_signal_applies
         and bool(
             incomplete_blob_hashes
@@ -1518,7 +1514,7 @@ def is_gguf_repo_partial(
         ):
             variants.add(variant)
     if not variants:
-        # Nothing named a quant: an interrupted attempt leaves no manifest or marker, only torn shards.
+        # Nothing named a quant: an interrupted attempt leaves only torn shards.
         return has_legacy_partial or _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir)
     has_clean = False
     has_broken = has_legacy_partial

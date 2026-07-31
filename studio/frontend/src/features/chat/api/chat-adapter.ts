@@ -1447,8 +1447,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-/** Whether a cache row is chattable. Resume/delete-only rows waste an attempt and suppress the
-*  default download; both fields are optional so an older backend keeps trying the row. */
+/** Whether a cache row is chattable. Both fields are optional so an older backend keeps trying. */
 function isChattableCachedRepo(repo: {
   partial?: boolean;
   capabilities?: { can_chat?: boolean } | null;
@@ -1507,20 +1506,19 @@ async function autoLoadSmallestModel(): Promise<{
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
-  // Why the last load attempt failed, set only when loadModel rejected. Boxed because a `let`
-  // assigned only in a nested function narrows to `null`.
+  // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
   const loadFailure: {
     current: { label: string; detail: string; blamesModel: boolean } | null;
   } = { current: null };
 
-  // Set once the user declines the HF token dialog, so the sweep and the Hub download stop asking.
+  // Set once the user declines the HF token dialog, so nothing asks again.
   let autoLoadCancelled = false;
 
   function noteLoadFailure(label: string, error: unknown): void {
     const detail =
       error instanceof Error && error.message.trim() ? error.message.trim() : "";
     // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
-    // backend): those still stop the Hub download, but the headline must not blame the model.
+    // backend): those stop the Hub download, but must not blame the model.
     const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
     const blamesModel = !(
       marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
@@ -1573,8 +1571,7 @@ async function autoLoadSmallestModel(): Promise<{
   }
 
   function recordTerminalFailure(label: string, error: unknown): void {
-    // Only the two terminal markers: an ordinary failure stays this candidate's problem and the
-    // sweep moves on.
+    // Only the two terminal markers: an ordinary failure lets the sweep move on.
     const marker = error as {
       unslothTransportFailure?: boolean;
       unslothUserCancelled?: boolean;
@@ -1582,7 +1579,7 @@ async function autoLoadSmallestModel(): Promise<{
     if (marker?.unslothUserCancelled === true) {
       noteLoadFailure(label, error);
       // The next candidate would reopen the same dialog, so stop rather than ask per repo. A
-      // transport failure deliberately does NOT stop it: the backend can come back mid-sweep.
+      // transport failure deliberately does NOT: the backend can come back mid-sweep.
       autoLoadCancelled = true;
       return;
     }
@@ -1599,7 +1596,7 @@ async function autoLoadSmallestModel(): Promise<{
       return await canAutoLoad(payload);
     } catch (error) {
       // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here,
-      // and the sweep's bare catches would drop it and hit the Hub download.
+      // where the sweep's bare catches would drop it and hit the Hub download.
       recordTerminalFailure(label, error);
       throw error;
     }
@@ -1656,8 +1653,8 @@ async function autoLoadSmallestModel(): Promise<{
       // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        // Raised before loadModel, so its catch never sees it: route it through the same helper or
-        // every later candidate reopens the dialog.
+        // Raised before loadModel, so route it through the same helper or every later candidate
+        // reopens the dialog.
         const cancelled = Object.assign(new Error("Model load cancelled."), {
           unslothUserCancelled: true,
         });
@@ -1770,8 +1767,8 @@ async function autoLoadSmallestModel(): Promise<{
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
     const loadedModelId = loadResp.model || modelPath;
-    // The identity stays the backend's, per the inactive-cache contract. The pin is recorded
-    // alongside it so a later reload of this model finds the same directory.
+    // The identity stays the backend's, per the inactive-cache contract; the pin is recorded
+    // alongside it so a later reload finds the same directory.
     useChatRuntimeStore.setState({
       activeLoadId: modelPath === candidate.id ? null : modelPath,
     });
@@ -2051,7 +2048,7 @@ async function autoLoadSmallestModel(): Promise<{
 
     // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    // A cached model tried and failed stops here too: that reason beats an unrelated Hub default.
+    // A tried-and-failed cached model stops here: that reason beats an unrelated Hub default.
     // An empty cache never sets loadFailure and still falls through.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);

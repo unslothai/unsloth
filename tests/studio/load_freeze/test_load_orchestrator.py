@@ -50,9 +50,9 @@ import logging as _logging  # noqa: E402
 _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-# structlog is a hard studio.txt requirement imported only lazily, so a bare setdefault would shadow
-# the real package. Stub only a genuinely absent one (check sys.modules first: find_spec() raises
-# ValueError on another module's bare stub), then backfill get_logger.
+# structlog is a hard studio.txt requirement imported only lazily, so a bare setdefault would
+# shadow the real package. Stub only a genuinely absent one (check sys.modules first: find_spec()
+# raises ValueError on another module's bare stub), then backfill get_logger.
 _structlog = sys.modules.get("structlog")
 if _structlog is None and importlib.util.find_spec("structlog") is None:
     _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))
