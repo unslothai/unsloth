@@ -195,12 +195,14 @@ def test_static_prefix_without_system_still_rejects_system_message():
             ],
         )
 
+
 def test_auto_appended_eos_prefers_the_tokenizer_eos_deterministically():
     """When the template has no EOS after {OUTPUT}, construct_chat_template appends one
     itself and picks `extra_eos_tokens[0]`. `extra_eos_tokens.insert(0, tokenizer.eos_token)`
     exists to make that the tokenizer's own EOS, so the choice must not depend on set
     ordering: de-duplicating through `set()` made the appended token, and therefore the
     token ending every formatted training sample, vary with PYTHONHASHSEED."""
+
     class _TwoEosTokenizer(_SuccessFakeTokenizer):
         def get_vocab(self):
             return {"</s>": 0, "<|myeos|>": 2}
