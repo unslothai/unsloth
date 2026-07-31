@@ -652,7 +652,6 @@ export const ru = {
       hubPlaceholder: "Поиск датасетов Hugging Face...",
       devicePlaceholder: "Поиск локальных датасетов...",
       useAsHubDataset: "Использовать как датасет Hugging Face",
-      useAsLocalPath: "Использовать как локальный путь",
       hfCacheLabel: "Кэш HF",
       sourceRecipe: "Рецепт",
       sourceUpload: "Загрузка",

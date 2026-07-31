@@ -5,6 +5,7 @@
 
 from .training import (
     TrainingStartRequest,
+    TrainingStartRequestStatus,
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
@@ -72,6 +73,7 @@ from .data_recipe import (
 __all__ = [
     # Training schemas
     "TrainingStartRequest",
+    "TrainingStartRequestStatus",
     "TrainingJobResponse",
     "TrainingStatus",
     "TrainingProgress",

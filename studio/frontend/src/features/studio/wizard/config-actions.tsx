@@ -27,7 +27,10 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ChangeEvent, useRef } from "react";
-import { trainingConfigFilename } from "./training-config-file";
+import {
+  readBrowserTrainingConfig,
+  trainingConfigFilename,
+} from "./training-config-file";
 
 export function ConfigActions() {
   const t = useT();
@@ -57,11 +60,12 @@ export function ConfigActions() {
     if (!file) {
       return;
     }
-    file
-      .text()
+    readBrowserTrainingConfig(file)
       .then((content) => applyYamlConfig(content, file.name))
-      .catch(() => {
-        toast.error(t("studio.training.failedToReadFile"));
+      .catch((error: unknown) => {
+        toast.error(t("studio.training.failedToReadFile"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
       });
   };
 

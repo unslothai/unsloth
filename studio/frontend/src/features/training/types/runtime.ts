@@ -16,6 +16,7 @@ export type TrainingPhase =
 export interface TrainingStatusResponse {
   job_id: string;
   start_request_id?: string | null;
+  start_request_state?: "pending" | "accepted" | "rejected" | null;
   phase: TrainingPhase;
   is_training_running: boolean;
   eval_enabled: boolean;

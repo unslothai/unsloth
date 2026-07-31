@@ -687,7 +687,6 @@ export const de = {
       hubPlaceholder: "Hugging Face-Datensätze durchsuchen...",
       devicePlaceholder: "Lokale Datensätze durchsuchen...",
       useAsHubDataset: "Als Hugging Face-Datensatz verwenden",
-      useAsLocalPath: "Als lokalen Pfad verwenden",
       hfCacheLabel: "HF-Cache",
       scanningLocal: "Datensätze auf diesem Gerät werden durchsucht…",
       couldntScan: "Lokale Datensätze konnten nicht durchsucht werden",

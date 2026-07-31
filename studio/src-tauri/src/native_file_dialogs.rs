@@ -144,7 +144,7 @@ fn read_selected_text_import(
     let metadata = fs::metadata(&path)
         .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
     if !metadata.is_file() {
-        return Err(format!("Selected import is not a file: {}", path.display()));
+        return Err(format!("{label} is not a file: {}", path.display()));
     }
     if metadata.len() > max_bytes {
         return Err(format!(
@@ -359,10 +359,7 @@ mod tests {
         // be rejected or re-extensioned by the OS dialog.
         assert_eq!(save_filter("report.txt"), ("Text", vec!["txt", "log"]));
         assert_eq!(save_filter("photo.PNG"), ("PNG image", vec!["png"]));
-        assert_eq!(
-            save_filter("shot.jpeg"),
-            ("JPEG image", vec!["jpg", "jpeg"])
-        );
+        assert_eq!(save_filter("shot.jpeg"), ("JPEG image", vec!["jpg", "jpeg"]));
         assert_eq!(save_filter("clip.wav"), ("WAV audio", vec!["wav"]));
         assert_eq!(save_filter("voice.webm"), ("WebM audio", vec!["webm"]));
     }
@@ -412,8 +409,14 @@ mod tests {
         let json_path = temp_path("training-config-invalid").with_extension("json");
         fs::write(&json_path, "{}").unwrap();
         assert!(read_selected_training_config(Some(json_path.clone())).is_err());
+        let directory = temp_path("training-config-directory").with_extension("yaml");
+        fs::create_dir(&directory).unwrap();
+        assert!(read_selected_training_config(Some(directory.clone()))
+            .unwrap_err()
+            .starts_with("Training config is not a file:"));
         let _ = fs::remove_file(yaml_path);
         let _ = fs::remove_file(json_path);
+        let _ = fs::remove_dir(directory);
     }
 
     #[test]

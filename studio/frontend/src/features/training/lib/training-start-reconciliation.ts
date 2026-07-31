@@ -1,7 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TrainingStartRequestStatusResponse } from "../types/api";
 import type { TrainingStatusResponse } from "../types/runtime";
+
+export type TrainingStartRequestOutcome =
+  | { kind: "pending"; jobId: string; message: string }
+  | { kind: "accepted"; jobId: string; message: string }
+  | { kind: "rejected"; error: string }
+  | { kind: "unmatched" };
+
+export function resolveTrainingStartRequestOutcome(
+  status: TrainingStartRequestStatusResponse,
+  expectedStartRequestId: string,
+): TrainingStartRequestOutcome {
+  if (status.start_request_id !== expectedStartRequestId) {
+    return { kind: "unmatched" };
+  }
+  if (status.state === "rejected") {
+    return { kind: "rejected", error: status.error || status.message };
+  }
+  if (!status.job_id.trim()) {
+    return { kind: "unmatched" };
+  }
+  return {
+    kind: status.state,
+    jobId: status.job_id,
+    message: status.message,
+  };
+}
 
 export function statusConfirmsActiveTrainingStart(
   status: Pick<

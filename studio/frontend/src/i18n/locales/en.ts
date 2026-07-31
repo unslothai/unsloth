@@ -1107,7 +1107,6 @@ export const en = {
       hubPlaceholder: "Search Hugging Face datasets...",
       devicePlaceholder: "Search local datasets...",
       useAsHubDataset: "Use as Hugging Face dataset",
-      useAsLocalPath: "Use as local path",
       hfCacheLabel: "HF cache",
       scanningLocal: "Scanning datasets on this device…",
       couldntScan: "Couldn't scan local datasets",

@@ -637,12 +637,23 @@ class TrainingJobResponse(BaseModel):
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
 
 
+class TrainingStartRequestStatus(BaseModel):
+    start_request_id: str
+    job_id: str
+    state: Literal["pending", "accepted", "rejected"]
+    message: str
+    error: Optional[str] = None
+
+
 class TrainingStatus(BaseModel):
     """Current training job status - works for streaming or polling"""
 
     job_id: str = Field(..., description = "Training job identifier")
     start_request_id: Optional[str] = Field(
         None, description = "Client-generated identifier for the current training start request"
+    )
+    start_request_state: Optional[Literal["pending", "accepted", "rejected"]] = Field(
+        None, description = "Lifecycle state of the current training start request"
     )
     phase: Literal[
         "idle",

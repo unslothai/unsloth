@@ -670,7 +670,6 @@ export const fr = {
       hubPlaceholder: "Rechercher des jeux de données Hugging Face...",
       devicePlaceholder: "Rechercher des jeux de données locaux...",
       useAsHubDataset: "Utiliser comme jeu de données Hugging Face",
-      useAsLocalPath: "Utiliser comme chemin local",
       hfCacheLabel: "Cache HF",
       scanningLocal: "Recherche des jeux de données sur cet appareil…",
       couldntScan: "Impossible d'analyser les jeux de données locaux",

@@ -651,7 +651,6 @@ export const ko = {
       hubPlaceholder: "Hugging Face 데이터셋 검색...",
       devicePlaceholder: "로컬 데이터셋 검색...",
       useAsHubDataset: "Hugging Face 데이터셋으로 사용",
-      useAsLocalPath: "로컬 경로로 사용",
       hfCacheLabel: "HF 캐시",
       sourceRecipe: "레시피",
       sourceUpload: "업로드",

@@ -735,7 +735,6 @@ export const zhCN = {
       hubPlaceholder: "搜索 Hugging Face 数据集...",
       devicePlaceholder: "搜索本地数据集...",
       useAsHubDataset: "作为 Hugging Face 数据集使用",
-      useAsLocalPath: "作为本地路径使用",
       hfCacheLabel: "HF 缓存",
       sourceRecipe: "配方",
       sourceUpload: "上传",

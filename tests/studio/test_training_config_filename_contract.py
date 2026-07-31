@@ -38,3 +38,12 @@ def test_tauri_load_dialog_reads_bounded_yaml_configs():
     assert "pickNativeTrainingConfig" in actions
     assert "if (!isTauri)" in actions
     assert 'accept=".yaml,.yml"' in actions
+
+
+def test_browser_load_dialog_uses_the_same_yaml_size_limit():
+    helper = FILENAME_HELPER.read_text(encoding = "utf-8")
+    actions = CONFIG_ACTIONS.read_text(encoding = "utf-8")
+
+    assert "MAX_TRAINING_CONFIG_BYTES = 1024 * 1024" in helper
+    assert "file.size > MAX_TRAINING_CONFIG_BYTES" in helper
+    assert "readBrowserTrainingConfig(file)" in actions

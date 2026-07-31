@@ -6,6 +6,7 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   TrainingResetResponse,
   TrainingStartRequest,
+  TrainingStartRequestStatusResponse,
   TrainingStartResponse,
   TrainingStopResponse,
 } from "../types/api";
@@ -49,21 +50,59 @@ export async function startTraining(
 ): Promise<TrainingStartResponse> {
   let response: Response;
   try {
-    response = await authFetch("/api/train/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload, start_request_id: startRequestId }),
-    });
+    response = await authFetch(
+      "/api/train/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, start_request_id: startRequestId }),
+      },
+      { retryNetworkErrors: false },
+    );
   } catch (error) {
     throw new TrainingStartOutcomeUnknownError(error);
   }
   if (!response.ok) {
-    throw new Error(await readError(response));
+    const message = await readError(response);
+    await acknowledgeTrainingStartRequest(startRequestId).catch(
+      () => undefined,
+    );
+    throw new Error(message);
   }
   try {
-    return (await response.json()) as TrainingStartResponse;
+    const result = (await response.json()) as TrainingStartResponse;
+    if (result.status === "error") {
+      await acknowledgeTrainingStartRequest(startRequestId).catch(
+        () => undefined,
+      );
+    }
+    return result;
   } catch (error) {
     throw new TrainingStartOutcomeUnknownError(error);
+  }
+}
+
+export async function getTrainingStartRequestStatus(
+  startRequestId: string,
+): Promise<TrainingStartRequestStatusResponse | null> {
+  const response = await authFetch(
+    `/api/train/start-requests/${encodeURIComponent(startRequestId)}`,
+  );
+  if (response.status === 404) {
+    return null;
+  }
+  return parseJson<TrainingStartRequestStatusResponse>(response);
+}
+
+export async function acknowledgeTrainingStartRequest(
+  startRequestId: string,
+): Promise<void> {
+  const response = await authFetch(
+    `/api/train/start-requests/${encodeURIComponent(startRequestId)}/acknowledge`,
+    { method: "POST" },
+  );
+  if (!response.ok) {
+    throw new Error(await readError(response));
   }
 }
 

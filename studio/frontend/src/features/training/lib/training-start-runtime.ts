@@ -3,14 +3,15 @@
 
 import { type TranslationKey, translate } from "@/i18n";
 import {
-  getTrainingStatus,
+  acknowledgeTrainingStartRequest,
+  getTrainingStartRequestStatus,
   resetTraining,
   stopTraining,
 } from "../api/train-api";
 import { emitTrainingRunsChanged } from "../events";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import { syncTrainingRuntimeFromBackend } from "./sync-runtime";
-import { statusConfirmsActiveTrainingStart } from "./training-start-reconciliation";
+import { resolveTrainingStartRequestOutcome } from "./training-start-reconciliation";
 
 export const TRAINING_SETUP_CHANGED_ERROR =
   "studio.training.setupChanged" satisfies TranslationKey;
@@ -18,6 +19,20 @@ export const TRAINING_SETUP_CHANGED_ERROR =
 export interface TrainingStartLease {
   resetGeneration: number;
   startRequestId: string;
+}
+
+export type TrainingStartRecoveryResult =
+  | { kind: "recovered" }
+  | { kind: "rejected"; error: string }
+  | { kind: "unknown" };
+
+const START_RECONCILIATION_DELAYS_MS = [
+  0, 250, 750, 1500, 2500, 5000, 5000, 5000, 5000, 5000,
+] as const;
+const START_REGISTRATION_ATTEMPTS = 5;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function tryAcquireTrainingStart(): TrainingStartLease | null {
@@ -89,28 +104,67 @@ export async function settleAcceptedTrainingStart(
 
 export async function reconcileTrainingStartTransportFailure(
   lease: TrainingStartLease,
-): Promise<boolean> {
-  if (!isTrainingStartLeaseActive(lease)) {
-    return false;
-  }
-  const status = await getTrainingStatus().catch(() => null);
-  if (
-    !status ||
-    !statusConfirmsActiveTrainingStart(status, lease.startRequestId)
-  ) {
-    return false;
-  }
-  if (!isTrainingStartLeaseActive(lease)) {
-    return false;
-  }
+): Promise<TrainingStartRecoveryResult> {
+  let pending: { jobId: string; message: string } | null = null;
+  for (const [attempt, delayMs] of START_RECONCILIATION_DELAYS_MS.entries()) {
+    if (attempt >= START_REGISTRATION_ATTEMPTS && pending === null) {
+      break;
+    }
+    if (!isTrainingStartLeaseActive(lease)) {
+      return { kind: "unknown" };
+    }
+    if (delayMs > 0) {
+      await wait(delayMs);
+    }
+    if (!isTrainingStartLeaseActive(lease)) {
+      return { kind: "unknown" };
+    }
 
-  const runtime = useTrainingRuntimeStore.getState();
-  runtime.setStartQueued(status.job_id, status.message);
-  await Promise.allSettled([
-    Promise.resolve().then(emitTrainingRunsChanged),
-    syncTrainingRuntimeFromBackend().catch(() => {
-      useTrainingRuntimeStore.getState().applyStatus(status);
-    }),
-  ]);
-  return true;
+    const status = await getTrainingStartRequestStatus(
+      lease.startRequestId,
+    ).catch(() => null);
+    if (!status) {
+      continue;
+    }
+    const outcome = resolveTrainingStartRequestOutcome(
+      status,
+      lease.startRequestId,
+    );
+    if (outcome.kind === "rejected") {
+      await acknowledgeTrainingStartRequest(lease.startRequestId).catch(
+        () => undefined,
+      );
+      return outcome;
+    }
+    if (outcome.kind === "pending") {
+      pending = outcome;
+      continue;
+    }
+    if (outcome.kind === "unmatched") {
+      continue;
+    }
+    if (!isTrainingStartLeaseActive(lease)) {
+      return { kind: "unknown" };
+    }
+
+    useTrainingRuntimeStore
+      .getState()
+      .setStartQueued(outcome.jobId, outcome.message);
+    await Promise.allSettled([
+      Promise.resolve().then(emitTrainingRunsChanged),
+      syncTrainingRuntimeFromBackend(),
+    ]);
+    return { kind: "recovered" };
+  }
+  if (pending && isTrainingStartLeaseActive(lease)) {
+    useTrainingRuntimeStore
+      .getState()
+      .setStartQueued(pending.jobId, pending.message);
+    await Promise.allSettled([
+      Promise.resolve().then(emitTrainingRunsChanged),
+      syncTrainingRuntimeFromBackend(),
+    ]);
+    return { kind: "recovered" };
+  }
+  return { kind: "unknown" };
 }

@@ -671,7 +671,6 @@ export const es = {
       hubPlaceholder: "Buscar conjuntos de datos en Hugging Face...",
       devicePlaceholder: "Buscar conjuntos de datos locales...",
       useAsHubDataset: "Usar como conjunto de datos de Hugging Face",
-      useAsLocalPath: "Usar como ruta local",
       hfCacheLabel: "Caché de HF",
       scanningLocal: "Buscando conjuntos de datos en este dispositivo…",
       couldntScan: "No se pudieron buscar conjuntos de datos locales",

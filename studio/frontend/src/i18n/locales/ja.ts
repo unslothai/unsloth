@@ -704,7 +704,6 @@ export const ja = {
       hubPlaceholder: "Hugging Face データセットを検索...",
       devicePlaceholder: "ローカルデータセットを検索...",
       useAsHubDataset: "Hugging Face データセットとして使用",
-      useAsLocalPath: "ローカルパスとして使用",
       hfCacheLabel: "HF キャッシュ",
       sourceRecipe: "レシピ",
       sourceUpload: "アップロード",

@@ -653,7 +653,6 @@ export const ar = {
       hubPlaceholder: "ابحث في مجموعات بيانات Hugging Face...",
       devicePlaceholder: "ابحث في مجموعات البيانات المحلية...",
       useAsHubDataset: "استخدامها كمجموعة بيانات Hugging Face",
-      useAsLocalPath: "استخدامها كمسار محلي",
       hfCacheLabel: "ذاكرة HF المؤقتة",
       scanningLocal: "جارٍ فحص مجموعات البيانات على هذا الجهاز…",
       couldntScan: "تعذّر فحص مجموعات البيانات المحلية",

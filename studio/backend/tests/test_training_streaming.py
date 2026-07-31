@@ -435,10 +435,19 @@ def test_streaming_start_happy_path_reaches_backend():
         captured.update(kwargs)
         return True
 
+    start_record = SimpleNamespace(
+        start_request_id = "start-request-123",
+        job_id = "job_test",
+        state = "pending",
+        message = "Training start is being validated",
+        error = None,
+    )
     backend = SimpleNamespace(
         current_job_id = "job_test",
         is_training_active = lambda: False,
         start_training = _start_training,
+        reserve_start_request = lambda request_id, job_id: ("reserved", start_record),
+        resolve_start_request = lambda *args, **kwargs: start_record,
     )
 
     with (
@@ -465,9 +474,18 @@ def test_training_status_exposes_the_current_start_request_id():
         "training_route_module_for_start_request_status_test",
         "routes/training.py",
     )
+    start_record = SimpleNamespace(
+        start_request_id = "start-request-123",
+        job_id = "job_test",
+        state = "accepted",
+        message = "Training queued",
+        error = None,
+    )
     backend = SimpleNamespace(
         current_job_id = "job_test",
         current_start_request_id = "start-request-123",
+        status_start_request = lambda: start_record,
+        get_start_request = lambda request_id: start_record,
         is_training_active = lambda: True,
         trainer = SimpleNamespace(get_training_progress = lambda: None),
         eval_enabled = False,

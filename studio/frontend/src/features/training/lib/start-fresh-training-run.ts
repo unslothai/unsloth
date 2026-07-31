@@ -212,15 +212,15 @@ class FreshTrainingStartAttempt {
     return settleAcceptedTrainingStart(this.lease, jobId, message);
   }
 
-  async recoverTransportFailure(): Promise<boolean> {
+  async recoverTransportFailure() {
     if (this.phase !== "transport") {
-      return false;
+      return { kind: "unknown" } as const;
     }
-    const recovered = await reconcileTrainingStartTransportFailure(this.lease);
-    if (recovered) {
+    const recovery = await reconcileTrainingStartTransportFailure(this.lease);
+    if (recovery.kind === "recovered") {
       this.phase = "finished";
     }
-    return recovered;
+    return recovery;
   }
 
   private abortForChangedInputs(): false {
@@ -269,11 +269,14 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     }
     return await submitFreshTrainingRun(attempt, tokenResult.token);
   } catch (error) {
-    if (
-      isTrainingStartOutcomeUnknownError(error) &&
-      (await attempt.recoverTransportFailure())
-    ) {
-      return true;
+    if (isTrainingStartOutcomeUnknownError(error)) {
+      const recovery = await attempt.recoverTransportFailure();
+      if (recovery.kind === "recovered") {
+        return true;
+      }
+      if (recovery.kind === "rejected") {
+        return attempt.cancel(normalizeTrainingStartError(recovery.error));
+      }
     }
     if (attempt.abortIfInputsChanged()) {
       return false;

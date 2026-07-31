@@ -59,6 +59,7 @@ from utils.utils import canonical_model_repo_id, hf_env_offline, log_and_http_er
 
 from models import (
     TrainingStartRequest,
+    TrainingStartRequestStatus,
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
@@ -135,6 +136,26 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
             detail = f"{label} not found: {missing_detail}",
         )
     return validated
+
+
+def _start_request_response(record) -> TrainingJobResponse:
+    return TrainingJobResponse(
+        job_id = record.job_id,
+        status = "error" if record.state == "rejected" else "queued",
+        message = record.message,
+        error = record.error,
+    )
+
+
+def _reject_start_request(backend, start_request_id: Optional[str], message: str) -> None:
+    if backend is None or start_request_id is None:
+        return
+    backend.resolve_start_request(
+        start_request_id,
+        state = "rejected",
+        message = message,
+        error = message,
+    )
 
 
 def _is_indexed_model_weight_name(name: str, expected_suffix: str) -> bool:
@@ -640,6 +661,38 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
     return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
+@router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
+async def get_training_start_request(
+    start_request_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    backend = get_training_backend()
+    record = backend.get_start_request(start_request_id)
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Training start request not found")
+    return TrainingStartRequestStatus(
+        start_request_id = record.start_request_id,
+        job_id = record.job_id,
+        state = record.state,
+        message = record.message,
+        error = record.error,
+    )
+
+
+@router.post("/start-requests/{start_request_id}/acknowledge")
+async def acknowledge_training_start_request(
+    start_request_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    backend = get_training_backend()
+    if not backend.acknowledge_start_request(start_request_id):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Training start request is not ready to acknowledge",
+        )
+    return {"status": "ok"}
+
+
 @router.post("/start")
 async def start_training(
     request: TrainingStartRequest,
@@ -652,8 +705,22 @@ async def start_training(
     Initiates training in the background and returns immediately. Use /status
     to check progress.
     """
+    backend = None
+    reserved_start_request_id = None
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
+        backend = get_training_backend()
+        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
+        if request.start_request_id:
+            reservation, record = backend.reserve_start_request(
+                request.start_request_id,
+                job_id,
+            )
+            if reservation == "existing":
+                return _start_request_response(record)
+            if reservation == "conflict":
+                return _start_request_response(record)
+            reserved_start_request_id = request.start_request_id
 
         # When Unsloth is driven as an inference API (API-key auth), refuse to start
         # training while a request is in flight: training frees VRAM by unloading
@@ -684,8 +751,6 @@ async def start_training(
                 detail = ("A transformers installation is in progress. Retry when it completes."),
             )
 
-        backend = get_training_backend()
-
         # S3 dataset loading needs the optional boto3 dependency. Reject early
         # with a clear message so credentials are never accepted and then
         # silently dropped on a host without boto3 installed.
@@ -700,6 +765,11 @@ async def start_training(
         # Check before mutating state.
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
+            _reject_start_request(
+                backend,
+                reserved_start_request_id,
+                "Training already active",
+            )
             return TrainingJobResponse(
                 job_id = existing_job_id or "",
                 status = "error",
@@ -709,10 +779,6 @@ async def start_training(
                 ),
                 error = "Training already active",
             )
-
-        # Job ID; start_training() sets it on the backend only after the old
-        # pump thread is dead.
-        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
 
         resume_output_dir: Optional[str] = None
         resume_run: Optional[dict] = None
@@ -1062,13 +1128,25 @@ async def start_training(
 
         if not success:
             progress_error = backend.trainer.training_progress.error
+            failure_message = progress_error or "Failed to start training subprocess"
+            _reject_start_request(
+                backend,
+                reserved_start_request_id,
+                failure_message,
+            )
             return TrainingJobResponse(
                 job_id = backend.current_job_id or "",
                 status = "error",
-                message = progress_error or "Failed to start training subprocess",
+                message = failure_message,
                 error = progress_error or "subprocess_start_failed",
             )
 
+        if reserved_start_request_id is not None:
+            backend.resolve_start_request(
+                reserved_start_request_id,
+                state = "accepted",
+                message = "Training job queued and starting in subprocess",
+            )
         return TrainingJobResponse(
             job_id = job_id,
             status = "queued",
@@ -1076,16 +1154,31 @@ async def start_training(
             error = None,
         )
 
-    except HTTPException:
+    except asyncio.CancelledError:
+        _reject_start_request(
+            backend,
+            reserved_start_request_id,
+            "Training start was cancelled",
+        )
+        raise
+    except HTTPException as exc:
         # Deliberate rejections (S3 not implemented, resume validation) must
         # reach the client with their original status, not a generic 500.
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        _reject_start_request(backend, reserved_start_request_id, detail)
         raise
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         # Deliberate user-facing GPU-selection validation message.
         validation_message = str(e)
+        _reject_start_request(backend, reserved_start_request_id, validation_message)
         raise HTTPException(status_code = 400, detail = validation_message)
     except Exception as e:
+        _reject_start_request(
+            backend,
+            reserved_start_request_id,
+            "Failed to start training",
+        )
         raise log_and_http_error(
             e,
             500,
@@ -1175,8 +1268,20 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
         start_request_id: Optional[str] = getattr(backend, "current_start_request_id", None)
+        start_request = backend.status_start_request()
+        start_request_state = start_request.state if start_request is not None else None
+        if start_request is not None and start_request.state in {"pending", "rejected"}:
+            job_id = "" if start_request.state == "rejected" else start_request.job_id
+            start_request_id = start_request.start_request_id
 
         is_active = await asyncio.to_thread(backend.is_training_active)
+        if is_active and backend.current_start_request_id:
+            active_start_request = backend.get_start_request(backend.current_start_request_id)
+            if active_start_request is not None:
+                start_request = active_start_request
+                start_request_state = active_start_request.state
+                job_id = active_start_request.job_id
+                start_request_id = active_start_request.start_request_id
 
         try:
             progress = backend.trainer.get_training_progress()
@@ -1187,11 +1292,21 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
             getattr(progress, "status_message", None) if progress else None
         ) or "Ready to train"
         error_message = getattr(progress, "error", None) if progress else None
+        if start_request is not None and start_request.state == "pending":
+            status_message = start_request.message
+            error_message = None
+        elif start_request is not None and start_request.state == "rejected":
+            status_message = start_request.message
+            error_message = start_request.error or start_request.message
 
         trainer_stopped = getattr(backend, "_should_stop", False)
 
         # Derive high-level phase
-        if error_message:
+        if start_request_state == "pending":
+            phase = "configuring"
+        elif start_request_state == "rejected":
+            phase = "error"
+        elif error_message:
             phase = "error"
         elif is_active:
             msg_lower = status_message.lower()
@@ -1237,6 +1352,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         return TrainingStatus(
             job_id = job_id,
             start_request_id = start_request_id,
+            start_request_state = start_request_state,
             phase = phase,
             is_training_running = is_active,
             eval_enabled = backend.eval_enabled,

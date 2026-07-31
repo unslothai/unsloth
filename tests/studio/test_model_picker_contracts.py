@@ -2170,17 +2170,28 @@ def test_training_transport_failures_reconcile_with_the_backend_before_failing()
     backend_route = _read_backend("routes/training.py")
     backend_runtime = _read_backend("core/training/training.py")
 
-    assert "await getTrainingStatus().catch(() => null)" in runtime
-    assert "statusConfirmsActiveTrainingStart(status, lease.startRequestId)" in runtime
-    assert "runtime.setStartQueued(status.job_id, status.message)" in runtime
+    assert "getTrainingStartRequestStatus(" in runtime
+    assert "START_RECONCILIATION_DELAYS_MS" in runtime
+    assert "resolveTrainingStartRequestOutcome(" in runtime
+    assert ".setStartQueued(outcome.jobId, outcome.message)" in runtime
+    assert "acknowledgeTrainingStartRequest(lease.startRequestId)" in runtime
     assert "isTrainingStartOutcomeUnknownError(error)" in fresh
     assert "await attempt.recoverTransportFailure()" in fresh
-    assert "isTrainingStartOutcomeUnknownError(error)" in resume
+    assert "isTrainingStartOutcomeUnknownError(failure)" in resume
     assert "await reconcileTrainingStartTransportFailure(this.lease)" in resume
     assert "start_request_id: startRequestId" in api
+    assert "retryNetworkErrors: false" in api
     assert "start_request_id: Optional[str]" in backend_models
+    assert 'state: Literal["pending", "accepted", "rejected"]' in backend_models
+    start_route = backend_route.split('async def start_training(', 1)[1]
+    assert start_route.index("backend.reserve_start_request(") < start_route.index(
+        "_reject_untrainable_model_request,"
+    )
+    assert 'state = "accepted"' in backend_route
+    assert 'state = "rejected"' in backend_route
     assert "start_request_id = request.start_request_id" in backend_route
     assert "start_request_id = start_request_id" in backend_route
+    assert "self._pending_start_request_id" in backend_runtime
     assert "self.current_start_request_id = start_request_id" in backend_runtime
 
 

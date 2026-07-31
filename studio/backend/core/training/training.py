@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING
+from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -60,9 +60,19 @@ _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
 # terminal state, since the watchdog is the sole finalizer once _proc is dropped.
 _DB_FINALIZE_RETRIES = 3
 _DB_FINALIZE_RETRY_S = 0.5
+_MAX_TRACKED_START_REQUESTS = 64
 
 _pyplot = None
 _pyplot_failed = False
+
+
+@dataclass(frozen = True)
+class TrainingStartRequestRecord:
+    start_request_id: str
+    job_id: str
+    state: Literal["pending", "accepted", "rejected"]
+    message: str
+    error: Optional[str] = None
 
 
 def _load_pyplot():
@@ -1034,6 +1044,9 @@ class TrainingBackend:
         # Job metadata
         self.current_job_id: Optional[str] = None
         self.current_start_request_id: Optional[str] = None
+        self._start_requests: dict[str, TrainingStartRequestRecord] = {}
+        self._pending_start_request_id: Optional[str] = None
+        self._status_start_request_id: Optional[str] = None
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
@@ -1058,6 +1071,100 @@ class TrainingBackend:
     # ------------------------------------------------------------------
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
+
+    def reserve_start_request(
+        self, start_request_id: str, job_id: str
+    ) -> tuple[str, TrainingStartRequestRecord]:
+        with self._lock:
+            existing = self._start_requests.get(start_request_id)
+            if existing is not None:
+                return "existing", existing
+            if self._pending_start_request_id is not None:
+                record = TrainingStartRequestRecord(
+                    start_request_id = start_request_id,
+                    job_id = job_id,
+                    state = "rejected",
+                    message = (
+                        "Another training start is still being processed. "
+                        "Wait for it to finish before starting a new one."
+                    ),
+                    error = "Training start already pending",
+                )
+                self._start_requests[start_request_id] = record
+                self._prune_start_requests_locked()
+                return "conflict", record
+
+            record = TrainingStartRequestRecord(
+                start_request_id = start_request_id,
+                job_id = job_id,
+                state = "pending",
+                message = "Training start is being validated",
+            )
+            self._start_requests[start_request_id] = record
+            self._pending_start_request_id = start_request_id
+            self._status_start_request_id = start_request_id
+            self._prune_start_requests_locked()
+            return "reserved", record
+
+    def resolve_start_request(
+        self,
+        start_request_id: str,
+        *,
+        state: Literal["accepted", "rejected"],
+        message: str,
+        error: Optional[str] = None,
+    ) -> Optional[TrainingStartRequestRecord]:
+        if state not in {"accepted", "rejected"}:
+            raise ValueError(f"Invalid training start request state: {state}")
+        with self._lock:
+            existing = self._start_requests.get(start_request_id)
+            if existing is None:
+                return None
+            if existing.state != "pending":
+                return existing
+            record = replace(
+                existing,
+                state = state,
+                message = message,
+                error = error,
+            )
+            self._start_requests[start_request_id] = record
+            if self._pending_start_request_id == start_request_id:
+                self._pending_start_request_id = None
+            return record
+
+    def get_start_request(
+        self, start_request_id: str
+    ) -> Optional[TrainingStartRequestRecord]:
+        with self._lock:
+            return self._start_requests.get(start_request_id)
+
+    def status_start_request(self) -> Optional[TrainingStartRequestRecord]:
+        with self._lock:
+            if self._status_start_request_id is None:
+                return None
+            return self._start_requests.get(self._status_start_request_id)
+
+    def acknowledge_start_request(self, start_request_id: str) -> bool:
+        with self._lock:
+            record = self._start_requests.get(start_request_id)
+            if record is None or record.state == "pending":
+                return False
+            if self._status_start_request_id == start_request_id:
+                self._status_start_request_id = None
+            return True
+
+    def _prune_start_requests_locked(self) -> None:
+        overflow = len(self._start_requests) - _MAX_TRACKED_START_REQUESTS
+        if overflow <= 0:
+            return
+        for request_id, record in tuple(self._start_requests.items()):
+            if overflow <= 0:
+                break
+            if record.state == "pending" or request_id == self.current_start_request_id:
+                continue
+            del self._start_requests[request_id]
+            overflow -= 1
 
     def start_training(
         self,
@@ -1316,6 +1423,12 @@ class TrainingBackend:
                 new_pump.start()
                 self._spawn_in_progress = False
 
+            if start_request_id is not None:
+                self.resolve_start_request(
+                    start_request_id,
+                    state = "accepted",
+                    message = "Training job queued and starting in subprocess",
+                )
             return True
 
         except Exception:
@@ -1445,6 +1558,7 @@ class TrainingBackend:
                 self.grad_norm_history.clear()
                 self.grad_norm_step_history.clear()
                 self._needs_xet_respawn = False
+                self._status_start_request_id = None
             return "reset"
 
     def _start_stop_watchdog(

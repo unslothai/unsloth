@@ -653,7 +653,6 @@ export const hi = {
       hubPlaceholder: "Hugging Face डेटासेट खोजें...",
       devicePlaceholder: "स्थानीय डेटासेट खोजें...",
       useAsHubDataset: "Hugging Face डेटासेट के रूप में उपयोग करें",
-      useAsLocalPath: "स्थानीय पथ के रूप में उपयोग करें",
       hfCacheLabel: "HF कैश",
       scanningLocal: "इस डिवाइस पर डेटासेट स्कैन हो रहे हैं…",
       couldntScan: "स्थानीय डेटासेट स्कैन नहीं किए जा सके",

@@ -87,6 +87,14 @@ export interface TrainingStartResponse {
   error: string | null;
 }
 
+export interface TrainingStartRequestStatusResponse {
+  start_request_id: string;
+  job_id: string;
+  state: "pending" | "accepted" | "rejected";
+  message: string;
+  error: string | null;
+}
+
 export interface TrainingStopResponse {
   status: "stopped" | "idle";
   message: string;

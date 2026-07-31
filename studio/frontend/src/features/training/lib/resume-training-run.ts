@@ -149,13 +149,19 @@ class ResumeTrainingStartAttempt {
     if (this.phase === "finished") {
       return false;
     }
+    let failure = error;
     if (
       this.phase === "transport" &&
-      isTrainingStartOutcomeUnknownError(error) &&
-      (await reconcileTrainingStartTransportFailure(this.lease))
+      isTrainingStartOutcomeUnknownError(failure)
     ) {
-      this.phase = "finished";
-      return true;
+      const recovery = await reconcileTrainingStartTransportFailure(this.lease);
+      if (recovery.kind === "recovered") {
+        this.phase = "finished";
+        return true;
+      }
+      if (recovery.kind === "rejected") {
+        failure = new Error(recovery.error);
+      }
     }
     if (!isTrainingStartLeaseActive(this.lease)) {
       return false;
@@ -164,8 +170,8 @@ class ResumeTrainingStartAttempt {
       return false;
     }
     const rawMessage =
-      error instanceof Error
-        ? error.message
+      failure instanceof Error
+        ? failure.message
         : translate("studio.training.resumeFailed");
     const safeMessage = normalizeTrainingStartError(rawMessage);
     this.cancel(safeMessage);

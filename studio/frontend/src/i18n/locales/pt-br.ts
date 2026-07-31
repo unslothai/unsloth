@@ -756,7 +756,6 @@ export const ptBR = {
       hubPlaceholder: "Buscar datasets no Hugging Face...",
       devicePlaceholder: "Buscar datasets locais...",
       useAsHubDataset: "Usar como dataset do Hugging Face",
-      useAsLocalPath: "Usar como caminho local",
       hfCacheLabel: "Cache do HF",
       scanningLocal: "Procurando datasets neste dispositivo…",
       couldntScan: "Não foi possível procurar datasets locais",
