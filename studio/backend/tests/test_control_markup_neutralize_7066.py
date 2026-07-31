@@ -3533,9 +3533,9 @@ def test_qwen_vision_placeholders_are_neutralized(marker, role):
     """Qwen2-VL / Qwen2.5-VL reserve these for the processor, which expands a pad token per
     image or video patch (mapper.py:679-697). A pasted one is counted as media with no
     image behind it, binding embeddings at the wrong prompt position (#7066)."""
-    out = neutralize_control_markup_in_messages(
-        [{"role": role, "content": f"hi {marker} there"}]
-    )[0]["content"]
+    out = neutralize_control_markup_in_messages([{"role": role, "content": f"hi {marker} there"}])[
+        0
+    ]["content"]
     assert marker not in out
     assert "there" in out
 
@@ -3544,9 +3544,9 @@ def test_qwen_vision_placeholders_are_neutralized(marker, role):
 def test_the_generic_media_sentinels_still_break(marker):
     """The vision arm is an addition, not a replacement: adding longer spellings to the
     alternation must not stop the bare ones matching (#7066)."""
-    out = neutralize_control_markup_in_messages(
-        [{"role": "user", "content": f"x{marker}"}]
-    )[0]["content"]
+    out = neutralize_control_markup_in_messages([{"role": "user", "content": f"x{marker}"}])[0][
+        "content"
+    ]
     assert marker not in out
 
 
@@ -3589,7 +3589,7 @@ def test_a_clean_content_vocabulary_field_keeps_its_tool(field, value):
 
 
 def test_content_schema_is_scanned_as_a_subschema_not_a_value():
-    """"contentSchema" holds a subschema, so it stays out of the valued set: its keyword
+    """ "contentSchema" holds a subschema, so it stays out of the valued set: its keyword
     positions still drop, while its prose is neutralized like any description (#7066)."""
 
     def build(inner):
