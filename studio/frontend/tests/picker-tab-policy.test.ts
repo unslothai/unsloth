@@ -15,7 +15,7 @@ const inferredBase = {
   selectedTab: "hub" as const,
 };
 
-test("keeps a cold inferred picker on its initial tab while inventory settles", () => {
+test("defers inferred tab locking until device inventory settles", () => {
   const loading = {
     ...inferredBase,
     hasDeviceItems: false,
@@ -24,7 +24,7 @@ test("keeps a cold inferred picker on its initial tab while inventory settles", 
     resolvePickerTab({ ...loading, lockedInferredTab: null }),
     "hub",
   );
-  assert.equal(resolveInferredPickerTabLock(loading), "hub");
+  assert.equal(resolveInferredPickerTabLock(loading), null);
 
   const withUnsettledDeviceItems = {
     ...loading,
@@ -37,7 +37,7 @@ test("keeps a cold inferred picker on its initial tab while inventory settles", 
     }),
     "hub",
   );
-  assert.equal(resolveInferredPickerTabLock(withUnsettledDeviceItems), "hub");
+  assert.equal(resolveInferredPickerTabLock(withUnsettledDeviceItems), null);
 
   const withDeviceItems = {
     ...withUnsettledDeviceItems,
@@ -60,7 +60,7 @@ test("keeps a cold inferred picker on its initial tab while inventory settles", 
   assert.equal(resolveInferredPickerTabLock(withoutDeviceItems), "hub");
 });
 
-test("does not change an inferred tab after the picker opens", () => {
+test("preserves a locked tab after user interaction", () => {
   assert.equal(
     resolvePickerTab({
       ...inferredBase,
@@ -69,6 +69,24 @@ test("does not change an inferred tab after the picker opens", () => {
       lockedInferredTab: "hub",
     }),
     "hub",
+  );
+});
+
+test("moves an idle cold picker to device when inventory arrives", () => {
+  const loading = {
+    ...inferredBase,
+    hasDeviceItems: false,
+  };
+  const lock = resolveInferredPickerTabLock(loading);
+  assert.equal(lock, null);
+  assert.equal(
+    resolvePickerTab({
+      ...loading,
+      hasDeviceItems: true,
+      isDeviceInventorySettled: true,
+      lockedInferredTab: lock,
+    }),
+    "device",
   );
 });
 

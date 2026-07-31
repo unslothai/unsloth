@@ -108,10 +108,20 @@ function nextPickerNavigationTarget(
 ): HTMLElement | undefined {
   const isSearch = target.matches('[data-picker-search="true"]');
   const isOption = target.matches('[data-picker-option="true"]');
-  if (!(isSearch || isOption)) {
+  const isTab = target.matches('[role="tab"]');
+  if (!(isSearch || isOption || (isTab && key === "ArrowDown"))) {
     return undefined;
   }
   const options = pickerOptions(container);
+  if (isTab) {
+    return (
+      options[0] ??
+      container.querySelector<HTMLInputElement>(
+        '[data-picker-search="true"]',
+      ) ??
+      undefined
+    );
+  }
   if (options.length === 0) {
     return undefined;
   }
