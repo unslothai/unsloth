@@ -2192,9 +2192,49 @@ exit 0
         substep "Could not determine the GPU arch -- install the HIP SDK or set" "Yellow"
         substep "UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm PyTorch:" "Yellow"
         substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+    } elseif (-not $HasNvidiaSmi -and -not $HasROCm) {
+        # ── Intel GPU detection (Arc / Data Center GPU Max / Ultra AIPC iGPU) ──
+        # PyTorch publishes XPU (SYCL) wheels at download.pytorch.org/whl/xpu,
+        # which ship their own oneAPI runtime — no Intel oneAPI Base Toolkit needed.
+        $HasIntelGpu = $false
+        $IntelGpuLabel = $null
+        try {
+            $wmiIntel = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "(?i)(Intel.*Arc|Intel.*Graphics|Intel.*Iris|Intel.*UHD|Intel.*HD Graphics)" } |
+                Select-Object -First 1
+            if ($wmiIntel) {
+                $HasIntelGpu = $true
+                $IntelGpuLabel = $wmiIntel.Name
+            }
+        } catch {}
+        # Double-check: torch.xpu.is_available() is the authoritative test when
+        # PyTorch is already installed (migrated env). This catches the case where
+        # a WMI Intel GPU entry exists but no XPU driver/runtime is loaded.
+        if (-not $HasIntelGpu -and (Test-Path -LiteralPath $VenvPython)) {
+            try {
+                $xpuCheck = & $VenvPython -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String
+                if ($xpuCheck.Trim() -eq 'True') {
+                    $HasIntelGpu = $true
+                    $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)"
+                }
+            } catch {}
+        }
+        if ($HasIntelGpu) {
+            step "gpu" "Intel GPU detected" "Green"
+            substep "$IntelGpuLabel"
+            substep "PyTorch XPU (SYCL) wheels will be installed from https://download.pytorch.org/whl/xpu"
+            # Override the TorchIndexUrl to the XPU index so the install section below
+            # pulls torch from the Intel wheel repository instead of CPU/CUDA.
+            $XpuBaseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+            $TorchIndexUrl = "$XpuBaseUrl/xpu"
+            $script:IsIntelXpu = $true
+        } else {
+            step "gpu" "none (chat-only / GGUF)" "Yellow"
+            substep "Training and GPU inference require an NVIDIA, AMD ROCm, or Intel Arc GPU." "Yellow"
+        }
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
-        substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
+        substep "Training and GPU inference require an NVIDIA, AMD ROCm, or Intel Arc GPU." "Yellow"
     }
     # On an AMD GPU (no NVIDIA), surface the optional WSL-ROCm driver hint.
     if (-not $HasNvidiaSmi -and ($ROCmGfxArch -or $ROCmGpuLabel)) { Show-AmdWslDriverHint }
@@ -2447,6 +2487,10 @@ exit 0
             } elseif ($ROCmGpuLabel) {
                 substep "Installing CPU-only PyTorch (AMD GPU arch unknown -- install the HIP SDK" "Yellow"
                 substep "or set UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm)." "Yellow"
+            } elseif ($HasIntelGpu -and -not $script:IsIntelXpu) {
+                substep "Intel GPU detected but XPU not available. Installing CPU-only PyTorch." "Yellow"
+                substep "If you want GPU training, install Intel oneAPI Base Toolkit 2025.2.1" "Yellow"
+                substep "and re-run this installer. See: https://unsloth.ai/docs/get-started/install/intel" "Yellow"
             } else {
                 substep "No NVIDIA GPU detected." "Yellow"
             }
@@ -2560,6 +2604,26 @@ exit 0
                 # reinstalls ROCm afterwards (recomputes its own index URL).
                 $ROCmIndexUrl = $null
                 $ROCmTorchFloor = $null
+            }
+        } elseif ($script:IsIntelXpu -and $TorchIndexUrl -like "*/xpu") {
+            # ── Intel Arc / XPU PyTorch install ──
+            # XPU wheels ship their own oneAPI runtime (intel-sycl-rt et al.) and
+            # are published at https://download.pytorch.org/whl/xpu under PEP 503.
+            Write-TauriLog "STEP" "Installing PyTorch (Intel XPU)"
+            substep "installing PyTorch from $(Remove-IndexUrlCredentials $TorchIndexUrl)..."
+            # Let pip resolve the correct version triple for the host — the XPU index
+            # publishes torch, torchvision, torchaudio, triton-xpu, pytorch-triton-xpu
+            # and all oneAPI runtime deps as wheels. No floor/ceiling pins needed.
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall --default-index $TorchIndexUrl torch torchvision torchaudio }
+            if ($torchInstallExit -ne 0) {
+                # Transient XPU-index failure: fall back to CPU base.
+                $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
+                substep "XPU PyTorch install failed (exit $torchInstallExit); using a CPU base." "Yellow"
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
+                if ($torchInstallExit -ne 0) {
+                    Write-Host "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
+                    return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+                }
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
