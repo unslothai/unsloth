@@ -2119,6 +2119,14 @@ def test_partial_local_datasets_are_not_selectable():
     assert device_items.count(".filter((d) => !d.partial)") == 2
 
 
+def test_dataset_panel_uses_the_shared_cross_platform_path_detector():
+    helpers = _read("features/studio/sections/dataset-panel-helpers.ts")
+
+    assert 'import { looksLikeLocalPath } from "@/features/hub";' in helpers
+    assert "looksLikeLocalPath(trimmed)" in helpers
+    assert "jsonl|json|csv|parquet|arrow" in helpers
+
+
 def test_multitask_model_search_fans_out_concurrently_and_closes_iterators():
     source = _read("features/hub/hooks/use-hub-model-search.ts")
     merge = _read("features/hub/lib/merge-task-iterators.ts")
