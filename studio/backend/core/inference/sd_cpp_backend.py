@@ -326,6 +326,7 @@ class SdCppDiffusionBackend:
         self._state: Optional[_SdState] = None
         self._loading: Optional[_SdLoading] = None
         self._load_token = 0
+        # Replaced (never cleared) per load, so a cancelled asset pull stays cancelled.
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
         # sd-server started for an in-flight load, before it commits to _state; tracked so an unload / superseding load can stop it mid-startup instead of waiting out the timeout.
@@ -430,7 +431,11 @@ class SdCppDiffusionBackend:
                 self._active_generate_cancel.set()
             self._load_token += 1
             token = self._load_token
-            self._cancel_event.clear()
+            # A NEW event per load, never a clear() of the shared one: unload() sets the event the
+            # running worker holds but also drops _loading, so this load is admitted before that
+            # worker exited and a clear() would un-cancel its still-running multi-gigabyte pull.
+            cancel_event = threading.Event()
+            self._cancel_event = cancel_event
             self._loading = _SdLoading(
                 repo_id = repo_id,
                 base_repo = base,
@@ -455,6 +460,7 @@ class SdCppDiffusionBackend:
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 _load_token = token,
+                _cancel_event = cancel_event,
             ),
             daemon = True,
         ).start()
@@ -472,7 +478,10 @@ class SdCppDiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         _load_token: int,
+        _cancel_event: Optional[threading.Event] = None,
     ) -> None:
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it, so a cancelled worker stays cancelled.
+        cancel_event = _cancel_event if _cancel_event is not None else self._cancel_event
         try:
             # Resolve mode (server preferred, one-shot fallback) + binary up front so an install / missing-binary failure surfaces before the multi-GB asset pull.
             mode, server_binary, engine = self._resolve_backend()
@@ -499,7 +508,7 @@ class SdCppDiffusionBackend:
 
             assets = self._asset_specs(repo_id, gguf_filename, fam)
             self._set_expected_bytes(assets, hf_token)
-            paths = self._fetch_assets(assets, hf_token)
+            paths = self._fetch_assets(assets, hf_token, cancel_event = cancel_event)
 
             files = SdCppModelFiles(
                 diffusion_model = paths["diffusion_model"],
@@ -733,21 +742,27 @@ class SdCppDiffusionBackend:
             loading.expected_bytes = total
 
     def _fetch_assets(
-        self, assets: list[tuple[str, str, str]], hf_token: Optional[str]
+        self,
+        assets: list[tuple[str, str, str]],
+        hf_token: Optional[str],
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict[str, str]:
-        """Download every asset (cancellable), returning kind -> local path."""
+        """Download every asset (cancellable via this load's own ``cancel_event``, so
+        a replacement load cannot un-cancel this pull), returning kind -> local path."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+        # Callers without a per-load event (tests, direct use) fall back to the current one.
+        cancel = cancel_event if cancel_event is not None else self._cancel_event
         paths: dict[str, str] = {}
         for repo, fn, kind in assets:
-            if self._cancel_event.is_set():
+            if cancel.is_set():
                 raise SdCppCancelled("load cancelled")
             local_root = Path(repo).expanduser()
             if kind == "diffusion_model" and local_root.exists():
                 path = str(resolve_local_gguf_child(local_root, fn))
             else:
                 path = hf_hub_download_with_xet_fallback(
-                    repo, fn, hf_token, cancel_event = self._cancel_event
+                    repo, fn, hf_token, cancel_event = cancel
                 )
             paths[kind] = path
             with self._lock:
@@ -1247,8 +1262,10 @@ class SdCppDiffusionBackend:
     # ── Unload / status ──────────────────────────────────────────────────────
 
     def unload(self) -> dict[str, Any]:
-        self._cancel_event.set()
         with self._lock:
+            # Under the lock: begin_load rebinds this attribute, so an unlocked read could set an
+            # event the current load no longer watches.
+            self._cancel_event.set()
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
             state = self._state

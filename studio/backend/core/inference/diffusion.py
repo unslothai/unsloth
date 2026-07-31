@@ -543,6 +543,7 @@ class DiffusionBackend:
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress.
         self._load_token = 0
         # Set by unload() to abort an in-flight (lock-free) download so an eviction preempts it.
+        # Replaced (never cleared) per load, so a cancelled worker's own event stays set.
         self._cancel_event = threading.Event()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
@@ -664,9 +665,11 @@ class DiffusionBackend:
         base: str,
         base_files: list[str],
         hf_token: Optional[str],
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Pre-download the GGUF + the given ``base_files`` into the HF cache,
-        WITHOUT the lock and honoring ``_cancel_event``, so load_pipeline's
+        WITHOUT the lock and honoring ``cancel_event`` (this load's own event, so a
+        replacement load cannot un-cancel this one), so load_pipeline's
         from_single_file / from_pretrained hit the cache and the heavy download can
         be preempted by an unload/eviction. Raises ``RuntimeError("Cancelled")``.
 
@@ -677,18 +680,20 @@ class DiffusionBackend:
         (estimate failure, config-only base, local repo) -> hub id as before."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+        # Callers without a per-load event (tests, direct use) fall back to the current one.
+        cancel = cancel_event if cancel_event is not None else self._cancel_event
         # GGUF transformer (hub repos only; a local path is already on disk).
         if gguf_filename and not Path(repo_id).expanduser().exists():
             hf_hub_download_with_xet_fallback(
-                repo_id, gguf_filename, hf_token, cancel_event = self._cancel_event
+                repo_id, gguf_filename, hf_token, cancel_event = cancel
             )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
         for rfilename in base_files:
-            if self._cancel_event.is_set():
+            if cancel.is_set():
                 raise RuntimeError("Cancelled")
             local = hf_hub_download_with_xet_fallback(
-                base, rfilename, hf_token, cancel_event = self._cancel_event
+                base, rfilename, hf_token, cancel_event = cancel
             )
             if rfilename == "model_index.json":
                 snapshot_root = str(Path(local).parent)
@@ -836,8 +841,14 @@ class DiffusionBackend:
                 raise RuntimeError("A diffusion load is already in progress.")
             self._load_token += 1
             token = self._load_token
-            # Best-effort download preemption; the token is the real commit guard.
-            self._cancel_event.clear()
+            # A NEW event per load, never a clear() of the shared one (same reason video.py takes a
+            # fresh one): unload() sets the event the running worker holds but also drops _loading,
+            # so the next begin_load is admitted before that worker exited and would clear the very
+            # object it is watching -- the cancelled multi-gigabyte pull then resumed alongside the
+            # replacement load. A fresh object leaves the old worker's event set. Best-effort
+            # download preemption either way; the token is the real commit guard.
+            cancel_event = threading.Event()
+            self._cancel_event = cancel_event
             # Seed with the family fallback; the worker resolves the real base and updates this.
             self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
 
@@ -862,6 +873,7 @@ class DiffusionBackend:
                 model_kind = model_kind,
                 loras = loras,
                 _load_token = token,
+                _cancel_event = cancel_event,
             ),
             daemon = True,
         ).start()
@@ -869,6 +881,8 @@ class DiffusionBackend:
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it, so a cancelled worker stays cancelled.
+        cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
             fam = detect_family_for_pick(
@@ -911,6 +925,7 @@ class DiffusionBackend:
                 base,
                 base_files,
                 kwargs.get("hf_token"),
+                cancel_event = cancel_event,
             )
             self.load_pipeline(**kwargs)
             with self._lock:
@@ -3158,9 +3173,11 @@ class DiffusionBackend:
         }
 
     def unload(self) -> dict[str, Any]:
-        # Abort an in-flight (lock-free) download so unload/eviction returns promptly.
-        self._cancel_event.set()
         with self._lock:
+            # Abort an in-flight (lock-free) download so unload/eviction returns promptly. Under the
+            # lock, like video.py: begin_load rebinds this attribute, so an unlocked read could set
+            # an event the current load no longer watches.
+            self._cancel_event.set()
             # Abort an in-flight denoise via ITS cancel event.
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
@@ -3174,10 +3191,15 @@ class DiffusionBackend:
         # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on. Mirrors begin_load.
         with self._generate_lock:
             with self._lock:
-                self._unload_locked()
-                # Teardown is done: _state is None, so the fence has nothing left to protect and
-                # the next generation gets the plain not-loaded message.
-                self._teardown_waiters -= 1
+                try:
+                    self._unload_locked()
+                finally:
+                    # Released in a finally, exactly like begin_load: _unload_locked ends in
+                    # clear_gpu_cache(), whose CUDA branch raises on a sticky fault, and an
+                    # un-drained fence would refuse every later generation for the life of the
+                    # process. Teardown is done (or gave up): the next generation gets the plain
+                    # not-loaded message instead.
+                    self._teardown_waiters -= 1
         return self.status()
 
     def _unload_locked(self) -> None:

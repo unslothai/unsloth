@@ -1809,6 +1809,48 @@ def test_prefetch_aborts_when_cancelled(tmp_path):
         )
 
 
+def test_each_load_owns_its_cancel_event(fake_runtime, monkeypatch, tmp_path):
+    # unload() cancels an in-flight (lock-free) download by setting the event the load worker holds,
+    # and drops _loading in the same breath, so a replacement load is admitted while that worker is
+    # still inside _prefetch_files. With one shared Event the replacement's clear() un-cancelled the
+    # dead worker and its multi-gigabyte pull resumed alongside the new load.
+    backend = DiffusionBackend()
+    started = threading.Event()
+    seen: list[threading.Event] = []
+
+    def _capture(**kwargs):
+        seen.append(kwargs["_cancel_event"])
+        started.set()
+
+    monkeypatch.setattr(backend, "_run_load", _capture)  # skip the download thread's work
+    backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
+    assert started.wait(5)
+    first = seen[0]
+
+    backend.unload()  # cancels the worker holding `first`
+    assert first.is_set()
+
+    started.clear()
+    backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q8_0.gguf")
+    assert started.wait(5)
+    second = seen[1]
+
+    assert second is not first, "each load needs its own event, not a clear() of the shared one"
+    assert not second.is_set()  # the replacement load starts uncancelled
+    assert first.is_set(), "the superseded worker's event must stay set"
+    # And the superseded worker's prefetch bails on ITS event, not on the live one.
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "Cancelled"):
+        backend._prefetch_files(
+            str(tmp_path),
+            "model.gguf",
+            "Tongyi-MAI/Z-Image-Turbo",
+            ["vae/diffusion_pytorch_model.safetensors"],
+            None,
+            cancel_event = first,
+        )
+
+
 def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
     backend = DiffusionBackend()
     calls: list = []
@@ -3862,6 +3904,43 @@ def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path)
 
     assert seen == [1]  # the fence was up for the whole wait
     assert backend._teardown_waiters == 0  # and released once the pipeline was gone
+
+
+def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path, monkeypatch):
+    # _unload_locked ends in clear_gpu_cache(), whose CUDA branch (synchronize / empty_cache /
+    # ipc_collect) raises on a sticky fault. Without the finally the fence stayed up forever, so
+    # every later generation was refused as cancelled for the life of the process, a fresh load
+    # included (begin_load's own increment/decrement are symmetric and never drain it).
+    from core.inference import diffusion as diffusion_module
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    real_clear = diffusion_module.clear_gpu_cache
+
+    def _sticky(*_args, **_kwargs):
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", _sticky)
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        backend.unload()
+    assert backend._teardown_waiters == 0, "a failed teardown must not leave the fence up"
+
+    # The next load and generation must not be fenced out by the teardown that blew up.
+    monkeypatch.setattr(diffusion_module, "clear_gpu_cache", real_clear)
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert backend.generate(prompt = "after", steps = 2)["images"]
 
 
 def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):

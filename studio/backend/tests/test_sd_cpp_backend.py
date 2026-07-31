@@ -447,6 +447,43 @@ def test_begin_load_resolves_family_from_filename_only(monkeypatch):
     assert b._loading is not None and b._loading.repo_id == "/models/gguf-store"
 
 
+def test_each_load_owns_its_cancel_event(monkeypatch):
+    # Same contract as the diffusers backend: unload() cancels the running asset pull by setting the
+    # event that worker holds and drops _loading, so a replacement load starts while the worker is
+    # still inside _fetch_assets. A clear() of one shared event would un-cancel it and the pull would
+    # resume; a fresh Event per load leaves the superseded worker cancelled.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    started = threading.Event()
+    seen: list[threading.Event] = []
+
+    def _capture(**kwargs):
+        seen.append(kwargs["_cancel_event"])
+        started.set()
+
+    monkeypatch.setattr(b, "_run_load", _capture)  # skip the download thread's work
+
+    b.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z.gguf")
+    assert started.wait(5)
+    first = seen[0]
+    b.unload()
+    assert first.is_set()
+
+    started.clear()
+    b.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z.gguf")
+    assert started.wait(5)
+    second = seen[1]
+    assert second is not first, "each load needs its own event, not a clear() of the shared one"
+    assert not second.is_set()
+    assert first.is_set(), "the superseded worker's event must stay set"
+    # The superseded worker's fetch bails on ITS event, not on the live one.
+    with pytest.raises(SdCppCancelled):
+        b._fetch_assets(
+            [("unsloth/Z-Image-Turbo-GGUF", "z.gguf", "diffusion_model")],
+            None,
+            cancel_event = first,
+        )
+
+
 def test_ensure_binary_returns_found(monkeypatch):
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/usr/bin/sd-cli")
     assert ensure_sd_cpp_binary() == "/usr/bin/sd-cli"
