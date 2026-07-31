@@ -2715,6 +2715,169 @@ def _wsl_shim_env(
     return env, tuple(dict.fromkeys((*wsl_env_bridge, *(f"{name}/p" for name in cwd_env), "PWD/p")))
 
 
+_NPM_CMD_SHIM_HEAD = (
+    "@ECHO off\n"
+    "GOTO start\n"
+    ":find_dp0\n"
+    "SET dp0=%~dp0\n"
+    "EXIT /b\n"
+    ":start\n"
+    "SETLOCAL\n"
+    "CALL :find_dp0\n"
+)
+_NPM_NODE_CMD_SHIM_PREFIX = (
+    re.escape(_NPM_CMD_SHIM_HEAD)
+    + r"(?P<environment>(?:@SET [^=\r\n]+=[^\r\n]+\n)*)"
+    + re.escape(
+        '\nIF EXIST "%dp0%\\node.exe" (\n'
+        + '  SET "_prog=%dp0%\\node.exe"\n'
+        + ") ELSE (\n"
+        + '  SET "_prog=node"\n'
+    )
+)
+_NPM_NODE_CMD_SHIM_SUFFIX = (
+    r"(?P<node_args>[^\r\n]*?)[ \t]+" + r'"%dp0%\\(?P<target>[^"\r\n]+)"[ \t]+%\*'
+)
+_NPM_NODE_CMD_SHIMS = (
+    re.compile(
+        _NPM_NODE_CMD_SHIM_PREFIX
+        + re.escape(
+            "  SET PATHEXT=%PATHEXT:;.JS;=;%\n"
+            + ")\n\n"
+            + 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"'
+        )
+        + _NPM_NODE_CMD_SHIM_SUFFIX,
+        re.IGNORECASE,
+    ),
+    re.compile(
+        _NPM_NODE_CMD_SHIM_PREFIX
+        + re.escape(
+            ")\n\n"
+            + "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "
+            + "set PATHEXT=%PATHEXT:;.JS;=;% & "
+            + '"%_prog%"'
+        )
+        + _NPM_NODE_CMD_SHIM_SUFFIX,
+        re.IGNORECASE,
+    ),
+)
+_NPM_NATIVE_CMD_SHIM = re.compile(
+    re.escape(_NPM_CMD_SHIM_HEAD) + r'"%dp0%\\(?P<target>[^"\r\n]+)"[ \t]+%\*',
+    re.IGNORECASE,
+)
+_NPM_NODE_SHEBANG = re.compile(
+    r"^#!\s*(?:/usr/bin/env\s+(?:-S\s+)?((?:[^ \t=]+=[^ \t=]+\s+)*))?([^ \t]+)(.*)$"
+)
+_NPM_SHEBANG_DOLLAR = re.compile(r"\$\{?([^$@#?\- \t{}:]+)\}?")
+
+
+def _npm_batch_environment(declarations: str) -> str:
+    lines = []
+    for declaration in declarations.split():
+        name, separator, value = declaration.partition("=")
+        name = name.strip()
+        value = value.strip()
+        if separator and name and value:
+            value = _NPM_SHEBANG_DOLLAR.sub(lambda match: f"%{match.group(1)}%", value)
+            lines.append(f"@SET {name}={value}\n")
+    return "".join(lines)
+
+
+def _windows_expand_environment(value: str, environment: dict) -> str:
+    folded = {name.casefold(): item for name, item in environment.items()}
+    return re.sub(
+        r"%([^%\r\n]+)%",
+        lambda match: folded.get(match.group(1).casefold(), ""),
+        value,
+    )
+
+
+def _npm_node_shim_metadata(target: Path, match, environment: dict) -> Optional[tuple]:
+    environment_block = match.group("environment") or ""
+    node_args_text = (match.group("node_args") or "").strip()
+    known_node_suffix = target.suffix.lower() in {".js", ".cjs", ".mjs"}
+    if not environment_block and not node_args_text and known_node_suffix:
+        return [], {}
+
+    first_line = target.read_text(encoding = "utf-8").splitlines()[0]
+    shebang = _NPM_NODE_SHEBANG.fullmatch(first_line)
+    if shebang is None or Path(shebang.group(2)).name.casefold() not in {"node", "node.exe"}:
+        return None
+    declarations = shebang.group(1) or ""
+    if _npm_batch_environment(declarations).casefold() != environment_block.casefold():
+        return None
+    if (shebang.group(3) or "").strip() != node_args_text:
+        return None
+    try:
+        node_args = shlex.split(node_args_text) if node_args_text else []
+    except ValueError:
+        return None
+
+    updates = {}
+    expanded_environment = dict(environment)
+    for line in environment_block.splitlines():
+        name, value = line.removeprefix("@SET ").split("=", 1)
+        expanded = _windows_expand_environment(value, expanded_environment)
+        expanded_environment[name] = expanded
+        updates[name] = expanded
+    return node_args, updates
+
+
+def _apply_windows_environment(environment: dict, updates: dict) -> None:
+    for name, value in updates.items():
+        existing = next((key for key in environment if key.casefold() == name.casefold()), None)
+        if existing is not None and existing != name:
+            del environment[existing]
+        environment[name] = value
+
+
+def _resolved_launch_command(
+    executable: str,
+    arguments: list,
+    environment: Optional[dict] = None,
+) -> list:
+    """Return an argv that preserves arguments through standard Windows npm shims."""
+    if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
+        # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
+        # PowerShell's native-command bridge also rewrites embedded quotes. Match
+        # complete cmd-shim templates so custom wrappers keep their setup behavior.
+        with contextlib.suppress(OSError, UnicodeError, IndexError):
+            shim = Path(executable)
+            contents = shim.read_text(encoding = "utf-8").replace("\r\n", "\n").strip()
+            for pattern in _NPM_NODE_CMD_SHIMS:
+                match = pattern.fullmatch(contents)
+                if match is None:
+                    continue
+                relative = Path(*re.split(r"[\\/]+", match.group("target")))
+                target = (shim.parent / relative).resolve()
+                if not target.is_file() or not any(
+                    part.casefold() == "node_modules" for part in target.parts
+                ):
+                    continue
+                metadata = _npm_node_shim_metadata(target, match, environment or os.environ)
+                if metadata is None:
+                    continue
+                node_args, environment_updates = metadata
+                bundled_node = shim.parent / "node.exe"
+                node = str(bundled_node) if bundled_node.is_file() else shutil.which("node.exe")
+                if node:
+                    if environment is not None:
+                        _apply_windows_environment(environment, environment_updates)
+                    return [node, *node_args, str(target), *arguments]
+
+            match = _NPM_NATIVE_CMD_SHIM.fullmatch(contents)
+            if match is not None:
+                relative = Path(*re.split(r"[\\/]+", match.group("target")))
+                target = (shim.parent / relative).resolve()
+                if (
+                    target.is_file()
+                    and any(part.casefold() == "node_modules" for part in target.parts)
+                    and target.suffix.lower() in {".exe", ".com"}
+                ):
+                    return [str(target), *arguments]
+    return [executable, *arguments]
+
+
 def _launch(
     command: list,
     env: dict,
@@ -2748,7 +2911,8 @@ def _launch(
     # handler, not SIG_IGN: exec preserves an ignored signal but resets a caught one.
     previous = signal.signal(signal.SIGINT, lambda *_: None)
     try:
-        code = subprocess.run([executable, *command[1:]], env = child_env).returncode
+        launch_command = _resolved_launch_command(executable, command[1:], child_env)
+        code = subprocess.run(launch_command, env = child_env).returncode
     finally:
         signal.signal(signal.SIGINT, previous)
     # Negative returncode means killed by signal N; shells expect 128+N.
