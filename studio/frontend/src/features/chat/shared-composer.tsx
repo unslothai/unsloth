@@ -1019,6 +1019,24 @@ export function SharedComposer({
         return;
       }
     }
+    const releaseCompareModelLifecycle = () => {
+      if (compareLifecycleLease === null) {
+        return;
+      }
+      useChatRuntimeStore.getState().endModelLoading(compareLifecycleLease);
+      compareLifecycleLease = null;
+    };
+    const acquireCompareModelLifecycle = () => {
+      if (compareLifecycleLease !== null) {
+        return;
+      }
+      compareLifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading();
+      if (compareLifecycleLease === null) {
+        throw new Error("Another model load started during comparison");
+      }
+    };
 
     setText("");
     setPendingImages([]);
@@ -1414,6 +1432,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const status1 = await ensureModelLoaded(model1);
+          releaseCompareModelLifecycle();
           toast("Generating with Model 1…", {
             id: toastId,
             description: `${name1} (${status1})`,
@@ -1426,6 +1445,7 @@ export function SharedComposer({
 
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
+          acquireCompareModelLifecycle();
           const needsLoad =
             model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
             (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
@@ -1437,6 +1457,7 @@ export function SharedComposer({
             });
           }
           const status2 = await ensureModelLoaded(model2);
+          releaseCompareModelLifecycle();
           toast("Generating with Model 2…", {
             id: toastId,
             description: `${name2} (${status2})`,
@@ -1462,11 +1483,7 @@ export function SharedComposer({
           duration: 4000,
         });
       } finally {
-        if (compareLifecycleLease !== null) {
-          useChatRuntimeStore
-            .getState()
-            .endModelLoading(compareLifecycleLease);
-        }
+        releaseCompareModelLifecycle();
         setComparing(false);
       }
     } else {

@@ -28,3 +28,19 @@ export function shouldAbortPendingQueueForModelBoundary({
       capturedGeneration !== localPromptQueueModelBoundary.capture())
   );
 }
+
+export function shouldAbortPendingQueueForSettingsChange({
+  capturedEpoch,
+  currentEpoch,
+  capturedTemporary,
+  currentTemporary,
+}: {
+  capturedEpoch: number;
+  currentEpoch: number;
+  capturedTemporary: boolean;
+  currentTemporary: boolean;
+}): boolean {
+  return (
+    capturedEpoch !== currentEpoch || capturedTemporary !== currentTemporary
+  );
+}

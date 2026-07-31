@@ -147,6 +147,13 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "temporary: useChatRuntimeStore.getState().incognito" in THREAD
     assert "localPromptQueueModelBoundary.capture()" in THREAD
     assert "shouldAbortPendingQueueForModelBoundary" in THREAD
+    assert "queuedSettingsEpoch:" in THREAD
+    assert "shouldAbortPendingQueueForSettingsChange" in THREAD
+    assert "capturedEpoch: reservation.queuedSettingsEpoch" in THREAD
+    assert "currentEpoch: currentQueueSettings.queuedSettingsEpoch" in THREAD
+    assert "capturedTemporary: reservation.temporary" in THREAD
+    assert "currentTemporary: currentQueueSettings.incognito" in THREAD
+    assert "!settingsInvalidated" in THREAD
     assert "reservation.cancelled = true" in THREAD
     assert "temporaryOnly && !reservation.temporary" in THREAD
     assert "onAborted?.()" in THREAD
@@ -186,8 +193,14 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "addQueuedChatRunSettingsThreadIds(settingsId" in target
     assert ".getItemById(state.id)\n            .initialize()" in target
     assert "await updateStoredChatThread(remoteId" in target
-    assert "const shouldCorrectPersistedModel = !state.remoteId" in target
+    assert "let shouldCorrectPersistedModel: boolean | null = null" in target
+    assert "shouldCorrectPersistedModel ??= !state.remoteId" in target
     assert "if (shouldCorrectPersistedModel)" in target
+    assert (
+        target.index("await updateStoredChatThread(remoteId")
+        < target.index("shouldCorrectPersistedModel = false")
+        < target.index("const appendResult = thread.append(")
+    )
     assert 'modelId: runSettingsAtQueueStart.params.checkpoint ?? ""' in target
     assert target.index("await updateStoredChatThread(remoteId") < target.index(
         "const appendResult = thread.append("
@@ -293,6 +306,23 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "endModelLoading(lifecycleLease)" in eject
     assert "beginModelLoading()" in SHARED_COMPOSER
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
+    assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
+    assert (
+        SHARED_COMPOSER.index("const status1 = await ensureModelLoaded(model1)")
+        < SHARED_COMPOSER.index("releaseCompareModelLifecycle();")
+        < SHARED_COMPOSER.index("handle1.startRun()")
+    )
+    side_two = _between(
+        SHARED_COMPOSER,
+        "// Side 2: load → generate → wait",
+        "compareStepSucceededRef.current = true",
+    )
+    assert (
+        side_two.index("acquireCompareModelLifecycle();")
+        < side_two.index("const status2 = await ensureModelLoaded(model2)")
+        < side_two.index("releaseCompareModelLifecycle();")
+        < side_two.index("handle2.startRun()")
+    )
     assert "requestLocalPromptQueueStop" in eject
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
     assert ".slice(Math.max(run.index, 0))" in THREAD

@@ -109,6 +109,7 @@ import {
   localPromptQueueModelBoundary,
   registerQueuedChatRunSettings,
   shouldAbortPendingQueueForModelBoundary,
+  shouldAbortPendingQueueForSettingsChange,
   snapshotQueuedChatRunSettings,
   composerDraftKey,
   markThreadIncognito,
@@ -2091,6 +2092,7 @@ const Composer: FC<{
         temporary: boolean;
         cancelled: boolean;
         localModelBoundaryGeneration: number;
+        queuedSettingsEpoch: number;
       }
     >(),
   );
@@ -2222,6 +2224,7 @@ const Composer: FC<{
     };
     const pendingSettingsIds = new Set<number>();
     let cancelled = false;
+    let shouldCorrectPersistedModel: boolean | null = null;
     const discardOldestPendingSettings = () => {
       const settingsId = pendingSettingsIds.values().next().value;
       if (settingsId === undefined) {
@@ -2264,7 +2267,7 @@ const Composer: FC<{
           if (!runtime || !state) {
             throw new Error("Prompt queue thread item is unavailable");
           }
-          const shouldCorrectPersistedModel = !state.remoteId;
+          shouldCorrectPersistedModel ??= !state.remoteId;
           // A fresh chat receives its remote id during initialization. Await it
           // before append so the adapter can match the queued settings using
           // unstable_threadId on its first invocation.
@@ -2285,6 +2288,7 @@ const Composer: FC<{
             await updateStoredChatThread(remoteId, {
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
             });
+            shouldCorrectPersistedModel = false;
             if (cancelled || !pendingSettingsIds.has(settingsId)) {
               return;
             }
@@ -2355,22 +2359,33 @@ const Composer: FC<{
         cancelled: false,
         localModelBoundaryGeneration:
           localPromptQueueModelBoundary.capture(),
+        queuedSettingsEpoch:
+          useChatRuntimeStore.getState().queuedSettingsEpoch,
       };
       promptQueueStartPendingRef.current.set(reservationKey, reservation);
       void createPromptQueueTarget()
         .then((target) => {
+          const currentQueueSettings = useChatRuntimeStore.getState();
           const modelBoundaryInvalidated = target
             ? shouldAbortPendingQueueForModelBoundary({
                 capturedGeneration:
                   reservation.localModelBoundaryGeneration,
                 usesLocalModel: target.usesLocalModel,
-                modelLoading: useChatRuntimeStore.getState().modelLoading,
+                modelLoading: currentQueueSettings.modelLoading,
               })
             : false;
+          const settingsInvalidated =
+            shouldAbortPendingQueueForSettingsChange({
+              capturedEpoch: reservation.queuedSettingsEpoch,
+              currentEpoch: currentQueueSettings.queuedSettingsEpoch,
+              capturedTemporary: reservation.temporary,
+              currentTemporary: currentQueueSettings.incognito,
+            });
           if (
             target &&
             !reservation.cancelled &&
             !modelBoundaryInvalidated &&
+            !settingsInvalidated &&
             promptQueueStartPendingRef.current.get(reservationKey) ===
               reservation
           ) {

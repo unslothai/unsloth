@@ -84,6 +84,7 @@ export {
 export {
   localPromptQueueModelBoundary,
   shouldAbortPendingQueueForModelBoundary,
+  shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
 export {
   addQueuedChatRunSettingsThreadIds,
