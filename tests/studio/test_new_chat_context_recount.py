@@ -6,13 +6,12 @@
 A ``/chat?new=<uuid>`` view reaches none of the other recount triggers: it has no persisted
 thread for the history loader, and ``ThreadNewChatSwitch`` writes ``setActiveThreadId(null)``,
 which blanks ``contextUsage``. A page RELOAD adds a second gap -- that effect runs before
-``/api/inference/status`` answers, so the store still holds ``checkpoint: ""`` /
-``ggufContextLength: null`` and the recount returns without counting; the component's
-dependency array is what retries it.
+``/api/inference/status`` answers, so the store still holds ``checkpoint: ""`` and the recount
+returns without counting; the component's dependency array is what retries it.
 
-The effects, the real ``refreshContextUsage`` and the real store reducers are sliced verbatim
-out of the studio sources (see ``_node_harness``) and replayed through a small React-effect
-emulator: per-effect dependency arrays, re-run only when a dependency changed.
+The effects, the real ``refreshContextUsage`` and the real store reducers are sliced verbatim out
+of the studio sources (see ``_node_harness``) and replayed through a React-effect emulator:
+per-effect dependency arrays, re-run only when a dependency changed.
 """
 
 from __future__ import annotations
@@ -370,8 +369,7 @@ def _run(script: str) -> dict:
     return run_harness(TEMP, _harness_source(), script)
 
 
-# The status response that hydrates a resident GGUF. Neither field is persisted, so on a
-# reload both arrive only once /api/inference/status has answered.
+# The status response that hydrates a resident GGUF; neither field survives a reload.
 LOADED_MODEL = """
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
@@ -384,10 +382,9 @@ LOADED_MODEL = """
 @pytest.mark.parametrize(
     ("before_status", "expected_early_counts"),
     [
-        # Arriving on New Chat with the GGUF already resident: the model is known from the
-        # outset and the outgoing chat's usage is blanked. The second render repeats identical
-        # store values (a deferred inventory refresh rewriting the same checkpoint) and must
-        # not re-price.
+        # Arriving on New Chat with the GGUF already resident: the model is known from the outset
+        # and the outgoing chat's usage is blanked. The second render repeats identical store
+        # values (a deferred inventory refresh rewriting the checkpoint) and must not re-price.
         pytest.param(
             LOADED_MODEL
             + """
@@ -399,13 +396,11 @@ LOADED_MODEL = """
             1,
             id = "model_already_resident",
         ),
-        # A page RELOAD of /chat?new=<uuid>: neither the checkpoint nor the window is
-        # persisted, so nothing can be priced until /api/inference/status answers.
+        # A page RELOAD of /chat?new=<uuid>: nothing is priceable until /api/inference/status answers.
         pytest.param("", 0, id = "reload_before_status_hydrates"),
-        # New Chat opened FROM a populated conversation, which is left running: its runtime
-        # stays mounted and the live branch reader keeps returning its messages until the
-        # voided switchToNewThread() settles, which it has not when the recount effect runs in
-        # the same flush. The empty chat must still be priced as a bare template.
+        # New Chat opened FROM a populated conversation, which is left running: its runtime stays
+        # mounted and the live branch reader keeps returning its messages until the voided
+        # switchToNewThread() settles. The empty chat must still be priced as a bare template.
         pytest.param(
             LOADED_MODEL
             + """
@@ -426,9 +421,8 @@ LOADED_MODEL = """
 def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
     before_status, expected_early_counts
 ):
-    """#7450: the empty New Chat request already carries a template, but this view reaches no
-    other recount trigger, so the bar stays hidden until the first completion. It has to land
-    on a count in either order, and open exactly one thread doing so."""
+    """#7450: the empty New Chat request already carries a template, but this view reaches no other
+    recount trigger. It has to land on a count in either order, and open exactly one thread."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -486,10 +480,9 @@ def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
     ids = ["missing", "null", "string", "nan", "infinity", "object"],
 )
 def test_a_count_that_is_not_a_finite_number_never_reaches_the_bar(reply):
-    """The response type is a compile-time assertion, so a 200 from anything other than a
-    matched backend can put a non-number on the bar. ContextUsageBar's "nothing to show"
-    guard is `used <= 0`, which undefined does not satisfy, and its tooltip calls
-    toLocaleString on it."""
+    """The response type is a compile-time assertion, so a 200 from anything but a matched backend
+    can put a non-number on the bar. ContextUsageBar's "nothing to show" guard is `used <= 0`,
+    which undefined does not satisfy, and its tooltip calls toLocaleString on it."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -557,9 +550,8 @@ def test_the_bar_stays_hidden_when_there_is_nothing_to_price(
 
 
 def test_the_hydration_retry_stays_off_a_started_chat():
-    """The user sent a message before the status response landed, so the thread is persisted
-    and a real completion owns the bar. The retry effect re-runs whenever the model fields
-    change, so it needs its own guard against overwriting that usage."""
+    """The user sent a message before the status response landed, so a real completion owns the
+    bar. The retry effect re-runs on any model field change, so it needs its own guard."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -595,8 +587,7 @@ TWO_STORED_TURNS = """
     ];
 """
 
-# A regenerated last answer: the retry is the newest stored leaf, so the branch rebuilt from
-# records is the one the runtime is NOT showing.
+# A regenerated last answer: the newest stored leaf is not the branch the runtime is showing.
 RETRY_BRANCH_STORED = """
     world.storedMessages["thread-a"] = [
       { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
@@ -625,33 +616,28 @@ LIVE_INCOGNITO_BRANCH = """
 @pytest.mark.parametrize(
     ("world_setup", "expected_sent", "counted_model"),
     [
-        # No runtime branch published yet (the history loader's call runs before the import):
-        # the stored records are the only source, and both turns must be priced.
+        # No runtime branch yet: the stored records are the only source, and both turns count.
         pytest.param(TWO_STORED_TURNS, 2, None, id = "stored_branch"),
-        # An incognito chat persists nothing, so listStoredChatMessages returns [] by design
-        # and the records would price a bare template.
+        # An incognito chat persists nothing, so the records would price a bare template.
         pytest.param(LIVE_INCOGNITO_BRANCH, 3, None, id = "incognito_thread_stores_nothing"),
-        # Regenerated, then switched back to the first answer: the newest stored leaf is the
-        # retry, so records reconstruct four turns the request would not send.
+        # Regenerated, then switched back: the stored leaf is the retry, four turns not sent.
         pytest.param(
             RETRY_BRANCH_STORED + LIVE_BRANCH, 2, None, id = "runtime_shows_an_older_branch"
         ),
         # The endpoint counts with whatever is resident, never the model asked for. Another tab
-        # loaded a different GGUF since this client's last status refresh, so the total came
-        # from a tokenizer whose window the bar is not showing -- and this client's own
-        # checkpoint never moved, so the identity reported back is the only witness.
+        # loaded a different GGUF, so the total came from a tokenizer whose window the bar is not
+        # showing -- and this client's checkpoint never moved, so the reported id is the witness.
         pytest.param(
             TWO_STORED_TURNS, 2, "unsloth/other-gguf", id = "another_client_swapped_the_model"
         ),
     ],
 )
 def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, counted_model):
-    """The post-load recount on a real chat: a model change clears the per-thread cache, so
-    the bar has to be refilled by pricing the conversation rather than reusing the last
-    completion's usage. It must price the branch the next request would send -- the mounted
-    runtime's when it has one, the stored records otherwise -- and it must reach the per-thread
-    cache setActiveThreadId restores from, or the bar blanks on the way back. A total counted
-    by another tokenizer is dropped instead, leaving the previous usage in place."""
+    """The post-load recount on a real chat: a model change clears the per-thread cache, so the bar
+    has to be refilled by pricing the conversation. It must price the branch the next request would
+    send -- the mounted runtime's when it has one, the stored records otherwise -- and reach the
+    per-thread cache setActiveThreadId restores from, or the bar blanks on the way back. A total
+    counted by another tokenizer is dropped instead, leaving the previous usage in place."""
     # None means the reply names the model this client already holds, so it is published.
     expected_total = 12 + 25 * expected_sent if counted_model is None else None
     counted_model_setup = (
@@ -699,18 +685,16 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
 @pytest.mark.parametrize(
     ("send_a_turn", "expected_total"),
     [
-        # Sent while the count is in flight, then stopped before any usage is emitted, so
-        # contextUsage never moves and the snapshot guard cannot see the turn.
+        # Sent mid-count then stopped before any usage, so the snapshot guard cannot see the turn.
         pytest.param(True, None, id = "a_turn_arrives_mid_count"),
         # Control: the branch the count priced is still the one on screen.
         pytest.param(False, 62, id = "branch_unchanged"),
     ],
 )
 def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total):
-    """The recount publishes for the branch it priced. A run that starts after the branch is
-    fixed and is stopped (or fails) before writing usage leaves contextUsage reference-equal to
-    the snapshot, so the total lands anyway -- short by the turn just sent, on a bar nothing
-    recounts again until the next completion."""
+    """The recount publishes for the branch it priced. A run that starts after the branch is fixed
+    and is stopped before writing usage leaves contextUsage reference-equal to the snapshot, so the
+    total lands anyway -- short by the turn just sent, until the next completion."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -777,9 +761,8 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
     ids = ["still_streaming", "stopped_before_publish", "idle_and_unchanged"],
 )
 def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, expected_total):
-    """A run streaming into a turn that already exists grows its content without moving the
-    branch length or its last id, so the branch signature cannot see it and the partial is
-    what got priced. The run writes its own usage when it lands, so declining loses nothing."""
+    """A run streaming into an existing turn grows its content without moving the branch length or
+    its last id, so the partial is what got priced. The run writes its own usage when it lands."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -833,14 +816,12 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
 @pytest.mark.parametrize(
     ("mutation", "expected_total"),
     [
-        # A tool result arriving on a tool-call part that already existed. It carries no `text`,
-        # and filling it in adds no part, so neither a text length nor a part tally moves.
+        # A tool result landing on an existing tool-call part: no `text`, and no part added.
         ("live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };", None),
         # An edit to different text of the same length, which a size-based signature cannot see.
         ('live[0].content = [{ type: "text", text: "ih" }];', None),
-        # Deleting an attachment. The counter prices attachment text through collectTextParts,
-        # but the removal handler rewrites `attachments` alone and leaves content and ids as
-        # they were, so nothing else in the branch moves.
+        # Deleting an attachment. The counter prices attachment text, but the removal handler
+        # rewrites `attachments` alone and leaves content and ids as they were.
         ("live[0].attachments = [];", None),
         ("", 62),
     ],
@@ -852,9 +833,8 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
     ],
 )
 def test_a_count_for_a_branch_mutated_without_growing_is_dropped(mutation, expected_total):
-    """The branch a count priced has to be identified by its content, not its size: a tool loop
-    mutates parts in place, so a size-based signature would publish a total for a prompt that
-    has since gained an entire tool result."""
+    """The branch a count priced has to be identified by content, not size: a tool loop mutates
+    parts in place, so a size-based signature would publish a total for a stale prompt."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -972,9 +952,8 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
     ids = ["first_turn_sent_mid_count", "still_empty"],
 )
 def test_a_new_chat_count_is_dropped_once_its_first_run_starts(first_run_starts, expected_total):
-    """A New Chat count captures a null thread id, so it has no branch to compare and the
-    active-thread check stays null until initialize() assigns one. A first turn files its run
-    under "__default", which is the only witness that the bare-template total is now stale."""
+    """A New Chat count captures a null thread id, so it has no branch to compare. A first turn
+    files its run under "__default", the only witness that the bare-template total is now stale."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -1007,10 +986,9 @@ def test_a_new_chat_count_is_dropped_once_its_first_run_starts(first_run_starts,
 
 
 def test_adopting_the_resident_gguf_reprices_the_open_thread():
-    """Switching back from an external provider to the local model that never left memory takes
-    loadModel's already-resident branch, which returns before the post-load recount.
-    setCheckpoint blanks the bar on the way through and a mounted thread does not rerun its
-    history loader, so this branch has to recount or the bar stays empty."""
+    """Switching back to a local model that never left memory takes loadModel's already-resident
+    branch, which returns before the post-load recount. setCheckpoint blanks the bar and a mounted
+    thread does not rerun its history loader, so this branch must recount or the bar stays empty."""
     out = _run(
         textwrap.dedent(
             """
@@ -1056,9 +1034,8 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
     assert (out["cached"] or {}).get("totalTokens") == 62
 
 
-# Revisiting a thread that was NOT the one open when the model changed: setCheckpoint emptied
-# contextUsageByThreadId, setActiveThreadId has nothing to restore, and the thread is already
-# mounted so its history loader never runs again.
+# Revisiting a thread that was NOT open when the model changed: setCheckpoint emptied
+# contextUsageByThreadId, and the thread is already mounted so its history loader never reruns.
 REVISIT_AFTER_A_MODEL_SWITCH = """
     seed({
       activeThreadId: "thread-b",
@@ -1077,9 +1054,8 @@ REVISIT_AFTER_A_MODEL_SWITCH = """
     renderThreadContextUsageRecount();
 """
 
-# A deep link to /chat/:id against an already-resident GGUF: the history loader's own recount
-# runs before /api/inference/status answers, and the status response lands before
-# ThreadAutoSwitch has written activeThreadId, so neither of those counts.
+# A deep link to /chat/:id against a resident GGUF: the history loader's own recount runs before
+# /api/inference/status answers, and status lands before ThreadAutoSwitch writes activeThreadId.
 DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
     renderThreadContextUsageRecount();
     await refreshContextUsage({ threadId: "thread-a" });
@@ -1107,10 +1083,9 @@ DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
     ],
 )
 def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scenario):
-    """#7450 again, from the two orderings the load-time and history-load recounts miss. Both
-    end with a thread the bar points at, a known model and window, and no usage to show, so the
-    recount has to run off the thread becoming active rather than off either of those
-    independently timed callbacks."""
+    """#7450 again, from the two orderings the load-time and history-load recounts miss. Both end
+    with a thread the bar points at, a known model and window, and no usage, so the recount has to
+    run off the thread becoming active rather than off either independently timed callback."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -1139,8 +1114,7 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
             """
         )
     )
-    # thread-b in the first case still holds a completion's usage: an exact number this count
-    # would only ever estimate, so becoming active must leave it alone.
+    # thread-b still holds a completion's usage: exact, so becoming active must leave it alone.
     assert out["beforeSwitch"] == 0, "nothing to reprice until the thread is the active one"
     assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
         "a thread the bar points at with no cached usage stays blank until the next "
@@ -1154,8 +1128,7 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
 @pytest.mark.parametrize(
     ("mount", "expected_total"),
     [
-        # The runtime mounted during the count and the user had already sent a turn, so the
-        # stored branch this count priced is a prefix of what the next request will send.
+        # The runtime mounted mid-count after a turn was sent, so the priced branch is a prefix.
         (
             'live = [...stored, { id: "m3", role: "user", createdAt: new Date(3),'
             ' content: [{ type: "text", text: "and another" }] }];',
@@ -1169,9 +1142,8 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
     ids = ["mounted_with_a_new_turn", "mounted_unchanged", "still_unmounted"],
 )
 def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(mount, expected_total):
-    """A recount that falls back to storage runs before the thread is mounted, so it has no
-    live branch to sign. Ids survive both shapes, so the last one is the witness: if the
-    runtime has mounted a different tail by publish time, the stored total is already stale."""
+    """A recount that falls back to storage runs before the thread is mounted, so it has no live
+    branch to sign. Ids survive both shapes: a different mounted tail means the total is stale."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -1230,9 +1202,8 @@ def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(mount
     ids = ["output_only_audio", "audio_input_model", "plain_gguf"],
 )
 def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_counts):
-    """A TTS GGUF sends through /audio/generate, which prices the latest user message alone
-    inside a codec prompt and answers with no usage. Counting the chat template over the whole
-    thread would park a total on the bar that describes nothing and that nothing corrects."""
+    """A TTS GGUF sends through /audio/generate, which answers with no usage. A chat-template total
+    over the thread would park a number on the bar that describes nothing and nothing corrects."""
     out = _run(
         textwrap.dedent(
             f"""

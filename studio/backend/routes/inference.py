@@ -2293,16 +2293,14 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
     """True when a GGUF request is forwarded to llama-server verbatim.
 
-    The passthrough sends the caller's own tools, no built-in schema and no nudge, so the
-    token counter must reach this verdict BEFORE applying the process tool policy:
-    `unsloth run --enable-tools` sets that policy without asking for Unsloth's tool loop,
-    so counting its catalog would price a prompt the completion never sends.
+    The passthrough sends the caller's own tools, no built-in schema and no nudge, so the counter
+    must decide this BEFORE applying the process tool policy: `unsloth run --enable-tools` sets
+    that policy without asking for the tool loop, so its catalog would price a prompt never sent.
     """
     supports_tools = getattr(llama_backend, "supports_tools", False)
     if supports_tools and _explicit_studio_tool_loop_requested(payload):
         return False
-    # Read defensively: a count request carries no tool_choice and usually no
-    # response_format, and absent means the caller withdrew neither.
+    # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
     ) or _has_openai_tool_history(payload.messages)
@@ -2315,9 +2313,8 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
 def _passthrough_client_tools(payload):
     """The caller's own tool catalog exactly as the passthrough puts it on the wire.
 
-    ``tool_choice: "none"`` withdraws it, but only when no tool history needs those schemas
-    to replay. llama-server renders whatever ``tools`` reaches ``/apply-template`` regardless
-    of tool_choice, so the counter must share this rule or it overprices.
+    ``tool_choice: "none"`` withdraws it, unless tool history needs those schemas to replay.
+    /apply-template renders any ``tools`` regardless of tool_choice, so the counter shares the rule.
     """
     if getattr(payload, "tool_choice", None) == "none" and not _has_openai_tool_history(
         payload.messages
@@ -7697,8 +7694,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             _model_id = llama_backend.model_identifier
             # is_local_model below needs the flag; the helper reports identities, not provenance.
             _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
-            # Shared with /chat/count_tokens, which hands the same identity back so a
-            # client can tell whose tokenizer produced a count.
+            # Shared with /chat/count_tokens, so a client can tell whose tokenizer counted.
             _display_model_id, _reported_model_identifier = _llama_status_model_ids(llama_backend)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
@@ -9883,9 +9879,8 @@ async def openai_chat_completions(
     # One helper, shared with the token counter, so a count can never describe a route the
     # completion does not take. Guided decoding routes here too so response_format reaches
     # llama-server: the non-passthrough path calls generate_chat_completion, which has no
-    # response_format kwarg and would silently drop the schema (leaving data_designer on
-    # free-form sampling). It needs no ``supports_tools`` -- grammars are independent of
-    # tool-call parsing.
+    # response_format kwarg and would silently drop the schema, leaving data_designer on
+    # free-form sampling. No ``supports_tools`` needed -- grammars are independent of it.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
@@ -15045,12 +15040,10 @@ async def chat_count_tokens(
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
-    Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational,
-    the active model is used. The caller is a background recount with no abort signal, so
-    switching could drag the backend back to the model loaded when the count started, a
-    server-side reload the frontend's checkpoint guards cannot undo."""
-    # /apply-template swaps every image for a short media marker, so refuse rather than
-    # undercount by the whole embedding.
+    Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
+    caller is a background recount with no abort signal, so switching could drag the backend back
+    to the model loaded when the count started, a reload the client's guards cannot undo."""
+    # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
     if _request_has_image(payload):
         raise HTTPException(
             status_code = 503,
@@ -15070,10 +15063,9 @@ async def chat_count_tokens(
             detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
-    # Same sanitization the GGUF chat path runs before generation, so the count renders the
-    # prompt the next request would build. Route FIRST: the passthrough forwards what
-    # _openai_messages_for_passthrough builds, which does not merge adjacent user turns, so
-    # coalescing here would price a prompt that route never sends. (Two user turns split
+    # Same sanitization the GGUF chat path runs before generation. Route FIRST: the passthrough
+    # forwards what _openai_messages_for_passthrough builds, which does not merge adjacent user
+    # turns, so coalescing here would price a prompt that route never sends. (Two user turns split
     # by an empty assistant sentinel is that shape, after a stopped response.)
     _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
     openai_messages = _strip_provider_synthetic_tool_history(
@@ -15084,13 +15076,12 @@ async def chat_count_tokens(
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
-    # A thread left on a PENDING turn (unanswered user message, or a tool result an
-    # interrupted loop never answered) is the one shape where the next generation runs on
-    # exactly these messages -- and the tool loop starts it by splicing in whatever
-    # build_rag_autoinject retrieves, thousands of tokens this count never sees, so the bar
-    # would claim the turn fits when the generation would not. Retrieval is not this
-    # endpoint's job, so decline as the image case does. Any other shape ends in an assistant
-    # turn, where retrieval would run against a user message that does not exist yet.
+    # A thread left on a PENDING turn (unanswered user message, or a tool result an interrupted
+    # loop never answered) is the one shape where the next generation runs on exactly these
+    # messages -- and the tool loop starts it by splicing in whatever build_rag_autoinject
+    # retrieves, thousands of tokens this count never sees, so the bar would claim the turn fits
+    # when the generation would not. Retrieval is not this endpoint's job, so decline. Any other
+    # shape ends in an assistant turn, where retrieval has no user message to run against.
     if (
         payload.rag_scope
         and openai_messages
@@ -15103,18 +15094,16 @@ async def chat_count_tokens(
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
-    # The passthrough is the only route that puts the caller's own catalog on the wire, and
-    # only under _passthrough_client_tools' rule. Every other route renders tools solely from
-    # the selection below, so a catalog surviving here would price schemas the completion never
-    # sends -- which is what tool_choice "none" would do: it withdraws the catalog and disables
-    # the selection, leaving payload.tools as the only thing /apply-template still renders.
+    # The passthrough is the only route that puts the caller's own catalog on the wire, and only
+    # under _passthrough_client_tools' rule. Every other route renders tools solely from the
+    # selection below, so a catalog surviving here would price schemas the completion never sends
+    # -- which is what tool_choice "none" would do, since it also disables that selection.
     openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
     _cli_policy = _get_tool_policy_ct()
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
-    # Schemas and the action nudge are a large share of a tool-enabled prompt, so price them
-    # from the same selection the completion path makes.
+    # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
     _mcp_allowed = (
         not _client_disabled_tool_calls and bool(payload.mcp_enabled) and _cli_policy is not False
@@ -15137,8 +15126,8 @@ async def chat_count_tokens(
                 ),
             )
 
-            # The GGUF tool path strips leaked markup from replayed history before
-            # rendering; without the same strip the count prices text it removes.
+            # The GGUF tool path strips leaked markup from replayed history before rendering;
+            # without the same strip the count prices text it removes.
             _count_auto_heal = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
@@ -15152,17 +15141,16 @@ async def chat_count_tokens(
                         enabled_tool_names = _count_history_gate,
                     ).strip()
 
-    # llama-server merges the load-time --chat-template-kwargs under whatever a request
-    # omits, so sending nothing here prices the template as the model was LOADED.
+    # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
+    # so omitting these prices the template in whatever mode the model was LOADED in.
     _template_kwargs = llama_backend._request_reasoning_kwargs(
         payload.enable_thinking,
         payload.reasoning_effort,
         payload.preserve_thinking,
     )
 
-    # Whose tokenizer this is, in the shape /api/inference/status publishes. Another tab's
-    # load silently moves the tokenizer while the caller's own guard still sees its captured
-    # checkpoint unchanged, so report the identity and let it drop a total it cannot show.
+    # Whose tokenizer this is, in the shape /api/inference/status publishes: another tab's load
+    # moves it while the caller's own checkpoint guard sees no change, so report and let it drop.
     _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
 
     try:
@@ -15179,8 +15167,7 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
-    # A load landing mid-count leaves the total attributable to neither model, and reporting
-    # either identity would have the caller trust it.
+    # A load landing mid-count leaves the total attributable to neither model.
     if _llama_status_checkpoint_id(llama_backend) != _tokenizer_model:
         raise HTTPException(
             status_code = 503,

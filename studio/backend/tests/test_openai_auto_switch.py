@@ -3184,15 +3184,13 @@ def _count_tokens_backend(
     supports_tools = False,
     reasoning_style = "enable_thinking",
 ):
-    """A loaded GGUF backend wired into the count endpoint, as ``(switched, counted)``:
-    auto-switch attempts, and the messages/system/tools/template kwargs the route hands
-    to the tokenizer."""
+    """A loaded GGUF backend wired into the count endpoint, as ``(switched, counted)``: auto-switch
+    attempts, and the messages/system/tools/template kwargs the route hands to the tokenizer."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = _FakeBackend(loaded_id)
     backend.supports_tools = supports_tools
-    # The real kwargs builder, so this pins the route against the mapping the completion
-    # paths use rather than a reimplementation.
+    # The real kwargs builder, so this pins the route against the completion path's mapping.
     backend._supports_reasoning = True
     backend._reasoning_always_on = False
     backend._reasoning_style = reasoning_style
@@ -3260,8 +3258,7 @@ def _counted_body(payload):
     ],
 )
 def test_chat_count_tokens_prices_the_loaded_model_without_switching(monkeypatch, content):
-    # The recount has no abort signal, so a stale payload still naming the previously
-    # loaded model A must not drag the backend back to it: count whatever is loaded.
+    # The recount has no abort signal, so a stale payload naming A must not drag the backend back.
     switched, _counted = _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 42)
     payload = _count_request([{"role": "user", "content": content}])
     # The reply names B, the tokenizer that produced the total, not the A asked for.
@@ -3270,8 +3267,7 @@ def test_chat_count_tokens_prices_the_loaded_model_without_switching(monkeypatch
 
 
 def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
-    # Schemas and the action nudge are a large share of a tool-enabled prompt, so they
-    # must be priced from the same selection the completion path makes.
+    # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
     gate = {}
 
@@ -3294,8 +3290,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     )
 
 
-# A leaked tool call in a replayed assistant turn, plus an example naming a tool that is
-# NOT enabled -- prose the strip's gate keeps, in the prompt and in the count.
+# A leaked tool call in a replayed turn, plus an example naming a NOT-enabled tool the gate keeps.
 _LEAKED_TOOL_HISTORY = [
     {"role": "user", "content": "weather?"},
     {
@@ -3310,8 +3305,7 @@ _LEAKED_TOOL_HISTORY = [
 @pytest.mark.parametrize(
     ("fields", "expect_markup"),
     [
-        # Auto-Heal on (the default): the GGUF tool path strips before rendering, so
-        # counting the raw markup would report a prompt larger than the one sent.
+        # Auto-Heal on (default): the tool path strips before rendering, so raw markup reads high.
         pytest.param({}, False, id = "auto_heal_default_on"),
         pytest.param({"auto_heal_tool_calls": True}, False, id = "auto_heal_on"),
         # Off leaves the markup in the real prompt, so the count has to keep it as well.
@@ -3364,9 +3358,8 @@ _PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
 @pytest.mark.parametrize(
     ("cli_policy", "messages", "fields", "priced_tools"),
     [
-        # The reported shape: `unsloth run --enable-tools` sets the process policy without
-        # asking for Unsloth's tool loop, so a request with tool history still goes to
-        # llama-server verbatim, with neither a built-in schema nor the nudge.
+        # The reported shape: `unsloth run --enable-tools` sets the process policy without asking
+        # for the tool loop, so tool history still goes to llama-server verbatim, bare.
         pytest.param(
             True,
             _PASSTHROUGH_TOOL_HISTORY,
@@ -3374,8 +3367,7 @@ _PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
             None,
             id = "cli_policy_does_not_price_a_passthrough_prompt",
         ),
-        # Negative control: with no tool history the same policy takes the ordinary GGUF
-        # loop, which does select and render that catalog.
+        # Negative control: with no tool history the same policy takes the ordinary GGUF loop.
         pytest.param(
             True,
             _PASSTHROUGH_PLAIN,
@@ -3391,8 +3383,7 @@ _PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
             ["get_weather"],
             id = "client_catalog_is_priced_verbatim",
         ),
-        # tool_choice "none" withdraws the catalog and leaves the request on the ordinary
-        # path, which renders no tools at all.
+        # tool_choice "none" withdraws the catalog, leaving the request on the ordinary path.
         pytest.param(
             None,
             _PASSTHROUGH_PLAIN,
@@ -3400,8 +3391,7 @@ _PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
             None,
             id = "withdrawn_catalog_is_not_priced",
         ),
-        # ... unless tool history still needs those schemas to replay, which keeps the
-        # request on the passthrough with the catalog on the wire.
+        # ... unless tool history needs those schemas to replay, keeping it on the passthrough.
         pytest.param(
             None,
             _PASSTHROUGH_TOOL_HISTORY,
@@ -3409,8 +3399,7 @@ _PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
             ["get_weather"],
             id = "withdrawn_catalog_with_tool_history_is_priced",
         ),
-        # It withdraws the process policy's own catalog too, exactly as the completion
-        # path's _client_disabled_tool_calls does.
+        # It withdraws the process policy's own catalog too, as _client_disabled_tool_calls does.
         pytest.param(
             True,
             _PASSTHROUGH_PLAIN,
@@ -3425,9 +3414,8 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
 ):
     """The count must describe the request the completion actually sends (#7453).
 
-    Applying the process tool policy without first asking which route the request takes
-    prices a built-in catalog plus the action nudge, while the completion forwards the
-    request to llama-server verbatim and sends neither.
+    Applying the process tool policy without first asking which route the request takes prices a
+    built-in catalog plus the action nudge, while the completion forwards verbatim and sends neither.
     """
     import state.tool_policy as _tp
 
@@ -3454,9 +3442,8 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
 def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypatch):
     """Coalescing is an ordinary-GGUF-path step, so it has to follow the routing.
 
-    ``_openai_messages_for_passthrough`` drops the empty assistant sentinel but keeps the
-    two user turns around it -- the shape a thread has after a response is stopped before
-    its first token. Merging them prices a prompt that route never sends.
+    ``_openai_messages_for_passthrough`` drops the empty assistant sentinel but keeps the two user
+    turns around it (a stopped response's shape), so merging prices a prompt that route never sends.
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
     sentinel_thread = [
@@ -3471,8 +3458,7 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
         "second",
     ]
 
-    # Negative control: off the passthrough the same thread merges, so a strict template
-    # never sees two user turns in a row.
+    # Negative control: off the passthrough the same thread merges, so no two user turns in a row.
     _counted_body(_count_request(sentinel_thread))
     assert [message.get("content") for message in counted.get("messages") or []] == [
         "first\n\nsecond"
@@ -3480,8 +3466,7 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
 
 
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):
-    # Images become a short /apply-template marker, so a count would be short by the whole
-    # embedding. Refuse rather than undercount, and refuse before the switch.
+    # Images become a short /apply-template marker: refuse rather than undercount, before the switch.
     switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
     payload = _count_request(
         [
@@ -3505,8 +3490,7 @@ def test_chat_count_tokens_refuses_image_messages(monkeypatch):
 
 
 def test_chat_count_tokens_refuses_audio_messages(monkeypatch):
-    # extra = "allow", so without this guard audio_base64 is accepted, dropped, and answered
-    # with a total short by the clip the completion would have injected.
+    # extra = "allow", so without this guard audio_base64 is accepted, dropped and undercounted.
     switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
     payload = _count_request(
         [{"role": "user", "content": "what did I just say"}],
@@ -3528,9 +3512,8 @@ def test_chat_count_tokens_still_counts_without_audio(monkeypatch):
     assert counted != {}, "the tokenizer must be reached"
 
 
-# Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is one
-# the next generation answers from these exact messages, and the tool loop opens that turn by
-# splicing in what build_rag_autoinject retrieves.
+# Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is answered
+# from these exact messages, and the tool loop opens it by splicing in what RAG retrieves.
 _PENDING_USER_TURN = [{"role": "user", "content": "what does the contract say"}]
 _PENDING_TOOL_TURN = [
     {"role": "user", "content": "what does the contract say"},
@@ -3546,13 +3529,11 @@ _SETTLED_TURN = [
 @pytest.mark.parametrize(
     ("messages", "rag_scope", "expected_total"),
     [
-        # Retrieval would splice whole-document or top-K passages in front of this turn, so
-        # counting the messages alone says it fits when the generation does not.
+        # Retrieval splices passages in front of this turn, so counting alone says it fits.
         pytest.param(_PENDING_USER_TURN, {"thread_id": "t1"}, None, id = "pending_user_turn"),
         # An interrupted loop's unanswered tool result is the same pending shape.
         pytest.param(_PENDING_TOOL_TURN, {"project_id": "p1"}, None, id = "pending_tool_turn"),
-        # Ends on an assistant turn: the next retrieval runs against a user message that does
-        # not exist yet, so nothing is omitted and the count stands.
+        # Ends on an assistant turn: retrieval has no user message yet, so nothing is omitted.
         pytest.param(_SETTLED_TURN, {"thread_id": "t1"}, 4242, id = "settled_turn_still_counts"),
         # No documents in scope means no injection to miss, pending turn or not.
         pytest.param(_PENDING_USER_TURN, None, 4242, id = "no_rag_scope_still_counts"),
@@ -3561,9 +3542,8 @@ _SETTLED_TURN = [
 def test_chat_count_tokens_declines_a_pending_turn_that_would_retrieve(
     monkeypatch, messages, rag_scope, expected_total
 ):
-    """A recount that omits RAG injection under-reports by however much was retrieved,
-    which is exactly the direction the context bar must never be wrong in. Decline as the
-    image case does and leave the bar showing the usage it already had."""
+    """A recount that omits RAG injection under-reports, the one direction the context bar must
+    never be wrong in. Decline as the image case does and leave the usage the bar already had."""
     _switched, counted = _count_tokens_backend(monkeypatch, count = 4242)
     payload = _count_request(
         messages,
@@ -3585,9 +3565,8 @@ def test_chat_count_tokens_declines_a_pending_turn_that_would_retrieve(
 
 
 def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch):
-    """A load landing while the tokenizer runs leaves a total attributable to neither model,
-    and the caller's own checkpoint guard never moved, so reporting either identity would
-    have it trust the number."""
+    """A load landing while the tokenizer runs leaves a total attributable to neither model, and
+    the caller's checkpoint guard never moved, so either identity would have it trust the number."""
     _switched, counted = _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 555)
     backend = inference_route.get_llama_cpp_backend()
     inner = backend.count_chat_tokens
@@ -3614,8 +3593,7 @@ def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch
 
 
 def test_chat_count_tokens_collapses_system_turns(monkeypatch):
-    # The completion path joins every system/developer turn into one, so the count has to
-    # render that prompt rather than the raw history.
+    # The completion path joins every system/developer turn into one; the count renders that.
     _switched, counted = _count_tokens_backend(monkeypatch, count = 13)
     payload = _count_request(
         [
@@ -3635,9 +3613,8 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
 @pytest.mark.parametrize(
     ("reasoning_style", "fields", "expected"),
     [
-        # Qwen3-style gate: with Thinking off the completion sends enable_thinking=false and
-        # the template prefills an empty <think> block. Without the same kwarg here
-        # /apply-template renders whatever the model was LOADED with.
+        # Qwen3-style gate: with Thinking off the completion sends enable_thinking=false and the
+        # template prefills an empty <think> block; without it, the LOADED mode renders.
         pytest.param(
             "enable_thinking",
             {"enable_thinking": False},
@@ -3651,8 +3628,7 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
             {"reasoning_effort": "low"},
             id = "effort_level",
         ),
-        # preserve_thinking decides whether past <think> blocks stay in the prompt: the
-        # difference between a short count and the whole reasoning history.
+        # preserve_thinking decides whether past <think> blocks stay: a short count or the history.
         pytest.param(
             "enable_thinking",
             {"enable_thinking": True, "preserve_thinking": True},
@@ -3666,8 +3642,7 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
 def test_chat_count_tokens_renders_the_requested_reasoning_mode(
     monkeypatch, reasoning_style, fields, expected
 ):
-    # llama-server layers a request's chat_template_kwargs over the load-time
-    # --chat-template-kwargs, so omitting them prices the mode the model was LOADED in.
+    # llama-server layers request kwargs over the load-time ones: omitting them prices LOAD mode.
     _switched, counted = _count_tokens_backend(
         monkeypatch, count = 7, reasoning_style = reasoning_style
     )
@@ -3679,8 +3654,7 @@ def test_chat_count_tokens_renders_the_requested_reasoning_mode(
 @pytest.mark.parametrize(
     ("template_kwargs", "expected_tokens"),
     [
-        # Thinking off: the template prefills an empty <think></think> pair the completion
-        # spends tokens on, so the count has to include it.
+        # Thinking off: the template prefills an empty <think></think> pair the completion pays for.
         pytest.param({"enable_thinking": False}, 5, id = "thinking_off"),
         pytest.param(None, 3, id = "template_default"),
     ],
@@ -3747,18 +3721,16 @@ def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
 @pytest.mark.parametrize(
     "failure",
     [
-        # A minja template that cannot render this history (strict role alternation, an
-        # unsupported filter), or a build without the endpoint.
+        # A minja template that cannot render this history, or a build without the endpoint.
         pytest.param("status", id = "apply_template_rejects"),
         # The template call times out while the tokenizer answers.
         pytest.param("raise", id = "apply_template_unreachable"),
     ],
 )
 def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure):
-    """/apply-template failing on a TEXT-ONLY prompt used to fall through to concatenating
-    message text, dropping every role marker, special token and tool schema (~30% of a
-    six-turn two-tool prompt). Strict callers publish what they get, so it must be an
-    error, not an estimate."""
+    """/apply-template failing on a TEXT-ONLY prompt used to fall through to concatenating message
+    text, dropping every role marker, special token and tool schema (~30% of a six-turn two-tool
+    prompt). Strict callers publish what they get, so it must be an error, not an estimate."""
     from core.inference import llama_cpp as llama_cpp_mod
     from core.inference.llama_cpp import LlamaCppBackend
 

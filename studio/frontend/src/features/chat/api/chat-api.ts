@@ -218,8 +218,7 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
-  // `model` is informational: the endpoint counts with whatever is resident and reports
-  // which that was, in the same shape status publishes (model_identifier ?? active_model).
+  // `model` is informational: the endpoint counts with whatever is resident and reports which.
 }): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",

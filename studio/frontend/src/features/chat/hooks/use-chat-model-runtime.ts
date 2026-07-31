@@ -321,10 +321,9 @@ async function syncInferenceStatusToStore(options?: {
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Studio starting against an already-resident GGUF: history can load before this
-        // first status refresh has a checkpoint or window, so its own recount never runs and
-        // the bar stays blank. Only into a blank bar on a mounted thread: a populated bar
-        // already holds usage, and a null thread would publish an empty count.
+        // Studio starting against an already-resident GGUF: history can load before this first
+        // status refresh has a checkpoint or window, so its own recount never runs. Only into a
+        // blank bar on a mounted thread; a null thread would publish an empty count.
         const hydrated = useChatRuntimeStore.getState();
         if (
           !selectedCheckpoint &&
@@ -603,9 +602,8 @@ export function useChatModelRuntime() {
           });
           syncModelCapabilities(modelId, residentStatus);
           // setCheckpoint above blanked the bar and this path returns before the post-load
-          // recount below, while a mounted thread does not rerun its history loader on the
-          // way back -- so without this the bar stays empty until the next completion.
-          // Guarded inside: a non-GGUF resident has no window.
+          // recount below, while a mounted thread does not rerun its history loader on the way
+          // back, so the bar would stay empty until the next completion. Guarded inside.
           void refreshContextUsage({ afterModelLoad: true });
           return;
         }

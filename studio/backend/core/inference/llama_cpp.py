@@ -13600,14 +13600,12 @@ class LlamaCppBackend:
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
-        Non-strict callers keep the historical best-effort behavior and receive
-        0 when a count cannot be determined. Strict callers (public count_tokens
-        endpoints) get an exception instead of a successful-looking number when
-        the tokenizer fails or the chat template cannot be rendered, since the
-        text-only fallback is an approximation and not a count.
+        Non-strict callers keep the historical best-effort behavior and get 0 when a
+        count cannot be determined. Strict callers (public count_tokens endpoints)
+        raise instead: the text-only fallback is an approximation, not a count.
 
         ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller can
-        price a request that renders the template in a non-default reasoning mode.
+        price a request rendered in a non-default reasoning mode.
         """
         if not self.is_loaded:
             if strict:
@@ -13668,8 +13666,8 @@ class LlamaCppBackend:
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
-                    # llama-server layers the request's kwargs over the load-time
-                    # --chat-template-kwargs, so only the keys sent here move.
+                    # llama-server layers these over the load-time --chat-template-kwargs,
+                    # so only the keys sent here move.
                     if chat_template_kwargs:
                         template_body["chat_template_kwargs"] = chat_template_kwargs
                     resp = client.post(

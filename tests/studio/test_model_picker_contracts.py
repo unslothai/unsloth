@@ -1232,8 +1232,8 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     assert "const NATIVE_FILE_LABEL_RE = /^[^/\\\\]+\\.gguf$/i;" in identity
 
     inference = _read_backend("routes/inference.py")
-    # The pair is built in _llama_status_model_ids, which /api/inference/status and the
-    # checkpoint helper both read, so the two cannot report different identities.
+    # Both /api/inference/status and the checkpoint helper read _llama_status_model_ids,
+    # so the two cannot report different identities.
     assert (
         "return display_model_id, (None if native_grant_backed else model_id)" in inference
     ), "why the checkpoint is only a display name"

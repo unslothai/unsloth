@@ -1266,18 +1266,17 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
-// The Canvas instructions createOpenAIStreamAdapter appends to the outbound system
-// prompt. Named so the token recount below prices the same text the request carries.
+// The Canvas instructions createOpenAIStreamAdapter appends, named so the recount below prices
+// the same text the request carries.
 export const CANVAS_TOOL_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
 export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
 /**
- * The OpenAI-form messages a completion would send, for the token recount behind the
- * context usage bar. Mirrors the prune + system-prompt half of createOpenAIStreamAdapter.
- * The tool catalog is priced server-side from buildLocalTokenCountExtras' flags, since
- * `unsloth run --enable-tools` can inject schemas the client cannot see.
+ * The OpenAI-form messages a completion would send, for the token recount. Mirrors the prune +
+ * system-prompt half of createOpenAIStreamAdapter; the tool catalog is priced server-side from
+ * buildLocalTokenCountExtras' flags, since --enable-tools can inject schemas the client cannot see.
  */
 export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
@@ -1326,9 +1325,8 @@ export async function buildOutboundMessagesForTokenCount(
     });
   }
 
-  // Canvas appends one of these on every request, tool schema or not, so a count without
-  // it reads low and can say a chat fits when the next completion would not. The adapter's
-  // image gate is never why render_html is off here: the count route refuses images.
+  // Canvas appends one of these on every request, schema or not, so a count without it reads low.
+  // The adapter's image gate is never why render_html is off here: the count route refuses images.
   const canvasInstruction = artifactsEnabled
     ? supportsTools
       ? CANVAS_TOOL_INSTRUCTION
@@ -1351,10 +1349,9 @@ export async function buildOutboundMessagesForTokenCount(
 
 /**
  * The reasoning fields a completion would send. The backend turns these into llama-server
- * `chat_template_kwargs`, and llama-server falls back to the load-time
- * `--chat-template-kwargs` only for keys a request omits -- so a count that sends none of
- * them renders the template in whatever mode the model was LOADED in, and any template that
- * prefills a thinking block or drops past reasoning reports the wrong prompt size.
+ * `chat_template_kwargs`, and llama-server falls back to the load-time `--chat-template-kwargs`
+ * only for keys a request omits -- so a count sending none renders the template in whatever mode
+ * the model was LOADED in, and any template that prefills a thinking block misreports the size.
  */
 export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   const {
@@ -1366,15 +1363,14 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
     supportsPreserveThinking,
     preserveThinking,
   } = useChatRuntimeStore.getState();
-  // Same clamp the request build applies, so a level the loaded template does not offer
-  // is not sent (the backend would drop it and count against the template default).
+  // Same clamp the request build applies: a level the loaded template does not offer would be
+  // dropped by the backend and counted against the template default.
   const localReasoningEffort = clampReasoningEffortToLevels(
     reasoningEffort,
     reasoningEffortLevels,
   );
   return {
-    // enable_thinking, never the Anthropic-style `thinking` block the request may use:
-    // ChatCompletionRequest normalizes that shape into enable_thinking anyway.
+    // enable_thinking, not the Anthropic-style `thinking` block: the backend normalizes it anyway.
     ...(supportsReasoning
       ? reasoningStyle === "enable_thinking_effort"
         ? reasoningEnabled
@@ -1393,9 +1389,8 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 }
 
 /**
- * The tool flags a completion would send, so the count includes the tool schemas and the
- * action nudge. Same gates the adapter applies before it turns tools on; the render_html
- * image gate is left to the server, which sees the rendered prompt.
+ * The tool flags a completion would send, so the count includes the schemas and the action nudge.
+ * Same gates the adapter applies; the render_html image gate is left to the server.
  */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
@@ -1440,8 +1435,8 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
-    // Only its truthiness is read server-side, to keep search_knowledge_base in the
-    // catalog and its grounding nudge in the prompt; no retrieval runs for a count.
+    // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
+    // in the prompt; no retrieval runs for a count.
     ...(ragOn
       ? {
           rag_scope: {
@@ -1453,9 +1448,8 @@ export async function buildLocalTokenCountExtras(
                     ? { project_id: ragProjectId }
                     : {}),
                 }),
-            // Carried for the same reason the completion carries them: an unpersisted New
-            // Chat has neither id, and {} is falsy in Python, so the count alone would drop
-            // the tool and the nudge that the send prices.
+            // Carried as the completion carries them: an unpersisted New Chat has neither id,
+            // and {} is falsy in Python, so the count alone would drop the tool and its nudge.
             default_top_k: ragTopK,
             mode: ragMode,
           },

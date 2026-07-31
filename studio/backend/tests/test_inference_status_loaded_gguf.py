@@ -4,9 +4,8 @@
 """``GET /api/inference/status`` must answer with a GGUF loaded.
 
 The loaded-GGUF branch sits inside a ``try`` whose ``except`` reports 500, so an undefined
-name there is invisible until something loads a model and asks for status -- which is how
-``_native_grant_backed`` once lost its binding to a refactor while ``is_local_model`` kept
-reading it. The backend here is a stub: no GPU, no llama-server, no GGUF on disk.
+name there is invisible until it runs -- which is how ``_native_grant_backed`` once lost its
+binding to a refactor while ``is_local_model`` kept reading it. The backend is a stub.
 """
 
 import asyncio
