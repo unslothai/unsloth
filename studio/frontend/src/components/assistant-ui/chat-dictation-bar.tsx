@@ -236,7 +236,7 @@ export const ChatDictationBar: FC<{
       <span className="mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
         {formatElapsed(elapsed)}
       </span>
-      <div className="flex shrink-0 items-center gap-3">
+      <div className="flex shrink-0 items-center gap-2.5">
         <TooltipIconButton
           type="button"
           tooltip={transcribing === "stop" ? "Transcribing…" : "Stop recording"}
