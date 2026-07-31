@@ -83,8 +83,8 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
 
             check_dataset_for_missing_videos(
                 examples,
-                raise_error=True,
-                checked=self._checked_video_paths,
+                raise_error = True,
+                checked = self._checked_video_paths,
             )
 
             if formatting_func is None:

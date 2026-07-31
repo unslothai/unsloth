@@ -571,6 +571,7 @@ def test_real_collator_restores_formatting_func_when_super_raises(
         collator([{"anything": 1}])
     assert collator.formatting_func is fmt
 
+
 def test_vision_collator_thread_safety(monkeypatch):
     """
     Ensure concurrent access to the same collator instance does not lose
@@ -591,7 +592,7 @@ def test_vision_collator_thread_safety(monkeypatch):
     collator = object.__new__(UnslothVisionDataCollator)
     collator.formatting_func = formatter
     collator._checked_video_paths = set()
-    collator._formatting_lock = threading.Lock() 
+    collator._formatting_lock = threading.Lock()
 
     parent = UnslothVisionDataCollator
 
@@ -612,7 +613,7 @@ def test_vision_collator_thread_safety(monkeypatch):
     def worker():
         collator(examples)
 
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+    with ThreadPoolExecutor(max_workers = num_threads) as executor:
         futures = [executor.submit(worker) for _ in range(num_threads)]
         for future in futures:
             future.result()
