@@ -1978,9 +1978,7 @@ def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_pa
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
-def test_an_ungroupable_payload_under_a_subdirectory_does_not_serve_the_root(
-    tmp_path, monkeypatch
-):
+def test_an_ungroupable_payload_under_a_subdirectory_does_not_serve_the_root(tmp_path, monkeypatch):
     """A .ckpt or diffusion weight names no family this walk groups, which exempts it from the
     family checks. That exemption only holds at the snapshot root: the loader cannot discover one
     under backup/ any more than it can a nested shard set."""
