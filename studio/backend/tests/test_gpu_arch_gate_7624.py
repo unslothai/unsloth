@@ -53,6 +53,21 @@ class TestInstalledLlamaGfxArchs:
         assert LlamaCppBackend._installed_llama_gfx_archs() is None
 
 
+class TestKernelImageInvalidMarker:
+    def test_detects_rocm_arch_mismatch(self):
+        tail = (
+            "load_model: loading model 'x.gguf'\n"
+            "E ROCm error: device kernel image is invalid\n"
+            "E   current device: 0, in function ggml_cuda_kernel_launch"
+        )
+        assert LlamaCppBackend._kernel_image_invalid(tail)
+
+    def test_ignores_other_crashes(self):
+        assert not LlamaCppBackend._kernel_image_invalid("out of memory")
+        assert not LlamaCppBackend._kernel_image_invalid("")
+        assert not LlamaCppBackend._kernel_image_invalid(None)
+
+
 class _FakeProps:
     def __init__(self, arch):
         self.gcnArchName = arch

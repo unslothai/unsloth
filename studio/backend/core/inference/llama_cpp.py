@@ -6745,6 +6745,15 @@ class LlamaCppBackend:
             cls._is_signal_crash(returncode) or cls._is_abort_exit(returncode)
         )
 
+    # ROCm's arch-mismatch crash: the binary carries no compiled kernels for the
+    # device it launched on (#7624). Deterministic -- fit / flash-attn retries
+    # cannot help, only a different device can.
+    _KERNEL_IMAGE_INVALID_MARKER = "device kernel image is invalid"
+
+    @classmethod
+    def _kernel_image_invalid(cls, output: str) -> bool:
+        return cls._KERNEL_IMAGE_INVALID_MARKER in (output or "")
+
     @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
@@ -9124,6 +9133,36 @@ class LlamaCppBackend:
                             "llama-server aborted on --split-mode tensor "
                             "(split-axis geometry); retrying with layer split."
                         )
+                # "device kernel image is invalid": the auto-pinned device's arch
+                # has no compiled kernels in this binary (#7624: an iGPU whose
+                # shared-RAM "free memory" outranked the dGPU). The proactive
+                # mapped_targets gate can't see custom-linked builds, so catch the
+                # crash and retry once on the remaining enumerated GPUs. Auto
+                # selection only -- an explicit user pick keeps its error.
+                if (
+                    not healthy
+                    and not self._cancel_event.is_set()
+                    and not gpu_ids
+                    and not is_vulkan_backend
+                    and gpu_indices
+                    and self._kernel_image_invalid("\n".join(self._stdout_lines[-80:]))
+                ):
+                    _crashed = sorted(set(gpu_indices))
+                    _remaining = sorted(i for i, _free in gpus if i not in set(gpu_indices))
+                    if _remaining:
+                        logger.warning(
+                            f"llama-server crashed with 'device kernel image is "
+                            f"invalid' on GPU(s) {_crashed} -- the llama.cpp build "
+                            f"has no kernels for that arch. Retrying on GPU(s) "
+                            f"{_remaining}."
+                        )
+                        self._kill_process()
+                        gpu_indices = _remaining
+                        self._emit_child_gpu_visibility(
+                            env, ",".join(str(i) for i in _remaining), prefer_rocr = True
+                        )
+                        healthy = _spawn_and_wait(cmd, label = "-archfallback")
+
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
                 # builds (frequently inside the vision tower). Disabling FA keeps
                 # both vision and MTP, so retry that way before dropping either.
