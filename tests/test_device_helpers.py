@@ -1,7 +1,6 @@
 import importlib.util
 import sys
 import types
-import uuid
 from pathlib import Path
 
 from packaging.version import Version
@@ -9,6 +8,12 @@ from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEVICE_TYPE_PATH = REPO_ROOT / "unsloth" / "device_type.py"
+CUDA_PROPERTIES = types.SimpleNamespace(
+    name = "NVIDIA B200",
+    total_memory = 16 * 1024**3,
+    major = 10,
+    minor = 0,
+)
 
 
 def _load_device_type(
@@ -16,7 +21,7 @@ def _load_device_type(
     torch_module,
     mlx_available = False,
 ):
-    package_name = f"_device_helpers_test_{uuid.uuid4().hex}"
+    package_name = "_device_helpers_test"
     package = types.ModuleType(package_name)
     package.__path__ = [str(DEVICE_TYPE_PATH.parent)]
     monkeypatch.setitem(sys.modules, package_name, package)
@@ -56,17 +61,16 @@ def _fake_torch(
     *,
     properties,
     hip_version = None,
-    cuda_name = "",
     xpu_backend = None,
+    cuda_available = True,
 ):
     torch = types.ModuleType("torch")
-    cuda_calls = []
     torch.cuda = types.SimpleNamespace(
-        is_available = lambda: True,
+        is_available = lambda: cuda_available,
         device_count = lambda: 1,
         get_device_properties = lambda _index: properties,
-        get_device_name = lambda _index: cuda_name,
-        empty_cache = lambda: cuda_calls.append("empty_cache"),
+        get_device_name = lambda _index: "",
+        empty_cache = lambda: None,
         current_device = lambda: 0,
     )
     torch.version = types.SimpleNamespace(
@@ -76,22 +80,16 @@ def _fake_torch(
     )
     if xpu_backend is not None:
         torch.xpu = xpu_backend
-    return torch, cuda_calls
+    return torch
 
 
 def test_cuda_import_does_not_require_torch_xpu(monkeypatch):
-    properties = types.SimpleNamespace(
-        name = "NVIDIA B200",
-        total_memory = 16 * 1024**3,
-        major = 10,
-        minor = 0,
-    )
-    torch, _ = _fake_torch(properties = properties)
+    torch = _fake_torch(properties = CUDA_PROPERTIES)
 
     device_type = _load_device_type(monkeypatch, torch)
 
     assert not hasattr(torch, "xpu")
-    assert device_type._get_device_module() is torch.cuda
+    assert device_type._DEVICE_MODULE is torch.cuda
 
 
 def test_hip_stats_preserve_arch_name_fallback(monkeypatch):
@@ -100,7 +98,7 @@ def test_hip_stats_preserve_arch_name_fallback(monkeypatch):
         total_memory = 8 * 1024**3,
         gcnArchName = "gfx1100:sramecc+:xnack-",
     )
-    torch, _ = _fake_torch(properties = properties, hip_version = "6.3")
+    torch = _fake_torch(properties = properties, hip_version = "6.3")
     device_type = _load_device_type(monkeypatch, torch)
 
     name, snippet, max_memory = device_type.get_device_stats()
@@ -111,25 +109,30 @@ def test_hip_stats_preserve_arch_name_fallback(monkeypatch):
 
 
 def test_xpu_cache_and_current_device_dispatch(monkeypatch):
-    properties = types.SimpleNamespace(
-        name = "NVIDIA B200",
-        total_memory = 16 * 1024**3,
-        major = 10,
-        minor = 0,
-    )
     xpu_calls = []
     xpu_backend = types.SimpleNamespace(
+        is_available = lambda: True,
+        device_count = lambda: 1,
         empty_cache = lambda: xpu_calls.append("empty_cache"),
         current_device = lambda: 3,
+        get_device_properties = lambda _index: types.SimpleNamespace(
+            name = "Intel Arc",
+            total_memory = 8 * 1024**3,
+        ),
     )
-    torch, _ = _fake_torch(properties = properties, xpu_backend = xpu_backend)
+    torch = _fake_torch(
+        properties = CUDA_PROPERTIES,
+        xpu_backend = xpu_backend,
+        cuda_available = False,
+    )
     device_type = _load_device_type(monkeypatch, torch)
-    device_type.DEVICE_TYPE = "xpu"
 
     device_type.clean_gpu_cache()
+    name, snippet, max_memory = device_type.get_device_stats()
 
     assert xpu_calls == ["empty_cache"]
     assert device_type.get_current_device() == 3
+    assert (name, snippet, max_memory) == ("Intel Arc. ", "Intel Toolkit: 2026.1.", 8.0)
 
 
 def test_mlx_helpers_do_not_require_torch(monkeypatch):
@@ -140,7 +143,7 @@ def test_mlx_helpers_do_not_require_torch(monkeypatch):
     )
     device_type.clean_gpu_cache()
 
-    assert device_type._get_device_module() is None
+    assert device_type._DEVICE_MODULE is None
     assert device_type.get_current_device() == 0
 
 

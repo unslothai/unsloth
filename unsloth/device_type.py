@@ -216,23 +216,17 @@ def resolve_hip_gpu_stats_name(gpu_stats):
     return "AMD GPU. "
 
 
-def _get_device_module():
-    if _IS_MLX:
-        return None
-    module_name = "xpu" if DEVICE_TYPE == "xpu" else "cuda"
-    device_module = getattr(torch, module_name, None)
-    if device_module is None:
-        raise RuntimeError(f"Unsloth: PyTorch does not provide the {module_name} backend.")
-    return device_module
+_DEVICE_MODULE = None if _IS_MLX else getattr(torch, DEVICE_TYPE_TORCH, None)
+if not _IS_MLX and _DEVICE_MODULE is None:
+    raise RuntimeError(f"Unsloth: PyTorch does not provide the {DEVICE_TYPE_TORCH} backend.")
 
 
 def get_device_stats() -> tuple[str, str, float]:
     """Return (name, stats_snippet, max_memory_gb)."""
-    device_module = _get_device_module()
-    if device_module is None:
+    if _DEVICE_MODULE is None:
         raise RuntimeError("Unsloth: GPU statistics are unavailable on the MLX runtime.")
-    gpu_stats = device_module.get_device_properties(0)
-    max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+    gpu_stats = _DEVICE_MODULE.get_device_properties(0)
+    max_memory = round(gpu_stats.total_memory / 1024**3, 3)
 
     if DEVICE_TYPE == "hip":
         name = resolve_hip_gpu_stats_name(gpu_stats)
@@ -248,12 +242,10 @@ def get_device_stats() -> tuple[str, str, float]:
 
 def clean_gpu_cache() -> None:
     """Clear GPU cache for current device type."""
-    device_module = _get_device_module()
-    if device_module is not None:
-        device_module.empty_cache()
+    if _DEVICE_MODULE is not None:
+        _DEVICE_MODULE.empty_cache()
 
 
 def get_current_device() -> int:
     """Get current device index."""
-    device_module = _get_device_module()
-    return 0 if device_module is None else device_module.current_device()
+    return 0 if _DEVICE_MODULE is None else _DEVICE_MODULE.current_device()
