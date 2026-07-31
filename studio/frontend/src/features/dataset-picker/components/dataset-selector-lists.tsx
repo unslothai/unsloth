@@ -4,6 +4,7 @@
 import { isHfAuthError } from "@/components/resource-picker/hf-error";
 import { hubResourceIdsEqual } from "@/components/resource-picker/hub-resource-id";
 import {
+  PickerHubPaginationFooter,
   PickerSearchError,
   RetryButton,
 } from "@/components/resource-picker/picker-tab-toggle";
@@ -136,7 +137,9 @@ export function DatasetHubList({
   hasQuery,
   error,
   onPick,
+  onLoadMore,
   onRetry,
+  showLoadMore,
   sentinelRef,
 }: {
   items: ReadonlyArray<{ id: string }>;
@@ -146,7 +149,9 @@ export function DatasetHubList({
   hasQuery: boolean;
   error: string | null;
   onPick: (id: string) => void;
+  onLoadMore: () => void;
   onRetry: () => void;
+  showLoadMore: boolean;
   sentinelRef: Ref<HTMLDivElement>;
 }) {
   const t = useT();
@@ -180,9 +185,18 @@ export function DatasetHubList({
     }
     if (!hasQuery) {
       return (
-        <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-          {t("studio.datasetPicker.noDatasetsFound")}
-        </div>
+        <>
+          <div className="px-4 py-8 text-center text-xs text-muted-foreground">
+            {t("studio.datasetPicker.noDatasetsFound")}
+          </div>
+          <PickerHubPaginationFooter
+            isLoading={isLoading}
+            isLoadingMore={isLoadingMore}
+            onLoadMore={onLoadMore}
+            sentinelRef={sentinelRef}
+            showLoadMore={showLoadMore}
+          />
+        </>
       );
     }
   }
@@ -212,12 +226,13 @@ export function DatasetHubList({
           compact={true}
         />
       )}
-      <div ref={sentinelRef} className="h-px" />
-      {isLoadingMore && (
-        <div className="flex items-center justify-center py-2">
-          <Spinner className="size-3.5 text-muted-foreground" />
-        </div>
-      )}
+      <PickerHubPaginationFooter
+        isLoading={isLoading}
+        isLoadingMore={isLoadingMore}
+        onLoadMore={onLoadMore}
+        sentinelRef={sentinelRef}
+        showLoadMore={showLoadMore}
+      />
     </>
   );
 }

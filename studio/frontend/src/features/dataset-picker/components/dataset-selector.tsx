@@ -103,17 +103,16 @@ export function DatasetSelector() {
   const {
     cachedRows,
     localRows,
-    downloadedReady,
     inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
   } = useHubInventory({ kind: "datasets", enabled: picker.open });
-  const isLoadingLocal = !downloadedReady;
   const localError =
     inventoryError && localRows.length === 0 && cachedRows.length === 0
       ? t("studio.datasetPicker.couldntScan")
       : null;
+  const isLoadingLocal = localError === null && !inventorySettled;
   const retryLocalDatasets = useCallback(() => {
     refreshInventory().catch(() => undefined);
   }, [refreshInventory]);
@@ -239,7 +238,7 @@ export function DatasetSelector() {
     scannedCount: scannedHfCount,
   });
 
-  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+  const { scrollRef, sentinelRef, fetchMoreManually } = useHubInfiniteScroll(
     hubPagination.fetchMore,
     hubPagination.signal,
     hubPagination.options,
@@ -372,6 +371,9 @@ export function DatasetSelector() {
           title={
             (datasetSource === "upload" ? uploadedFile : dataset) ?? undefined
           }
+          aria-label={`${t("studio.wizard.datasetLabel")}: ${
+            display ?? t("studio.datasetPicker.selectDataset")
+          }`}
           className={cn(PICKER_TRIGGER_CLASS, "w-full justify-between")}
         >
           <span className="flex min-w-0 items-center gap-1.5">
@@ -433,7 +435,9 @@ export function DatasetSelector() {
               closePicker();
             }
           }}
+          onLoadMore={fetchMoreManually}
           onRetry={retryHf}
+          showLoadMore={hasMoreHf}
           sentinelRef={sentinelRef}
         />
       }

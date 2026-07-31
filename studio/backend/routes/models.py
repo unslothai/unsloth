@@ -2053,6 +2053,8 @@ async def scan_model_remote_code(
     hf_token: Optional[str] = Body(None, embed = True),
     prefer_local_cache: bool = Body(False, embed = True),
     model_local_path: Optional[str] = Body(None, embed = True),
+    model_snapshot_path: Optional[str] = Body(None, embed = True),
+    model_snapshot_repo_id: Optional[str] = Body(None, embed = True),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan a model's ``auto_map`` custom code so the UI can show findings before
@@ -2070,6 +2072,21 @@ async def scan_model_remote_code(
         if not local_model:
             model_name = resolve_cached_repo_id_case(model_name)
         scan_target = model_name
+        exact_snapshot_path = (
+            model_snapshot_path.strip()
+            if isinstance(model_snapshot_path, str) and model_snapshot_path.strip()
+            else None
+        )
+        exact_snapshot_repo_id = model_name
+        if isinstance(model_snapshot_repo_id, str):
+            snapshot_repo_id = model_snapshot_repo_id.strip()
+            if snapshot_repo_id and not _is_valid_repo_id(snapshot_repo_id):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Invalid model snapshot repository ID.",
+                )
+            if snapshot_repo_id:
+                exact_snapshot_repo_id = snapshot_repo_id
         if local_model:
             normalized_model_name = normalize_path(model_name)
             try:
@@ -2078,7 +2095,16 @@ async def scan_model_remote_code(
                 )
             except (OSError, RuntimeError, ValueError):
                 scan_target = normalized_model_name
-        if prefer_local_cache is True and not local_model:
+        if exact_snapshot_path and not local_model:
+            exact_snapshot_repo_id = resolve_cached_repo_id_case(
+                exact_snapshot_repo_id
+            )
+            scan_target = _model_config_inspection_target(
+                exact_snapshot_repo_id,
+                True,
+                normalize_path(exact_snapshot_path),
+            )
+        elif prefer_local_cache is True and not local_model:
             from core.training.training import _resolve_model_snapshot
             local_path = normalize_path(model_local_path) if model_local_path else None
             scan_target = _resolve_model_snapshot(model_name, local_path) or model_name
@@ -2139,7 +2165,9 @@ async def scan_model_remote_code(
             security_targets, hf_token = hf_token, subject = current_subject
         )
         payload = decision.response_payload()
-        payload["model_name"] = model_name
+        payload["model_name"] = (
+            exact_snapshot_repo_id if exact_snapshot_path else model_name
+        )
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval for the unchanged repo lets the dialog be skipped; the scan still
         # ran, so this is a real fingerprint match under the current ruleset.
@@ -2152,7 +2180,11 @@ async def scan_model_remote_code(
         payload["created_by_scan"] = model_name in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
         # Provider tag decided here, where locality/scan scope/external refs are known.
-        payload["provider"] = _consent_provider(model_name, security_targets, external_refs)
+        payload["provider"] = _consent_provider(
+            exact_snapshot_repo_id if exact_snapshot_path else model_name,
+            security_targets,
+            external_refs,
+        )
 
         # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
         # hard-block. Orthogonal to remote code -- a poisoned pickle needs no auto_map.

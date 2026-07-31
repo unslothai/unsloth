@@ -189,12 +189,14 @@ function TrainingMethodSelect() {
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setTrainingMethod = useTrainingConfigStore((s) => s.setTrainingMethod);
   const activeMeta = TRAINING_METHOD_META[trainingMethod];
+  const activeLabel = activeMeta ? t(activeMeta.labelKey) : trainingMethod;
   return (
     <Select
       value={trainingMethod}
       onValueChange={(v) => setTrainingMethod(v as TrainingMethod)}
     >
       <SelectTrigger
+        aria-label={`${t("studio.wizard.methodLabel")}: ${activeLabel}`}
         className={cn(
           PICKER_TRIGGER_CLASS,
           "w-full min-w-[148px] justify-between",
@@ -210,7 +212,7 @@ function TrainingMethodSelect() {
             )}
           />
           <span className="truncate font-medium text-foreground">
-            {activeMeta ? t(activeMeta.labelKey) : trainingMethod}
+            {activeLabel}
           </span>
         </span>
       </SelectTrigger>
@@ -267,12 +269,12 @@ function ModelPanel() {
       <SetupField label={t("studio.wizard.methodLabel")}>
         <TrainingMethodSelect />
       </SetupField>
-      <SetupField label={t("studio.wizard.hfTokenLabel")}>
+      <div className="flex h-full min-w-0 items-end">
         <HfTokenIndicator
           showLabel={true}
           onOpenSettings={() => openSettings("general")}
         />
-      </SetupField>
+      </div>
     </div>
   );
 }

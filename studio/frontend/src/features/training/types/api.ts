@@ -6,6 +6,7 @@ import type { S3Config } from "@/types/training";
 
 export interface TrainingStartRequest {
   model_name: string;
+  actual_model_repo_id?: string | null;
   project_name: string | null;
   training_type: string;
   hf_token: string | null;

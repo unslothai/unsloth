@@ -705,6 +705,78 @@ class TestStructuredFindingsForDialog:
         assert payload["model_name"] == model_name
         assert payload["scan_created_repos"] == []
 
+    def test_scan_route_preserves_exact_snapshot_intent(self, monkeypatch):
+        import asyncio
+
+        import routes.models as models_route
+        import utils.models.model_config as model_config
+        import utils.security as security
+        import utils.security.remote_code_scan as remote_code_scan
+
+        model_name = "selector/cached-model"
+        actual_model_repo_id = "publisher/actual-4bit"
+        snapshot = "/cache/models--publisher--actual-4bit/snapshots/exact"
+        inspection_calls = []
+        preflight_targets = []
+
+        monkeypatch.setattr(models_route, "is_local_path", lambda value: value == snapshot)
+        monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda value: value)
+        monkeypatch.setattr(
+            models_route,
+            "_model_config_inspection_target",
+            lambda name, prefer_local, path: inspection_calls.append(
+                (name, prefer_local, path)
+            )
+            or snapshot,
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_base_model_from_lora_identifier",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
+        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            security,
+            "preflight_remote_code_consent_for_targets",
+            lambda targets, **_kwargs: preflight_targets.extend(targets)
+            or SimpleNamespace(
+                has_remote_code = False,
+                blocked = False,
+                reason = "allowed",
+                response_payload = lambda: {
+                    "has_remote_code": False,
+                    "approvable": True,
+                },
+            ),
+        )
+        monkeypatch.setattr(security, "security_load_subdirs", lambda *_args: ())
+        monkeypatch.setattr(
+            security,
+            "evaluate_file_security",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                blocked = False,
+                unsafe_files = [],
+            ),
+        )
+
+        payload = asyncio.run(
+            models_route.scan_model_remote_code(
+                model_name = model_name,
+                hf_token = None,
+                prefer_local_cache = True,
+                model_local_path = "/cache/models--someone--cached-model",
+                model_snapshot_path = snapshot,
+                model_snapshot_repo_id = actual_model_repo_id,
+                current_subject = "tester",
+            )
+        )
+
+        assert inspection_calls == [(actual_model_repo_id, True, snapshot)]
+        assert preflight_targets == [snapshot]
+        assert payload["model_name"] == actual_model_repo_id
+        assert payload["provider"] == "publisher"
+
     def test_scan_route_canonicalizes_local_adapter_target(self, monkeypatch, tmp_path):
         import asyncio
 

@@ -15,14 +15,14 @@ const inferredBase = {
   selectedTab: "hub" as const,
 };
 
-test("keeps a cold picker inferable until device inventory settles", () => {
+test("keeps a cold inferred picker on device until inventory settles", () => {
   const loading = {
     ...inferredBase,
     hasDeviceItems: false,
   };
   assert.equal(
     resolvePickerTab({ ...loading, lockedInferredTab: null }),
-    "hub",
+    "device",
   );
   assert.equal(resolveInferredPickerTabLock(loading), null);
 
@@ -53,6 +53,10 @@ test("keeps a cold picker inferable until device inventory settles", () => {
     ...loading,
     isDeviceInventorySettled: true,
   };
+  assert.equal(
+    resolvePickerTab({ ...withoutDeviceItems, lockedInferredTab: null }),
+    "hub",
+  );
   assert.equal(resolveInferredPickerTabLock(withoutDeviceItems), "hub");
 });
 
@@ -62,7 +66,6 @@ test("preserves explicit, locked, and offline tab decisions", () => {
       ...inferredBase,
       hasDeviceItems: true,
       hasExplicitTabPreference: true,
-      isDeviceInventorySettled: true,
       lockedInferredTab: null,
       selectedTab: "hub",
     }),
@@ -73,7 +76,6 @@ test("preserves explicit, locked, and offline tab decisions", () => {
       ...inferredBase,
       hasDeviceItems: true,
       hasExplicitTabPreference: true,
-      isDeviceInventorySettled: true,
     }),
     null,
   );

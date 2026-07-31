@@ -18,16 +18,17 @@ export interface PickerTabResolutionInput extends PickerDeviceInventoryState {
 export function resolvePickerTab({
   hasDeviceItems,
   hasExplicitTabPreference,
+  isDeviceInventorySettled,
   lockedInferredTab,
   online,
   selectedTab,
 }: PickerTabResolutionInput): PickerTab {
-  const shouldUseDeviceTab = !online || hasDeviceItems;
+  const shouldUseHubTab = online && isDeviceInventorySettled && !hasDeviceItems;
   const inferredTab = hasExplicitTabPreference
     ? selectedTab
-    : shouldUseDeviceTab
-      ? PICKER_TAB.device
-      : PICKER_TAB.hub;
+    : shouldUseHubTab
+      ? PICKER_TAB.hub
+      : PICKER_TAB.device;
   return lockedInferredTab ?? inferredTab;
 }
 

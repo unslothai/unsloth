@@ -386,9 +386,7 @@ async function confirmSelectedModelRemoteCode(
     modelName,
     hfToken,
     preferLocalCache,
-    modelLocalPath: preferLocalCache
-      ? attempt.config.modelLocalPath
-      : null,
+    modelLocalPath: preferLocalCache ? attempt.config.modelLocalPath : null,
     requiresTrustRemoteCode: attempt.config.trustRemoteCode,
     onApprove: (fingerprint) => {
       approvalApplied = attempt.updateConfig({

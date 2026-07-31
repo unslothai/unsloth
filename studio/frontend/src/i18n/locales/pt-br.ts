@@ -9,6 +9,7 @@ export const ptBR = {
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
     retry: "Tentar novamente",
+    loadMore: "Carregar mais",
     offlineTitle: "Você está offline",
     offlineBody:
       "Mude para Dispositivo para usar {noun} locais ou em cache.",
@@ -693,7 +694,6 @@ export const ptBR = {
       configDescription: "Salve e carregue configurações",
       modelLabel: "Modelo",
       methodLabel: "Método",
-      hfTokenLabel: "Token do Hugging Face",
       datasetLabel: "Dataset",
       uploadLocalLabel: "Ou envie um arquivo local",
       sourceBrowse: "Procurar",

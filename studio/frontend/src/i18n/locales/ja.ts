@@ -10,6 +10,7 @@ export const ja = {
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
     retry: "再試行",
+    loadMore: "さらに読み込む",
     offlineTitle: "オフラインです",
     offlineBody:
       "キャッシュ済みまたはローカルの{noun}を使用するには、「デバイス」に切り替えてください。",
@@ -641,7 +642,6 @@ export const ja = {
       configDescription: "構成を保存または読み込み",
       modelLabel: "モデル",
       methodLabel: "手法",
-      hfTokenLabel: "Hugging Face トークン",
       datasetLabel: "データセット",
       uploadLocalLabel: "またはローカルファイルをアップロード",
       sourceBrowse: "参照",

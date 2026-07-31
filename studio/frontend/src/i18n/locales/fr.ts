@@ -9,6 +9,7 @@ export const fr = {
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
     retry: "Réessayer",
+    loadMore: "Charger plus",
     offlineTitle: "Vous êtes hors ligne",
     offlineBody:
       "Passez à « Appareil » pour utiliser des {noun} en cache ou locaux.",
@@ -607,7 +608,6 @@ export const fr = {
       configDescription: "Enregistrer et charger des configurations",
       modelLabel: "Modèle",
       methodLabel: "Méthode",
-      hfTokenLabel: "Token Hugging Face",
       datasetLabel: "Jeu de données",
       uploadLocalLabel: "Ou téléverser un fichier local",
       sourceBrowse: "Parcourir",

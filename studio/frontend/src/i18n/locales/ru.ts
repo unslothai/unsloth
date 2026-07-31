@@ -9,6 +9,7 @@ export const ru = {
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
     retry: "Повторить",
+    loadMore: "Загрузить ещё",
     offlineTitle: "Нет подключения к сети",
     offlineBody:
       "Переключитесь на «Устройство», чтобы использовать локальные или кэшированные {noun}.",
@@ -589,7 +590,6 @@ export const ru = {
       configDescription: "Сохраняйте и загружайте конфигурации",
       modelLabel: "Модель",
       methodLabel: "Метод",
-      hfTokenLabel: "Токен Hugging Face",
       datasetLabel: "Датасет",
       uploadLocalLabel: "Или загрузите локальный файл",
       sourceBrowse: "Обзор",

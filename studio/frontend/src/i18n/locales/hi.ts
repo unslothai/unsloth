@@ -9,6 +9,7 @@ export const hi = {
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
     retry: "पुनः प्रयास करें",
+    loadMore: "और लोड करें",
     offlineTitle: "आप ऑफ़लाइन हैं",
     offlineBody:
       "कैश किए गए या स्थानीय {noun} का उपयोग करने के लिए डिवाइस पर जाएं।",
@@ -590,7 +591,6 @@ export const hi = {
       configDescription: "कॉन्फ़िगरेशन सहेजें और लोड करें",
       modelLabel: "मॉडल",
       methodLabel: "विधि",
-      hfTokenLabel: "Hugging Face टोकन",
       datasetLabel: "डेटासेट",
       uploadLocalLabel: "या कोई स्थानीय फ़ाइल अपलोड करें",
       sourceBrowse: "ब्राउज़ करें",

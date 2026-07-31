@@ -1211,7 +1211,14 @@ def test_training_picker_pagination_preserves_scanned_progress():
     assert "return false;" in adapter
     assert "return fetchMore();" in adapter
     assert "signal: scannedCount" in adapter
-    for needle in ("enabled: canFetch", "isFetching", "resetKey", "resultCount"):
+    for needle in (
+        "enabled: canFetch",
+        "isFetching",
+        "manualFetchAfterAutoFill: true",
+        "maxAutoFillFetches: 5",
+        "resetKey",
+        "resultCount",
+    ):
         assert needle in adapter
 
     for rel in (
@@ -1228,7 +1235,19 @@ def test_training_picker_pagination_preserves_scanned_progress():
         assert "hubPagination.fetchMore" in src
         assert "hubPagination.signal" in src
         assert "hubPagination.options" in src
+        assert "fetchMoreManually" in src
+        assert "onLoadMore={fetchMoreManually}" in src
+        assert "showLoadMore={hasMoreHf}" in src
         assert "useLatestRef" not in src
+
+    for rel in (
+        "features/model-picker/components/train-model-picker-lists.tsx",
+        "features/dataset-picker/components/dataset-selector-lists.tsx",
+    ):
+        src = _read(rel)
+        assert "PickerHubPaginationFooter" in src
+        assert src.count("<PickerHubPaginationFooter") == 2
+        assert "showLoadMore={showLoadMore}" in src
 
 
 def test_seamless_training_model_picker_has_no_hidden_task_filter():
@@ -1503,7 +1522,7 @@ def test_training_model_lookups_preserve_platform_path_identity():
     assert "WINDOWS_DRIVE_PATH_RE.test(trimmed)" in normalizer
     assert 'slashPath.startsWith("//")' in normalizer
     assert "WSL_DRIVE_PATH_RE.test(slashPath)" in normalizer
-    assert normalizer.rstrip().endswith("return trimTrailingSeparators(trimmed, 1);\n}")
+    assert normalizer.rstrip().endswith("return trimTrailingSeparators(slashPath, 1);\n}")
 
 
 def test_model_identity_normalizes_cross_platform_trailing_separators():
@@ -1525,6 +1544,9 @@ def test_model_identity_normalizes_cross_platform_trailing_separators():
         "./",
         "../",
         "~/",
+        r".\models\demo",
+        "./models/demo",
+        "..\\models\\demo\\",
     ]
     expected = [
         "/opt/Models/Foo",
@@ -1541,6 +1563,9 @@ def test_model_identity_normalizes_cross_platform_trailing_separators():
         ".",
         "..",
         "~",
+        "./models/demo",
+        "./models/demo",
+        "../models/demo",
     ]
     script = (
         f"import {{ normalizeModelIdentity }} from {json.dumps(module_uri)};\n"
@@ -1887,12 +1912,14 @@ def test_filtered_hub_pages_keep_the_pagination_sentinel_mounted():
         assert "if (!hasQuery)" in hub_list
         assert "<PickerSearchError" in hub_list
         assert "compact={true}" in hub_list
-        assert re.search(r"<div ref=\{sentinelRef\} className=\"h-px\" />", hub_list)
+        assert hub_list.count("<PickerHubPaginationFooter") == 2
         assert not re.search(
             rf"if \({empty_collection}\.length === 0\).*?" r"if \(hasQuery\)\s*\{\s*return null;",
             hub_list,
             re.S,
         )
+    footer = _read("components/resource-picker/picker-tab-toggle.tsx")
+    assert '<div ref={sentinelRef} className="h-px" />' in footer
 
 
 def test_infinite_scroll_observes_a_late_mounted_sentinel():
@@ -2014,11 +2041,30 @@ def test_picker_shell_handles_ime_focus_and_short_viewports():
     assert "onCompositionEnd" in shell
     assert 'aria-label={t("picker.searchAriaLabel", { noun })}' in shell
     assert "max-h-(--radix-popover-content-available-height)" in shell
+    assert "gap-0 overflow-hidden" in shell
     assert '"mt-2.5 flex min-h-0 flex-1 flex-col gap-2"' in shell
     assert '"min-h-0 max-h-[320px] flex-1 overflow-y-auto' in shell
     assert "function switchToDevice()" in shell
     assert "window.requestAnimationFrame" in shell
     assert "onSwitchDevice={switchToDevice}" in shell
+
+
+def test_training_controls_expose_context_without_overriding_history_metadata():
+    model_picker = _read("features/model-picker/components/train-model-selector.tsx")
+    dataset_picker = _read("features/dataset-picker/components/dataset-selector.tsx")
+    wizard = _read("features/studio/wizard/training-wizard.tsx")
+    history = _read("features/studio/history-card-grid.tsx")
+
+    assert 'aria-label={`${t("studio.wizard.modelLabel")}: ${' in model_picker
+    assert 'aria-label={`${t("studio.wizard.datasetLabel")}: ${' in dataset_picker
+    assert 'aria-label={`${t("studio.wizard.methodLabel")}: ${activeLabel}`}' in wizard
+    assert '<SetupField label={t("studio.wizard.hfTokenLabel")}>' not in wizard
+    assert "aria-labelledby={`${cardId}-title`}" in history
+    assert (
+        "aria-describedby={`${cardId}-status ${cardId}-details ${cardId}-metrics`}"
+        in history
+    )
+    assert "aria-label={title}" not in history
 
 
 def test_manual_training_method_wins_over_delayed_auto_selection():

@@ -208,6 +208,7 @@ async function confirmResumeRemoteCode(
   let approvedRemoteCodeFingerprint =
     payload.approved_remote_code_fingerprint ?? null;
   const remoteCodeCache = resolveResumeRemoteCodeCache({
+    actualModelRepoId: payload.actual_model_repo_id,
     modelKnownCached: payload.model_known_cached,
     modelLocalPath: payload.model_local_path,
     modelSnapshotPath: payload.model_snapshot_path,

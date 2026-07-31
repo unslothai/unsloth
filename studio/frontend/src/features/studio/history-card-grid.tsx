@@ -455,6 +455,7 @@ export function HistoryCardGrid({
 
           const title = getTrainingRunDisplayTitle(run);
           const modelSubtitle = getTrainingRunModelSubtitle(run);
+          const cardId = `training-run-${encodeURIComponent(run.id)}`;
 
           const projectSubtitle =
             run.project_name && title !== run.project_name
@@ -473,7 +474,8 @@ export function HistoryCardGrid({
             >
               <button
                 type="button"
-                aria-label={title}
+                aria-labelledby={`${cardId}-title`}
+                aria-describedby={`${cardId}-status ${cardId}-details ${cardId}-metrics`}
                 className={cn(
                   "relative z-0 flex h-full w-full cursor-pointer select-text flex-col gap-3 rounded-[inherit] border-0 bg-transparent p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                   (canResume || canCopyPreview) && "gap-2",
@@ -488,7 +490,10 @@ export function HistoryCardGrid({
                   onSelectRun(run.id);
                 }}
               >
-                <span className="flex items-center justify-between pr-6">
+                <span
+                  id={`${cardId}-status`}
+                  className="flex items-center justify-between pr-6"
+                >
                   <span
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-ui-10 font-semibold",
@@ -512,33 +517,36 @@ export function HistoryCardGrid({
                 </span>
                 <span className="block min-w-0 cursor-text">
                   <span
+                    id={`${cardId}-title`}
                     className="block truncate text-sm font-medium"
                     title={title}
                   >
                     {title}
                   </span>
-                  {modelSubtitle && (
+                  <span id={`${cardId}-details`} className="block">
+                    {modelSubtitle && (
+                      <span
+                        className="block truncate text-xs text-muted-foreground"
+                        title={modelSubtitle}
+                      >
+                        {modelSubtitle}
+                      </span>
+                    )}
                     <span
                       className="block truncate text-xs text-muted-foreground"
-                      title={modelSubtitle}
+                      title={run.dataset_name}
                     >
-                      {modelSubtitle}
+                      {run.dataset_name}
                     </span>
-                  )}
-                  <span
-                    className="block truncate text-xs text-muted-foreground"
-                    title={run.dataset_name}
-                  >
-                    {run.dataset_name}
+                    {projectSubtitle && (
+                      <span
+                        className="block truncate text-xs text-muted-foreground/80"
+                        title={projectSubtitle}
+                      >
+                        {projectSubtitle}
+                      </span>
+                    )}
                   </span>
-                  {projectSubtitle && (
-                    <span
-                      className="block truncate text-xs text-muted-foreground/80"
-                      title={projectSubtitle}
-                    >
-                      {projectSubtitle}
-                    </span>
-                  )}
                 </span>
                 {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
                   <span
@@ -554,7 +562,10 @@ export function HistoryCardGrid({
                     />
                   </span>
                 )}
-                <span className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
+                <span
+                  id={`${cardId}-metrics`}
+                  className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground"
+                >
                   <span>
                     {t("studio.history.loss")}:{" "}
                     {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}

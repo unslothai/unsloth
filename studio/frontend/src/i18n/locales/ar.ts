@@ -9,6 +9,7 @@ export const ar = {
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
     retry: "إعادة المحاولة",
+    loadMore: "تحميل المزيد",
     offlineTitle: "أنت غير متصل بالإنترنت",
     offlineBody:
       "انتقل إلى «الجهاز» لاستخدام {noun} المحلية أو المخزّنة مؤقتًا.",
@@ -589,7 +590,6 @@ export const ar = {
       configDescription: "احفظ التكوينات وحمّلها",
       modelLabel: "النموذج",
       methodLabel: "الطريقة",
-      hfTokenLabel: "توكن Hugging Face",
       datasetLabel: "مجموعة البيانات",
       uploadLocalLabel: "أو حمّل ملفًا محليًا",
       sourceBrowse: "استعراض",

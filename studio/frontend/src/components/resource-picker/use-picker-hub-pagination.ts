@@ -36,6 +36,8 @@ export function usePickerHubPagination({
     options: {
       enabled: canFetch,
       isFetching,
+      manualFetchAfterAutoFill: true,
+      maxAutoFillFetches: 5,
       resetKey,
       resultCount,
     },

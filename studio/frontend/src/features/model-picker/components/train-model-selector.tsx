@@ -138,17 +138,16 @@ export function TrainModelSelector() {
   const {
     cachedRows,
     localRows,
-    downloadedReady,
     inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
   } = useHubInventory({ kind: "models", enabled: picker.open });
-  const isLoadingLocalModels = !downloadedReady;
   const localModelsError =
     inventoryError && cachedRows.length === 0 && localRows.length === 0
       ? t("studio.modelPicker.couldntScan")
       : null;
+  const isLoadingLocalModels = localModelsError === null && !inventorySettled;
   const retryLocalModels = useCallback(() => {
     refreshInventory().catch(() => undefined);
   }, [refreshInventory]);
@@ -387,7 +386,7 @@ export function TrainModelSelector() {
     scannedCount: scannedHfCount,
   });
 
-  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+  const { scrollRef, sentinelRef, fetchMoreManually } = useHubInfiniteScroll(
     hubPagination.fetchMore,
     hubPagination.signal,
     hubPagination.options,
@@ -595,6 +594,9 @@ export function TrainModelSelector() {
           type="button"
           data-tour="studio-model-picker"
           title={selectedModel ?? undefined}
+          aria-label={`${t("studio.wizard.modelLabel")}: ${
+            display ?? t("studio.modelPicker.selectModel")
+          }`}
           className={cn(
             PICKER_TRIGGER_CLASS,
             "w-full min-w-[180px] justify-between",
@@ -645,7 +647,9 @@ export function TrainModelSelector() {
           hasQuery={activeQuery.length > 0}
           error={hfError}
           onPick={pickHubModel}
+          onLoadMore={fetchMoreManually}
           onRetry={retryHf}
+          showLoadMore={hasMoreHf}
           sentinelRef={sentinelRef}
         />
       }

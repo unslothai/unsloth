@@ -51,9 +51,11 @@ export async function getRemoteCodeScan(
   options?: {
     preferLocalCache?: boolean;
     modelLocalPath?: string | null;
+    modelSnapshotPath?: string | null;
+    modelSnapshotRepoId?: string | null;
   },
 ): Promise<RemoteCodeScan> {
-  const response = await authFetch(`/api/models/remote-code-scan`, {
+  const response = await authFetch("/api/models/remote-code-scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -61,6 +63,8 @@ export async function getRemoteCodeScan(
       hf_token: hfToken ?? null,
       prefer_local_cache: options?.preferLocalCache ?? false,
       model_local_path: options?.modelLocalPath ?? null,
+      model_snapshot_path: options?.modelSnapshotPath ?? null,
+      model_snapshot_repo_id: options?.modelSnapshotRepoId ?? null,
     }),
   });
   if (!response.ok) {
@@ -111,9 +115,11 @@ export async function getRemoteCodeScan(
 
 /** Decline cleanup: purge what the scan downloaded. Fire-and-forget; the backend only
  *  removes a metadata-only cache entry it created (never weights, a loaded model, or a local path). */
-export async function discardRemoteCodeDownload(modelName: string): Promise<void> {
+export async function discardRemoteCodeDownload(
+  modelName: string,
+): Promise<void> {
   try {
-    await authFetch(`/api/models/discard-remote-code`, {
+    await authFetch("/api/models/discard-remote-code", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model_name: modelName }),

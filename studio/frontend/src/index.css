@@ -2167,11 +2167,6 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Fine-tuning Studio: equal minimum card height, grows with content (md+) */
-	.min-h-studio-config-column {
-		@apply md:min-h-[520px];
-	}
-
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;

@@ -241,7 +241,7 @@ export function PickerShell({
         onKeyDown={handlePickerNavigation}
         aria-label={t("picker.searchAriaLabel", { noun })}
         className={cn(
-          "max-h-(--radix-popover-content-available-height) w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-2xl p-4",
+          "max-h-(--radix-popover-content-available-height) w-[min(420px,calc(100vw-2rem))] gap-0 overflow-hidden rounded-2xl p-4",
           contentClassName,
         )}
       >

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { translate, type TranslationKey } from "@/i18n";
+import { type TranslationKey, translate } from "@/i18n";
 import { resetTraining, stopTraining } from "../api/train-api";
 import { emitTrainingRunsChanged } from "../events";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
