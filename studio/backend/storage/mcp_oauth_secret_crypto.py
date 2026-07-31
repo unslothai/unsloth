@@ -84,9 +84,9 @@ def _load_or_create_key() -> bytes:
         return _load_existing_key()
 
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f"{_KEY_FILENAME}.",
-        suffix=".tmp",
-        dir=path.parent,
+        prefix = f"{_KEY_FILENAME}.",
+        suffix = ".tmp",
+        dir = path.parent,
     )
     temporary_path = Path(temporary_name)
     try:
@@ -124,7 +124,7 @@ def encrypt_client_secret(secret: str | None) -> str | None:
         return None
     encoded = secret.encode("utf-8")
     if _IS_WINDOWS:
-        protected = _dpapi_transform(encoded, decrypt=False)
+        protected = _dpapi_transform(encoded, decrypt = False)
         return f"{_DPAPI_PREFIX}{base64.b64encode(protected).decode('ascii')}"
     encrypted = Fernet(_load_or_create_key()).encrypt(encoded).decode("ascii")
     return f"{_FERNET_PREFIX}{encrypted}"
@@ -137,7 +137,7 @@ def decrypt_client_secret(encrypted_secret: str | None) -> str | None:
         if not _IS_WINDOWS:
             raise ValueError("Windows-protected MCP OAuth secret cannot be decrypted here")
         payload = base64.b64decode(encrypted_secret.removeprefix(_DPAPI_PREFIX))
-        return _dpapi_transform(payload, decrypt=True).decode("utf-8")
+        return _dpapi_transform(payload, decrypt = True).decode("utf-8")
     if not encrypted_secret.startswith(_FERNET_PREFIX):
         raise ValueError("Stored MCP OAuth client secret uses an unknown encryption format")
     if _IS_WINDOWS:
@@ -157,8 +157,8 @@ def _dpapi_transform(data: bytes, *, decrypt: bool) -> bytes:
         ctypes.cast(input_buffer, ctypes.POINTER(ctypes.c_ubyte)),
     )
     output_blob = _DataBlob()
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error = True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
     function = crypt32.CryptUnprotectData if decrypt else crypt32.CryptProtectData
     function.argtypes = [
         ctypes.POINTER(_DataBlob),
