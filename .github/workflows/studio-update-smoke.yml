@@ -206,6 +206,10 @@ jobs:
           leak=0
           for p in \
             "$HOME/.unsloth/studio" \
+            "$HOME/.unsloth/whisper.cpp" \
+            "$HOME/.unsloth/.llama.cpp.install.lock" \
+            "$HOME/.unsloth/.node.install.lock" \
+            "$HOME/.unsloth/.whisper.cpp.install.lock" \
             "$HOME/.local/share/unsloth" \
             "$HOME/Desktop/Unsloth Studio.desktop" \
             "$HOME/.local/bin/unsloth"; do
@@ -215,6 +219,16 @@ jobs:
               leak=$((leak + 1))
             fi
           done
+          # Catch-all that does not need updating when a new artifact is added:
+          # nothing but Unsloth writes under ~/.unsloth on a runner, so a
+          # surviving directory means the uninstaller missed something. This is
+          # what caught the node/whisper install locks, which individually look
+          # harmless but keep the uninstaller's rmdir from pruning ~/.unsloth.
+          if [ -d "$HOME/.unsloth" ]; then
+            echo "::error::leak: ~/.unsloth survived the uninstall"
+            find "$HOME/.unsloth" | head -40
+            leak=$((leak + 1))
+          fi
           [ "$leak" -eq 0 ] || exit 1
           # Idempotent: re-runs exit 0 on an empty $HOME.
           sh scripts/uninstall.sh 2>&1 | tail -5
