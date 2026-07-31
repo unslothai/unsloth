@@ -3785,6 +3785,60 @@ def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure
     assert _CountBackend().count_chat_tokens(messages, None, tools) > 0
 
 
+def test_an_empty_chat_still_renders_a_template(monkeypatch):
+    """A fresh New Chat has no messages and, by default, no system prompt, so the count would
+    send messages: [] to /apply-template. Most real templates index messages[0] and raise on
+    that, and a strict count turns the error into a 503 the recount swallows, which is #7450's
+    own case reporting a blank bar. Verified against the shipped templates for
+    Llama-3.2-1B-Instruct, Qwen3-8B, gemma-3-270m-it and mistral-7b-instruct-v0.3: all four
+    raise on [] and all four render one empty system turn."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen = {}
+
+    class _FakeResponse:
+        def __init__(self, payload, status_code = 200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(self, url, json = None):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                seen["messages"] = body.get("messages")
+                # Stand in for the real templates: indexing [0] of an empty list raises.
+                if not body.get("messages"):
+                    return _FakeResponse({"error": "template error"}, status_code = 500)
+                return _FakeResponse({"prompt": "<bos>"})
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    count = _CountBackend().count_chat_tokens([], None, None, strict = True)
+    assert seen["messages"], "an empty list reaches the template and it rejects it"
+    assert count > 0, "a fresh chat must still price the template preamble"
+
+
 def test_audio_generate_is_reload_only(monkeypatch):
     # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
     # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal
