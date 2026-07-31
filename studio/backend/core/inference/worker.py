@@ -431,6 +431,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_info["context_length"] = int(_context_length)
             except Exception as _ctx_exc:
                 logger.warning("context_length forward failed: %s", _ctx_exc)
+            # Backend post-load audio classification outranks pre-load config.
+            model_info.update(
+                {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+            )
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
@@ -960,6 +964,14 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio_input":
+                    # Drain discipline as in "generate" (see that branch).
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    cancel_event.clear()
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":

@@ -348,17 +348,16 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
 
 
 def test_worker_generate_branches_check_drain_before_clearing_cancel():
-    # Both worker command loops (MLX fast-path + GPU) must consult the drain skip
-    # before clearing cancel_event and running, so a queued generate can't clear an
-    # unload-initiated cancel and run the outgoing model to completion. Each loop
-    # checks the drain twice -- once before the clear and once after -- so a
-    # drain+cancel pair that lands in the window between them is still caught.
+    # The guarded branches consult the drain skip before clearing cancel_event
+    # and again after, so a queued command can't erase an unload's cancel and
+    # run the outgoing model. Three are guarded today: the MLX loop's generate
+    # and generate_audio_input, and the GPU loop's generate.
     import inspect
 
     from core.inference import worker
 
     src = inspect.getsource(worker.run_inference_process)
-    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 4
+    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 6
 
 
 def test_worker_generate_rechecks_drain_after_clearing_cancel():

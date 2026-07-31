@@ -6463,9 +6463,10 @@ async def _load_model_impl(
             is_lora = config.is_lora,
             is_gguf = False,
             is_local_model = config.is_local,
-            is_audio = config.is_audio,
-            audio_type = config.audio_type,
-            has_audio_input = config.has_audio_input,
+            # Post-load classification (mirrored from the worker) wins here.
+            is_audio = _model_info.get("is_audio", config.is_audio),
+            audio_type = _model_info.get("audio_type", config.audio_type),
+            has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
             inference = inference_config,
             requires_trust_remote_code = _requires_rc,
             supports_reasoning = _sf_flags["supports_reasoning"],

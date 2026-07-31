@@ -97,7 +97,13 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
-def _render_registered_vlm_prompt(processor, model, messages, num_images):
+def _render_registered_vlm_prompt(
+    processor,
+    model,
+    messages,
+    num_images,
+    num_audios = 0,
+):
     """Render through mlx-vlm when it declares a formatter for this model."""
     from mlx_vlm import prompt_utils
 
@@ -113,10 +119,57 @@ def _render_registered_vlm_prompt(processor, model, messages, num_images):
         messages,
         add_generation_prompt = True,
         num_images = num_images,
+        num_audios = num_audios,
     )
     if isinstance(rendered, str) and rendered.strip():
         return rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
+
+
+# Rate the chat route decodes uploads to; mlx-vlm does not resample arrays.
+_AUDIO_INPUT_SAMPLE_RATE = 16000
+_AUDIO_PROBE_MESSAGES = [{"role": "user", "content": "audio"}]
+
+
+def _classify_mlx_audio_type(model, processor, is_vision):
+    """audio_type for the model entry: "audio_vlm" (omni audio input; is_audio
+    stays False — it means TTS and redirects in the chat route) or None.
+
+    The checkpoint's own capability comes from unsloth_zoo, which answers it by
+    observing whether audio content changes what the processor returns. Two
+    things stay here because they are this backend's, not the checkpoint's: the
+    waveform arrives at the rate the chat route decodes to, and the prompt is
+    rendered through mlx-vlm's registry, where some families accept an audio
+    count and silently drop it. The rendered prompt is what the capability call
+    probes with, so a family whose marker only its own template emits is judged
+    on the real thing.
+    """
+    if not is_vision or processor is None:
+        return None
+    # Everything below runs inside the guard, including the capability call and
+    # its result: this is a probe, and a model load must never fail on one. The
+    # dependency promises totality, but it is pinned by a floor rather than a
+    # version, so its promise is not ours to assume. BaseException for the same
+    # reason the dependency uses it — an escape here aborts the load.
+    try:
+        from unsloth_zoo.mlx.utils import (
+            audio_extractor_sampling_rate,
+            audio_input_capability,
+        )
+
+        if audio_extractor_sampling_rate(processor) != _AUDIO_INPUT_SAMPLE_RATE:
+            return None
+        args = (processor, model, _AUDIO_PROBE_MESSAGES, 0)
+        marked = _render_registered_vlm_prompt(*args, num_audios = 1)
+        if not marked or marked == _render_registered_vlm_prompt(*args, num_audios = 0):
+            return None
+        capability = audio_input_capability(model, processor, texts = marked)
+        if capability.capable:
+            return "audio_vlm"
+        logger.info("MLX audio input unavailable for this model: %s", capability.reason)
+    except BaseException as exc:
+        logger.info("MLX audio capability check did not run (%s)", type(exc).__name__)
+    return None
 
 
 def _count_vlm_images(content):
@@ -621,6 +674,7 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
+        _audio_type = _classify_mlx_audio_type(model, self._processor, is_vision)
         self.active_model_name = model_name
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
@@ -636,9 +690,10 @@ class MLXInferenceBackend:
             "base_model": getattr(config, "base_model", None)
             if getattr(config, "is_lora", False)
             else None,
-            "is_audio": False,
-            "audio_type": None,
-            "has_audio_input": False,
+            # Mirrors utils.models.model_config semantics (is_audio == TTS).
+            "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
+            "audio_type": _audio_type,
+            "has_audio_input": _audio_type in ("whisper", "audio_vlm"),
             "context_length": runtime_context_length(self._model, max_seq_length),
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
@@ -1176,6 +1231,83 @@ class MLXInferenceBackend:
         yield from normalize_reasoning_snapshots(
             _stream_vlm_snapshots(), chat_target, cancel_event, tools = tools
         )
+
+    def generate_audio_input_response(
+        self,
+        messages,
+        system_prompt,
+        audio_array,
+        max_new_tokens = 512,
+        cancel_event = None,
+        **_sampler,
+    ):
+        """Audio-input chat (omni models): waveform in, incremental text deltas
+        out (the audio route forwards deltas, unlike the snapshot-diffing
+        text/vision paths). Greedy, so the worker's sampler kwargs go unused."""
+        entry = self.models.get(self.active_model_name) or {}
+        if entry.get("audio_type") != "audio_vlm":
+            raise RuntimeError(
+                "Audio input is not supported for this model on the MLX backend: "
+                "no verified audio-capable tower/processor was detected at load."
+            )
+
+        from mlx_vlm import stream_generate as vlm_stream
+
+        # Only the CURRENT user turn may caption the audio; an audio-only turn
+        # takes the transcribe default rather than borrowing older history.
+        user_text = ""
+        for msg in reversed(messages or []):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                user_text = content_to_text(msg.get("content") or "").strip()
+                break
+        if not user_text:
+            user_text = "Please transcribe this audio."
+        if not system_prompt:
+            system_prompt = "You are an assistant that transcribes speech accurately."
+
+        audio_messages = [
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+            {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
+        ]
+        prompt = _render_registered_vlm_prompt(
+            self._processor,
+            self._model,
+            audio_messages,
+            num_images = 0,
+            num_audios = 1,
+        )
+        if prompt is None:
+            raise RuntimeError(
+                "mlx-vlm has no registered prompt renderer for this model family; "
+                "cannot build an audio prompt."
+            )
+
+        logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
+        with self._generation_lock:
+            final_response = None
+            try:
+                for response in vlm_stream(
+                    self._model,
+                    self._processor,
+                    prompt,
+                    audio = [audio_array],
+                    max_tokens = max_new_tokens,
+                    temperature = 0.0,
+                ):
+                    final_response = response
+                    token_text = response.text if hasattr(response, "text") else str(response)
+                    if token_text:
+                        yield token_text
+                    if cancel_event and cancel_event.is_set():
+                        break
+            finally:
+                if final_response is not None:
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                    )
 
     def generate_with_adapter_control(
         self,
