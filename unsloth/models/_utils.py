@@ -28,7 +28,6 @@ __all__ = [
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
     "platform_system",
-    "resolve_hip_gpu_stats_name",
     "patch_tokenizer",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
@@ -117,7 +116,6 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
-    resolve_hip_gpu_stats_name,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING
 from unsloth_zoo.log import logger
