@@ -689,9 +689,7 @@ def _stub_kernel_preference(monkeypatch):
         "torchao.quantization.quantize_.common",
     ):
         monkeypatch.setitem(sys.modules, name, sys.modules.get(name) or types.ModuleType(name))
-    monkeypatch.setitem(
-        sys.modules, "torchao.quantization.quantize_.common.kernel_preference", mod
-    )
+    monkeypatch.setitem(sys.modules, "torchao.quantization.quantize_.common.kernel_preference", mod)
 
 
 class _FakeFp8Weight:
@@ -713,8 +711,7 @@ def test_pin_kernel_preference_rewrites_auto(monkeypatch):
     pinned = pq._pin_kernel_preference(sd, logger = None)
     assert pinned == 2
     assert all(
-        getattr(t, "kernel_preference", _FakeKernelPreference.TORCH)
-        == _FakeKernelPreference.TORCH
+        getattr(t, "kernel_preference", _FakeKernelPreference.TORCH) == _FakeKernelPreference.TORCH
         for t in sd.values()
     )
 
