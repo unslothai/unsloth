@@ -3,7 +3,7 @@
 
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
-import { resolveInitialConfig } from "@/features/model-picker";
+import { resolveResidentInitialConfig } from "@/features/model-picker";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -25,6 +25,7 @@ import {
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
+import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 
@@ -215,11 +216,14 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel && !options.readoptingSameModel;
   // This model's remembered override, read only on a fresh store or a model
   // change, so a steady poll cannot re-pin a control the user just blanked.
+  // Through the resident resolver, not the raw id: an API-driven load reports the
+  // snapshot path a cached repo loaded from, while its settings are keyed by the
+  // repo id, and the plain lookup misses that record.
   const slotsUnseeded =
     prevState.loadedNParallel === null && prevState.nParallel === null;
   const remembered =
     status.is_gguf && (slotsUnseeded || slotsModelChanged)
-      ? resolveInitialConfig(checkpointId, status.gguf_variant ?? null)
+      ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)
@@ -397,12 +401,20 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
-    ...(status.chat_template_override !== undefined &&
-      prevState.loadedChatTemplateOverride === null &&
-      prevState.chatTemplateOverride === null && {
-        chatTemplateOverride: status.chat_template_override,
-        loadedChatTemplateOverride: status.chat_template_override,
-      }),
+    // The one load param that only ever seeded from null, so a switch left the previous model's
+    // template in the store, which the Hub settings page reads as the new model's loaded config:
+    // Apply then saves A's template under B. A same-model reload from another client moves it
+    // too, so the seed also follows a changed status the way the GPU group above does: baseline
+    // always, control only while it still sits on that baseline. See resolveChatTemplateSeed.
+    ...resolveChatTemplateSeed({
+      incoming: status.chat_template_override,
+      previous: {
+        chatTemplateOverride: prevState.chatTemplateOverride,
+        loadedChatTemplateOverride: prevState.loadedChatTemplateOverride,
+      },
+      hydratingExistingModel,
+      seedLoadParams,
+    }),
   });
 
   ensureActiveModelInStoreList(status, checkpointId);

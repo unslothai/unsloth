@@ -741,7 +741,7 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
     )
     monkeypatch.setattr(
         llama_cpp_module,
-        "_hf_offline_if_dns_dead",
+        "_hf_offline_if_unreachable",
         lambda: __import__("contextlib").nullcontext(),
     )
 
@@ -790,7 +790,7 @@ def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatc
         monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
         monkeypatch.setattr(
             llama_cpp_module,
-            "_hf_offline_if_dns_dead",
+            "_hf_offline_if_unreachable",
             lambda: __import__("contextlib").nullcontext(),
         )
 

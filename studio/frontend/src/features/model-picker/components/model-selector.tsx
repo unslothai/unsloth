@@ -35,6 +35,7 @@ import {
   useState,
 } from "react";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+import { isOllamaLinkPath } from "../model-config/model-identity";
 import {
   type PerModelConfig,
   resolveInitialConfig,
@@ -499,11 +500,15 @@ function ModelSelectorContent({
   const visibleConfigTarget = open ? configTarget : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+    const isGguf = meta.isGguf ?? Boolean(meta.ggufVariant);
     setConfigTarget({
       id,
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
       ggufVariant: meta.ggufVariant ?? null,
-      isGguf: meta.isGguf ?? Boolean(meta.ggufVariant),
+      isGguf,
+      // Ollama's models sit under a link dir the resolver skips, so mirroring their
+      // settings would advertise a load the API can never make.
+      apiLoadable: isGguf && !isOllamaLinkPath(id),
       meta,
     });
   };

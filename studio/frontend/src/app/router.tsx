@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { useT } from "@/i18n";
 import { Route as rootRoute } from "./routes/__root";
+import { Route as apiMonitorRoute } from "./routes/api";
 import { Route as dataRecipesRoute } from "./routes/data-recipes";
 import { Route as dataRecipeRoute } from "./routes/data-recipes.$recipeId";
 import { Route as chatRoute } from "./routes/chat";
@@ -36,6 +37,7 @@ const routeTree = rootRoute.addChildren([
   videoRoute,
   dataRecipesRoute,
   dataRecipeRoute,
+  apiMonitorRoute,
 ]);
 
 function DefaultNotFound() {
