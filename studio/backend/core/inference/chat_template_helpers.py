@@ -691,6 +691,30 @@ _SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired", "dependencies"}
 _SCHEMA_VALUED_IDENTIFIERS = frozenset({"enum", "const", "required", "pattern", "default"})
 
 
+def _first_unsafe_leaf(value):
+    """The first string leaf, dict key included, that the rewrite would change."""
+    stack = [value]
+    seen = {id(value)}
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if neutralize_control_markup(node) != node:
+                return node
+        elif isinstance(node, dict):
+            for key, item in node.items():
+                if isinstance(key, str) and neutralize_control_markup(key) != key:
+                    return key
+                if id(item) not in seen:
+                    seen.add(id(item))
+                    stack.append(item)
+        elif isinstance(node, list):
+            for item in node:
+                if id(item) not in seen:
+                    seen.add(id(item))
+                    stack.append(item)
+    return None
+
+
 def _unsafe_schema_identifier(value):
     """Return the first schema identifier the rewrite would change, or None."""
     stack = [value]
@@ -711,12 +735,13 @@ def _unsafe_schema_identifier(value):
                                 ):
                                     return dependent
                 elif key in _SCHEMA_VALUED_IDENTIFIERS:
-                    for literal in item if isinstance(item, list) else [item]:
-                        if (
-                            isinstance(literal, str)
-                            and neutralize_control_markup(literal) != literal
-                        ):
-                            return literal
+                    # Every leaf, not just a top-level string: JSON Schema lets an enum
+                    # entry or a const be any value, so "enum": [["<s>"]] and
+                    # "const": {"tag": "</think>"} are literals the model has to reproduce
+                    # exactly and the leaf rewrite would otherwise quietly re-specify.
+                    unsafe = _first_unsafe_leaf(item)
+                    if unsafe is not None:
+                        return unsafe
                 if isinstance(item, (dict, list)) and id(item) not in seen:
                     seen.add(id(item))
                     stack.append(item)
