@@ -52,9 +52,9 @@ rename the heading at release time.
 
 ### Kimi K3
 
-Kimi K3 is thinking-only, and low, high and max reasoning efforts are all
-supported. Multi-GPU setups are detected automatically and expert layers can
-be offloaded to system memory.
+Kimi K3 loads with thinking on, and low, high and max reasoning efforts are
+all supported. Multi-GPU setups are detected automatically and expert layers
+can be offloaded to system memory.
 
 It is a very large model, so plan hardware accordingly:
 
@@ -106,15 +106,15 @@ This builds on the initial
 ### Also in this release
 
 - Large exports can use every visible GPU, avoiding GPU 0 memory limits.
-- MLX gains streaming datasets, continued pretraining, callbacks and better
-  VLM and LoRA support.
+- MLX gains better VLM and LoRA support, and the inference sidecar is
+  activated before detection.
 - Incorrect `flash_attention_2` model output is fixed.
 - Unsloth and its saving utilities now work without bitsandbytes.
 - `.json` datasets and the Qwen3.5 / Qwen3.6 MoE and GRPO notebook setup are
   fixed.
 - Hub download folders are easier to find and open.
-- `unsloth start --as-subagent` lets Codex, Claude Code and Pi delegate tasks
-  to a local Unsloth model.
+- `unsloth start <agent> --as-subagent` lets Claude Code, Codex, OpenCode and
+  Pi delegate tasks to a local Unsloth model.
 
 ## 2026.7.5
 
@@ -123,12 +123,8 @@ This builds on the initial
 - AMD support is here. Train, run RL, chat with and deploy 500+ models on
   Radeon, Instinct, Ryzen and data center GPUs across Windows, WSL and Linux,
   up to 2x faster with 70% less VRAM and no accuracy loss.
-- Intel XPU support lands in Studio, so Arc and Data Center GPUs run chat and
-  training alongside the NVIDIA, AMD and Apple paths.
 - Local speech to text dictation runs fully offline, with slim Whisper bundles
   and a picker for custom models.
-- DoRA training is available in Studio, selectable next to LoRA and full
-  fine-tuning in the training tab.
 - The update popup previews release notes inline, pulled from this file and
   matched to the exact version being offered.
 
