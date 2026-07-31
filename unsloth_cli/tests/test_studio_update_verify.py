@@ -40,7 +40,12 @@ def _deps():
 # ── a fake site-packages with real RECORD metadata ───────────────────
 
 
-def _make_dist(site: Path, name: str, files: dict[str, bytes], record_sizes = None):
+def _make_dist(
+    site: Path,
+    name: str,
+    files: dict[str, bytes],
+    record_sizes = None,
+):
     """Install `files` under `site` and write a dist-info RECORD describing them.
 
     `record_sizes` overrides the size RECORD claims, which is how damage is
@@ -86,7 +91,9 @@ def test_an_intact_install_reports_nothing(site):
 
 def test_a_truncated_file_is_reported(site):
     # The observed failure: fastapi/__init__.py emptied, metadata untouched.
-    _make_dist(site, "fastapi", {"fastapi/__init__.py": b""}, record_sizes = {"fastapi/__init__.py": 1081})
+    _make_dist(
+        site, "fastapi", {"fastapi/__init__.py": b""}, record_sizes = {"fastapi/__init__.py": 1081}
+    )
     found = _deps().damaged_installed_files()
     assert len(found) == 1
     assert "fastapi/__init__.py" in found[0]
@@ -117,8 +124,12 @@ def test_a_file_larger_than_recorded_is_not_damage(site):
     # Two distributions claiming one path: descript-audio-codec ships a
     # top-level tests/__init__.py that another package overwrites. Flagging that
     # would block updates on a perfectly healthy install.
-    _make_dist(site, "delta", {"tests/__init__.py": b"a much longer body\n"},
-               record_sizes = {"tests/__init__.py": 0})
+    _make_dist(
+        site,
+        "delta",
+        {"tests/__init__.py": b"a much longer body\n"},
+        record_sizes = {"tests/__init__.py": 0},
+    )
     assert _deps().damaged_installed_files() == []
 
 
@@ -128,8 +139,7 @@ def test_installer_owned_metadata_is_ignored(site):
     _make_dist(site, "epsilon", {"epsilon/__init__.py": b"e\n"})
     info = site / "epsilon-1.0.dist-info"
     (info / "RECORD").write_text(
-        "epsilon-1.0.dist-info/METADATA,sha256=x,999999\n"
-        "epsilon/__init__.py,sha256=x,2\n"
+        "epsilon-1.0.dist-info/METADATA,sha256=x,999999\nepsilon/__init__.py,sha256=x,2\n"
     )
     assert _deps().damaged_installed_files() == []
 
@@ -165,7 +175,8 @@ def test_a_damaged_tree_exits_nonzero_and_names_the_files(monkeypatch, capsys):
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
     monkeypatch.setattr(
-        studio._studio_deps, "damaged_installed_files",
+        studio._studio_deps,
+        "damaged_installed_files",
         lambda *a, **k: ["fastapi: fastapi/__init__.py is 0 bytes, expected 1081"],
     )
     with pytest.raises(typer.Exit) as excinfo:
@@ -197,7 +208,9 @@ def test_windows_is_told_the_powershell_installer(monkeypatch, capsys):
 
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
-    monkeypatch.setattr(studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"])
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
+    )
     monkeypatch.setattr(_platform, "system", lambda: "Windows")
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
