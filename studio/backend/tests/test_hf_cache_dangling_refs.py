@@ -1978,6 +1978,48 @@ def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_pa
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+def test_a_canonical_index_with_no_shards_is_not_skipped_for_the_bin(tmp_path, monkeypatch):
+    """_get_resolved_checkpoint_files tries model.safetensors.index.json before pytorch_model.bin,
+    and the branches are exclusive, so a whole .bin beside an index whose shards were never
+    recovered is not the file the loader reaches."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "pytorch_model.bin": b"\0" * 256,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_bin_with_no_safetensors_index_beside_it_still_serves(tmp_path, monkeypatch):
+    """Control for the test above: with no safetensors name of any kind, pytorch_model.bin is the
+    file the loader reaches."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "pytorch_model.bin": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_a_family_behind_an_alternate_index_name_is_not_visible(tmp_path, monkeypatch):
     """transformers probes model.safetensors.index.json, never model-copy.safetensors.index.json, so
     a set behind the alternate name is one the pinned load never opens."""

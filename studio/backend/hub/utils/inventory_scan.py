@@ -818,6 +818,8 @@ class _SnapshotPayload(NamedTuple):
     empty_whole: dict
     # Kinds whose weights are here but only under a subdirectory the loader never opens.
     nested: frozenset
+    # Suffixes whose canonical root index exists, shards recovered or not.
+    root_indexes: frozenset
 
 
 def _required_config_is_unreadable(path: Path, empty: bool) -> bool:
@@ -991,6 +993,14 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     # invisible and neither serve nor veto the row; an unusable index is picked and failed on instead.
     unloadable: set = set()
     invisible: set = set()
+    # The index is selected by its own name, so it counts even when the walk grouped no shard of it.
+    root_indexes: set[str] = set()
+    for suffix, canonical in _LOADER_WEIGHT_NAMES["base"].items():
+        try:
+            if (snapshot_dir / f"{canonical}.index.json").is_file():
+                root_indexes.add(suffix)
+        except OSError:
+            continue
     for family in groups["base"]:
         # Only the canonical index is probed, so a set behind any other name is one it never opens.
         index_path = (
@@ -1017,6 +1027,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         frozenset(empty_ungrouped),
         empty_whole,
         frozenset(nested),
+        frozenset(root_indexes),
     )
 
 
@@ -1099,6 +1110,10 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 if family[3] == suffix and family[0] in ("", ".")
             }
             if not families:
+                if kind == "base" and suffix in payload.root_indexes:
+                    # The loader selects this index and loads exactly what it names. With none of
+                    # those shards here it fails rather than trying the next name.
+                    return kind == wanted or wanted not in payload.ungrouped
                 continue
             if all(family in payload.invisible_families for family in families):
                 # Nothing names these shards, so the loader looks past them: they neither serve nor veto.
