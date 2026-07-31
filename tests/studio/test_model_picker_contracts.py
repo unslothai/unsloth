@@ -1338,6 +1338,8 @@ def test_external_readoption_drops_a_pin_taken_for_another_model():
     assert branch.index("activeLoadId: null") < branch.index(
         ".setCheckpoint(modelId, residentStatus.gguf_variant)"
     ), "the pin must be cleared before the checkpoint is adopted"
+
+
 def test_only_gguf_configs_are_mirrored_to_the_server():
     """The server override map is read by the OpenAI-compatible auto-switch, and its
     resolver indexes GGUFs only."""
