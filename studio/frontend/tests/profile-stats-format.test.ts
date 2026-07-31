@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   formatCompactNumber,
+  formatDayCount,
   formatDuration,
   formatMilliseconds,
   heatLevel,
@@ -46,6 +47,16 @@ test("durations read the way the header does", () => {
   assert.equal(formatMilliseconds(420), "420ms");
   assert.equal(formatMilliseconds(2500), "2.5s");
   assert.equal(formatMilliseconds(0), "—");
+});
+
+test("day counts follow each locale's plural rules", () => {
+  assert.equal(formatDayCount(1, "en"), "1 day");
+  assert.equal(formatDayCount(2, "en"), "2 days");
+  assert.equal(formatDayCount(1, "ar"), "يوم");
+  assert.equal(formatDayCount(2, "ar"), "يومان");
+  assert.equal(formatDayCount(3, "ar"), "3 أيام");
+  assert.equal(formatDayCount(11, "ar"), "11 يومًا");
+  assert.equal(formatDayCount(100, "ar"), "100 يوم");
 });
 
 test("heat levels are relative to the busiest day", () => {

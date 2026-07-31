@@ -47,6 +47,7 @@ export const en = {
       compare: "Compare",
       search: "Search",
       hub: "Model hub",
+      projects: "Projects",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -430,8 +431,6 @@ export const en = {
         longestChat: "Longest chat",
         currentStreak: "Current streak",
         longestStreak: "Longest streak",
-        dayCount: "{count} days",
-        dayCountOne: "1 day",
         activityTitle: "Token activity",
         activityDescription: "{total} tokens over the last {weeks} weeks",
         mode: {

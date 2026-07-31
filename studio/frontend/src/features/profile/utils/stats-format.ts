@@ -45,6 +45,15 @@ export function formatFullNumber(value: number): string {
   return Math.round(value).toLocaleString();
 }
 
+/** Locale-aware day unit, including languages with multiple plural forms. */
+export function formatDayCount(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    style: "unit",
+    unit: "day",
+    unitDisplay: "long",
+  }).format(value);
+}
+
 /** Compact duration for chat and training time: 4h 8m, 12m 30s, 45s. */
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
