@@ -296,13 +296,22 @@ def start_background_warm() -> bool:
     lifespan used to do inline and which must still happen without waiting for a
     request (it prints "Hardware detected: ..." and feeds /api/health's
     chat_only).
+
+    A finished thread left over from an earlier lifespan does not count as one
+    already running. reset_background_warm() declines while a warm is alive, so
+    a shutdown that lands mid-warm leaves the object in place; if that warm then
+    finishes before the next lifespan gets here, treating it as "already started"
+    would skip the warm entirely -- over hardware state the same shutdown just
+    cleared, leaving the restart cold until some request kicks detection.
     """
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     with _start_lock:
         if _thread is not None:
-            return False
+            if _thread.is_alive():
+                return False
+            _clear_finished_warm_locked()
         _thread = threading.Thread(target = _warm, daemon = True, name = "torch-warm")
         _status["started"] = True
         _thread.start()
@@ -324,17 +333,22 @@ def reset_background_warm() -> bool:
     shutdown clears DETECTION_COMPLETE and /api/health kicks
     start_background_detection().
     """
-    global _thread
     with _start_lock:
         thread = _thread
         if thread is not None and thread.is_alive():
             return False
-        _thread = None
-        _status["started"] = False
-        _status["finished"] = False
-        _status["stages"] = {}
-        _status.pop("seconds", None)
+        _clear_finished_warm_locked()
         return True
+
+
+def _clear_finished_warm_locked() -> None:
+    """Drop the finished warm and its status. Caller holds ``_start_lock``."""
+    global _thread
+    _thread = None
+    _status["started"] = False
+    _status["finished"] = False
+    _status["stages"] = {}
+    _status.pop("seconds", None)
 
 
 def warm_status() -> dict:

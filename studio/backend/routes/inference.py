@@ -4967,11 +4967,25 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
         from utils.hardware import DeviceType, get_device
         from utils.hardware.hardware import resolve_requested_gpu_ids
 
-        is_vulkan = LlamaCppBackend._is_vulkan_backend()
-        if get_device() == DeviceType.XPU and not is_vulkan:
+        # One hop for the whole device-dependent block, not just get_device().
+        # resolve_requested_gpu_ids() reaches get_device() and
+        # get_physical_gpu_count() itself, so both wait on the same detection lock
+        # while the warm is importing torch. The auto-switch path calls this
+        # helper before any of the explicit-gpu_ids offloads, so leaving it inline
+        # let the first OpenAI request to a model with a stored pin hold the event
+        # loop for that whole import, stalling login, liveness and health.
+        def _device_and_resolution() -> tuple[object, bool, list]:
+            is_vulkan = LlamaCppBackend._is_vulkan_backend()
+            return (
+                get_device(),
+                is_vulkan,
+                resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan),
+            )
+
+        device, is_vulkan, resolved = await asyncio.to_thread(_device_and_resolution)
+        if device == DeviceType.XPU and not is_vulkan:
             # Rejected outright on XPU.
             return False
-        resolved = resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
         if is_vulkan and resolved:
             # Vulkan ordinals are their own index space, so presence needs the ggml probe.
             binary = LlamaCppBackend._find_llama_server_binary()

@@ -1042,3 +1042,91 @@ async def _run_shutdown(shutdown_mod, hw_mod) -> None:
         clear_compiled_cache = lambda: None,
         hw_module = hw_mod,
     )
+
+
+# ------------------------------------------- the post-warm worker rechecks
+def test_the_post_warm_worker_rechecks_before_each_action():
+    """One check after the join leaves a window shutdown can land in.
+
+    The join is the long wait, but the MLX autorepair and the RAG warm each take
+    their own time, and the RAG warm can go as far as spawning a llama-server.
+    A generation read before each action is what keeps a stopped lifespan from
+    starting either.
+    """
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_post_warm_background_work"
+    )
+    checks = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "_post_warm_retired"
+    ]
+    assert len(checks) >= 3, (
+        "the post-warm worker checks retirement fewer than once per action; a "
+        "shutdown landing after the join can still start MLX autorepair or a "
+        "llama-server for a lifespan that has stopped"
+    )
+
+
+def test_the_retirement_check_reads_the_live_generation(monkeypatch):
+    """It has to compare against the current counter, not a captured one."""
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_post_warm_current_generation", lambda: 7, raising = True)
+    assert main_mod._post_warm_retired(7) is False
+    assert main_mod._post_warm_retired(6) is True
+    assert main_mod._post_warm_retired(None) is False, (
+        "a direct call with no generation must still run; that is the test path"
+    )
+
+
+# --------------------------------------- the saved GPU override goes off-loop
+def test_the_saved_gpu_override_check_runs_off_the_event_loop():
+    """The auto-switch path reaches this before any explicit-gpu_ids offload.
+
+    resolve_requested_gpu_ids() calls get_device() and get_physical_gpu_count()
+    itself, so both wait on the detection lock while the warm imports torch.
+    """
+    path = _BACKEND / "routes" / "inference.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_override_gpu_ids_still_resolve"
+    )
+    nested = {
+        sub
+        for helper in ast.walk(fn)
+        if isinstance(helper, ast.FunctionDef)
+        for sub in ast.walk(helper)
+    }
+    inline = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id in {"get_device", "resolve_requested_gpu_ids"}
+        and sub not in nested
+    ]
+    assert not inline, (
+        "get_device() or resolve_requested_gpu_ids() is called inline again; the "
+        "first auto-switch to a model with a stored pin then holds the event loop "
+        "for the whole torch import"
+    )
+    reached = {
+        call.func.id
+        for helper in ast.walk(fn)
+        if isinstance(helper, ast.FunctionDef)
+        for call in ast.walk(helper)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+    assert {"get_device", "resolve_requested_gpu_ids"} <= reached, (
+        "the offloaded helper no longer does the device resolution; the check "
+        "moved somewhere this test does not cover"
+    )

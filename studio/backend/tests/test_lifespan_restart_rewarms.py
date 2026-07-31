@@ -94,21 +94,57 @@ def _restore(monkeypatch) -> None:
     )
 
 
-def test_reset_lets_a_second_lifespan_start_a_fresh_warm(monkeypatch):
+def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
+    """Both restart paths must re-warm, not just the one that got a clean reset.
+
+    reset_background_warm() declines while a warm is still alive, which is the
+    normal case for a shutdown that lands mid-warm. If that warm then finishes,
+    the thread object is left behind, and treating it as "already started" would
+    skip the second lifespan's warm entirely -- over hardware state the same
+    shutdown just cleared.
+    """
     _restore(monkeypatch)
     runs: list[int] = []
     monkeypatch.setattr(warmup, "_warm", lambda: runs.append(1))
 
     assert warmup.start_background_warm() is True
     assert warmup.join_background_warm(30) is True
-    # Without a reset this is the second lifespan's outcome: the latch is still
-    # held by the finished thread, so nothing warms.
-    assert warmup.start_background_warm() is False
 
+    # Path one: shutdown reset cleanly, the next lifespan warms.
     assert warmup.reset_background_warm() is True
     assert warmup.start_background_warm() is True
     assert warmup.join_background_warm(30) is True
     assert runs == [1, 1], "the second lifespan did not run the warm again"
+
+    # Path two: no reset ran at all, because the warm outlived the shutdown that
+    # tried. The finished thread must not still hold the latch.
+    assert warmup.start_background_warm() is True
+    assert warmup.join_background_warm(30) is True
+    assert runs == [1, 1, 1], (
+        "a finished warm kept the latch, so the restart served with the ML stack "
+        "cold until some request kicked detection"
+    )
+
+
+def test_a_live_warm_still_holds_the_latch(monkeypatch):
+    """Negative control: clearing the dead thread must not allow two live warms."""
+    _restore(monkeypatch)
+    release = threading.Event()
+    entered = threading.Event()
+
+    def _slow_warm() -> None:
+        entered.set()
+        release.wait(30)
+
+    monkeypatch.setattr(warmup, "_warm", _slow_warm)
+    try:
+        assert warmup.start_background_warm() is True
+        assert entered.wait(30)
+        assert warmup.start_background_warm() is False, "a second warm ran beside a live one"
+        assert warmup.reset_background_warm() is False
+    finally:
+        release.set()
+        warmup.join_background_warm(30)
 
 
 def test_reset_clears_the_reported_warm_status(monkeypatch):

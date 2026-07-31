@@ -557,6 +557,26 @@ def _stop_post_warm_thread() -> None:
         _post_warm_generation += 1
 
 
+def _post_warm_retired(generation: Optional[int]) -> bool:
+    """True when this post-warm worker's lifespan has ended. Logs once when it has.
+
+    A worker carries the generation it was started with; _stop_post_warm_thread()
+    advances the counter, so any mismatch means the application that wanted this
+    work has stopped. Everything the worker does imports or loads something, and
+    the RAG warm can go as far as spawning a llama-server, so none of it may
+    start for a stopped lifespan.
+    """
+    if generation is None or _post_warm_current_generation() == generation:
+        return False
+    import structlog as _structlog
+    _structlog.get_logger(__name__).info(
+        "post-warm work %s stood down: its lifespan ended while the ML stack "
+        "was still loading",
+        generation,
+    )
+    return True
+
+
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
     """Stack-dependent startup work, run after the coordinated warm.
 
@@ -580,13 +600,14 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # llama-server; none of that may start for an application that has stopped.
     # generation is None only for a direct call (tests); a worker started by a
     # lifespan always carries one.
-    if generation is not None and _post_warm_current_generation() != generation:
-        import structlog as _structlog
-        _structlog.get_logger(__name__).info(
-            "post-warm work %s stood down: its lifespan ended while the ML stack "
-            "was still loading",
-            generation,
-        )
+    #
+    # Rechecked before every action below, not once here. The join is where the
+    # long wait is, but it is not the only place shutdown can land: the MLX
+    # autorepair and the RAG warm each take their own time, so a single check
+    # leaves a window where the generation moves and this worker never looks
+    # again. Each action is cheap to guard and none of them is cancellable once
+    # started.
+    if _post_warm_retired(generation):
         return
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
@@ -598,6 +619,8 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # is precisely what lets a version-satisfying but broken install go unrepaired.
     try:
         from utils.mlx_repair import start_mlx_autorepair_if_needed
+        if _post_warm_retired(generation):
+            return
         start_mlx_autorepair_if_needed()
     except Exception as _mlx_exc:
         import structlog as _structlog
@@ -614,6 +637,8 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return
 
+    if _post_warm_retired(generation):
+        return
     _warm_rag_embedder()
 
 
