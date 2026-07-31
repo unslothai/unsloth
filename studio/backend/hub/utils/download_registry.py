@@ -775,8 +775,7 @@ class DownloadMetadata:
     completed_baseline_bytes: int = 0
     hub_cache: Optional[str] = None
     xet_cache: Optional[str] = None
-    # Scoped jobs only: the exact files to fetch. Kept here so the XET -> HTTP retry
-    # respawns the same scoped download instead of a full snapshot.
+    # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
     scoped_files: tuple[str, ...] = ()
 
 
@@ -1157,9 +1156,8 @@ class DownloadRegistry:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES and not replace_active:
-                # A scope slot is shared by every file set that rides it (two quants of one repo both key as
-                # "@diffusion"), so adopting the live job would let the caller wait on files it never asked for.
-                # Reject instead; checked here, under the lock, so a concurrent claim cannot slip past.
+                # A scope slot is shared by every file set that rides it (two quants of one repo both key as "@diffusion"), so adopting
+                # the live job would let the caller wait on files it never asked for. Reject instead, under the lock.
                 live = self._metadata.get(key)
                 if (
                     scoped_files is not None

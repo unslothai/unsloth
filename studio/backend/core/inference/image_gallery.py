@@ -69,8 +69,7 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     image_id = uuid.uuid4().hex
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
-    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write
-    # never leaves a truncated {id}.png the listing would surface as a corrupt record.
+    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a truncated {id}.png in the listing.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
         tmp_path.write_bytes(_png_bytes(image, meta))
@@ -112,8 +111,7 @@ def image_b64(image_id: str) -> Optional[str]:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as
-# foreign, so a hand-dropped or older-schema file can't 500 the listing.
+# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as foreign, so a hand-dropped or older-schema file cannot 500 the listing.
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
@@ -175,10 +173,9 @@ def list_images(
     except OSError:
         return []
     paths.sort(key = _mtime, reverse = True)
-    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced
-    # window would drop valid images and make has_more wrong. Read only as far as needed. Known
-    # limit: this re-reads headers from newest down to `offset+limit` per page, so a deep scroll is
-    # O(offset) header-opens; PIL opens are lazy and off the event loop, so nothing freezes.
+    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop valid
+    # images and make has_more wrong. Read only as far as needed. Known limit: this re-reads headers from newest down to
+    # `offset+limit` per page, so a deep scroll is O(offset) header-opens; PIL opens are lazy and off the event loop.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
@@ -198,8 +195,7 @@ def delete(image_id: str) -> bool:
     path = image_path(image_id)
     if path is None:
         return False
-    # Only delete files we own (a readable recipe chunk); a hand-dropped foreign PNG is invisible to
-    # list_images, so a guessed id must not destroy it.
+    # Only delete files we own (a readable recipe chunk): a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it.
     if _read_meta(path) is None:
         return False
     try:

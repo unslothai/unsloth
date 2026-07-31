@@ -1487,9 +1487,7 @@ def gguf_load_in_flight(hf_repo: Optional[str]):
                 _LOADS_IN_FLIGHT[key] = remaining
 
 
-# Chat loads in flight, repo-agnostic (local paths and safetensors included). The repo-keyed
-# counter above answers the download manager; this one answers the GPU arbiter, which must know a
-# chat load exists before llama-server is spawned.
+# Chat loads in flight, repo-agnostic (local paths and safetensors included). The repo-keyed counter above answers the download manager; this one answers the GPU arbiter, which must know before llama-server spawns.
 _CHAT_LOADS_IN_FLIGHT = 0
 
 
@@ -1535,11 +1533,9 @@ def zero_vram_chat_load(
     """
     if gpu_memory_mode != "manual" or gpu_layers != 0:
         return False
-    # Any speculative mode may launch a GPU drafter, and only the request's own knobs are known here,
-    # so treat every selection as GPU-bearing -- except "off", which the resolver never emits a
-    # drafter for. Canonicalize first: the UI persists and sends the literal "off", which a bare
-    # truthiness test read as "speculation requested" and so evicted a resident image/video pipeline
-    # for a CPU-only load.
+    # Any speculative mode may launch a GPU drafter and only the request's own knobs are known here, so treat every selection
+    # as GPU-bearing except "off", which the resolver never emits a drafter for. Canonicalize first: the UI sends the literal
+    # "off", which a bare truthiness test read as "speculation requested" and evicted a pipeline for a CPU-only load.
     spec_mode = _canonicalize_spec_mode(speculative_type)
     if needs_mmproj or spec_mode not in (None, "off"):
         return False

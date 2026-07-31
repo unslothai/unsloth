@@ -30,8 +30,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Companion files (text projections, VAEs incl. vocoder) next to the quants in unsloth's GGUF
-# repo: the official Lightricks weights split out of the combined checkpoint. Keyed by variant.
+# Companion files (text projections, VAEs incl. vocoder) beside the quants in unsloth's GGUF repo: the official Lightricks weights split out of the combined checkpoint. Keyed by variant.
 LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
 _EXTRAS_TEXT_PROJ = "text_encoders/ltx-2.3-22b-{variant}_embeddings_connectors.safetensors"
 _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
@@ -361,10 +360,8 @@ def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
     )
 
 
-# Upstream ltx_core's DISTILLED_SIGMA_VALUES: the fixed 8-step sampling curve the 22B distilled
-# DiT was trained against (the scheduler appends the terminal 0 itself). The base scheduler's
-# resolution-shifted spacing lands far from it at every mu the pipeline can compute, so the
-# distilled default of 8 steps must pass this list verbatim.
+# Upstream ltx_core's DISTILLED_SIGMA_VALUES: the fixed 8-step curve the 22B distilled DiT was trained against (the
+# scheduler appends the terminal 0). The base scheduler's shifted spacing never lands near it, so 8 steps pass this verbatim.
 LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
     1.0,
     0.99375,
@@ -446,8 +443,7 @@ def load_ltx23_transformer(
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
 
-    # Pre-rename the 2.3-only keys the converter doesn't know, then from_single_file merges the
-    # config overrides into the base 2.0 config and runs the stock key conversion.
+    # Pre-rename the 2.3-only keys the converter does not know; from_single_file then merges the config overrides into the base 2.0 config and runs the stock conversion.
     for old, new in _TRANSFORMER_PRERENAME:
         for key in [k for k in dit_state if k.startswith(old)]:
             dit_state[new + key[len(old) :]] = dit_state.pop(key)
@@ -468,8 +464,7 @@ def load_ltx23_connectors(
 ) -> Any:
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
-    # Transformer-only checkpoints carry the connector stacks but not the per-modality text
-    # projections; fetch those from the companion file.
+    # Transformer-only checkpoints carry the connector stacks but not the per-modality text projections, so fetch those from the companion file.
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
@@ -526,8 +521,7 @@ def load_ltx23_audio_vae_and_vocoder(
         _AUDIO_VAE_RENAME,
         torch_dtype,
     )
-    # The 2.3 vocoder is a composite (base + bandwidth-extension stack + mel STFT buffers); keys line
-    # up module-for-module after the renames.
+    # The 2.3 vocoder is a composite (base + bandwidth-extension stack + mel STFT buffers); keys line up module-for-module after the renames.
     vocoder_state = _apply_rename(_to_plain_dtype(vocoder_state, torch_dtype), _VOCODER_RENAME)
     for key in [k for k in vocoder_state if ".ups." in k]:
         vocoder_state[key.replace(".ups.", ".upsamplers.")] = vocoder_state.pop(key)
@@ -573,9 +567,8 @@ def load_ltx23_pipeline(
     groups = _split_checkpoint(state)
     del state
 
-    # The Lightricks fp8 single files store SCALED float8 weights (.weight_scale/.input_scale
-    # companions). Casting without the scales corrupts every quantized layer, so refuse loudly; use
-    # the GGUF quants (Q8_0 for highest fidelity) instead.
+    # The Lightricks fp8 single files store SCALED float8 weights (.weight_scale/.input_scale companions), and casting without
+    # the scales corrupts every quantized layer, so refuse loudly and point at the GGUF quants (Q8_0 for highest fidelity).
     if any(k.endswith((".weight_scale", ".input_scale")) for k in groups["dit"]):
         raise ValueError(
             "This LTX checkpoint stores scaled fp8 weights, which this loader does "
@@ -605,8 +598,7 @@ def load_ltx23_pipeline(
         hf_token = hf_token,
     )
 
-    # Shared 2.0/2.3 components from the base repo, via model_index so upstream class renames break
-    # loudly here rather than drift silently.
+    # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather than drift.
     index = LTX2Pipeline.load_config(base_repo, token = hf_token)
 
     def _sub(name: str, **extra: Any) -> Any:

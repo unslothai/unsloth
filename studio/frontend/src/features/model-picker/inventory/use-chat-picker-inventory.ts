@@ -43,8 +43,7 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
     task: row.task ?? null,
-    // Carried through: the diffusion picker drops single-file checkpoint repos (loading one as a
-    // pipeline fails after the handoff), and an undefined flag reads as "full pipeline".
+    // Carried through: the diffusion picker drops single-file checkpoint repos (loading one as a pipeline fails after the handoff), and undefined reads as "full pipeline".
     single_file: row.singleFile ?? false,
   };
 }
@@ -112,10 +111,8 @@ export function useChatPickerInventory(
             // Skip non-chat rows (e.g. a folder with only config.json is
             // classified "unknown" -> canChat false); selecting one would try to
             // load a weightless path. toLocalModelInfo drops capabilities, so
-            // this is the only place the guard can live. A row the backend
-            // classified as a generation task is exempt: canChat is about the
-            // chat loader, and dropping it here hid every on-device diffusion
-            // model from the Images/Video pickers that CAN load it.
+            // this is the only place the guard can live. A row the backend classified as a generation task is exempt: canChat is
+            // about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
             (row.capabilities.canChat || studioPageForTask(row.task) !== undefined) &&
             !isHiddenModelId(row.modelId, row.repoId, row.path),
         )

@@ -649,10 +649,8 @@ def _scan_cached_models() -> list[dict]:
                     repo_id,
                     repo_path,
                 )
-                # A companion-only prefetch (pipeline manifest + VAE / text-encoder but no transformer
-                # shards, left behind by a GGUF load) passes the download check -- every file its
-                # manifest expected did arrive -- yet from_pretrained cannot load it. Mark it partial
-                # so the pickers do not advertise it as on-device, matching /api/models/cached.
+                # A companion-only prefetch (pipeline manifest + VAE / text-encoder but no transformer shards, left by a GGUF load) passes
+                # the download check yet cannot from_pretrained, so mark it partial and the pickers stop advertising it as on-device.
                 companion_only = hf_cache_scan.repo_pipeline_missing_denoiser(repo_info)
                 snapshot_partial = download_partial or companion_only
                 row_task = _cached_row_task(repo_info, gguf = False)
@@ -668,15 +666,12 @@ def _scan_cached_models() -> list[dict]:
                             repo_id,
                             repo_cache_dir = repo_path,
                         )
-                        # Only a genuine download partial has a transport; a companion-only
-                        # snapshot arrived intact and has no Resume / Redownload story.
+                        # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
                         if download_partial
                         else None
                     ),
-                    # Diffusion repos with no pipeline index load only via from_single_file, so the
-                    # task pickers must not offer them as pipeline loads. Same rule as
-                    # /api/models/cached; without it here, the picker's single_file gate sees
-                    # undefined on every hub-sourced row and lets a checkpoint-only repo through.
+                    # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as
+                    # pipeline loads. Without this the picker's single_file gate sees undefined on every hub-sourced row.
                     "single_file": bool(
                         row_task is not None
                         and not hf_cache_scan.repo_has_pipeline_index(repo_info)

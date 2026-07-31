@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Assertions over the model catalog: canonical keys, alias resolution, catalog
-// integrity, the artifact/quant routing ladders, and search matching. Follows
-// the i18n:check pattern (plain node:assert, no test framework).
-//
-// Run: npm run catalog:check
+// Assertions over the model catalog: keys, aliases, integrity, quant routing ladders, search matching.
+// Plain node:assert like i18n:check. Run: npm run catalog:check
 
 import assert from "node:assert/strict";
 
@@ -38,8 +35,7 @@ assert.equal(
 );
 assert.equal(canonicalKeyFor("Wan-AI/Wan2.2-TI2V-5B-Diffusers"), "wan-ai/wan2.2-ti2v-5b");
 assert.equal(canonicalKeyFor("lightricks/ltx-2.3-fp8"), "lightricks/ltx-2.3");
-// Prequant suffixes strip regardless of case: -GGUF/-FP8/-int8/-nvfp4 all route
-// to the base name.
+// Prequant suffixes strip regardless of case: -GGUF/-FP8/-int8/-nvfp4 all route to the base name.
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-int8"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-INT8"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-nvfp4"), "unsloth/qwen-image-2512");
@@ -96,8 +92,7 @@ for (const artifact of qwen2512.artifacts) {
 }
 // Cross-owner aliases resolve only because they are declared.
 assert.equal(groupForRepoId("Qwen/Qwen-Image-2512", IMAGE_CATALOG), qwen2512);
-// Undeclared prequant variants (any case) still route to the base group via the
-// stripped key, so Recommended and On Device standardize them to the base name.
+// Undeclared prequant variants (any case) route to the base group via the stripped key.
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2512-INT8", IMAGE_CATALOG), qwen2512);
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2512-NVFP4", IMAGE_CATALOG), qwen2512);
 assert.equal(
@@ -330,8 +325,8 @@ assert.equal(
     .repoId,
   "ideogram-ai/ideogram-4-nf4-diffusers",
 );
-// A gated BF16 artifact (FLUX.1-dev) is NOT auto-routed when undownloaded, even on a big GPU that
-// fits it: the download would fail without license/token access, so route to the open GGUF.
+// A gated BF16 artifact (FLUX.1-dev) is NOT auto-routed when undownloaded even on a big GPU: the
+// download would fail without license/token access, so route to the open GGUF.
 const fluxDevRoute = groupForRepoId("unsloth/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDevRoute);
 assert.equal(
@@ -348,8 +343,7 @@ assert.equal(
   }).repoId,
   "black-forest-labs/FLUX.1-dev",
 );
-// FLUX.1 Krea dev: gated BF16 skipped when undownloaded -> the open QuantStack GGUF; the
-// GGUF repo id also resolves to the group (cross-owner via the artifact list).
+// FLUX.1 Krea dev: gated BF16 skipped when undownloaded -> the open QuantStack GGUF, whose repo id also resolves to the group.
 const kreaDevRoute = groupForRepoId("black-forest-labs/FLUX.1-Krea-dev", IMAGE_CATALOG);
 assert.ok(kreaDevRoute);
 assert.equal(
@@ -361,8 +355,7 @@ assert.equal(
   groupForRepoId("QuantStack/FLUX.1-Krea-dev-GGUF", IMAGE_CATALOG),
   kreaDevRoute,
 );
-// Lumina Image 2.0: a single ungated bf16 pipeline artifact (11 GB) -- auto-routed on a
-// 24 GB GPU (11 <= 0.7 * 24) and resolvable through its canonical id.
+// Lumina Image 2.0: one ungated bf16 pipeline (11 GB), auto-routed on a 24 GB GPU (11 <= 0.7 * 24).
 const lumina = groupForRepoId("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG);
 assert.ok(lumina);
 assert.equal(
@@ -371,9 +364,8 @@ assert.equal(
   "Alpha-VLLM/Lumina-Image-2.0",
 );
 assert.equal(loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind, "pipeline");
-// HunyuanImage 2.1: the 50 GB bf16 pipeline does NOT fit a 24 GB card, so a bare
-// click routes to the QuantStack GGUF; on a large GPU the bf16 wins. The mirror id
-// and the GGUF id resolve to one group.
+// HunyuanImage 2.1: the 50 GB bf16 pipeline misses a 24 GB card so a bare click routes to the
+// QuantStack GGUF; on a large GPU bf16 wins. The mirror id and the GGUF id share one group.
 const hyimage = groupForRepoId(
   "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
   IMAGE_CATALOG,
@@ -390,9 +382,8 @@ assert.equal(
   "bf16",
 );
 assert.equal(groupForRepoId("QuantStack/HunyuanImage-2.1-GGUF", IMAGE_CATALOG), hyimage);
-// HiDream I1: all three variants group together; a datacenter GPU auto-routes to the
-// Full bf16 (catalog order wins among equal sizes), and the group is hidden by the fit
-// filter on a 24 GB card (no GGUF artifact, 63 GB everywhere).
+// HiDream I1: all three variants group together, a datacenter GPU auto-routes to the Full bf16 (catalog
+// order wins among equal sizes), and the fit filter hides the group on 24 GB (63 GB everywhere).
 const hidream = groupForRepoId("HiDream-ai/HiDream-I1-Full", IMAGE_CATALOG);
 assert.ok(hidream);
 assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG), hidream);
@@ -425,8 +416,8 @@ assert.equal(
     .label,
   "BF16 - 720p",
 );
-// Same-format artifacts keep declaration order, so 720p is listed first and the fit loop returns
-// it when it fits; a smaller card (budget 42) skips 720p (52 > 42) and falls back to 480p (40).
+// Same-format artifacts keep declaration order, so 720p is listed first and the fit loop returns it when
+// it fits; a budget of 42 skips 720p (52 > 42) and falls back to 480p (40).
 assert.equal(
   pickDefaultArtifact(hunyuan, { gpuGb: 60, systemRamGb: 128, isDownloaded: notDownloaded })
     .label,
@@ -434,9 +425,8 @@ assert.equal(
 );
 
 // ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────
-// Qwen-Image-2512 BF16 (54 GB) doesn't fit a 24/48 GB budget (bnb-4bit/fp8 win there, asserted
-// above) but on an 80 GB datacenter GPU (budget 56) the official BF16 is the highest-quality
-// artifact that fits and wins.
+// Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget (bnb-4bit/fp8 win there, asserted above) but on
+// an 80 GB GPU (budget 56) it is the highest-quality artifact that fits and wins.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,
@@ -447,8 +437,7 @@ assert.equal(
     .repoId,
   "Qwen/Qwen-Image-2512",
 );
-// Z-Image-Turbo BF16 (30 GB): does not fit 24 GB (bnb-4bit wins) but fits a
-// 48 GB GPU (budget 33.6) where the official BF16 wins.
+// Z-Image-Turbo BF16 (30 GB) misses 24 GB (bnb-4bit wins) but fits a 48 GB GPU (budget 33.6) and wins.
 const zturbo = groupForRepoId("unsloth/Z-Image-Turbo", IMAGE_CATALOG);
 assert.ok(zturbo);
 assert.equal(
@@ -461,8 +450,8 @@ assert.equal(
     .format,
   "bf16",
 );
-// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU, but it is GATED: a bare click routes to the open
-// GGUF unless the BF16 is already downloaded (see the gated-routing checks above). Small GPU -> GGUF.
+// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU but is GATED, so a bare click routes to the open GGUF unless
+// it is already downloaded (see the gated-routing checks above). Small GPU -> GGUF.
 const fluxDev = groupForRepoId("black-forest-labs/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDev);
 assert.equal(fluxDev.canonicalId, "unsloth/FLUX.1-dev");
@@ -484,9 +473,8 @@ assert.equal(
     .format,
   "gguf",
 );
-// LTX-2.3 video carries the official BF16 single-file checkpoint (no FP8: its scaled-fp8 file is
-// refused by the loader), which keeps the ~50 GB Gemma3 encoder resident, so a consumer or 80 GB
-// GPU routes to GGUF; only a B200-class budget picks the official BF16.
+// LTX-2.3 video carries the official BF16 single-file checkpoint (no FP8: the loader refuses its scaled-fp8
+// file), which keeps the ~50 GB Gemma3 encoder resident, so only a B200-class budget picks it.
 const ltxGroup = groupForRepoId("unsloth/LTX-2.3", VIDEO_CATALOG);
 assert.ok(ltxGroup);
 assert.equal(
@@ -534,8 +522,7 @@ assert.equal(
   catalogGroupFitsDevice(hunyuanFit, { gpuGb: 8, systemRamGb: 8 }, notDownloaded),
   false,
 );
-// A GGUF in the group is always runnable (its quant ladder self-fits + offloads),
-// so LTX-2.3 stays visible even on a tiny card despite its 90 GB BF16 sibling.
+// A GGUF in the group is always runnable (its quant ladder self-fits + offloads), so LTX-2.3 stays visible on a tiny card despite its 90 GB BF16 sibling.
 assert.equal(
   catalogGroupFitsDevice(ltxGroup, { gpuGb: 4, systemRamGb: 4 }, notDownloaded),
   true,

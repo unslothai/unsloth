@@ -98,8 +98,7 @@ export function apiStart(
       })
     : startModelDownload({
         repo_id: req.repoId,
-        // A scoped job carries its scope instead of a quant; the backend derives the
-        // same "@scope" variant this surface already keyed the job under.
+        // A scoped job carries its scope instead of a quant; the backend derives the same "@scope" variant this surface keyed it under.
         gguf_variant: req.scopeId ? null : req.variant,
         scope_id: req.scopeId ?? null,
         files: req.files,

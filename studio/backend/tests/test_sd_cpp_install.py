@@ -273,14 +273,12 @@ def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
     sd_cli = install(install_dir = tmp_path)
     assert sd_cli.name == "sd-cli" and sd_cli.is_file()
     assert not (tmp_path / name).exists()  # archive cleaned up after extract
-    # The ownership marker lets the uninstaller delete a Studio-installed sd.cpp beside a custom root
-    # while keeping a user's own stable-diffusion.cpp checkout.
+    # The ownership marker lets the uninstaller delete a Studio-installed sd.cpp while keeping a user's own checkout.
     assert (tmp_path / ".unsloth-studio-owned").is_file()
 
 
 def test_install_into_empty_dir_claims_ownership(tmp_path, monkeypatch):
-    # An empty (or freshly created) target may be adopted: the marker is written so the uninstaller can
-    # later remove the Studio-installed tree.
+    # An empty (or freshly created) target may be adopted: the marker is written so the uninstaller can remove the tree later.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     empty = tmp_path / "sdcpp"
@@ -290,8 +288,7 @@ def test_install_into_empty_dir_claims_ownership(tmp_path, monkeypatch):
 
 
 def test_install_into_nonempty_unowned_dir_is_refused(tmp_path, monkeypatch):
-    # A pre-existing, non-empty directory Studio did not create (e.g. a user's own checkout) must not
-    # be extracted into; install() refuses up front and leaves it untouched.
+    # A pre-existing, non-empty directory Studio did not create must not be extracted into; install() refuses up front.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     target = tmp_path / "stable-diffusion.cpp"
@@ -309,8 +306,7 @@ def test_install_into_nonempty_unowned_dir_is_refused(tmp_path, monkeypatch):
 
 
 def test_reinstall_into_owned_dir_keeps_ownership(tmp_path, monkeypatch):
-    # A directory that already carries our marker (a prior Studio install / upgrade) stays owned even
-    # though it is now non-empty.
+    # A directory that already carries our marker stays owned even though it is now non-empty.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     target = tmp_path / "stable-diffusion.cpp"
@@ -331,9 +327,8 @@ def test_install_sha256_mismatch_raises_and_cleans_up(tmp_path, monkeypatch):
 
 
 def test_partial_install_failure_is_reclaimed_on_retry(tmp_path, monkeypatch):
-    # A crash AFTER extraction (here the post-extract cudart fetch raises) leaves the target non-empty.
-    # Because ownership is marked BEFORE the partial writes, the retry recognises the debris as ours
-    # and re-extracts instead of tripping the "not a Studio-managed directory" refusal.
+    # A crash AFTER extraction leaves the target non-empty. Because ownership is marked BEFORE the partial writes, the retry
+    # recognises the debris as ours and re-extracts instead of tripping the "not a Studio-managed directory" refusal.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     target = tmp_path / "sdcpp"
@@ -387,8 +382,7 @@ def test_safe_extractall_extracts_normal_members(tmp_path):
 
 
 def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
-    # A binary installed under a custom Studio root must be discovered without also setting
-    # UNSLOTH_SD_CPP_PATH (matching default_install_dir's env handling).
+    # A binary installed under a custom Studio root must be discovered without also setting UNSLOTH_SD_CPP_PATH.
     from core.inference import sd_cpp_engine as eng
 
     monkeypatch.delenv("SD_CLI_PATH", raising = False)
@@ -404,8 +398,7 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
 # ── Unsloth mirror: default source + the CPU/Apple asset set it publishes ─────
 
 _TAG = "master-741-484baa4"
-# Exactly what unslothai/stable-diffusion.cpp's CI publishes (CPU + Apple only; GPU hosts run
-# diffusers and never reach the native installer).
+# Exactly what unslothai/stable-diffusion.cpp's CI publishes (CPU + Apple only; GPU hosts run diffusers).
 _MIRROR_ASSETS = [
     f"sd-{_TAG}-bin-Darwin-macOS-arm64.zip",
     f"sd-{_TAG}-bin-Darwin-macOS-x86_64.zip",
@@ -513,8 +506,7 @@ def test_install_falls_back_to_upstream_when_mirror_missing(tmp_path, monkeypatc
     sd_cli = install(install_dir = tmp_path)
     assert sd_cli.name == "sd-cli" and sd_cli.is_file()
     captured = capsys.readouterr()
-    # The repo-fallback diagnostic goes to stderr so --print-asset's stdout stays a single asset line;
-    # the "source ..." install note still prints to stdout.
+    # The repo-fallback diagnostic goes to stderr so --print-asset's stdout stays one asset line; the install note stays on stdout.
     assert "falling back to leejet/stable-diffusion.cpp" in captured.err
     assert "source leejet/stable-diffusion.cpp" in captured.out
 
@@ -531,9 +523,8 @@ def test_install_errors_when_neither_source_serves(tmp_path, monkeypatch):
 
 
 def test_mirror_windows_gpu_accel_is_no_match_not_cpu():
-    # The mirror ships only a CPU win zip. An explicit --accelerator cuda/vulkan/rocm must NOT silently
-    # resolve to that CPU build; it returns None so install() falls back to upstream, which does build
-    # the accelerated asset.
+    # The mirror ships only a CPU win zip. An explicit --accelerator cuda/vulkan/rocm must NOT silently resolve to it; it
+    # returns None so install() falls back to upstream, which does build the accelerated asset.
     for accel in ("cuda", "vulkan", "rocm"):
         assert _mresolve("Windows", "AMD64", accel) is None
     # auto / cpu still resolve to the CPU build.
@@ -547,8 +538,7 @@ def test_mirror_linux_gpu_accel_is_no_match_not_cpu():
 
 
 def test_upstream_full_matrix_still_resolves_gpu_accel():
-    # Regression guard: the "explicit GPU accel -> None on miss" change must not break the upstream
-    # matrix, which does publish the accelerated builds.
+    # Regression guard: the "explicit GPU accel -> None on miss" change must not break the upstream matrix, which publishes them.
     assert _resolve("Windows", "AMD64", "cuda") == "sd-master-8caa3f9-bin-win-cuda12-x64.zip"
     assert _resolve("Linux", "x86_64", "vulkan").endswith("x86_64-vulkan.zip")
     assert "rocm" in _resolve("Linux", "x86_64", "rocm")
@@ -558,8 +548,7 @@ def test_upstream_full_matrix_still_resolves_gpu_accel():
 
 
 def test_explicit_repo_override_equal_to_default_suppresses_fallback(tmp_path, monkeypatch):
-    # A user who pins UNSLOTH_SD_CPP_REPO (even to the default value) must get exactly that repo -- no
-    # surprise leejet substitution -- so a missing release errors instead.
+    # A user who pins UNSLOTH_SD_CPP_REPO (even to the default) must get exactly that repo, so a missing release errors.
     _stub_two_repos(
         monkeypatch, mirror_serves = False, upstream_serves = True, zip_bytes = b"", digest = ""
     )
@@ -572,8 +561,7 @@ def test_explicit_repo_override_equal_to_default_suppresses_fallback(tmp_path, m
 
 
 def test_pinned_tag_prefers_upstream_pin_over_mirror_latest(tmp_path, monkeypatch, capsys):
-    # The mirror lacks the pinned tag but has a newer latest; upstream has the pin. The pinned upstream
-    # build must win over the unpinned mirror-latest (reproducibility).
+    # The mirror lacks the pinned tag but has a newer latest; the pinned upstream build must win (reproducibility).
     monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
     monkeypatch.setenv("UNSLOTH_SD_CPP_TAG", "master-999-pinned")
     zb = _zip_with_sd_cli()
@@ -628,8 +616,7 @@ def test_pinned_tag_prefers_upstream_pin_over_mirror_latest(tmp_path, monkeypatc
 
 
 def test_print_asset_uses_upstream_fallback(monkeypatch, capsys):
-    # A host the mirror does not build (Linux Vulkan) must print the upstream asset that a real install
-    # would fetch, not "no matching prebuilt".
+    # A host the mirror does not build (Linux Vulkan) must print the upstream asset a real install would fetch.
     monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
     monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
 
@@ -656,16 +643,14 @@ def test_print_asset_uses_upstream_fallback(monkeypatch, capsys):
 
 
 def test_unrunnable_managed_binary_is_removed_so_it_reinstalls(monkeypatch, tmp_path):
-    # An interrupted extraction leaves an sd-cli that exists but cannot run. The finder only checks
-    # is_file(), so without a probe the installer never retried and native inference stayed off for
-    # the life of the install.
+    # An interrupted extraction leaves an sd-cli that exists but cannot run. The finder only checks is_file(), so without a
+    # probe the installer never retried and native inference stayed off for the life of the install.
     import core.inference.sd_cpp_backend as bk
     import core.inference.sd_cpp_engine as eng
 
     root = tmp_path / "sd-home" / "stable-diffusion.cpp"
     root.mkdir(parents = True)
-    # install() writes the ownership marker BEFORE it extracts, so a real interrupted extraction
-    # always leaves one; it is what says the tree is ours to replace rather than a user checkout.
+    # install() writes the ownership marker BEFORE extracting, so a real interrupted extraction always leaves one.
     (root / ".unsloth-studio-owned").touch()
     managed = root / "sd-cli"
     managed.write_bytes(b"truncated")
@@ -696,8 +681,7 @@ def test_unrunnable_managed_binary_is_removed_so_it_reinstalls(monkeypatch, tmp_
 
 
 def test_an_unrunnable_user_supplied_binary_is_never_deleted(monkeypatch, tmp_path):
-    # SD_CLI_PATH / PATH / an in-tree build belong to the user: report them and let the router's own
-    # probe refuse, but never remove or reinstall over them.
+    # SD_CLI_PATH / PATH / an in-tree build belong to the user: report them and let the router's probe refuse, never remove them.
     import core.inference.sd_cpp_backend as bk
 
     outside = tmp_path / "mine" / "sd-cli"
@@ -714,13 +698,9 @@ def test_an_unrunnable_user_supplied_binary_is_never_deleted(monkeypatch, tmp_pa
 def test_unrunnable_binary_in_an_unmarked_root_is_kept_because_install_would_refuse(
     monkeypatch, tmp_path
 ):
-    # The repair and the installer have to agree on what "ours" means. install() refuses a
-    # pre-existing, non-empty target with no ownership marker (a user's own stable-diffusion.cpp
-    # checkout looks exactly like that at the default path, and so does any install predating the
-    # marker). Discarding a binary there deleted it and was then refused the reinstall -- and
-    # permanently, since the sibling sd-cli keeps the directory non-empty so the marker can never be
-    # claimed. The unrunnable binary is left in place instead: the router's probe still refuses it,
-    # and nothing of the user's is deleted.
+    # The repair and the installer have to agree on what "ours" means. install() refuses a pre-existing, non-empty target with
+    # no marker, which is exactly what a user's own checkout looks like, so discarding a binary there deleted it and then
+    # permanently refused the reinstall. The unrunnable binary is left in place instead: the router's probe still refuses it.
     import types
 
     import core.inference.sd_cpp_backend as bk
@@ -751,8 +731,7 @@ def test_unrunnable_binary_in_an_unmarked_root_is_kept_because_install_would_ref
 
 
 def test_the_repair_only_deletes_what_the_installer_may_reinstall(monkeypatch, tmp_path):
-    # The same tree WITH the marker is ours: install() reclaims it, so discarding the unrunnable
-    # copy is safe and the reinstall goes through. This is the loop a2342f80d set out to close.
+    # The same tree WITH the marker is ours: install() reclaims it, so discarding the unrunnable copy is safe.
     import types
 
     import core.inference.sd_cpp_backend as bk
@@ -784,9 +763,8 @@ def test_the_repair_only_deletes_what_the_installer_may_reinstall(monkeypatch, t
 
 
 def test_a_reinstall_over_an_owned_root_keeps_the_repair_loop_closed(tmp_path, monkeypatch):
-    # End to end across the two modules: after a real install() the marker exists, so the binary it
-    # wrote reads as managed and a later repair may discard it. Without this the two definitions of
-    # "ours" drift apart again.
+    # End to end across the two modules: after a real install() the marker exists, so the binary reads as managed and a later
+    # repair may discard it. Without this the two definitions of "ours" drift apart again.
     import core.inference.sd_cpp_engine as eng
 
     zb = _zip_with_sd_cli()

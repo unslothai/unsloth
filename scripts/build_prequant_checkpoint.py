@@ -83,15 +83,12 @@ def main(argv = None) -> int:
         args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
-    # Mirror the runtime exclusions exactly: int8 also skips the M=1 modulation projections
-    # (torch._int_mm needs M>16) plus per-family ones; scaled_mm schemes skip none. family=None
-    # bakes the crashing linears and yields an artifact the runtime then rejects.
+    # Mirror the runtime exclusions: int8 skips the M=1 modulation projections (torch._int_mm needs M>16)
+    # plus per-family ones; scaled_mm skips none. family=None bakes crashing linears the runtime rejects.
     exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
-    # fp8 / mxfp8 assert bf16 weights, so skip any non-bf16 Linear (mixed-precision DiTs keep some
-    # in fp32); nvfp4 handles fp32. Mirrors the runtime quantize_transformer gate.
+    # fp8 / mxfp8 need bf16 weights, so skip non-bf16 Linears; nvfp4 handles fp32. Mirrors the runtime gate.
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
-    # fp8 bakes the accumulate mode into the saved kernels; record it so the loader can reject a
-    # checkpoint contradicting an explicit runtime request.
+    # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
     quantize_(
         transformer,
@@ -113,8 +110,7 @@ def main(argv = None) -> int:
         "family": fam.name,
         "scheme": scheme,
         "min_features": args.min_features,
-        # Skipped layers, whether non-bf16 Linears were skipped, and the fp8 accumulate mode: all let
-        # the loader reject a checkpoint that would not match the runtime path.
+        # Let the loader reject a checkpoint that would not match the runtime path.
         "exclude_name_tokens": list(exclude_name_tokens),
         "require_bf16": require_bf16,
         "fast_accum": fast_accum,

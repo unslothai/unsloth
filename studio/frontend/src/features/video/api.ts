@@ -6,9 +6,8 @@ import { authFetch } from "@/features/auth";
 import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance, for the "Auto: X" badges. Same shape the
-// diffusion status uses. `value` is the engaged value (scheme/mode string, null when off, or a
-// boolean); `source` is "auto" or "explicit"; `reason` is the tooltip why.
+// One Advanced control's resolved value + provenance for the "Auto: X" badges, same shape as the diffusion status.
+// `value` is the engaged value (string, null when off, or boolean); `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
   value: string | boolean | null;
   source: "auto" | "explicit";
@@ -53,16 +52,14 @@ export interface VideoStatus {
   has_audio: boolean;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
-  // Per-Advanced-control provenance, keyed by control name (memory_mode, speed_mode,
-  // attention_backend, transformer_cache). The "Auto: X" badges read it. Null when
-  // nothing is loaded or on a backend that doesn't record it.
+  // Per-control provenance keyed by control name (memory_mode, speed_mode, attention_backend, transformer_cache), read by
+  // the "Auto: X" badges. Null when nothing is loaded or the backend does not record it.
   resolved?: Record<string, VideoResolvedControl> | null;
 }
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "queued" | "denoise" | "export" | "completed" | "failed" | null. The terminal
-  // phases carry the outcome of the background job POST /video/generate started.
+  // "queued" | "denoise" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
   phase?: string | null;
   step: number;
   total: number;
@@ -83,12 +80,10 @@ export interface VideoLoadProgress {
 
 export interface VideoLoadRequest {
   model_path: string;
-  // Required for the gguf / single_file kinds, omitted for a full pipeline (a
-  // diffusers repo loaded via from_pretrained).
+  // Required for the gguf / single_file kinds, omitted for a full pipeline (a diffusers repo loaded via from_pretrained).
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename): "gguf" (single-file
-  // GGUF transformer), "single_file" (single-file safetensors transformer), or "pipeline"
-  // (a full diffusers repo). Non-GGUF kinds are restricted to unsloth/* or family bases.
+  // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file" (safetensors transformer) or
+  // "pipeline" (a full diffusers repo). Non-GGUF kinds are restricted to unsloth/* or family bases.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
@@ -110,16 +105,14 @@ export interface VideoLoadRequest {
     | "aiter";
   transformer_cache?: "off" | "fbcache";
   transformer_cache_threshold?: number;
-  // Dense DiT precision on full-pipeline loads (omit for the hardware-ladder auto;
-  // "none" pins plain bf16). GGUF / single-file checkpoints carry their own precision.
+  // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16). GGUF / single-file checkpoints carry their own.
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
 }
 
 export interface VideoGenerateRequest {
   prompt: string;
   negative_prompt?: string;
-  // Width/height/num_frames/fps default per loaded family (the backend snaps them to the
-  // family's required multiples/lattice), so they are optional here.
+  // Width/height/num_frames/fps default per loaded family (the backend snaps them to its lattice), so they are optional.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -150,8 +143,7 @@ export interface GalleryVideo {
   created_at: string;
 }
 
-// Acknowledgement that the generation job started; the saved record arrives via
-// getVideoGenerateProgress when its phase reaches "completed".
+// Acknowledgement that the job started; the saved record arrives via getVideoGenerateProgress at phase "completed".
 export interface VideoGenerateResponse {
   status: "started";
   // Always null (kept for response-shape compatibility).
@@ -200,9 +192,7 @@ export async function getVideoDownloadPlan(
   );
 }
 
-/** Start a generation job. Returns as soon as the backend accepts it (the clip takes
- *  minutes, and secure mode's tunnel caps responses near 100s, so the POST cannot span
- *  the generation); poll getVideoGenerateProgress for completion. */
+/** Start a generation job. Returns as soon as the backend accepts it (a clip takes minutes and secure mode's tunnel caps responses near 100s); poll getVideoGenerateProgress for completion. */
 export async function generateVideo(
   body: VideoGenerateRequest,
 ): Promise<VideoGenerateResponse> {
@@ -215,8 +205,7 @@ export async function generateVideo(
   );
 }
 
-/** Request a cancel of the in-flight generation. Best-effort: the backend stops at the
- *  next step boundary and raises the cancelled sentinel, which the caller maps to a 409. */
+/** Request a cancel. Best-effort: the backend stops at the next step boundary and raises the cancelled sentinel, which the caller maps to a 409. */
 export async function cancelVideoGeneration(): Promise<{ cancelled: boolean }> {
   return parseJson(
     await authFetch("/api/inference/video/generate/cancel", { method: "POST" }),
@@ -248,14 +237,7 @@ export async function clearVideoGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** A directly playable, range-capable URL for one gallery clip.
- *
- *  NOT the blob treatment the images gallery uses: an MP4 is tens to hundreds of MB, so
- *  `res.blob()` would download the whole clip before playback could start, defeat seeking, and
- *  pin those bytes in the webview for as long as the entry is cached -- one long clip can exceed
- *  the entire cache budget by itself. The backend's file route already streams and serves ranges;
- *  it just cannot be a plain <video src> because it is bearer-gated, so mint a short-lived signed
- *  link and let the element fetch only what it plays. */
+/** A directly playable, range-capable URL for one gallery clip. NOT the images-gallery blob treatment: an MP4 is tens to hundreds of MB, so res.blob() would download the whole clip before playback, defeat seeking and pin those bytes in the webview. The backend's file route already streams ranges but is bearer-gated, so mint a short-lived signed link. */
 export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   const res = await authFetch(
     `/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`,
@@ -266,8 +248,7 @@ export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   return body.url;
 }
 
-/** Server-side transcode for the Download menu (WebM / GIF). The backend 501s
- *  with a readable message when the codec for that format is unavailable. */
+/** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable message when the codec is unavailable. */
 export async function fetchGalleryVideoExport(
   id: string,
   format: "webm" | "gif",

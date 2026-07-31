@@ -126,16 +126,11 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
-  /**
-   * Set when Studio runs this model on a dedicated page rather than in chat. The status
-   * stays "unsupported" because the chat pickers gate on it, but the UI must not call the
-   * model unsupported: the Images and Video pages load it.
-   */
+  /** Set when Studio runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call the model unsupported: the Images and Video pages load it. */
   supportedIn?: "images" | "video";
 }
 
-// Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video
-// picker's tasks; image-to-video is included for LTX-2.3, whose HF pipeline tag is that.
+// Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
 const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "image-to-image",
@@ -243,8 +238,7 @@ export function classifyUnslothSupport({
     return {
       status: "unsupported",
       reason: `Pipeline task: ${pipeline}.`,
-      // Not chat-loadable, but the Images/Video pages run it, so the UI must not
-      // present it as unsupported.
+      // Not chat-loadable, but the Images/Video pages run it, so the UI must not present it as unsupported.
       supportedIn: studioPageForTask(pipeline),
     };
   }

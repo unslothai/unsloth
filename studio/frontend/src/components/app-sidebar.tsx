@@ -205,8 +205,7 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
-// One navigable row, rendered as a NavItem or a MoreMenuItem depending on its
-// pin state.
+// One navigable row, rendered as a NavItem or a MoreMenuItem depending on its pin state.
 type NavRowDef = {
   icon: typeof ZapIcon;
   label: string;
@@ -484,8 +483,7 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // "More" flyout. Opens on click or hover; close is delayed so the pointer can
-  // cross the gap to the panel.
+  // "More" flyout. Opens on click or hover; close is delayed so the pointer can cross the gap to the panel.
   const [moreOpen, setMoreOpen] = useState(false);
   const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openMore = useCallback(() => {
@@ -738,8 +736,7 @@ export function AppSidebar() {
           aria-label="New project"
           onClick={(e) => {
             e.stopPropagation();
-            // NewProjectDialog owns its own name field, so opening it is just the
-            // move target plus the open flag (same as the other call sites).
+            // NewProjectDialog owns its own name field, so opening it is just the move target plus the open flag.
             setProjectCreateMoveTarget(null);
             setCreatingProject(true);
           }}
@@ -796,8 +793,7 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
-    // Video is diffusers-only, so a chat-only host can't load it. Disable with a
-    // hint instead of bouncing off the root guard's redirect.
+    // Video is diffusers-only, so a chat-only host cannot load it: disable with a hint instead of bouncing off the root guard.
     video: {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
@@ -854,8 +850,7 @@ export function AppSidebar() {
   const unpinnedNavIds = sidebarNav
     .filter((item) => !item.pinned)
     .map((item) => item.id);
-  // More needs two or more rows to be worth a click. With exactly one unpinned,
-  // the menu and that row are both dropped.
+  // More needs two or more rows to be worth a click; with exactly one unpinned, the menu and that row are both dropped.
   const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
   const inlineNavIds = sidebarNav
     .filter((item) => item.pinned)
@@ -1703,9 +1698,7 @@ export function AppSidebar() {
                     onOpenChange={setMoreOpen}
                     modal={false}
                   >
-                    {/* Tooltip wraps the trigger rather than using the button's
-                        `tooltip` prop: that returns a Tooltip root, so
-                        DropdownMenuTrigger asChild would miss the DOM node. */}
+                    {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
                     <Tooltip>
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
@@ -1713,9 +1706,8 @@ export function AppSidebar() {
                             isActive={overflowNavIds.some(
                               (id) => navRows[id].active,
                             )}
-                            // Keeps the row highlighted while the panel is open,
-                            // after the pointer has left the row. Not data-state:
-                            // the tooltip and menu triggers both write that one.
+                            // Keeps the row highlighted while the panel is open, after the pointer has left it. Not data-state: the tooltip and
+                            // menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
                           >

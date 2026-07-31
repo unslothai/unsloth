@@ -40,7 +40,7 @@ def bench_pytorch(repo, gguf, resolutions, steps, seed, iters):
     backend = DiffusionBackend()
     for speed in ("off", "default"):
         backend.begin_load(repo, gguf_filename = gguf, speed_mode = speed)
-        deadline = time.time() + 1800  # 30 min: a stuck download/load must not hang forever
+        deadline = time.time() + 1800  # 30 min: never hang on a stuck download/load
         while backend.load_progress().get("phase") != "ready":
             prog = backend.load_progress()
             if prog.get("phase") == "error":

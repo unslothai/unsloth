@@ -39,9 +39,8 @@ def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     mp4_tmp = directory / f".{video_id}.mp4.tmp"
     sidecar = directory / f"{video_id}.json"
     sidecar_tmp = directory / f".{video_id}.json.tmp"
-    # Stage both files, rename the MP4 in, then the sidecar (the pair's commit marker: list_videos
-    # skips an mp4 without a readable sidecar). On any failure remove every artifact, else a sidecar
-    # failure would leave an invisible, undeletable orphan MP4.
+    # Stage both files, rename the MP4 in, then the sidecar (the pair's commit marker: list_videos skips an mp4 without a
+    # readable sidecar). On any failure remove every artifact, else an invisible, undeletable orphan MP4 is left behind.
     try:
         mp4_tmp.write_bytes(mp4_bytes)
         sidecar_tmp.write_text(json.dumps(meta), encoding = "utf-8")
@@ -87,8 +86,7 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
     export of a clip that size runs to hundreds of MB, and holding it as one ``bytes`` (then again
     in the response) let a couple of concurrent export clicks exhaust the process. The MP4 route
     already streams from disk; this makes the transcodes behave the same way."""
-    # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a guessed
-    # stem for a foreign/orphan MP4 the gallery hides can't be re-encoded out either.
+    # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a guessed stem for a foreign MP4 cannot be re-encoded out either.
     path = owned_video_path(video_id)
     if path is None:
         return None
@@ -104,8 +102,7 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
         if normalized == "webm":
             _transcode_webm(path, dest)
         else:
-            # GIF is already bounded by _GIF_MAX_FRAMES / _GIF_MAX_EDGE, so it is built in memory
-            # and written out; the cap is what keeps that safe.
+            # GIF is already bounded by _GIF_MAX_FRAMES / _GIF_MAX_EDGE, so it is built in memory and written out.
             dest.write_bytes(_transcode_gif(path))
     except BaseException:
         dest.unlink(missing_ok = True)
@@ -141,13 +138,10 @@ def _transcode_webm(path: Path, dest: Path) -> None:
             out_v.width = in_v.codec_context.width
             out_v.height = in_v.codec_context.height
             out_v.pix_fmt = "yuv420p"
-            # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at
-            # a small quality cost, right for a download button.
+            # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at a small quality cost.
             out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
-            # An LTX-2 clip carries a synchronized audio track, and WebM is offered as the web-embed
-            # format, so dropping the track would silently hand back half the generated result. Opus is
-            # WebM's audio codec: resample to its 48 kHz grid and hand the encoder whole frames through a
-            # FIFO (libopus takes a fixed 20 ms frame, 960 samples at 48 kHz).
+            # An LTX-2 clip carries a synchronized audio track and WebM is the web-embed format, so dropping it would hand back half the
+            # result. Opus is WebM's audio codec: resample to its 48 kHz grid and feed whole frames through a FIFO (960 samples per frame).
             in_a = src.streams.audio[0] if src.streams.audio else None
             out_a = fifo = resampler = None
             if in_a is not None:
@@ -172,8 +166,7 @@ def _transcode_webm(path: Path, dest: Path) -> None:
                     for packet in out_a.encode(frame):
                         dst.mux(packet)
 
-            # Demux both streams together so the muxer sees them interleaved rather than buffering
-            # every video packet until the audio arrives.
+            # Demux both streams together so the muxer sees them interleaved rather than buffering every video packet.
             for packet in src.demux(*([in_v] + ([in_a] if out_a is not None else []))):
                 if packet.dts is None:  # flush packet from the demuxer
                     continue
@@ -184,8 +177,7 @@ def _transcode_webm(path: Path, dest: Path) -> None:
                     continue
                 for frame in packet.decode():
                     for resampled in resampler.resample(frame):
-                        # Let the FIFO time the output: the resampler's frames do not line up with
-                        # Opus' fixed frame size.
+                        # Let the FIFO time the output: the resampler's frames do not line up with Opus' fixed frame size.
                         resampled.pts = None
                         fifo.write(resampled)
                     _drain_audio()
@@ -201,9 +193,8 @@ def _transcode_webm(path: Path, dest: Path) -> None:
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
 
 
-# Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px
-# and 300 frames (25s at the 12 fps target) bound that at roughly 150 MB for the widest clip the
-# generate request allows, and cover the share/preview case a GIF is for.
+# Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px and 300 frames (25s at the
+# 12 fps target) bound that at roughly 150 MB for the widest clip a generate request allows.
 _GIF_MAX_EDGE = 720
 _GIF_MAX_FRAMES = 300
 
@@ -225,12 +216,9 @@ def _transcode_gif(path: Path) -> bytes:
             rate = float(in_v.average_rate or 24)
             # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
             step = max(1, round(rate / 12))
-            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded
-            # walk is a memory bomb: a clip may be 2048x2048 for 1024 frames, and at 12 fps or
-            # below step is 1, which is >4 GB of frames plus the GIF buffer -- enough to take the
-            # whole backend down from one export click. Bound both axes instead: downscale past
-            # _GIF_MAX_EDGE and widen the step so at most _GIF_MAX_FRAMES are retained (GIF is the
-            # share/preview format; MP4 keeps the full clip).
+            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded walk is a memory bomb: a 2048x2048
+            # clip of 1024 frames is >4 GB, enough to take the backend down from one export click. Bound both axes instead: downscale
+            # past _GIF_MAX_EDGE and widen the step so at most _GIF_MAX_FRAMES are retained. MP4 keeps the full clip.
             total = in_v.frames or 0
             kept = (total + step - 1) // step if total else 0
             if kept > _GIF_MAX_FRAMES:
@@ -272,9 +260,8 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
-# Sidecar keys every genuine Studio record carries. delete()/clear() own a pair only when its
-# sidecar has all of these, so a hand-dropped MP4 with an empty or partial sidecar is neither
-# counted as ours nor destroyed. Key-presence only (the route owns schema validation).
+# Sidecar keys every genuine Studio record carries. delete()/clear() own a pair only when its sidecar has all of these, so a
+# hand-dropped MP4 with a partial sidecar is neither counted as ours nor destroyed. Key-presence only.
 _REQUIRED_META = (
     "prompt",
     "width",
@@ -299,8 +286,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    # A parseable dict is not enough: a foreign ("{}") or different-schema sidecar lacks these keys.
-    # Require them so delete()/clear() never destroy a clip the gallery never surfaced.
+    # A parseable dict is not enough: a foreign ("{}") or different-schema sidecar lacks these keys, and delete()/clear() must never destroy a clip the gallery never surfaced.
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
@@ -344,8 +330,7 @@ def list_videos(
     except OSError:
         return []
     paths.sort(key = _mtime, reverse = True)
-    # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced
-    # window would drop valid videos and make has_more wrong. Read only as far as needed.
+    # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced window would drop valid videos and make has_more wrong.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
@@ -366,13 +351,11 @@ def delete(video_id: str) -> bool:
     path = video_path(video_id)
     if path is None:
         return False
-    # Only delete a pair we own (a readable sidecar); a foreign/orphan MP4 is invisible to
-    # list_videos, so a guessed id must not destroy it.
+    # Only delete a pair we own (a readable sidecar); a foreign/orphan MP4 is invisible to list_videos, so a guessed id must not destroy it.
     if _read_meta(_sidecar_path(video_id)) is None:
         return False
-    # Delete the MP4 FIRST: dropping the sidecar first and failing to unlink the mp4 would leave a
-    # clip that vanished from the gallery with no retry. mp4-first leaves at worst an orphan sidecar,
-    # which list_videos ignores.
+    # Delete the MP4 FIRST: dropping the sidecar first and failing to unlink the mp4 would leave a clip that vanished from the
+    # gallery with no retry. mp4-first leaves at worst an orphan sidecar, which list_videos ignores.
     try:
         path.unlink()
     except OSError as exc:

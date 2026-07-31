@@ -45,8 +45,7 @@ def main() -> int:
         lins = [(n, m) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
         selected = [(n, m) for n, m in lins if m.in_features >= MIN and m.out_features >= MIN]
         print(f"\n### {label}: {len(lins)} Linear, {len(selected)} pass min_features={MIN}")
-        # A modulation/embedder Linear sits outside the repeated blocks (no numeric index in its fqn),
-        # or has an AdaLN out==k*in (k>=3) shape.
+        # Suspects: Linears outside the repeated blocks (no numeric fqn index) or AdaLN-shaped (out == k*in, k>=3).
         sus = []
         for n, m in selected:
             depth_idx = any(p.isdigit() for p in n.split("."))
@@ -63,7 +62,7 @@ def main() -> int:
                 tag.append("NAME")
             if tag:
                 sus.append((n, m.in_features, m.out_features, ",".join(tag)))
-        # Print the distinct fqn shapes (collapse block indices to {i})
+        # distinct fqn shapes, block indices collapsed to {i}
         import re
 
         seen = {}
@@ -74,7 +73,7 @@ def main() -> int:
         print(f"  SUSPECT (M=1 risk) distinct patterns:")
         for (key, i, o, tag), cnt in sorted(seen.items()):
             print(f"    [{cnt:>3}x] {key:55s} {i:>6}->{o:<6} [{tag}]")
-        # Also show a few non-suspect selected names for contrast (the real FLOP linears)
+        # a few non-suspect names for contrast (the real FLOP linears)
         good = [
             n
             for n, m in selected

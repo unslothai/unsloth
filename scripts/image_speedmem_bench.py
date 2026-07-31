@@ -68,19 +68,19 @@ _FAMILIES: dict[str, dict[str, Any]] = {
 
 #                       te        speed       attn       cache
 _CONFIGS: dict[str, dict[str, Any]] = {
-    # bit-exact reference: everything off / native / dense.
+    # bit-exact reference: everything off / native / dense
     "reference": dict(te = "none", speed = "off", attn = "native", cache = "off"),
-    # the non-compile floor: eager patches + attention auto-upgrade, no compile.
+    # non-compile floor: eager patches + attention auto-upgrade
     "eager": dict(te = "none", speed = "eager", attn = "auto", cache = "off"),
-    # the default dense tier (regional compile), uncached.
+    # default dense tier (regional compile), uncached
     "compile": dict(te = "none", speed = "default", attn = "auto", cache = "off"),
-    # max tier (max-autotune regional compile + TF32 + fused QKV), uncached.
+    # max tier (max-autotune regional compile + TF32 + fused QKV), uncached
     "speedmax": dict(te = "none", speed = "max", attn = "auto", cache = "off"),
-    # the default tier + FBCache (the auto path for 20+ step schedules).
+    # default tier + FBCache (the auto path for 20+ step schedules)
     "fbcache": dict(te = "none", speed = "default", attn = "auto", cache = "fbcache"),
-    # FBCache without compile (isolates the cache's own drift from the compile floor).
+    # FBCache without compile: isolates the cache's drift from the compile floor
     "fbcache_eager": dict(te = "none", speed = "eager", attn = "auto", cache = "fbcache"),
-    # TE quant isolation on the bit-exact stack: the conditioning perturbation ALONE.
+    # TE quant isolation on the bit-exact stack: the conditioning perturbation ALONE
     "te_fp8dyn": dict(te = "fp8_dynamic", speed = "off", attn = "native", cache = "off"),
     "te_fp8": dict(te = "fp8", speed = "off", attn = "native", cache = "off"),
 }
@@ -388,7 +388,7 @@ def main() -> None:
     pipe.to("cuda")
     weights_gb = _alloc_gb()
 
-    # Warmup: pays the one-time compile (and the cuDNN autotune) outside the timed runs.
+    # Warmup pays the one-time compile / cuDNN autotune outside the timed runs.
     wt0 = time.perf_counter()
     _generate(
         pipe,

@@ -60,8 +60,7 @@ def test_family_repo_by_scheme_and_component():
     assert (
         family_te_prequant_repo(_fam(te_prequant_repos = (("bad",),)), "fp8", "text_encoder") is None
     )
-    # Families without the field resolve to None (both dataclasses default it, but a fake or an older
-    # family object must not break).
+    # Families without the field resolve to None (both dataclasses default it, but a fake or older family object must not break).
     assert family_te_prequant_repo(types.SimpleNamespace(name = "x"), "fp8", "text_encoder") is None
 
 
@@ -317,8 +316,7 @@ def test_family_dataclasses_declare_te_prequant_field():
 
     assert DiffusionFamily.__dataclass_fields__["te_prequant_repos"].default_factory is tuple
     assert VideoFamily.__dataclass_fields__["te_prequant_repos"].default_factory is tuple
-    # Families without a hosted TE checkpoint keep the empty default (sdxl's CLIPs stay dense; flux.1
-    # hosts its T5 and is asserted below).
+    # Families without a hosted TE checkpoint keep the empty default (sdxl's CLIPs stay dense; flux.1 hosts its T5, asserted below).
     fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
     assert fam.te_prequant_repos == ()
 
@@ -350,8 +348,7 @@ def test_hosted_te_prequant_entries():
         te_prequant_repo_filename("unsloth/LTX-2-FP8", "text_encoder", "fp8")
         == "LTX-2-text_encoder-FP8.pt"
     )
-    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs because the generic
-    # quantize_text_encoders pass only covers text_encoder.._3.
+    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers text_encoder.._3.
     assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
         ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
     )
@@ -359,8 +356,7 @@ def test_hosted_te_prequant_entries():
         te_prequant_repo_filename("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8")
         == "HiDream-I1-Full-text_encoder_4-FP8.pt"
     )
-    # Round 2: T5-XXL for every flux.1 base (byte-identical weights, one artifact), Gemma2-2B,
-    # Qwen3-4B, Qwen3-VL-4B, and hunyuanimage reusing the Qwen-Image artifact.
+    # Round 2: T5-XXL for every flux.1 base (byte-identical, one artifact), Gemma2-2B, Qwen3-4B, Qwen3-VL-4B, and hunyuanimage reusing the Qwen-Image artifact.
     assert detect_family("black-forest-labs/FLUX.1-schnell").te_prequant_repos == (
         ("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),
     )
@@ -380,8 +376,7 @@ def test_hosted_te_prequant_entries():
     assert detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),
     )
-    # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the z-image artifact
-    # must not serve it (verified tensor diff, maxdiff 0.86).
+    # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the z-image artifact must not serve it (maxdiff 0.86).
     assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == ()
 
 
@@ -557,11 +552,9 @@ def test_cast_fp8_is_idempotent_on_precast_encoder():
     enc = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.LayerNorm(64))
     _cast_fp8(enc, target)
     assert enc[0].weight.dtype == torch.float8_e4m3fn
-    # Module.dtype must report the COMPUTE dtype: pipelines derive tensor dtypes from it (Flux2 feeds
-    # it to randn_tensor, which has no fp8 kernel).
+    # Module.dtype must report the COMPUTE dtype: pipelines derive tensor dtypes from it (Flux2 feeds it to randn_tensor, which has no fp8 kernel).
     assert enc.dtype == torch.bfloat16
-    # EXACT class identity: a dynamic-subclass swap here broke transformers' kwargs-based output
-    # recording (Qwen3VLModel returned hidden_states=None; krea-2 crashed at encode).
+    # EXACT class identity: a dynamic-subclass swap broke transformers' kwargs-based output recording (Qwen3VLModel returned hidden_states=None).
     assert type(enc) is torch.nn.Sequential
     # An uncast sibling of the same (now property-patched) class keeps original behaviour.
     sibling = torch.nn.Sequential(torch.nn.Linear(8, 8))

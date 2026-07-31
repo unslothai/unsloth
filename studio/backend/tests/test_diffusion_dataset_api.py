@@ -88,8 +88,8 @@ def test_list_images_caption_precedence(client, ds_root):
 
 
 def test_list_images_tolerates_invalid_utf8_sidecar(client, ds_root):
-    # The upload route stores .txt/.caption sidecars as raw bytes, so a sidecar can hold non-UTF-8 text. read_text then raises UnicodeDecodeError, a ValueError not an OSError, so an `except OSError` around it 500s the whole labeling grid.
-    # One bad sidecar must read as no caption while every other image still lists.
+    # The upload route stores sidecars as raw bytes, so one can hold non-UTF-8 text and read_text raises UnicodeDecodeError, a
+    # ValueError not an OSError. One bad sidecar must read as no caption while every other image still lists.
     folder = ds_root / "badutf8"
     folder.mkdir()
     _write_png(folder / "a.png")
@@ -163,7 +163,7 @@ def test_put_caption_roundtrip_and_clear(client, ds_root):
 
 
 def test_put_caption_overrides_metadata_row(client, ds_root):
-    # Editing a caption for an image that already has a metadata.jsonl row must take effect: the sidecar edit wins over the metadata caption, in the response and in what the trainer reads.
+    # Editing a caption for an image that already has a metadata.jsonl row must take effect: the sidecar edit wins.
     folder = ds_root / "cap"
     folder.mkdir()
     _write_png(folder / "x.png")
@@ -199,7 +199,7 @@ def test_delete_image_cleans_sidecar_and_thumb(client, ds_root):
     folder.mkdir()
     _write_png(folder / "x.png")
     (folder / "x.txt").write_text("cap", encoding = "utf-8")
-    # Generate a thumbnail so we can assert it is cleaned up too. Thumbs are keyed on the full filename to avoid same-stem collisions across formats.
+    # Generate a thumbnail so we can assert it is cleaned up too. Thumbs are keyed on the full filename.
     client.get("/api/train/diffusion/dataset/d/image/x.png?thumb=32")
     assert list((folder / ".thumbs").glob("x.png_*.jpg"))
 
@@ -211,7 +211,7 @@ def test_delete_image_cleans_sidecar_and_thumb(client, ds_root):
 
 
 def test_delete_keeps_a_caption_a_same_stem_sibling_still_uses(client, ds_root):
-    # cat.jpg and cat.png share cat.txt: the trainer's pair discovery and the labeling grid both resolve either image to it. Deleting one image must not strip the survivor's caption and silently change what the next run trains on.
+    # cat.jpg and cat.png share cat.txt, so deleting one image must not strip the survivor's caption.
     folder = ds_root / "d"
     folder.mkdir()
     _write_png(folder / "cat.png")
@@ -250,7 +250,7 @@ def test_delete_removes_a_caption_no_other_image_shares(client, ds_root):
 
 
 def test_thumb_cache_key_distinguishes_same_stem_extensions(client, ds_root):
-    # sample.png and sample.jpg share a stem; each must get its OWN thumbnail cache file, so the grid never serves one image thumbnail for the other.
+    # sample.png and sample.jpg share a stem; each must get its OWN thumbnail cache file.
     folder = ds_root / "d"
     folder.mkdir()
     Image.new("RGB", (8, 8), (10, 20, 30)).save(folder / "sample.png", format = "PNG")
@@ -307,7 +307,7 @@ def test_list_dataset_examples(client, ds_root):
 
 
 def test_list_dataset_examples_large_sets(client, ds_root):
-    # The two ~100-image sets: butterflies is a subject set (trigger, no caption column), nouns a captioned style set. Both cap at 100.
+    # The two ~100-image sets: butterflies is a subject set (trigger, no captions), nouns a captioned style set.
     r = client.get("/api/train/diffusion/dataset-examples")
     examples = {e["id"]: e for e in r.json()["examples"]}
     butterflies = examples["smithsonian-butterflies"]
@@ -409,7 +409,7 @@ def test_import_example_respects_cap(client, ds_root, monkeypatch):
 
 
 def test_import_example_streams_instead_of_preparing_the_whole_split(client, ds_root, monkeypatch):
-    # The cap keeps 10-100 rows, while the curated repos run to 49,859 rows / 328 MB (m1guelpf/nouns), all of which a prepared load downloads and converts before the first row is read. The import must ask for a streamed split.
+    # The cap keeps 10-100 rows while the curated repos run to tens of thousands, all of which a prepared load downloads first.
     calls = _install_fake_load_dataset(monkeypatch, n_rows = 3)
     r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
     assert r.status_code == 200, r.text
@@ -418,7 +418,7 @@ def test_import_example_streams_instead_of_preparing_the_whole_split(client, ds_
 
 
 def test_import_example_falls_back_when_the_repo_cannot_stream(client, ds_root, monkeypatch):
-    # A repo with a loading script or no listed data files cannot stream; the one-click import must still work through the prepared load rather than 502.
+    # A repo with a loading script or no listed data files cannot stream; the import must still work through the prepared load.
     calls = _install_fake_load_dataset(monkeypatch, n_rows = 3, streamable = False)
     r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
     assert r.status_code == 200, r.text
@@ -429,7 +429,7 @@ def test_import_example_falls_back_when_the_repo_cannot_stream(client, ds_root, 
 def test_import_example_resolves_columns_from_the_first_row_without_features(
     client, ds_root, monkeypatch
 ):
-    # A streamed dataset can arrive with no feature metadata to inspect, so the image and caption columns come from the first row instead.
+    # A streamed dataset can arrive with no feature metadata, so the image and caption columns come from the first row.
     _install_fake_load_dataset(monkeypatch, n_rows = 2, features = None)
     r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
     assert r.status_code == 200, r.text
@@ -455,7 +455,7 @@ def _seed_non_image_dataset_files(folder):
 
 
 def test_import_example_keeps_the_dataset_when_rmdir_fails(client, ds_root, monkeypatch):
-    # Promotion folds the folder's existing entries into the staging dir so the rename is atomic. If the rmdir then fails the request reports "Nothing was written", so those entries must still be there -- they used to be deleted with the staging dir.
+    # Promotion folds the folder's existing entries into the staging dir. If the rmdir then fails the request reports "Nothing was written", so they must survive.
     import os
 
     _install_fake_load_dataset(monkeypatch, n_rows = 2)
@@ -531,13 +531,13 @@ def _jpg_bytes(color = (30, 120, 200), size = (8, 8)) -> bytes:
 
 
 def _upload(client, name, files):
-    # files: list of (filename, bytes). Content type is irrelevant to the route (it keys off the extension), so send everything as octet-stream.
+    # files: list of (filename, bytes). Content type is irrelevant to the route (it keys off the extension).
     parts = [("files", (fn, data, "application/octet-stream")) for fn, data in files]
     return client.post("/api/train/diffusion/dataset", data = {"name": name}, files = parts)
 
 
 def test_upload_rejects_same_stem_different_extension(client, ds_root):
-    # sample.png and sample.jpg share the stem "sample", so both map to one sample.txt sidecar and keeping both would silently corrupt captions. The second must 400.
+    # sample.png and sample.jpg share the stem "sample", so both map to one sidecar and the second must 400.
     assert _upload(client, "styleset", [("sample.png", _png_bytes())]).status_code == 200
     dup = _upload(client, "styleset", [("sample.jpg", _jpg_bytes())])
     assert dup.status_code == 400
@@ -555,7 +555,7 @@ def test_upload_same_stem_collision_within_one_batch(client, ds_root):
 
 
 def test_upload_rejects_exact_duplicate_name_within_one_batch(client, ds_root):
-    # Two parts with the SAME name in ONE multipart batch are distinct files, and the staged commit would let the later replace silently discard the earlier one while `uploaded` counts both. The batch must be rejected whole; re-sending a name in a SEPARATE upload stays a deliberate overwrite.
+    # Two parts with the SAME name in ONE batch are distinct files the staged commit would silently collapse, so the batch is rejected whole.
     r = _upload(
         client,
         "styleset",
@@ -568,13 +568,13 @@ def test_upload_rejects_exact_duplicate_name_within_one_batch(client, ds_root):
     r = _upload(client, "styleset", [("sample.txt", b"a"), ("sample.txt", b"b")])
     assert r.status_code == 400
     assert "more than once" in r.json()["detail"]
-    # A STEM case variant pair (Cat.png vs cat.png) stays exempt: it is one file / an overwrite on case-insensitive filesystems, and on Linux the two write separate sidecars.
+    # A STEM case variant pair stays exempt: one file / an overwrite on case-insensitive filesystems, separate sidecars on Linux.
     r = _upload(client, "styleset", [("Cat.png", _png_bytes()), ("cat.png", _png_bytes())])
     assert r.status_code == 200
 
 
 def test_upload_rejects_extension_case_variant_sidecar_collision(client, ds_root):
-    # An EXTENSION-case variant pair (dog.PNG vs dog.png) has exactly equal stems: on a case-sensitive filesystem both land and both resolve to ONE dog.txt sidecar. Must 400 within one batch and against a file already on disk.
+    # An EXTENSION-case variant pair has exactly equal stems, so both resolve to ONE sidecar and must 400.
     r = _upload(client, "styleset", [("dog.PNG", _png_bytes()), ("dog.png", _png_bytes())])
     assert r.status_code == 400
     assert "Duplicate image name" in r.json()["detail"]
@@ -588,7 +588,7 @@ def test_upload_rejects_extension_case_variant_sidecar_collision(client, ds_root
 
 
 def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root):
-    # Re-uploading the EXACT same name is an allowed overwrite, and a .txt caption for the same stem is the intended kohya flow: neither is a same-stem image collision.
+    # Re-uploading the EXACT same name is an allowed overwrite, and a .txt caption for the same stem is the kohya flow.
     assert (
         _upload(client, "styleset", [("sample.png", _png_bytes((10, 20, 30)))]).status_code == 200
     )
@@ -603,8 +603,8 @@ def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root)
 
 # ── import: promotion is all-or-nothing ──────────────────────────────────────
 def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypatch):
-    # The staging dir is promoted into the dataset folder in one atomic rename. If that rename fails, the folder must be left with NO images rather than a half-filled dataset the image_count>0 idempotency check would accept as complete on retry.
-    # Simulate the rename failing, assert nothing partial is left, and assert a retry re-imports cleanly.
+    # The staging dir is promoted in one atomic rename. If it fails, the folder must be left with NO images rather than a
+    # half-filled dataset the image_count>0 idempotency check would accept. Simulate the failure and assert a clean retry.
     import os
 
     # A client that returns the 500 (as production does) instead of re-raising.
@@ -628,7 +628,7 @@ def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypa
         "/api/train/diffusion/dataset/import-example",
         json = {"id": "tuxemon", "name": "my-tux"},
     )
-    # A failed rename is transient and retryable, so it maps to the same 409 as the sibling rmdir conflict rather than escaping as a 500.
+    # A failed rename is transient and retryable, so it maps to the same 409 as the sibling rmdir conflict.
     assert r.status_code == 409
     # No half-filled dataset: the folder holds zero images and no stray staging or rescue dir.
     assert list(ds_root.glob("my-tux/*.png")) == []
@@ -647,7 +647,7 @@ def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypa
 
 
 def test_upload_rolls_back_when_a_later_promotion_fails(ds_root, monkeypatch):
-    # Re-uploading a.txt and b.txt where the SECOND commit fails must roll back the first overwrite, so both originals survive and no stray temp/backup files remain.
+    # Re-uploading a.txt and b.txt where the SECOND commit fails must roll back the first overwrite.
     from pathlib import Path
 
     app = FastAPI()
@@ -693,7 +693,7 @@ def test_upload_rolls_back_when_a_later_promotion_fails(ds_root, monkeypatch):
 
 
 def test_upload_rechecks_training_state_before_commit(ds_root, monkeypatch):
-    # A /diffusion/start that reserves the training slot AFTER the upload passed its entry guard but BEFORE the commit must not have its dataset mutated: the recheck just before the promotion catches the now-active run, 409s, and leaves the on-disk dataset untouched.
+    # A start reserving AFTER the upload's entry guard but BEFORE the commit must not mutate the dataset: the pre-commit recheck 409s.
     import routes.training as tr
 
     folder = ds_root / "styleset"
@@ -703,7 +703,7 @@ def test_upload_rechecks_training_state_before_commit(ds_root, monkeypatch):
     calls = {"n": 0}
 
     def fake_active():
-        # Inactive at the entry guard (call 1), active by the pre-commit recheck (call 2+): the training run started while the upload was streaming.
+        # Inactive at the entry guard, active by the pre-commit recheck: the run started while the upload was streaming.
         calls["n"] += 1
         return calls["n"] >= 2
 
@@ -725,7 +725,7 @@ def test_upload_rechecks_training_state_before_commit(ds_root, monkeypatch):
 
 
 def test_resolve_dataset_folder_rejects_symlink(ds_root, tmp_path):
-    # A dataset dir that is a symlink outside the datasets root must be rejected, else delete / caption / read could operate on external files through the link.
+    # A dataset dir that is a symlink outside the datasets root must be rejected, else delete / caption / read reach external files.
     from routes.training import _resolve_dataset_folder
 
     external = tmp_path / "external"
@@ -766,7 +766,7 @@ def test_delete_through_symlinked_dataset_cannot_escape_root(client, ds_root, tm
 
 
 def test_delete_image_with_glob_chars_only_removes_own_thumbs(client, ds_root):
-    # Deleting a filename with glob metacharacters (e.g. "[ab].png") must remove only its own thumbnails, not a sibling that the raw glob would spuriously match.
+    # Deleting a filename with glob metacharacters must remove only its own thumbnails, not a spuriously matched sibling's.
     from urllib.parse import quote
 
     folder = ds_root / "d"
@@ -788,12 +788,12 @@ def test_delete_image_with_glob_chars_only_removes_own_thumbs(client, ds_root):
 
 
 def test_import_preserves_unrelated_files_when_folder_not_empty(client, ds_root, monkeypatch):
-    # A target folder holding unrelated NON-image files still has image_count 0, so the import runs. Those files are folded into the staging dir and promoted with it: the images are imported, the pre-existing file survives, and the promotion stays a single atomic rename (it used to fall back to a per-file move into the live folder, which is what makes a partial import possible).
+    # A folder holding unrelated NON-image files still has image_count 0, so the import runs: those files fold into the staging dir and are promoted with it, keeping one atomic rename.
     _install_fake_load_dataset(monkeypatch, n_rows = 3)
     folder = ds_root / "my-tux"
     folder.mkdir(parents = True)
     (folder / "notes.md").write_text("keep me", encoding = "utf-8")
-    # The promoted folder is the staging dir renamed into place, so its inode changes. A per-file move into the live folder would keep the original directory, which is how this pins that the promotion really was one atomic rename rather than a loop.
+    # The promoted folder is the staging dir renamed into place, so its inode changes; a per-file move would keep the original.
     inode_before = folder.stat().st_ino
     r = client.post(
         "/api/train/diffusion/dataset/import-example",
@@ -809,7 +809,7 @@ def test_import_preserves_unrelated_files_when_folder_not_empty(client, ds_root,
 
 
 def test_import_promotes_atomically_over_a_thumbs_cache(client, ds_root, monkeypatch):
-    # .thumbs is the case that actually shows up: a folder whose images were deleted keeps the thumbnail cache, which used to force the non-atomic per-file promote.
+    # .thumbs is the case that actually shows up: a folder whose images were deleted keeps the thumbnail cache.
     _install_fake_load_dataset(monkeypatch, n_rows = 2)
     folder = ds_root / "my-tux"
     (folder / ".thumbs").mkdir(parents = True)
@@ -826,7 +826,7 @@ def test_import_promotes_atomically_over_a_thumbs_cache(client, ds_root, monkeyp
 
 
 def test_import_replaces_a_pre_existing_file_the_import_also_writes(client, ds_root, monkeypatch):
-    # Same name on both sides -- here a stray caption sidecar with no image, so image_count is still 0 and the import runs. The imported file wins, which is what the old per-file move did by overwriting; the point is that the outcome did not change with the atomic promote.
+    # Same name on both sides (a stray caption sidecar, so image_count is still 0): the imported file wins, as the old per-file move did.
     _install_fake_load_dataset(monkeypatch, n_rows = 2)
     folder = ds_root / "my-tux"
     folder.mkdir(parents = True)
@@ -929,14 +929,14 @@ def test_an_unreadable_sidecar_shadows_the_metadata_caption(client, ds_root):
 
 @pytest.mark.parametrize("bad", ["CON", "nul", "COM1", "lpt9", "NUL.txt", "aux.images"])
 def test_upload_rejects_windows_reserved_dataset_names(client, ds_root, bad):
-    # Reserved in every directory on Windows, with or without an extension (NUL.txt is NUL), so mkdir dies with an unhandled OSError there. Rejected on every platform, since a dataset made on Linux gets opened on Windows.
+    # Reserved in every directory on Windows (NUL.txt is NUL), so mkdir dies there. Rejected on every platform, since datasets travel.
     resp = _upload(client, bad, [("sample.png", _png_bytes())])
     assert resp.status_code == 400, resp.text
     assert "reserved" in resp.json()["detail"].lower()
 
 
 def test_upload_rejects_a_trailing_period_dataset_name(client, ds_root):
-    # Win32 strips a trailing period, so 'photos.' opens the existing 'photos' dataset: an upload meant for a new name would silently modify the old one.
+    # Win32 strips a trailing period, so 'photos.' opens the existing 'photos' dataset and an upload would modify the wrong one.
     assert _upload(client, "photos", [("sample.png", _png_bytes())]).status_code == 200
     resp = _upload(client, "photos.", [("other.png", _png_bytes())])
     assert resp.status_code == 400, resp.text
@@ -946,7 +946,7 @@ def test_upload_rejects_a_trailing_period_dataset_name(client, ds_root):
 
 
 def test_upload_refuses_while_an_import_holds_the_same_folder(client, ds_root):
-    # The training interlock counts mutations rather than excluding them, and only imports took the per-folder lock, so an upload could add files while an import was materializing: the import's atomic promotion then failed on the non-empty folder and merged the two sets.
+    # The training interlock counts mutations and only imports took the per-folder lock, so an upload could merge into a materializing import.
     from routes.training import _dataset_import_lock
 
     folder = ds_root / "shared-name"

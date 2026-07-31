@@ -158,8 +158,7 @@ def _cuda_or_rocm_target(torch: Any, *, is_rocm: bool) -> DiffusionDeviceTarget:
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
-        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere
-        # cards emulate bf16 slowly but report it supported; the #6658 fix).
+        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16 slowly but report it supported).
         try:
             major = torch.cuda.get_device_capability()[0]
         except Exception:
@@ -217,13 +216,11 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe
-        # below), so relax it first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM
-        # a model that would fit. setdefault respects an override.
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it first or
+        # the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault respects an override.
         os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far
-        # outside fp16's range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS
-        # 14+) shares fp32's exponent range; on older macOS float32 keeps output correct.
+        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's range (Z-Image
+        # MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent range; older macOS uses fp32.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         return DiffusionDeviceTarget(
             device = "mps",

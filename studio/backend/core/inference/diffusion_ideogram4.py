@@ -71,7 +71,7 @@ def _patch_create_causal_mask() -> None:
     _CAUSAL_MASK_PATCHED = True
 
 
-# The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows). hidden_size is read from config so a future change cannot mis-split it.
+# The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows), read from config so a future change cannot mis-split it.
 _QKV_SPLIT = ("to_q", "to_k", "to_v")
 
 
@@ -263,7 +263,7 @@ def load_ideogram4_text_encoder(
         else:
             state_dict[key] = value.to(dtype)
 
-    # Construct normally (so __init__ computes the non-persistent rotary inv_freq the checkpoint omits) then copy the dequantized weights in. Build at the target dtype: this ~8B Qwen3-VL scaffold is ~2x at the fp32 default and loads FIRST, so fp32 can OOM a 64 GB host. inv_freq is computed in explicit fp32, so a bf16 default leaves it correct.
+    # Construct normally (so __init__ computes the non-persistent rotary inv_freq the checkpoint omits), then copy the dequantized weights in. Build at the target dtype: this ~8B Qwen3-VL scaffold is ~2x at the fp32 default and loads FIRST, so fp32 can OOM a 64 GB host. inv_freq is computed in explicit fp32.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -320,7 +320,7 @@ def load_ideogram4_transformer(
     config = _read_transformer_config(repo_id, subfolder, token)
     shard_paths = _transformer_shard_paths(repo_id, subfolder, token)
 
-    # Detect fp8 from shard HEADERS (keys() reads metadata only). All shards checked so a dense-first multi-shard export still routes to the dequant path. Only the fp8 path materializes tensors; -nf4 goes straight to from_pretrained.
+    # Detect fp8 from shard HEADERS (keys() reads metadata only), checking all shards so a dense-first multi-shard export still routes to the dequant path. Only fp8 materializes tensors; -nf4 goes straight to from_pretrained.
     is_fp8 = False
     for path in shard_paths:
         with safetensors.safe_open(path, "pt") as handle:
@@ -342,7 +342,7 @@ def load_ideogram4_transformer(
 
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # from_config materializes the full ~9B module before the weights copy in. At fp32 that is ~2x the bf16 model, and the second DiT builds while the first + encoder are resident, so fp32 can OOM smaller hosts. Build at the target dtype; only rotary_emb.inv_freq is absent from the checkpoint (computed in explicit fp32), so a bf16 default leaves it correct.
+    # from_config materializes the full ~9B module before the weights copy in, and at fp32 that is ~2x the bf16 model while the second DiT builds with the first + encoder resident, so build at the target dtype. Only rotary_emb.inv_freq is absent from the checkpoint (computed in explicit fp32).
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:

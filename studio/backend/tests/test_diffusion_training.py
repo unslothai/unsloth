@@ -204,7 +204,7 @@ def test_apply_event_transitions():
 
 
 def test_progress_nulls_non_finite_floats_for_strict_json():
-    # A divergent step (or an inf grad norm) can push loss / avg_loss / learning_rate to NaN or Infinity, which strict JSON forbids. The service must null those so the status snapshot and the metric history stay strict-JSON serializable.
+    # A divergent step can push loss / avg_loss / learning_rate to NaN or Infinity, which strict JSON forbids, so the service must null them.
     import json
     import math
 
@@ -244,7 +244,7 @@ def test_progress_nulls_non_finite_floats_for_strict_json():
 
 
 def test_terminal_events_clear_model_load_flag():
-    # A stop or error during model load emits complete/error WITHOUT a preceding model_load_completed, so the terminal update must reset in_model_load or the client shows a stale loading indicator after the job ended.
+    # A stop or error during model load emits complete/error without a preceding model_load_completed, so the terminal update must reset in_model_load.
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event({"type": "model_load_started"})
     assert svc.status()["in_model_load"] is True
@@ -258,7 +258,7 @@ def test_terminal_events_clear_model_load_flag():
 
 
 def test_complete_event_keeps_the_ema_adapter_path():
-    # A DiT run with ema_decay writes a SECOND adapter and reports it as ema_path. Dropping the field on the way into the snapshot leaves that adapter undiscoverable by any client.
+    # A DiT run with ema_decay writes a SECOND adapter as ema_path; dropping the field leaves that adapter undiscoverable.
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event(
         {
@@ -301,7 +301,7 @@ class _FakeService:
 
     @contextlib.contextmanager
     def dataset_mutation(self):
-        # Mirrors the real interlock: refuse while a run owns the dataset, and register the mutation so a concurrent reserve() would be refused for its duration.
+        # Mirrors the real interlock: refuse while a run owns the dataset, and register the mutation so a concurrent reserve() is refused.
         from core.training.diffusion_training_service import TrainingActiveError
 
         if self.is_active():
@@ -358,12 +358,12 @@ def client(monkeypatch):
     monkeypatch.setattr(
         "core.training.diffusion_training_service.get_diffusion_training_service", lambda: fake
     )
-    # Neutralize the LLM interlock + GPU-free for the wiring tests (their own tests exercise those). The route imports get_training_backend at module scope.
+    # Neutralize the LLM interlock + GPU-free for the wiring tests. The route imports get_training_backend at module scope.
     import routes.training as tr
 
     monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active = False))
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
-    # The dataset preflight runs the trainer discovery against _BODY fake data_dir; stub it here so wiring tests pass, and let the dedicated preflight tests re-point it at a real tmp dataset.
+    # The dataset preflight runs the trainer discovery against _BODY's fake data_dir; stub it for the wiring tests.
     monkeypatch.setattr(
         "core.training.diffusion_train_common.discover_image_caption_pairs",
         lambda data_dir, **kw: [("img.png", "caption")],
@@ -371,7 +371,7 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(training_router, prefix = "/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # Default to session (UI) auth: the API-key inference-in-flight guard is a no-op there, so the wiring tests behave as before. The guard test flips this override.
+    # Default to session (UI) auth: the API-key inference-in-flight guard is a no-op there. The guard test flips this.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     c = TestClient(app)
     c._fake = fake  # type: ignore[attr-defined]
@@ -401,8 +401,8 @@ def test_route_start_ok(client):
 
 
 def test_route_start_frees_gpu_off_the_coroutine_thread(client, monkeypatch):
-    # The GPU cleanup can block for seconds (engine unload waits on generation locks; the export subprocess join can take seconds), so the async start route must offload it via asyncio.to_thread rather than freeze the event loop.
-    # Assert the cleanup runs on a DIFFERENT thread than the inline coroutine body, which an inline call could not.
+    # The GPU cleanup can block for seconds (engine unload waits on generation locks), so the async start route must
+    # offload it via asyncio.to_thread. Assert it runs on a DIFFERENT thread than the inline coroutine body.
     import threading
 
     import routes.training as tr
@@ -428,7 +428,7 @@ def test_route_start_frees_gpu_off_the_coroutine_thread(client, monkeypatch):
 
 
 def test_route_start_reserves_before_freeing_gpu(client, monkeypatch):
-    # The training slot must be reserved (is_active -> true) BEFORE the route frees resident GPU models, so a concurrent /images/load or /video/load guard refuses during the free-then-spawn window. Assert reserve is logged before the GPU free, and the service reports active meanwhile.
+    # The training slot must be reserved (is_active -> true) BEFORE the route frees resident GPU models, so a concurrent load guard refuses during the free-then-spawn window.
     import routes.training as tr
 
     order: list = []
@@ -450,7 +450,7 @@ def test_route_start_reserves_before_freeing_gpu(client, monkeypatch):
 
 
 def test_route_start_reserves_before_scanning_dataset(client, monkeypatch):
-    # The dataset preflight scan decode-probes every image and can take a while, so it must run AFTER the slot is reserved, or a concurrent upload/caption/delete could mutate the dataset the trainer is about to read. Assert reserve precedes the scan and the service is active during it.
+    # The dataset scan decode-probes every image, so it must run AFTER the slot is reserved or a concurrent edit could mutate the dataset the trainer is about to read.
     order: list = []
 
     def _record_scan(data_dir, **kw):
@@ -470,7 +470,7 @@ def test_route_start_reserves_before_scanning_dataset(client, monkeypatch):
 
 
 def test_route_start_unreserves_when_dataset_preflight_fails(client, monkeypatch):
-    # A dataset preflight failure AFTER the reservation must roll it back, or a rejected start would leave training permanently "active" and keep blocking loads and dataset edits.
+    # A dataset preflight failure AFTER the reservation must roll it back, or a rejected start leaves training permanently "active".
     def _bad_scan(data_dir, **kw):
         raise ValueError("no captioned images found")
 
@@ -488,7 +488,7 @@ def test_route_start_unreserves_when_dataset_preflight_fails(client, monkeypatch
 
 
 def test_service_reserve_marks_active_and_rolls_back():
-    # The real service: reserve() flips is_active true before any proc exists (so a load guard refuses during the free window), and unreserve() clears it without a live proc.
+    # The real service: reserve() flips is_active true before any proc exists, and unreserve() clears it without a live proc.
     from core.training.diffusion_training_service import DiffusionTrainingService
 
     svc = DiffusionTrainingService()
@@ -500,8 +500,8 @@ def test_service_reserve_marks_active_and_rolls_back():
 
 
 def test_service_reserve_is_compare_and_set():
-    # reserve() is the concurrency gate: two /diffusion/start requests can interleave between the is_active() check and the reservation, so reserve() itself must reject a second one atomically.
-    # Without the compare-and-set both would free the GPU resident model and the loser would 409 only AFTER the eviction. A second reserve must raise; after unreserve the slot is claimable.
+    # reserve() is the concurrency gate: two starts can interleave between the is_active() check and the reservation, so
+    # it must reject the second atomically. Without the compare-and-set the loser 409ed only AFTER evicting the GPU.
     from core.training.diffusion_training_service import DiffusionTrainingService
 
     svc = DiffusionTrainingService()
@@ -515,7 +515,7 @@ def test_service_reserve_is_compare_and_set():
 
 
 def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monkeypatch):
-    # _preflight_gated_base does a blocking urlopen HEAD (up to 5s) to Hugging Face, so the async start route must offload it via asyncio.to_thread rather than freeze the event loop. Assert it runs on a DIFFERENT thread than the inline coroutine body.
+    # _preflight_gated_base does a blocking urlopen HEAD (up to 5s), so the start route must offload it. Assert it runs on a DIFFERENT thread.
     import threading
 
     import routes.training as tr
@@ -550,7 +550,7 @@ def test_route_start_forwards_extra_training_knobs(client):
 
 
 def test_route_start_forwards_num_epochs(client):
-    # Epochs mode: the frontend omits train_steps and sends num_epochs; it must reach the service so the trainer can resolve it against the dataset size.
+    # Epochs mode: the frontend omits train_steps and sends num_epochs; it must reach the service.
     body = {k: v for k, v in _BODY.items() if k != "train_steps"}
     r = client.post("/api/train/diffusion/start", json = {**body, "num_epochs": 8})
     assert r.status_code == 200, r.text
@@ -558,7 +558,7 @@ def test_route_start_forwards_num_epochs(client):
 
 
 def test_route_start_forwards_dit_loss_knobs(client):
-    # The trainer implements these, but the request schema did not declare them, so model_dump() dropped them and the run silently used the defaults.
+    # The trainer implements these, but the request schema did not declare them, so model_dump() dropped them silently.
     body = {
         **_BODY,
         "ema_decay": 0.99,
@@ -590,8 +590,8 @@ def test_request_model_dit_loss_knob_bounds():
 
 
 def test_request_model_rejects_lora_dropout_of_one():
-    # lora_dropout = 1.0 makes PEFT build nn.Dropout(p=1.0), which zeroes every input to the LoRA branch: the adapter output is identically the frozen base and both lora_A/lora_B get zero gradient, so the run saves an untrained adapter while reporting normal progress.
-    # The generic training schema already requires below 1; the diffusion schema must match.
+    # lora_dropout = 1.0 makes PEFT build nn.Dropout(p=1.0), zeroing the LoRA branch: both lora_A/lora_B get zero
+    # gradient, so the run saves an untrained adapter while reporting normal progress. The schema must require < 1.
     from pydantic import ValidationError
 
     from models.training import DiffusionTrainingStartRequest
@@ -632,7 +632,7 @@ def test_request_model_base_precision_accepts_mxfp8():
 
 
 def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
-    # The generic Studio epoch-mode payload sends max_steps: 0 as the "use epochs" sentinel. The max_steps alias would copy that 0 and normalized() would reject train_steps below 1 before epochs are resolved, so _config_from_dict must drop the falsy value.
+    # The generic epoch-mode payload sends max_steps: 0 as the "use epochs" sentinel, which normalized() would reject as train_steps < 1, so _config_from_dict drops it.
     from core.training.diffusion_train_common import DiffusionLoraConfig, _config_from_dict
 
     cfg = _config_from_dict(
@@ -651,7 +651,7 @@ def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
     norm = cfg.normalized()
     assert norm.num_epochs == 2
 
-    # An explicit non-zero max_steps in epochs mode is still honored (only the 0 sentinel is dropped), and a plain steps payload keeps max_steps: 0 -> train_steps 0 so normalized() still surfaces it.
+    # An explicit non-zero max_steps in epochs mode is still honored, and a plain steps payload keeps 0 so normalized() surfaces it.
     cfg_explicit = _config_from_dict(
         {
             "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
@@ -665,7 +665,7 @@ def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
 
 
 def test_permutation_sampler_covers_dataset_once_per_cycle():
-    # Every index must appear exactly once per cycle before any repeat (an epoch-style pass), so a short run over a small dataset never leaves images unseen the way the old with-replacement draw did. Consecutive cycles must be reshuffled.
+    # Every index must appear exactly once per cycle before any repeat, so a short run never leaves images unseen. Consecutive cycles are reshuffled.
     import random
 
     from core.training.diffusion_train_common import PermutationBatchSampler
@@ -673,7 +673,7 @@ def test_permutation_sampler_covers_dataset_once_per_cycle():
     n = 100
     sampler = PermutationBatchSampler(n, random.Random(0))
 
-    # Draw exactly one cycle in batches of 3 (n not divisible by the batch, so a batch spans the cycle boundary); the first n indices must be a permutation of range(n).
+    # Draw exactly one cycle in batches of 3 (n not divisible by the batch); the first n indices must be a permutation.
     drawn: list[int] = []
     while len(drawn) < n:
         drawn.extend(sampler.next_batch(3))
@@ -692,7 +692,7 @@ def test_permutation_sampler_covers_dataset_once_per_cycle():
     replay = PermutationBatchSampler(n, random.Random(0))
     assert replay.next_batch(n) == cycle_a
 
-    # A batch larger than the dataset refills across cycles so it never shrinks, even though it must then repeat indices within the batch.
+    # A batch larger than the dataset refills across cycles so it never shrinks, repeating indices within the batch.
     big = PermutationBatchSampler(4, random.Random(1))
     batch = big.next_batch(10)
     assert len(batch) == 10
@@ -700,7 +700,7 @@ def test_permutation_sampler_covers_dataset_once_per_cycle():
 
 
 def test_permutation_sampler_honors_batch_on_tiny_dataset():
-    # Regression for the SDXL LoRA trainer clamp: a dataset smaller than train_batch_size must still yield exactly train_batch_size indices, so a tiny dataset trains at the configured batch instead of silently shrinking it -- the contract SDXL _next_batch now relies on.
+    # Regression for the SDXL trainer clamp: a dataset smaller than train_batch_size must still yield exactly train_batch_size indices.
     import random
 
     from core.training.diffusion_train_common import PermutationBatchSampler
@@ -733,8 +733,8 @@ def test_route_start_rejects_uncontained_paths(client):
 
 
 def test_route_start_resolves_bare_name_under_image_dataset_root(client, monkeypatch, tmp_path):
-    # The upload/labeling routes manage image datasets directly under datasets_root() and the UI passes the bare folder name back as data_dir.
-    # The generic resolve_dataset_path searches the LLM uploads and recipe roots FIRST, so an unrelated file sharing the name would shadow the just-uploaded image dataset. The route must prefer the image dataset root for a bare name.
+    # The upload/labeling routes manage image datasets under datasets_root() and the UI passes the bare folder name back.
+    # resolve_dataset_path searches the LLM roots FIRST, so the route must prefer the image dataset root for a bare name.
     import utils.paths as up
 
     ds_root = tmp_path / "assets" / "datasets"
@@ -788,7 +788,7 @@ def test_route_start_conflict_maps_to_409(client):
 
 
 def test_route_start_over_api_with_inference_in_flight_is_409(client, monkeypatch):
-    # An API-key client must not start diffusion training (which frees VRAM by unloading chat) while an inference request is streaming; it should 409 instead of killing it.
+    # An API-key client must not start diffusion training (which unloads chat) while an inference request is streaming; it should 409.
     client._app.dependency_overrides[authenticated_via_api_key] = lambda: True
     monkeypatch.setattr(
         "core.inference.llama_keepwarm.other_inference_request_count",
@@ -829,7 +829,7 @@ def test_route_status_and_stop(client):
 
 
 def test_service_restart_after_completion():
-    # A finished job pump is joined OUTSIDE the lock (it needs the lock for its final state writes), so a second start neither stalls nor deadlocks.
+    # A finished job's pump is joined OUTSIDE the lock (it needs the lock for its final writes), so a second start neither stalls nor deadlocks.
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "completed")
@@ -842,7 +842,7 @@ def test_service_restart_after_completion():
 
 
 def test_stale_pump_events_cannot_corrupt_new_job():
-    # An event carrying a superseded job proc identity must be dropped, so a straggler pump can never overwrite the state of a newly started job.
+    # An event carrying a superseded job proc identity must be dropped, so a straggler pump cannot overwrite a new job's state.
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "completed")
@@ -890,7 +890,7 @@ def test_diffusion_info_lists_image_dataset_folders(client, dataset_roots):
 
 
 def test_diffusion_info_counts_metadata_captions(client, dataset_roots):
-    # A dataset captioned via metadata.jsonl must not report caption_count=0 (which the Train UI treats as uncaptioned); metadata rows count like sidecars, without double-counting an image that has both.
+    # A dataset captioned via metadata.jsonl must not report caption_count=0; metadata rows count like sidecars, without double-counting.
     ds_root, _ = dataset_roots
     folder = ds_root / "meta-captioned"
     folder.mkdir()
@@ -943,8 +943,8 @@ def test_diffusion_dataset_upload_accumulates(client, dataset_roots):
 
 def test_diffusion_dataset_upload_normalizes_windows_and_rejects_dotdot(client, dataset_roots):
     ds_root, _ = dataset_roots
-    # A Windows client can send a backslash path in the multipart filename, and POSIX Path.name does not split on backslash, so it must be folded to the true basename.
-    # Else the stored name holds backslashes that _safe_dataset_image_path later rejects, leaving an orphan the grid can list but never preview/caption/delete.
+    # A Windows client can send a backslash path in the multipart filename and POSIX Path.name does not split on it, so
+    # it must be folded to the true basename, else the stored name is an orphan the grid can list but never preview.
     r = client.post(
         "/api/train/diffusion/dataset",
         data = {"name": "winset"},
@@ -967,7 +967,7 @@ def test_diffusion_dataset_upload_normalizes_windows_and_rejects_dotdot(client, 
 
 
 def test_diffusion_dataset_upload_rejects_case_insensitive_stem_clash(client, dataset_roots):
-    # Two images whose stems differ only by case map to the SAME <stem>.txt caption sidecar on case-insensitive filesystems, so keeping both would silently corrupt one caption. The clash check compares stems with casefold, so it fires regardless of the test host filesystem.
+    # Two images whose stems differ only by case map to the SAME sidecar on case-insensitive filesystems, so the clash check compares casefolded stems on any host.
     r = client.post(
         "/api/train/diffusion/dataset",
         data = {"name": "caseset"},
@@ -992,7 +992,7 @@ def test_diffusion_dataset_upload_rejects_case_insensitive_stem_clash(client, da
     )
     assert r.status_code == 400 and "Duplicate image name" in r.json()["detail"]
 
-    # A same-name case variant with the SAME extension is an overwrite (one file on a case-insensitive FS), not a caption clash, so it is still allowed.
+    # A same-name case variant with the SAME extension is an overwrite, not a caption clash, so it is still allowed.
     r = client.post(
         "/api/train/diffusion/dataset",
         data = {"name": "caseset3"},
@@ -1007,7 +1007,7 @@ def test_diffusion_dataset_upload_rejects_case_insensitive_stem_clash(client, da
 def test_diffusion_dataset_upload_over_cap_keeps_existing_example(
     client, dataset_roots, monkeypatch
 ):
-    # A re-upload that trips the size cap mid-write must not destroy an example already stored under the same name: the write goes to a sibling temp file and only atomically replaces the original on success, so the 413 leaves the prior good bytes intact.
+    # A re-upload that trips the size cap mid-write must not destroy the stored file: staging to a sibling temp leaves the prior bytes intact.
     import utils.upload_limits as ul
 
     ds_root, _ = dataset_roots
@@ -1030,7 +1030,7 @@ def test_diffusion_dataset_upload_over_cap_keeps_existing_example(
 
 
 def test_diffusion_info_empty_sidecar_shadows_metadata_caption(client, dataset_roots):
-    # An empty (tombstone) .txt sidecar shadows a metadata row -- the trainer strips it and skips the image -- so the summary must not count it as captioned.
+    # An empty (tombstone) .txt sidecar shadows a metadata row -- the trainer skips the image -- so the summary must not count it captioned.
     ds_root, _ = dataset_roots
     folder = ds_root / "tombstoned"
     folder.mkdir()
@@ -1068,7 +1068,7 @@ def _png_bytes(width: int, height: int) -> bytes:
 
 
 def test_diffusion_dataset_upload_rejects_oversized_image(client, dataset_roots):
-    # A decompression bomb: a small compressible PNG with huge dimensions passes the byte limit but would OOM the trainer on decode, so it must 400 at upload (the check reads only the header).
+    # A decompression bomb: a small PNG with huge dimensions passes the byte limit but would OOM the trainer, so it must 400 at upload.
     pytest.importorskip("PIL")
     big = _png_bytes(5000, 64)  # > 4096 per side
     r = client.post(
@@ -1089,8 +1089,8 @@ def test_diffusion_dataset_upload_rejects_oversized_image(client, dataset_roots)
 
 
 def test_diffusion_dataset_upload_maps_pillow_bomb_to_400(client, dataset_roots, monkeypatch):
-    # Past Pillow hard bomb threshold Image.open() itself raises DecompressionBombError, which derives straight from Exception, so the dimension guard except clause missed it and the upload 500-ed instead of the intended 400.
-    # Shrink the limit (as Pillow own tests do) so a small file crosses it.
+    # Past Pillow's bomb threshold Image.open() raises DecompressionBombError, which derives straight from Exception, so
+    # the dimension guard missed it and the upload 500-ed. Shrink the limit so a small file crosses it.
     pytest.importorskip("PIL")
     from PIL import Image
 
@@ -1107,7 +1107,7 @@ def test_diffusion_dataset_upload_maps_pillow_bomb_to_400(client, dataset_roots,
 
 
 def test_diffusion_info_tolerates_non_object_jsonl(client, dataset_roots):
-    # A metadata.jsonl line that is valid JSON but not an object, or malformed, must be skipped per-line, not 500 the info endpoint; a valid row in the same file still counts.
+    # A metadata.jsonl line that is valid JSON but not an object must be skipped per-line, not 500 the info endpoint.
     ds_root, _ = dataset_roots
     folder = ds_root / "weird-meta"
     folder.mkdir()
@@ -1126,7 +1126,7 @@ def test_diffusion_info_tolerates_non_object_jsonl(client, dataset_roots):
 
 
 def test_diffusion_info_skips_null_metadata_captions(client, dataset_roots):
-    # A JSON null caption is "no caption": str(None) would store the literal "None" and both count as captioned and train on that text.
+    # A JSON null caption is "no caption": str(None) would store the literal "None" and train on that text.
     ds_root, _ = dataset_roots
     folder = ds_root / "null-caption"
     folder.mkdir()
@@ -1165,7 +1165,7 @@ def test_diffusion_info_tolerates_invalid_utf8_jsonl(client, dataset_roots):
 
 
 def test_diffusion_info_tolerates_invalid_utf8_sidecar(client, dataset_roots):
-    # Same for a per-image .txt sidecar: read_text raises UnicodeDecodeError, which is not an OSError, so an unguarded read 500s the info endpoint after the upload already committed.
+    # Same for a .txt sidecar: read_text raises UnicodeDecodeError, not an OSError, so an unguarded read 500s the endpoint.
     ds_root, _ = dataset_roots
     folder = ds_root / "bad-utf8-sidecar"
     folder.mkdir()
@@ -1200,7 +1200,7 @@ def test_diffusion_dataset_mutations_blocked_while_training_active(client, datas
 
 
 def test_diffusion_info_skips_symlinked_dataset_dir(client, dataset_roots):
-    # A directory symlink under the datasets root must not be advertised as a dataset (the CRUD resolver rejects symlinked datasets, so discovery must agree).
+    # A directory symlink under the datasets root must not be advertised as a dataset (the CRUD resolver rejects them).
     import os
 
     ds_root, _ = dataset_roots
@@ -1237,7 +1237,7 @@ def test_diffusion_dataset_upload_rejects_unsupported_files(client, dataset_root
 
 
 def test_free_gpu_for_diffusion_training_unloads_video(monkeypatch):
-    # A resident Video pipeline loads under the VIDEO arbiter owner, which the Images teardown does not free, so starting diffusion training must unload it too or the trainer OOMs.
+    # A resident Video pipeline loads under the VIDEO arbiter owner the Images teardown does not free, so training must unload it too.
     import routes.training as tr
     from core.inference import gpu_arbiter
 
@@ -1277,7 +1277,7 @@ def test_free_gpu_for_diffusion_training_unloads_video(monkeypatch):
 
 
 def test_keepwarm_tracks_image_video_generation_paths():
-    # The API-key training-start guard uses other_inference_request_count(), which only sees paths the keepwarm middleware tracks. Image/video generation must be tracked so a training start is refused (409) while one is in flight; the GET *-progress and */cancel variants stay untracked.
+    # The API-key start guard uses other_inference_request_count(), so image/video generation must be tracked; the GET progress/cancel variants stay untracked.
     from core.inference.llama_keepwarm import _is_inference_path
 
     assert _is_inference_path("/api/inference/images/generate")
@@ -1291,7 +1291,7 @@ def test_keepwarm_tracks_image_video_generation_paths():
 def test_import_example_partial_failure_leaves_no_partial_dataset(
     client, dataset_roots, monkeypatch
 ):
-    # A materialize that writes some images then fails must not leave a partial dataset: it stages into a discarded temp dir, so the target folder stays empty and a retry re-materializes instead of the idempotency check treating a truncated result as complete.
+    # A materialize that writes some images then fails must not leave a partial dataset: it stages into a discarded temp dir.
     import routes.training as tr
 
     ds_root, _ = dataset_roots
@@ -1312,7 +1312,7 @@ def test_import_example_partial_failure_leaves_no_partial_dataset(
 def test_diffusion_dataset_upload_over_cap_rolls_back_whole_batch(
     client, dataset_roots, monkeypatch
 ):
-    # All-or-nothing: a valid image ahead of the one that trips the size cap must NOT be left on disk (the 413 mid-batch rolls back every file written this request).
+    # All-or-nothing: a valid image ahead of the one that trips the size cap must NOT be left on disk.
     import utils.upload_limits as ul
 
     monkeypatch.setattr(ul, "get_upload_limit_bytes", lambda: 100)
@@ -1331,7 +1331,7 @@ def test_diffusion_dataset_upload_over_cap_rolls_back_whole_batch(
 def test_diffusion_dataset_upload_over_cap_preserves_existing_file(
     client, dataset_roots, monkeypatch
 ):
-    # A failed batch that reuses an existing filename must NOT delete the user pre-existing file: staging to a temp file keeps the original intact until the whole batch commits.
+    # A failed batch reusing an existing filename must NOT delete the user's file: staging keeps the original until commit.
     import utils.upload_limits as ul
 
     monkeypatch.setattr(ul, "get_upload_limit_bytes", lambda: 100)
@@ -1351,7 +1351,7 @@ def test_diffusion_dataset_upload_over_cap_preserves_existing_file(
 
 
 def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypatch):
-    # A doomed start (non-SDXL base) must 400 BEFORE resident GPU workloads are freed, so a bad pick never unloads the user working chat/Images model.
+    # A doomed start (non-SDXL base) must 400 BEFORE resident GPU workloads are freed.
     import routes.training as tr
 
     freed = []
@@ -1366,7 +1366,7 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
-    # A DiT precision the host cannot run must 400 BEFORE resident GPU workloads are freed, else the host tears down the user model and the run dies in the trainer child. The route imports training_precision_preflight_error locally, so patch it on its home module.
+    # A DiT precision the host cannot run must 400 BEFORE the GPU residents are freed. The route imports the helper locally, so patch its home module.
     import routes.training as tr
 
     freed = []
@@ -1388,7 +1388,7 @@ def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatc
     assert freed == []
     assert client._fake.started_with is None
 
-    # SDXL (its own mixed_precision path) is exempt: the same probe returns None, so an SDXL start proceeds normally past the preflight.
+    # SDXL (its own mixed_precision path) is exempt: the same probe returns None, so an SDXL start proceeds.
     r2 = client.post("/api/train/diffusion/start", json = _BODY)
     assert r2.status_code == 200, r2.text
 
@@ -1498,7 +1498,7 @@ def test_info_lists_trainable_families(client):
 
 
 def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatch, dit_train_host):
-    # A gated FLUX base with no valid token must 400 from the HEAD preflight BEFORE the GPU residents are freed, so a doomed start never evicts the user loaded model.
+    # A gated FLUX base with no valid token must 400 from the HEAD preflight BEFORE the GPU residents are freed.
     import urllib.error
     import urllib.request
 
@@ -1522,7 +1522,7 @@ def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatc
 
 
 def test_route_start_refuses_a_dit_family_without_a_gpu_before_freeing(client, monkeypatch):
-    # nf4 is not a CPU fallback: the 4-bit base load needs CUDA/XPU/MPS. Without a pre-teardown gate the default Train pick on a GPU-less host unloaded the working Images pipeline, pulled the text encoders, and only then failed in the child.
+    # nf4 is not a CPU fallback: the 4-bit base load needs CUDA/XPU/MPS. Without a pre-teardown gate the default pick evicted the Images pipeline then failed in the child.
     import torch
 
     import routes.training as tr
@@ -1554,7 +1554,7 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     import routes.training as tr
 
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
-    # This asserts the gated-repo probe is a no-op, not device support: pin the precision preflight so a GPU-less test host does not 400 for an unrelated reason.
+    # This asserts the gated-repo probe is a no-op, not device support: pin the precision preflight so a GPU-less host does not 400 for another reason.
     monkeypatch.setattr(
         "core.training.diffusion_train_common.training_precision_preflight_error",
         lambda fam, prec: None,
@@ -1671,7 +1671,7 @@ def test_runs_endpoints_list_and_detail(client, _isolated_runs_dir):
 
 
 def test_list_diffusion_runs_skips_wrong_shape_records(_isolated_runs_dir):
-    # A valid-JSON file with the wrong shape (non-dict, or missing the required string job_id / status) must be skipped by list_diffusion_runs so it never reaches the route DiffusionTrainingRunSummary(**r) and takes down the whole Previous runs panel.
+    # A valid-JSON file with the wrong shape must be skipped by list_diffusion_runs so it never takes down the whole Previous runs panel.
     import json
 
     from core.training.diffusion_training_service import list_diffusion_runs
@@ -1693,7 +1693,7 @@ def test_list_diffusion_runs_skips_wrong_shape_records(_isolated_runs_dir):
 
 
 def test_runs_route_tolerates_bad_field_record(client, _isolated_runs_dir):
-    # A record that passes the service shape check but has a wrong-typed field would raise a pydantic ValidationError in the route, so the route must catch it per record and still list the good runs.
+    # A record that passes the shape check but has a wrong-typed field raises ValidationError in the route, so it must catch per record.
     import json
 
     good = {"job_id": "a" * 32, "status": "completed", "adapter": "good", "saved": True}
@@ -1713,7 +1713,7 @@ def test_runs_route_tolerates_bad_field_record(client, _isolated_runs_dir):
 
 
 def test_run_detail_route_non_object_record_is_404(client, _isolated_runs_dir):
-    # A valid-JSON but non-object record makes DiffusionTrainingRunDetail(**rec) raise TypeError, not ValidationError, so the detail route must shape-check like the list path and 404 instead of 500.
+    # A valid-JSON but non-object record makes DiffusionTrainingRunDetail(**rec) raise TypeError, not ValidationError, so the detail route must 404.
     import json
 
     job_id = "a" * 32
@@ -1724,7 +1724,7 @@ def test_run_detail_route_non_object_record_is_404(client, _isolated_runs_dir):
 
 
 def test_request_model_rejects_non_finite_learning_rate():
-    # 1e309 parses as inf, which satisfies a gt-only bound; the route would then start AdamW with an infinite rate and save a destroyed adapter while progress looked fine.
+    # 1e309 parses as inf, which satisfies a gt-only bound; AdamW would then run at an infinite rate and save a destroyed adapter.
     from pydantic import ValidationError
 
     from models.training import DiffusionTrainingStartRequest as R
@@ -1737,12 +1737,9 @@ def test_request_model_rejects_non_finite_learning_rate():
 
 
 def test_request_model_rejects_non_finite_clipping_and_snr():
-    # Same 1e309 -> inf vector as learning_rate, on the two knobs whose bound is one-sided.
-    # max_grad_norm = inf passed ge = 0 and reached clip_grad_norm_, whose clip coefficient
-    # (max_norm / total_norm) is inf and clamps to 1.0: the run trained completely unclipped while
-    # the config still said 1.0. snr_gamma = inf passed gt = 0 here AND the > 0 check in
-    # DiffusionLoraConfig.normalized(), then min(snr, inf) / snr made every min-SNR weight 1.0, so
-    # the loss silently degraded to unweighted MSE.
+    # Same 1e309 -> inf vector as learning_rate, on the two knobs whose bound is one-sided. max_grad_norm = inf passed
+    # ge = 0 and made clip_grad_norm_'s coefficient clamp to 1.0, so the run trained completely unclipped; snr_gamma = inf
+    # passed gt = 0 and made every min-SNR weight 1.0, silently degrading the loss to unweighted MSE.
     from pydantic import ValidationError
 
     from models.training import DiffusionTrainingStartRequest as R
@@ -1761,12 +1758,9 @@ def test_request_model_rejects_non_finite_clipping_and_snr():
 
 
 def test_start_route_never_starts_a_run_with_a_non_finite_knob(client):
-    # End to end: FastAPI parses the body with the stdlib json module, which accepts the
-    # non-standard Infinity literal, and plain 1e309 floats to inf under any parser -- so the
-    # schema is the only thing standing between that and a run started with the knob disabled.
-    # Asserted on the outcome rather than the code: FastAPI's default validation handler cannot
-    # serialise the offending inf back into the 422 body, so a non-finite input already answers
-    # 500 for learning_rate today. What matters is that no run is spawned.
+    # End to end: FastAPI parses the body with the stdlib json module, which accepts the non-standard Infinity literal,
+    # and plain 1e309 floats to inf under any parser, so the schema is the only guard. Asserted on the outcome: the
+    # default validation handler cannot serialise inf back into a 422 body, so what matters is that no run is spawned.
     from fastapi.testclient import TestClient
 
     strict = TestClient(client._app, raise_server_exceptions = False)
@@ -1847,8 +1841,8 @@ def test_diffusion_seed_is_bounded_to_torch_range():
 
 
 def test_gpu_load_admission_and_reserve_exclude_each_other():
-    # The load guards read is_active() and only THEN acquire the arbiter and register the load, so a start reserving inside that window freed residents the load had not registered yet and the trainer came up beside a brand-new pipeline.
-    # The admission closes it from both sides, exactly like the dataset interlock.
+    # The load guards read is_active() and only THEN acquire the arbiter, so a start reserving inside that window freed
+    # residents the load had not registered yet. The admission closes it from both sides, like the dataset interlock.
     from core.training.diffusion_training_service import TrainingActiveError
 
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
@@ -1867,7 +1861,7 @@ def test_gpu_load_admission_and_reserve_exclude_each_other():
     finally:
         svc.unreserve()
 
-    # Nested/concurrent admissions are counted, not boolean: the first exit must not open the door while a second load is still registering.
+    # Nested/concurrent admissions are counted, not boolean: the first exit must not open the door while a second load registers.
     with svc.gpu_load_admission():
         with svc.gpu_load_admission():
             pass
@@ -1878,9 +1872,8 @@ def test_gpu_load_admission_and_reserve_exclude_each_other():
 
 
 def test_route_start_carries_and_contains_the_conditioning_cache_dir(client):
-    # The trainer persistent conditioning cache (cond_cache_dir) skips loading the VAE and the multi-GB text encoders on a rerun, but the start schema omitted the field, so Pydantic dropped it silently and every API-driven run fell back to the in-memory cache.
-    # It also has to be contained like output_dir: the trainer subprocess would otherwise resolve it against its own cwd.
-    # Sent against a DiT family, the only one whose trainer reads the option (see test_route_rejects_cond_cache_dir_for_sdxl).
+    # The persistent conditioning cache (cond_cache_dir) skips the VAE and text encoders on a rerun, but the start schema
+    # omitted the field, so Pydantic dropped it. It must also be contained like output_dir, and is sent against a DiT family.
     from pathlib import Path
 
     r = client.post(
@@ -1902,7 +1895,7 @@ def test_route_start_carries_and_contains_the_conditioning_cache_dir(client):
 
 
 def test_route_refuses_an_output_dir_that_is_the_outputs_root(client):
-    # "." / "outputs" / "./." all clean away to nothing and resolve to the outputs ROOT rather than a run inside it. The trainer would write pytorch_lora_weights.safetensors flat into the root, where the trained-model and checkpoint listings (both is_dir() filtered) cannot see it, and the next such run would overwrite it. The UI only checks the field is non-empty, so "outputs" is a plausible run name.
+    # "." / "outputs" / "./." all clean away to nothing and resolve to the outputs ROOT, where the adapter lands flat and the is_dir()-filtered listings cannot see it.
     from pathlib import Path
 
     for name in (".", "./", "./.", "outputs", "outputs/outputs", " . "):
@@ -1916,7 +1909,7 @@ def test_route_refuses_an_output_dir_that_is_the_outputs_root(client):
 
 
 def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client):
-    # Same collapse on the cache side, but here there is an honest "off" to fall back to: resolving to the root drops one flat safetensors per cached latent and caption straight into the directory trained models live in.
+    # Same collapse on the cache side, but with an honest "off" to fall back to: the root would take one flat safetensors per cached latent.
     for name in (".", "./.", "outputs", " . "):
         r = client.post(
             "/api/train/diffusion/start",
@@ -1927,7 +1920,7 @@ def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client):
 
 
 def test_route_rejects_cond_cache_dir_for_sdxl(client):
-    # Only the DiT trainer reads cond_cache_dir. The SDXL trainer builds a per-process in-memory latent cache and never touches the persistent store, so accepting the option there promised cross-run reuse that never happened. Refuse it rather than ignore it.
+    # Only the DiT trainer reads cond_cache_dir; the SDXL trainer never touches the persistent store, so refuse the option rather than ignore it.
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "model_family": "sdxl", "cond_cache_dir": "cond-cache"},
@@ -1938,7 +1931,7 @@ def test_route_rejects_cond_cache_dir_for_sdxl(client):
     # It names the families that DO support it, so the message is actionable.
     assert "z-image" in detail
 
-    # The check is on the RESOLVED family, so omitting model_family and letting an SDXL base be detected is refused too -- otherwise the common request shape kept the silent no-op.
+    # The check is on the RESOLVED family, so omitting model_family and letting an SDXL base be detected is refused too.
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "cond_cache_dir": "cond-cache"},
@@ -1962,7 +1955,7 @@ def test_route_rejects_cond_cache_dir_for_sdxl(client):
 
 
 def test_service_reserve_refuses_while_the_llm_trainer_holds_the_gpu(monkeypatch):
-    # The route reciprocal check runs several network-bound preflights before reserve(), so an LLM start could spawn inside that window and both trainers would allocate on one GPU. reserve() re-tests the LLM backend under its own lock, which is the half of the interlock that closes.
+    # The route's reciprocal check runs network-bound preflights before reserve(), so reserve() re-tests the LLM backend under its own lock.
     import types
 
     import core.training.diffusion_training_service as dts
@@ -1990,7 +1983,7 @@ def test_llm_active_probe_fails_open(monkeypatch):
 
 
 def test_llm_start_holds_the_diffusion_admission_across_its_spawn(monkeypatch):
-    # The other half: while the LLM route is spawning, a diffusion reserve() must lose. The route holds gpu_load_admission() across start_training, and reserve() already refuses while an admission is open.
+    # The other half: while the LLM route is spawning it holds gpu_load_admission(), and reserve() refuses while one is open.
     from core.training.diffusion_training_service import DiffusionTrainingService
     import routes.training as tr
 

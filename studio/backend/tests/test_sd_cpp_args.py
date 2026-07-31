@@ -54,9 +54,8 @@ def test_te_flags_by_family():
 
 
 def test_metal_keeps_the_text_encoder_off_the_gpu(monkeypatch):
-    # ggml's Metal backend aborts the process on RMS_NORM with non-contiguous rows and has no
-    # per-op CPU fallback, so an LLM text encoder killed sd-server mid-generation on macOS
-    # (observed on macos-14 with FLUX.2-klein-4B Q2_K: loads on mps, first generation exits -6).
+    # ggml's Metal backend aborts the process on RMS_NORM with non-contiguous rows and has no per-op CPU fallback, so an LLM
+    # text encoder killed sd-server mid-generation on macOS (macos-14, FLUX.2-klein-4B Q2_K: loads on mps, first generation exits -6).
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
     monkeypatch.setattr("sys.platform", "darwin")
     assert metal_text_encoder_flags() == ["--clip-on-cpu"]
@@ -106,8 +105,7 @@ def test_native_speed_flags():
     assert native_speed_flags(None) == []
     assert native_speed_flags("off") == []
     assert native_speed_flags("") == []
-    # default now includes conv-direct: measured ~9% faster sampling on CPU (z-image Q8_0, 192
-    # threads) with identical RSS and unchanged decode.
+    # default now includes conv-direct: ~9% faster sampling on CPU (z-image Q8_0, 192 threads) at identical RSS and unchanged decode.
     assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
     assert native_speed_flags("max") == ["--diffusion-fa", "--diffusion-conv-direct"]
     with pytest.raises(ValueError):
@@ -221,8 +219,7 @@ def test_build_negative_prompt_and_batch():
     params = SdCppGenParams(prompt = "x", negative_prompt = "blurry")
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     assert _pair(cmd, "--negative-prompt") == "blurry"
-    # A CLI batch would silently drop every image after the first (the runner only collects the literal
-    # --output path), so the builder rejects it outright.
+    # A CLI batch would silently drop every image after the first (the runner collects only the literal --output path), so the builder rejects it.
     with pytest.raises(ValueError, match = "single-image"):
         build_sd_cpp_command(
             "/bin/sd-cli",
@@ -287,8 +284,7 @@ def test_build_inpaint_adds_mask():
 
 
 def test_build_inpaint_mask_without_init_img_rejected():
-    # sd-cli inpaint needs a source image; a --mask with no --init-img is invalid argv, so the builder
-    # must reject it up front instead of emitting a doomed command.
+    # sd-cli inpaint needs a source image, so a --mask with no --init-img is rejected up front instead of emitting doomed argv.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     params = SdCppGenParams(prompt = "x", mask = "/in/mask.png")
     with pytest.raises(ValueError, match = "init_img is required"):
@@ -315,8 +311,7 @@ def test_build_edit_repeats_ref_image():
 
 
 def test_img2img_unset_dims_lets_sdcpp_derive_from_source():
-    # img2img/inpaint/edit with dims left unset must NOT force --width/--height, so sd.cpp derives the
-    # size from the input image instead of resizing it to 1024.
+    # img2img/inpaint/edit with dims unset must NOT force --width/--height, so sd.cpp derives the size from the input image.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     cmd = build_sd_cpp_command(
         "/bin/sd-cli",
@@ -531,8 +526,7 @@ def test_img_gen_request_requires_prompt():
 
 
 def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
-    # The CPU-backend rescue must fire for the deterministic "this backend cannot run this graph"
-    # abort and for nothing else: an OOM kill or a plain crash has to surface as itself.
+    # The CPU-backend rescue fires only for the deterministic "this backend cannot run this graph" abort: an OOM kill or a plain crash surfaces as itself.
     abort = (
         "sd-server connection lost during img_gen poll (process exited, code -6)\n"
         "Last output:\n"
@@ -552,8 +546,7 @@ def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
 
 
 def test_server_command_appends_extra_args_last():
-    # --backend cpu is passed as extra_args by the abort rescue, and sd.cpp is last-wins, so it has
-    # to land after every flag the normal build emits.
+    # --backend cpu is passed as extra_args by the abort rescue and sd.cpp is last-wins, so it must land after every normal flag.
     cmd = build_sd_cpp_server_command(
         "/x/sd-server",
         SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/vae.sft"),

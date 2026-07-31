@@ -84,13 +84,9 @@ def _load_shared() -> bool:
             _shared_import_error = exc
             import os as _os
 
-            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take
-            # its MLX/CPU path, which injects triton and bitsandbytes STUBS into sys.modules for the
-            # rest of the process. On a working GPU box (where the import failed for an unrelated
-            # reason, e.g. a bitsandbytes/CUDA mismatch) those stubs then raise
-            # "called on Apple Silicon / MLX" from the first CUDA-only kernel a later GGUF or
-            # compiled diffusion generation touches, turning a healthy GPU into 500s. The Xet
-            # watchdog is optional; a poisoned process is not, so degrade instead.
+            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path, which injects
+            # triton and bitsandbytes STUBS into sys.modules for the rest of the process. On a working GPU box (where the import
+            # failed for an unrelated reason) those stubs raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
             if _gpu_present():
                 _shared_available = False
                 import logging as _logging

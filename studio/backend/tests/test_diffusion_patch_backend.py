@@ -54,9 +54,8 @@ def _modules(
 
 
 def test_retry_skipped_without_a_supported_accelerator(monkeypatch):
-    # A CPU-only or MPS host cannot import unsloth, so paying ~940 MB of RSS to find that out is
-    # pure cost. Ungated this took down a Linux CI runner mid-generation and a 7 GB macOS one
-    # during load.
+    # A CPU-only or MPS host cannot import unsloth, so paying ~940 MB of RSS to find out is pure cost. Ungated this took
+    # down a Linux CI runner mid-generation and a 7 GB macOS one during load.
     _modules(monkeypatch, torch = _torch())
     assert pb._retry_could_help(_SENTINEL_ERROR) is False
 
@@ -81,8 +80,7 @@ def test_retry_runs_on_cpu_when_explicitly_allowed(monkeypatch):
 
 
 def test_retry_skipped_when_unsloth_is_already_imported(monkeypatch):
-    # Then the sentinel would already be set and the first attempt would have worked, so the
-    # failure is something else and re-importing cannot fix it.
+    # Then the sentinel would already be set and the first attempt would have worked, so re-importing cannot fix the failure.
     _modules(monkeypatch, torch = _torch(cuda = True), unsloth = True)
     assert pb._retry_could_help(_SENTINEL_ERROR) is False
 

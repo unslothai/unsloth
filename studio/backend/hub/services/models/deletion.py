@@ -603,13 +603,11 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     if status.get("loaded") and status.get("repo_id"):
         if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
             return "Unload the model before deleting"
-    # sd.cpp re-reads companion VAE / text-encoder files every generation, and status().repo_id
-    # covers only the main GGUF, so refuse the companions too.
+    # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers only the main GGUF, so refuse the companions too.
     for lid in getattr(engine, "loaded_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
-    # A downloading repo still reports loaded=False, but deleting would pull blobs from under the
-    # in-flight fetch.
+    # A downloading repo still reports loaded=False, but deleting would pull blobs from under the in-flight fetch.
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
@@ -630,8 +628,7 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
         return None
     status = backend.status()
     if status.get("loaded"):
-        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE
-        # and text encoders and is just as much part of the live model, so refuse it too.
+        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE and text encoders, so refuse it too.
         for key in ("repo_id", "base_repo"):
             held = status.get(key)
             if held and _loaded_id_matches_repo(str(held), repo_id):

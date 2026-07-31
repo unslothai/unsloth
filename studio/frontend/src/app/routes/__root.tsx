@@ -61,16 +61,13 @@ function RouteFallback() {
   );
 }
 
-// ImagesPage is mounted persistently below (not via the /images route) so an
-// in-flight image batch survives leaving the tab, mirroring ChatPage. Kept lazy
-// so its bundle still loads only on the first /images visit.
+// ImagesPage is mounted persistently below (not via the /images route) so an in-flight batch survives leaving the tab,
+// mirroring ChatPage. Kept lazy so its bundle still loads only on the first /images visit.
 const ImagesPage = lazy(() =>
   import("@/features/images").then((m) => ({ default: m.ImagesPage })),
 );
 
-// VideoPage gets the same persistent-mount treatment as ImagesPage so an in-flight
-// generation survives leaving the tab. Kept lazy so its bundle loads only on the first
-// /video visit.
+// VideoPage gets the same persistent mount so an in-flight generation survives leaving the tab; still lazy on first /video visit.
 const VideoPage = lazy(() =>
   import("@/features/video").then((m) => ({ default: m.VideoPage })),
 );
@@ -100,9 +97,8 @@ function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
-  // Images runs on CPU/MPS via the native sd.cpp engine, exactly the no-GPU (chat-only) setup it
-  // was added for. The chat-only flag is about training/export needing a GPU, so it must not
-  // redirect /images away here or the native image path is unreachable where it's needed.
+  // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about
+  // training/export needing a GPU, so it must not redirect /images away here.
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   return false;
 }
@@ -173,10 +169,8 @@ function RootLayout() {
   const chatSearch = isChatRoute ? liveChatSearch : frozenChatSearch;
   const shouldMountChat = isChatRoute || chatMounted;
 
-  // Same persistent-mount treatment for /images so a long image batch keeps
-  // generating when the user flips to another tab (ImagesPage reads no URL
-  // search, so it needs no freeze dance -- just the mount latch). Mounts lazily
-  // on first /images visit, then stays mounted, hidden+inert while off-route.
+  // Same persistent mount for /images so a long batch keeps generating off-tab (ImagesPage reads no URL search, so it needs
+  // only the mount latch). Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
   const isImagesRoute = pathname === "/images";
   const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
   if (isImagesRoute && !imagesMounted) {
@@ -184,21 +178,17 @@ function RootLayout() {
   }
   const shouldMountImages = isImagesRoute || imagesMounted;
 
-  // Same persistent-mount treatment for /video so a long generation keeps running when
-  // the user flips to another tab (VideoPage reads no URL search, so it needs no freeze
-  // dance -- just the mount latch). Mounts lazily on first /video visit, then stays
-  // mounted, hidden+inert while off-route.
+  // Same persistent mount for /video so a long generation keeps running off-tab (VideoPage reads no URL search either).
+  // Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
   const isVideoRoute = pathname === "/video";
   const [videoMounted, setVideoMounted] = useState(isVideoRoute);
   if (isVideoRoute && !videoMounted) {
     setVideoMounted(true);
   }
   const shouldMountVideo = isVideoRoute || videoMounted;
-  // Chat, Images and Video all render their own full-height shell (fixed top rail +
-  // internally-scrolling body), so all three want the chat-style layout: no outer pt-14 inset, no
-  // outer scroll. Keying off isChatRoute alone gave /images and /video the non-chat pt-14 + outer
-  // overflow, pushing the picker down and clipping the gallery. Treat them the same for container
-  // padding/overflow only; the keep-alive mounts below stay keyed to each route.
+  // Chat, Images and Video each render their own full-height shell, so all three want the chat-style layout: no outer pt-14
+  // inset, no outer scroll. Keying off isChatRoute alone gave /images and /video the pt-14 + outer overflow, pushing the
+  // picker down and clipping the gallery. This covers container padding/overflow only; the keep-alive mounts stay per route.
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
 
   useTrainingUnloadGuard();
@@ -328,10 +318,7 @@ function RootLayout() {
                   <ChatPage search={chatSearch} active={isChatRoute} />
                 </div>
               )}
-              {/* Same keep-alive treatment for Images so a long batch keeps
-                  generating off-tab; `active` force-closes its body-portaled
-                  overlays (model selector, recipe popover, aspect dropdown) so
-                  none can bleed over another tab while hidden. */}
+              {/* Same keep-alive treatment for Images so a long batch keeps generating off-tab; `active` force-closes its body-portaled overlays (model selector, recipe popover, aspect dropdown) so none bleed over another tab while hidden. */}
               {shouldMountImages && (
                 <div
                   className={
@@ -346,9 +333,7 @@ function RootLayout() {
                   </Suspense>
                 </div>
               )}
-              {/* Same keep-alive treatment for Video so a long generation keeps running
-                  off-tab; `active` force-closes its body-portaled overlays (model selector,
-                  recipe popover) so none can bleed over another tab while hidden. */}
+              {/* Same keep-alive treatment for Video so a long generation keeps running off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
               {shouldMountVideo && (
                 <div
                   className={

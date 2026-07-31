@@ -251,8 +251,7 @@ def test_krea2_forward_matches_stock():
         num_kv_heads = H // 2,
         norm_eps = 1e-6,
     ).eval()
-    # Give the zero-init modulation table real values so all six scale/shift/gate branches
-    # contribute to the output.
+    # Give the zero-init modulation table real values so all six scale/shift/gate branches contribute to the output.
     with torch.no_grad():
         blk.scale_shift_table.normal_()
     # A [text + 2x2 image grid] sequence with the real rotary embed (axes sum to head_dim).
@@ -298,8 +297,7 @@ def test_kill_switch(monkeypatch):
 
 
 def test_body_drift_guard_skips_changed_block(monkeypatch):
-    # A resolver whose body-check fails (diffusers changed the lines we rewrite) is skipped. Force
-    # the qwen resolver to see a drifted body.
+    # A resolver whose body-check fails (diffusers changed the lines we rewrite) is skipped; force the qwen resolver to see a drifted body.
     monkeypatch.setattr(ap, "_body_has", lambda fn, *needles: False)
     assert ap.install_arch_patches() == 0
     assert not ap.is_installed()

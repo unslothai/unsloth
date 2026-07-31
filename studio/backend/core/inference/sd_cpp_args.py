@@ -23,7 +23,7 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 
-# Per-family text-encoder flags, in supply order. Keyed by ``DiffusionFamily.name`` so the engine stays data-driven and the family registry need not import sd.cpp specifics.
+# Per-family text-encoder flags, in supply order. Keyed by ``DiffusionFamily.name`` so the family registry need not import sd.cpp specifics.
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "z-image": ("--llm",),
     "flux.2-klein": ("--llm",),
@@ -38,7 +38,7 @@ def text_encoder_flags_for_family(family_name: str) -> tuple[str, ...]:
     return _TE_FLAGS_BY_FAMILY.get(family_name, ())
 
 
-# sd-cli's image-gen mode (``img_gen``; older ``txt2img``). img2img is the same mode with --init-img, so this one token covers both.
+# sd-cli's image-gen mode (``img_gen``; older ``txt2img``). img2img is the same mode with --init-img, so one token covers both.
 DEFAULT_MODE = "img_gen"
 
 
@@ -67,7 +67,7 @@ class SdCppGenParams:
 
     prompt: str
     negative_prompt: Optional[str] = None
-    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain txt2img run with unset dims falls back to 1024x1024 (see the builder).
+    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain txt2img falls back to 1024x1024.
     width: Optional[int] = None
     height: Optional[int] = None
     steps: Optional[int] = None
@@ -96,7 +96,7 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles (engine-side analogue of diffusion_speed). off: nothing. default: --diffusion-fa + --diffusion-conv-direct (numerically exact). On the CPU tier this serves, direct conv measured z-image Q8_0 sampling 56.1 to 51.3s (~9%) with decode/RSS unchanged. max keeps it (profiles are a superset chain).
+# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa + --diffusion-conv-direct (numerically exact; direct conv measured z-image Q8_0 sampling 56.1 -> 51.3 s with decode/RSS unchanged). max keeps it (profiles chain).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -142,10 +142,10 @@ def metal_text_encoder_flags() -> list[str]:
     return ["--clip-on-cpu"]
 
 
-# Everything on the CPU backend. sd.cpp's default preference is GPU -> integrated GPU -> CPU, and only `--backend` changes which backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that takes ggml-metal out of the picture entirely.
+# Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes ggml-metal entirely.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
-# The ggml signature that means "this graph cannot run on this backend at all": ggml-metal checks ggml_metal_device_supports_op() per node in ggml_metal_op_encode_impl() and calls GGML_ABORT when it returns false, because a single-backend graph has nowhere to put the node. SIGABRT (-6 on POSIX, 134 through a shell) takes the whole sd-server down mid-generation.
+# The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when ggml_metal_device_supports_op() returns false for a node, since a single-backend graph has nowhere else to put it. The SIGABRT takes sd-server down mid-generation.
 _GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")
 
 
@@ -217,7 +217,7 @@ def build_sd_cpp_command(
     # ``(prompt or "")`` so a None prompt is rejected here, not passed as literal "None".
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
-    # sd-cli inpaint needs the source image: a --mask with no --init-img is invalid, so reject it here rather than fail deep in sd-cli.
+    # sd-cli inpaint needs the source image: a --mask with no --init-img is invalid, so reject it rather than fail deep in sd-cli.
     if params.mask and not params.init_img:
         raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 
@@ -250,7 +250,7 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
-    # Emit explicit dims when given. An image-conditioned run that leaves them unset omits the flags so sd.cpp derives the size from the input; a plain txt2img keeps the 1024 default.
+    # Emit explicit dims when given. An image-conditioned run leaving them unset omits the flags so sd.cpp derives the size from the input; a plain txt2img keeps the 1024 default.
     if params.width is not None or params.height is not None:
         w = int(params.width) if params.width is not None else 1024
         h = int(params.height) if params.height is not None else 1024
@@ -301,7 +301,7 @@ def build_sd_cpp_upscale_command(
         raise ValueError("input_image is required for upscale")
     if not params.upscale_model:
         raise ValueError("upscale_model is required for upscale")
-    # Reject repeats below 1 explicitly: a truthiness guard would swallow repeats=0 into sd-cli's one-pass default, quietly changing the caller's intent.
+    # Reject repeats below 1 explicitly: a truthiness guard would swallow repeats=0 into sd-cli's one-pass default.
     if params.repeats < 1:
         raise ValueError("repeats must be >= 1 for upscale")
     cmd: list[str] = [

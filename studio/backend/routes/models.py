@@ -28,11 +28,11 @@ class CachedModelRepo(BaseModel):
     repo_id: str
     size_bytes: int
     last_modified: Optional[float] = None
-    # "text-to-image" for cached diffusers image repos; declared here or response_model drops it, letting image-only repos pass the chat picker task gate.
+    # "text-to-image" for cached diffusers image repos; declared here or response_model drops it and image-only repos pass the chat picker gate.
     task: Optional[str] = None
-    # True when the snapshot is incomplete (cancelled/partial download): the picker must not treat it as usable, or an On Device click re-downloads the full GGUF.
+    # True when the snapshot is incomplete (cancelled/partial download): the picker must not treat it as usable.
     partial: Optional[bool] = None
-    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file + a filename. Pickers must not offer it as a pipeline load unless the curated catalog carries its artifact.
+    # True for a diffusion-tagged repo with NO top-level model_index.json: it needs from_single_file + a filename, so pickers must not offer a pipeline load.
     single_file: Optional[bool] = None
 
 
@@ -304,7 +304,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
-    # A scan folder can point directly at a diffusers PIPELINE dir, which _is_model_directory rejects; without admitting it the child scan surfaces the component subdirs as bogus models and hides the real pipeline. The Images/Video load path loads it, so admit the root as one model.
+    # A scan folder can point directly at a diffusers PIPELINE dir, which _is_model_directory rejects; the load path accepts it, so admit the root as one model.
     _is_self_model = _is_model_directory(models_dir) or _local_pipeline_index(models_dir)
 
     if _is_self_model:
@@ -339,7 +339,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             has_config = (child / "config.json").exists() or (
                 child / "adapter_config.json"
             ).exists()
-            # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root) is missed by the checks above; the Images/Video load path accepts it, so admit it too or it is hidden from the On Device picker.
+            # A diffusers PIPELINE folder (weights in component subdirs) is missed above; the load path accepts it, so admit it or it is hidden from the picker.
             has_pipeline_index = _local_pipeline_index(child)
             has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
         except OSError:
@@ -387,8 +387,8 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                     ),
                 )
 
-    # A scan folder can also point directly at a BARE single-file checkpoint dir (one loose .safetensors / weight .bin, no config.json and no model_index.json): both root checks above reject it, yet the child loop admits exactly that shape and the Images/Video load path reinterprets such a directory through resolve_local_single_file.
-    # Only when nothing else matched, so a models root holding a stray weight file still lists its real child models.
+    # A scan folder can also point at a BARE single-file checkpoint dir (one loose .safetensors, no configs): both root
+    # checks reject it, yet the load path reinterprets it via resolve_local_single_file. Only when nothing else matched.
     if not found and (limit is None or limit > 0) and _has_non_gguf_weights(models_dir):
         try:
             updated_at = models_dir.stat().st_mtime
@@ -994,7 +994,7 @@ async def list_local_models(
 
     try:
         models = collect_local_models(models_root)
-        # Tag each model with its task so the Images picker can filter to diffusion (GGUF by architecture; local checkpoints by pipeline / family).
+        # Tag each model with its task so the Images picker can filter to diffusion.
         models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
 
         return LocalModelListResponse(
@@ -2526,8 +2526,8 @@ async def delete_finetuned_model(
                     status_code = 409,
                     detail = "Cannot delete trained models while training is running",
                 )
-            # The diffusion (Images) trainer is a second, independent run on the same storage root, so checking only the LLM backend let a delete rmtree the output directory a live diffusion run is about to write its adapter into: the run then dies at export, or silently recreates part of the tree, and an expensive experiment is lost.
-            # The dataset mutation and model-load routes already consult this service.
+            # The diffusion (Images) trainer is a second independent run on the same storage root, so checking only the LLM backend
+            # let a delete rmtree the directory a live run was about to write its adapter into, losing the experiment.
             from core.training.diffusion_training_service import get_diffusion_training_service
 
             if get_diffusion_training_service().is_active():
@@ -2624,8 +2624,8 @@ async def delete_finetuned_model(
             detail = "Could not verify model load status before deleting",
         ) from e
 
-    # Every guard above is chat-only, and Images / Video hold their own pipelines: a local diffusion or video model under the storage root loads by path, so without this rmtree would pull the weights (and the companion VAE / text encoders sd.cpp re-reads every generation) out from under a live engine.
-    # The cached-model delete route matches by repo id, this one by path.
+    # Every guard above is chat-only, and Images / Video hold their own pipelines: a local model under the storage root
+    # loads by path, so rmtree would pull weights out from under a live engine. The cached route matches by repo id.
     for label, get_backend in (
         ("Images", _active_diffusion_backend),
         ("Video", _active_video_backend),
@@ -3260,10 +3260,10 @@ def _repo_gguf_last_modified(repo_info) -> float:
     return latest
 
 
-# GGUF general.architecture values that denote a diffusion (image) model (everything else is text); lets the Images picker show only image GGUFs in its On Device list.
+# GGUF general.architecture values denoting a diffusion (image) model; lets the Images picker show only image GGUFs.
 _DIFFUSION_GGUF_ARCHS = frozenset(
     {
-        # ONLY the families the diffusion backend can assemble (see diffusion_families._FAMILIES). Other diffusion archs (SD1/2/3, SDXL, PixArt, Lumina2, AuraFlow, Wan, HunyuanVideo, ...) would pass this filter then 400 in validate_load, so they stay excluded until the backend supports them.
+        # ONLY the families the diffusion backend can assemble. Other diffusion archs would pass this filter then 400 in validate_load.
         "flux",  # flux.1
         "flux2",  # flux.2-klein
         "qwen_image",  # qwen-image
@@ -3273,8 +3273,8 @@ _DIFFUSION_GGUF_ARCHS = frozenset(
     }
 )
 
-# Diffusion / image-video GGUF archs the backend can NOT assemble yet (llama.cpp also lacks an architecture for them); kept in sync with LlamaCppBackend._DIFFUSION_ARCHES minus the loadable set above.
-# A dedicated non-loadable task keeps them out of the chat picker (they die with "unknown model architecture") and out of Images (not an IMAGE_GEN_TASK; would 400).
+# Diffusion / image-video GGUF archs the backend can NOT assemble yet; kept in sync with LlamaCppBackend._DIFFUSION_ARCHES
+# minus the loadable set. A dedicated non-loadable task keeps them out of both the chat picker and Images.
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {
         "sd1",
@@ -3287,11 +3287,11 @@ _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     }
 )
 
-# Diffusion archs shared by a family the backend CAN assemble and one it cannot, so the arch alone cannot decide. Z-Image DiT is a Lumina2 derivative, so every converter tags unsloth/Z-Image-GGUF and unsloth/Z-Image-Turbo-GGUF as "lumina2" -- the same architecture a Lumina-Image-2.0 GGUF declares.
-# Reading the arch alone hid the whole Z-Image GGUF line from the Images picker, so these resolve from the repo/file name like bare "wan" does below.
+# Diffusion archs shared by a family the backend CAN assemble and one it cannot. Z-Image's DiT is a Lumina2 derivative,
+# so its GGUFs declare "lumina2" like a Lumina-Image-2.0 one; these resolve from the repo/file name instead.
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 
-# Video GGUF archs the video backend CAN load (LTX-2.x ships as "ltxv"; the Wan community GGUFs as "wan"). Tagged text-to-video so they surface in the Video picker and stay out of chat.
+# Video GGUF archs the video backend CAN load (LTX-2.x ships as "ltxv", the Wan community GGUFs as "wan").
 _VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
 _VIDEO_GEN_TASK = "text-to-video"
 
@@ -3352,13 +3352,13 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         return None
     a = arch.lower()
     if a in _DIFFUSION_GGUF_ARCHS:
-        # Third gate, mirroring the cached-repo picker: a family no engine on this host can build is a pick that can only fail, so tag it unsupported (hidden from Images AND from chat, where it would die in llama.cpp) rather than text-to-image.
+        # Third gate, mirroring the cached-repo picker: a family no engine on this host can build is a pick that can only fail, so tag it unsupported.
         if not _gguf_family_buildable(name_hints):
             return _UNSUPPORTED_DIFFUSION_TASK
         return "text-to-image"
     if a in _VIDEO_GGUF_ARCHS:
-        # Advertise as loadable video only when a VideoFamily resolves. Some archs map straight from the arch (ltxv); bare "wan" is ambiguous -- it covers both the GGUF-loadable single-DiT TI2V-5B and the dual-expert A14B MoE the loader refuses --
-        # so when the bare arch does not resolve, fall back to repo/file names (each tried separately, matching name segments) like the loader own detect_video_family, surfacing only a non-MoE match.
+        # Advertise as loadable video only when a VideoFamily resolves. Some archs map straight from the arch (ltxv); bare
+        # "wan" is ambiguous, so fall back to repo/file names like the loader's detect_video_family, surfacing only non-MoE.
         from core.inference.video_families import detect_video_family
 
         fam = detect_video_family("", override = a)
@@ -3372,7 +3372,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
             return _VIDEO_GEN_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
     if a in _AMBIGUOUS_DIFFUSION_GGUF_ARCHS:
-        # Same shape as the video branch: the arch is shared, so let the family detection the loader itself uses decide, trying each hint separately (a repo id, then a filename).
+        # Same shape as the video branch: the arch is shared, so let the loader's own family detection decide, trying each hint separately.
         from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick, family_gguf_loadable
 
@@ -3453,18 +3453,18 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             pass
         return None
     if _local_is_diffusers(model):
-        # A local diffusers pipeline can be a VIDEO family (LTX / Wan / Hunyuan), not just image. Tag it text-to-video so it surfaces in the Video On-Device picker instead of Images, mirroring _cached_repo_task. Gated on _local_is_diffusers, so only a real pipeline dir reaches here.
+        # A local diffusers pipeline can be a VIDEO family, not just image; tag it text-to-video so it surfaces in the Video picker.
         try:
             from core.inference.video import _is_trusted_video_repo
             from core.inference.video_families import detect_video_family
             for needle in _local_family_needles(model):
                 vfam = detect_video_family(needle)
-                # Third gate, as on the cached-repo branches: the video load asserts the family's diffusers pipeline class, and the newer ones (LTX-2) ship only in a newer diffusers.
+                # Third gate, as on the cached-repo branches: the video load asserts the family's pipeline class, and the newer ones need a newer diffusers.
                 if vfam is not None and _is_trusted_video_repo(path):
                     return _VIDEO_GEN_TASK if _video_family_buildable(vfam) else None
         except Exception:
             pass
-        # The Images load path rejects a pick with no supported image-family token, 400ing AFTER evicting the GPU owner. Tag text-to-image only when that same detection succeeds, so the picker never advertises a pipeline the load will always reject.
+        # The Images load path rejects a pick with no supported image family, 400ing AFTER eviction, so tag text-to-image only when that same detection succeeds.
         try:
             from core.inference.diffusion_engine_router import family_buildable_here
             from core.inference.diffusion_families import detect_family
@@ -3472,7 +3472,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             for needle in _local_family_needles(model):
                 fam = detect_family(needle)
                 if fam is not None:
-                    # A local non-GGUF checkpoint always loads through diffusers (the native engine consumes GGUF only), so the pipeline class has to exist here; the loader refuses the same way.
+                    # A local non-GGUF checkpoint always loads through diffusers, so the pipeline class has to exist here.
                     return (
                         "text-to-image"
                         if family_buildable_here(fam, model_kind = "pipeline")
@@ -3505,7 +3505,7 @@ def _local_is_diffusers(model: "LocalModelInfo") -> bool:
                 return True
     except Exception:
         pass
-    # A single-file VIDEO checkpoint (LTX / Wan / Hunyuan .safetensors, no model_index.json) is missed above but loaded as a single_file by the video route, so surface it or the picker hides it.
+    # A single-file VIDEO checkpoint (no model_index.json) is missed above but loaded as single_file by the video route, so surface it.
     try:
         from core.inference.video_families import detect_video_family
         for needle in _local_family_needles(model):
@@ -3706,9 +3706,8 @@ def _cached_repo_task(repo_info) -> Optional[str]:
         from core.inference.video import _is_trusted_video_repo
         from core.inference.video_families import detect_video_family
 
-        # Both gates: a detected video family (so image repos do not match) AND the load path trust rule (so an untrusted video repo is not advertised as loadable).
-        # An untrusted one is hidden outright rather than falling through to the image tag below: it is a video pipeline, so advertising it under Images would only move the same refusal to a different picker.
-        # Third gate, as on the image branch below: the video load asserts the family's pipeline class too, and the newer ones (LTX-2) exist only in a newer diffusers.
+        # Both gates: a detected video family (so image repos do not match) AND the load path's trust rule. An untrusted one is
+        # hidden outright. Third gate: the video load asserts the family's pipeline class, which needs a newer diffusers.
         video_fam = detect_video_family(repo_id)
         if video_fam is not None:
             if not _is_trusted_video_repo(repo_id) or not _video_family_buildable(video_fam):
@@ -3718,9 +3717,9 @@ def _cached_repo_task(repo_info) -> Optional[str]:
         pass
     if not _repo_is_diffusers(repo_info):
         return None
-    # BOTH gates, mirroring the video branch above: the load path trust rule AND a detected image family. A model_index.json only proves the repo is a diffusers pipeline, not that it is one of the image families this backend can assemble, so an unsloth-hosted pipeline of an unsupported class cleared the trust gate, was advertised as text-to-image, and then deterministically failed validate_load_request, which detects the family the same way.
-    # The third gate is the installed diffusers: the newer families exist only from 0.39, which cannot be installed on Python 3.9 at all (diffusers dropped 3.9 in 0.38), so on such an environment a Z-Image / Krea 2 / FLUX.2 row is a pick that can only fail, and the suggested `pip install -U diffusers` cannot fix it.
-    # validate_load_request refuses the same way.
+    # BOTH gates, mirroring the video branch: the trust rule AND a detected image family. A model_index.json only proves the
+    # repo is a diffusers pipeline, so an unsloth-hosted pipeline of an unsupported class cleared the trust gate and then
+    # failed validate_load_request. Third gate is the installed diffusers: the newer families need 0.39, absent on Python 3.9.
     try:
         from core.inference.diffusion import _is_trusted_diffusion_repo
         from core.inference.diffusion_families import detect_family, family_pipeline_available
@@ -3779,11 +3778,11 @@ async def list_cached_models(
                     )
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
-                    # A companion-only prefetch (manifest + VAE/text-encoder but no transformer shards) is not a loadable pipeline; treat it as partial so the picker does not advertise it as on-device.
+                    # A companion-only prefetch (manifest + VAE/TE but no transformer shards) is not a loadable pipeline; treat it as partial.
                     is_partial = _cached_repo_partial(
                         repo_id, Path(repo_info.repo_path)
                     ) or _repo_pipeline_missing_denoiser(repo_info)
-                    # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a smaller complete copy in another (size only breaks ties among equal completeness).
+                    # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
                     if existing is None or (not is_partial, total_size) > (
                         not bool(existing.get("partial")),
                         existing["size_bytes"],
@@ -3795,7 +3794,7 @@ async def list_cached_models(
                         }
                         if is_partial:
                             row["partial"] = True
-                        # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer them as pipeline loads unless the catalog carries them.
+                        # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
                         if row["task"] is not None and not _repo_has_pipeline_index(repo_info):
                             row["single_file"] = True
                         # Keep the newest timestamp across duplicate caches;

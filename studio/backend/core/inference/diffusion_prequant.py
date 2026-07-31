@@ -27,8 +27,8 @@ from typing import Any, Optional
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected.
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
-# Loading ends in ``torch.load(weights_only=False)``, which executes pickle code. A hosted repo checkpoint is first-party; a ``kind == "path"`` can come from a request ``transformer_prequant_path``, so it is unpickled ONLY when it resolves inside an operator-configured ALLOWLIST of directories.
-# A bare on/off toggle is never a wildcard.
+# Loading ends in ``torch.load(weights_only=False)``, which executes pickle code. A hosted repo checkpoint is first-party;
+# a ``kind == "path"`` can come from a request, so it is unpickled ONLY inside an operator-configured directory ALLOWLIST.
 ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
@@ -215,7 +215,7 @@ def load_prequantized_transformer(
     dense-quantise. Best-effort: never raises for an unavailable artifact.
     """
     try:
-        # weights_only=False executes pickle code, so a local path is unpickled ONLY when allowlisted. The hosted family repo is first-party and always allowed.
+        # weights_only=False executes pickle code, so a local path is unpickled ONLY when allowlisted; the hosted family repo is first-party.
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
                 logger,
@@ -234,7 +234,7 @@ def load_prequantized_transformer(
 
         import torch
 
-        # torchao weight subclasses aren't safetensors-serializable, so the checkpoint is a torch.save pickle and weights_only=False rebuilds them. Local path gated above.
+        # torchao weight subclasses are not safetensors-serializable, so the checkpoint is a torch.save pickle and weights_only=False rebuilds them. Local paths gated above.
         ckpt = torch.load(path, weights_only = False, map_location = "cpu")
         if not _validate_checkpoint(
             ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
@@ -248,15 +248,15 @@ def load_prequantized_transformer(
 
         with init_empty_weights():
             transformer = transformer_cls.from_config(config)
-        # assign=True swaps in the loaded tensors rather than copying into meta (a no-op); strict=True since the saved dict is the full state dict of the same class.
+        # assign=True swaps in the loaded tensors instead of copying into meta (a no-op); strict=True since the saved dict is the full state dict of the same class.
         transformer.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(transformer):
-            # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the quantized weights; dense bf16 lives in CPU RAM only, so the GPU gets just the quant footprint.
+            # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
             transformer = transformer_cls.from_config(config)
             transformer.load_state_dict(state_dict, strict = True, assign = True)
 
         transformer = transformer.to(device)
-        # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match that so train/eval-sensitive layers cannot make prequant inference diverge.
+        # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so train/eval-sensitive layers cannot make prequant inference diverge.
         try:
             transformer.eval()
         except Exception:  # noqa: BLE001 — eval() is best-effort
@@ -335,7 +335,7 @@ def _validate_checkpoint(
     if meta.get("scheme") != scheme:
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
-    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). An old checkpoint omits ``fp8_granularity`` or records non-per-row; reject so the loader re-quantises.
+    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). An old checkpoint omits ``fp8_granularity`` or records non-per-row, so reject and let the loader re-quantise.
     from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
 
     if scheme == TQ_FP8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
@@ -350,7 +350,7 @@ def _validate_checkpoint(
         return False
     ckpt_base = meta.get("base_model_id")
     if base:
-        # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always records base_model_id, so one that omits it against a requested base is untrustworthy.
+        # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always records base_model_id, so one omitting it against a requested base is untrustworthy.
         if not ckpt_base:
             _warn(
                 logger,
@@ -372,12 +372,12 @@ def _validate_checkpoint(
                 ValueError(f"checkpoint min_features {ckpt_min!r} != runtime {min_features!r}"),
             )
             return False
-    # The int8 exclusion set is scheme-derived, but a future change to the token list would leave old checkpoints with a stale baked set that passes scheme+min_features then crashes at the first denoise. Reject a recorded mismatch; absent is accepted.
+    # The int8 exclusion set is scheme-derived, so a future token-list change would leave old checkpoints with a stale baked set that passes scheme+min_features then crashes at the first denoise. Reject a recorded mismatch; absent is accepted.
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
 
-        # The exclude set derives from scheme AND family; use the recorded family so an artifact baked under an older token list is rejected and re-quantised, not loaded crashing.
+        # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older token list is rejected and re-quantised, not loaded crashing.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
         if tuple(ckpt_excludes) != expected:
             _warn(
@@ -388,7 +388,7 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # require_bf16 (skip non-bf16 Linears) is scheme-pinned. Recording and verifying it guards against a future _REQUIRE_BF16_SCHEMES change loading an old-filter checkpoint. Absent accepted.
+    # require_bf16 (skip non-bf16 Linears) is scheme-pinned; recording and verifying it stops a future _REQUIRE_BF16_SCHEMES change loading an old-filter checkpoint. Absent accepted.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
         from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES

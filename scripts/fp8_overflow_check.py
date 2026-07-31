@@ -63,8 +63,7 @@ def _run(fast_accum, steps, res, seed, mf):
         if m > stats["max_abs"]:
             stats["max_abs"] = m
 
-    # Hook the quantised linears where an fp8-accumulation overflow surfaces. Run eager: forward
-    # hooks don't trace through torch.compile, and accumulation is identical either way.
+    # Hook quantised linears in eager: forward hooks don't trace through compile, and accumulation matches.
     for m in pipe.transformer.modules():
         if isinstance(m, nn.Linear):
             m.register_forward_hook(hook)

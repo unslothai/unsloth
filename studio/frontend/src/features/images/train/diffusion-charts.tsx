@@ -4,10 +4,8 @@
 import { type ReactElement, useMemo } from "react";
 
 import type { TrainingSeriesPoint } from "@/features/training";
-// The loss + grad-norm cards are pure presentational (props only), so reuse them directly. We
-// do NOT reuse ChartsSection/ChartsContent: those also render LR and Eval Loss cards, which add
-// little for diffusion LoRA (LR is the deterministic schedule just picked; eval isn't
-// configured). This is a diffusion-only two-card layout: Training Loss + Grad Norm.
+// The loss + grad-norm cards are pure presentational (props only), so reuse them directly. NOT ChartsSection/ChartsContent:
+// those also render LR and Eval Loss, which add little here (LR is the schedule just picked; eval is not configured).
 // eslint-disable-next-line no-restricted-imports
 import { GradNormChartCard } from "@/features/studio/sections/charts/grad-norm-chart-card";
 // eslint-disable-next-line no-restricted-imports
@@ -21,9 +19,8 @@ import {
   ema,
 } from "@/features/studio/sections/charts/utils";
 
-// Fixed presentation defaults (the LLM tab exposes these via a settings sheet; here we pick
-// sensible constants): EMA smoothing on, linear scale, raw + smoothed + average lines shown,
-// no outlier trimming (diffusion loss is naturally noisy, not spiky-with-outliers).
+// Fixed presentation defaults (the LLM tab exposes these via a settings sheet): EMA smoothing on, linear scale, raw +
+// smoothed + average lines, no outlier trimming (diffusion loss is naturally noisy, not spiky-with-outliers).
 const SMOOTHING = 0.8;
 
 function toLossItems(series: TrainingSeriesPoint[]): { step: number; loss: number }[] {
@@ -32,8 +29,7 @@ function toLossItems(series: TrainingSeriesPoint[]): { step: number; loss: numbe
     .map((p) => ({ step: p.step, loss: p.value }));
 }
 
-// The x-domain that spans all points (the LLM tab supports a scrollable window; a training
-// run here is short enough to always show the whole thing).
+// The x-domain spanning all points (the LLM tab has a scrollable window; a run here is short enough to show whole).
 function fullStepDomain(steps: number[]): [number, number] {
   if (steps.length === 0) return [0, 1];
   const min = steps[0];
@@ -43,10 +39,8 @@ function fullStepDomain(steps: number[]): [number, number] {
   return [min, max];
 }
 
-// A diffusion-only metrics view: Training Loss and Grad Norm, side by side, with a note
-// under the loss card explaining why per-step loss looks noisy. Always renders both cards
-// (even with no data) so the parent can decide when to mount them; we never early-return
-// null here.
+// A diffusion-only metrics view: Training Loss and Grad Norm side by side, with a note under the loss card explaining why
+// per-step loss looks noisy. Always renders both cards so the parent decides when to mount them.
 export function DiffusionCharts({
   lossHistory,
   gradNormHistory,

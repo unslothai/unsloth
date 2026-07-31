@@ -110,8 +110,7 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
 
     pipe = load_krea2_pipeline(str(tmp_path), "bf16")
 
-    # Turbo's fixed-mu schedule rides on is_distilled; dropping any of these would silently degrade
-    # generations, so the ctor kwargs are asserted exactly.
+    # Turbo's fixed-mu schedule rides on is_distilled and dropping any of these silently degrades generations, so the ctor kwargs are asserted exactly.
     assert captured["pipeline"]["is_distilled"] is True
     assert captured["pipeline"]["patch_size"] == 2
     assert captured["pipeline"]["text_encoder_select_layers"] == [2, 5, 8]
@@ -126,8 +125,7 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
 
 
 def test_load_krea2_pipeline_requires_krea_capable_diffusers(monkeypatch):
-    # On diffusers < 0.39 (no Krea2Pipeline) the loader must fail fast with the upgrade hint instead
-    # of dying with a bare AttributeError mid-load.
+    # On diffusers < 0.39 (no Krea2Pipeline) the loader must fail fast with the upgrade hint, not a bare AttributeError mid-load.
     import pytest
 
     fake = SimpleNamespace(__version__ = "0.38.0")
@@ -147,8 +145,7 @@ def test_krea2_family_wiring():
 
     fam = detect_family("krea/Krea-2-Turbo")
     assert fam is not None and fam.name == KREA2_FAMILY_NAME
-    # Both vendor repos are non-GGUF allowlisted (Turbo for inference, Raw for training); no sd.cpp
-    # mapping, so diffusers fallback.
+    # Both vendor repos are non-GGUF allowlisted (Turbo for inference, Raw for training); no sd.cpp mapping, so diffusers fallback.
     assert _is_trusted_diffusion_repo("krea/Krea-2-Turbo")
     assert _is_trusted_diffusion_repo("krea/Krea-2-Raw")
     assert not family_sd_cpp_supported(fam)
@@ -156,9 +153,8 @@ def test_krea2_family_wiring():
     assert "time_embed" in exclude_tokens_for_scheme(TQ_INT8)
     # Adapters train on Raw but run on Turbo, so the family carries a deploy override.
     assert fam.deploy_base_repo == "krea/Krea-2-Turbo"
-    # The OpenAI /v1/images/generations route reads (steps, guidance) from this table; Krea Turbo is
-    # distilled (8 steps, no CFG), matching the Create UI seed. Raw is the undistilled base and runs
-    # its full 52-step / CFG 3.5 recipe, so its more specific key must win over "krea".
+    # The OpenAI /v1/images/generations route reads (steps, guidance) from this table. Krea Turbo is distilled (8 steps, no
+    # CFG); Raw is the undistilled base at 52 steps / CFG 3.5, so its more specific key must beat "krea".
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
@@ -184,13 +180,11 @@ def test_krea2_training_registry(dit_train_host):
         "resolution": 512,
     }
     info = {i["name"]: i for i in family_train_infos()}["krea-2"]
-    # Krea's guidance: train LoRAs on the undistilled Raw model and run them on Turbo, so Raw leads
-    # the training bases while Turbo stays available.
+    # Krea's guidance: train LoRAs on the undistilled Raw model and run them on Turbo, so Raw leads the training bases.
     assert info["default_base"] == "krea/Krea-2-Raw"
     assert info["base_repos"] == ["krea/Krea-2-Raw", "krea/Krea-2-Turbo"]
     assert info["supports_compile"] is True
-    # Deploy previews the adapter on Turbo, not the Raw checkpoint it trained on, so the UI loads the
-    # distilled inference recipe; other families leave this None.
+    # Deploy previews the adapter on Turbo, not the Raw checkpoint it trained on, so the UI loads the distilled recipe; other families leave this None.
     assert info["deploy_base"] == "krea/Krea-2-Turbo"
     assert {i["name"]: i for i in family_train_infos()}["flux.1"]["deploy_base"] is None
 
@@ -207,8 +201,7 @@ def test_krea2_spec_registered_with_authors_targets():
 
 
 def test_krea2_collate_and_forward_roundtrip():
-    # spec.forward imports Krea2Pipeline (prepare_position_ids), so this needs a real diffusers
-    # install; CI hosts run the backend suite without one.
+    # spec.forward imports Krea2Pipeline (prepare_position_ids), so this needs a real diffusers install; CI runs without one.
     pytest.importorskip("diffusers")
     import torch
     from core.training.diffusion_dit_trainer import _SPECS
@@ -228,8 +221,7 @@ def test_krea2_collate_and_forward_roundtrip():
     class _FakeTransformer:
         def __call__(self, **kwargs):
             captured.update(kwargs)
-            # Echo the packed sequence: unpack(pack(x)) == x proves the inlined packing mirrors Krea2Pipeline
-            # exactly (they are mutual inverses).
+            # Echo the packed sequence: unpack(pack(x)) == x proves the inlined packing mirrors Krea2Pipeline exactly.
             return (kwargs["hidden_states"],)
 
     noisy = torch.randn(2, 16, 1, 8, 8)
@@ -238,8 +230,7 @@ def test_krea2_collate_and_forward_roundtrip():
         _FakeTransformer(), noisy, timesteps, None, (pe_b, mask_b), None, "cpu", torch.float32
     )
     assert torch.equal(pred, noisy)
-    # [B, (H/2)*(W/2), C*4] patches, one shared [(txt+img), 3] position grid, and the [0, 1] timestep
-    # convention.
+    # [B, (H/2)*(W/2), C*4] patches, one shared [(txt+img), 3] position grid, and the [0, 1] timestep convention.
     assert captured["hidden_states"].shape == (2, 16, 64)
     assert captured["position_ids"].shape == (8 + 16, 3)
     assert torch.allclose(captured["timestep"], torch.tensor([0.25, 0.75]))

@@ -904,8 +904,7 @@ def test_variant_expander_forwards_the_gguf_filename():
     handler = re.search(r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S)
     assert handler, "handleVariantClick not found"
     assert "ggufFilename: filename," in handler.group(0)
-    # The call site has to actually pass it through, in the handler's argument order.
-    # Matched structurally: prettier wraps the call across lines once it grows.
+    # The call site must pass it through in the handler's argument order. Matched structurally, since prettier wraps the call once it grows.
     call = re.search(r"handleVariantClick\(([^)]*)\)", src)
     assert call, "handleVariantClick call site not found"
     args = [a.strip() for a in call.group(1).split(",") if a.strip()]
@@ -1072,8 +1071,7 @@ def test_staged_download_callbacks_only_answer_their_own_variant():
     the staged queue and started a load whose scoped files were still downloading, and its
     failure wiped a queue that was still running."""
     src = _read("features/hub/download-manager/use-staged-download.ts")
-    # The comparison lives in the shared isOurs() guard the three callbacks run (which also binds
-    # them to the started file set; see the test below).
+    # The comparison lives in the shared isOurs() guard the three callbacks run (which also binds them to the started file set).
     assert "(variant ?? null) === activeVariant &&" in src
     for callback in ("onComplete", "onError", "onCancelled"):
         handler = re.search(rf"{callback}: \(variant\) => \{{\n(.*?)\n    \}},", src, re.S)
@@ -1090,8 +1088,7 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
     assert "new IntersectionObserver(" in src
     assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
     assert 'root.querySelectorAll("[data-clip-id]")' in src
-    # rootMargin is added to the root box only, so the strip (the clipping scroller) has to
-    # BE the root, or the prefetch margin never reaches a card clipped past its edge.
+    # rootMargin applies to the root box only, so the strip (the clipping scroller) must BE the root or the prefetch margin never reaches a clipped card.
     assert '{ root, rootMargin: "0px 600px" }' in src
     # The only surviving whole-page fetches are the no-IntersectionObserver fallbacks.
     eager = list(re.finditer(r"page\.videos\.forEach\(\(video\) => void ensureSrc\(video\)\)", src))
@@ -1120,8 +1117,7 @@ def test_on_device_rows_carry_the_task_the_pickers_filter_on():
     assert "task: row.task ?? null," in vm and "task: model.task ?? null," in vm
     conv = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
     assert conv.count("task: row.task ?? null,") == 3, "a picker converter drops the task"
-    # A generation-task row is not a chat row, so the chat-only guard must not hide it from the
-    # pickers that can load it.
+    # A generation-task row is not a chat row, so the chat-only guard must not hide it from the pickers that can load it.
     assert "row.capabilities.canChat || studioPageForTask(row.task) !== undefined" in conv
 
 

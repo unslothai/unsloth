@@ -100,7 +100,7 @@ def main(argv = None) -> int:
     pipe.to("cuda")
     print("pipeline loaded on cuda", flush = True)
 
-    # warm the eager path once (allocator / cudnn), then time eager.
+    # warm eager once (allocator / cudnn), then time it
     _gen(
         pipe,
         args.prompt,
@@ -123,7 +123,6 @@ def main(argv = None) -> int:
     eager_arr = np.array(eager_img)
     print(f"EAGER: {eager_t:.2f}s/gen", flush = True)
 
-    # compile the repeated denoiser block.
     fn = getattr(pipe.transformer, "compile_repeated_blocks", None)
     if not callable(fn):
         print("RESULT: transformer has no compile_repeated_blocks -> N/A", flush = True)
@@ -143,7 +142,7 @@ def main(argv = None) -> int:
         print(f"RESULT: compile_repeated_blocks RAISED: {type(exc).__name__}: {exc}", flush = True)
         return 1
 
-    # first compiled gen triggers the actual compilation (untimed warmup).
+    # first compiled gen is the untimed compile warmup
     try:
         t0 = time.time()
         _gen(

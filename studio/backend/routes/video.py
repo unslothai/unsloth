@@ -57,7 +57,7 @@ def _guard_video_load_against_training() -> None:
     try:
         llm_active = get_training_backend().is_training_active()
     except Exception as e:  # noqa: BLE001
-        # Independent probes: an unreadable LLM backend must not disable the diffusion interlock below, which reads a different service and may know a trainer IS running.
+        # Independent probes: an unreadable LLM backend must not disable the diffusion interlock below.
         logger.warning("Could not check training state for video-load guard: %s", e)
         llm_active = False
     diffusion_active = False
@@ -66,7 +66,7 @@ def _guard_video_load_against_training() -> None:
         diffusion_active = get_diffusion_training_service().is_active()
     except Exception:  # noqa: BLE001
         diffusion_active = False
-    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so refuse a video load while one is active too. Symmetric with the image-load interlock.
+    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so refuse a video load while one is active.
     if not llm_active and not diffusion_active:
         return
     raise HTTPException(
@@ -113,7 +113,7 @@ async def video_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             hf_token = request.hf_token,
-            # The plan has to see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the base repo dense one wastes ~49 GB on LTX-2.
+            # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
         )
         return DiffusionDownloadPlanResponse(**plan)
@@ -133,9 +133,9 @@ async def load_video_model(
 
     backend = get_video_backend()
     try:
-        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad explicit kind raises here, so a 400.
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load agree; a bad kind raises here, so a 400.
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
-        # A local On-Device pick can be a bare single-file .safetensors dir (no model_index.json) that the picker starts as a pipeline with no filename, which would 400 on the missing index. If the dir holds exactly one checkpoint, load it as a single_file. Mirrors images.
+        # A local On-Device pick can be a bare single-file .safetensors dir the picker starts as a pipeline; if it holds exactly one checkpoint, load it as single_file. Mirrors images.
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
             if sole is not None:
@@ -154,7 +154,7 @@ async def load_video_model(
         )
         # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
         _guard_video_load_against_training()
-        # Take the GPU from chat only for a non-CPU load; a CPU load never touches GPU memory, so key off the device. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
+        # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
         def _begin_load():
@@ -176,8 +176,8 @@ async def load_video_model(
             )
 
         if device != "cpu":
-            # Register the in-flight load UNDER the arbiter lock (not after acquire_for returns): otherwise a competing Images/chat acquire in that gap evicts VIDEO before the load is marked in-flight, finds nothing to cancel, and both loaders allocate VRAM at once. Mirrors the images/load handoff.
-            # The training admission wraps the same span for the OTHER competitor: a diffusion-training start reserving here would free residents this load has not registered yet (see _diffusion_training_admission).
+            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO before the
+            # load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
                 with _diffusion_training_admission():
@@ -232,7 +232,7 @@ async def generate_video(
         # Bad client input -- a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
-        # Only the not-loaded / busy sentinels are client-state (409); match exactly so an unrelated failure cannot misroute and leak its message.
+        # Only the not-loaded / busy sentinels are client-state (409); match exactly so an unrelated failure cannot leak its message.
         msg = str(exc)
         if msg in (VIDEO_NOT_LOADED_MSG, VIDEO_GENERATION_BUSY_MSG):
             raise HTTPException(status_code = 409, detail = msg)
@@ -268,7 +268,7 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
 
     backend = get_video_backend()
     status_dict = await asyncio.to_thread(backend.unload)
-    # Drop VIDEO ownership only if nothing is resident AND no new load is in flight: a concurrent /video/load that re-acquired VIDEO must keep ownership. The idle check and release must be ATOMIC (release_if), since the load register runs under the same lock. Mirrors images.
+    # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC (release_if). Mirrors images.
     await asyncio.to_thread(
         release_if,
         VIDEO,
@@ -288,7 +288,7 @@ async def list_gallery_videos(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    # Validate inside the pager so offset / limit / has_more all count over the accepted domain. A sidecar that parses as JSON but has a wrong value type passes the read yet fails GalleryVideo(**r); dropping it only after slicing let a leading bad record return an empty page with has_more=True, stalling infinite scroll at offset 0.
+    # Validate inside the pager so offset / limit / has_more count over the accepted domain: dropping bad records only after slicing stalled infinite scroll at offset 0.
     def _valid_gallery_video(record: dict) -> bool:
         try:
             GalleryVideo(**record)
@@ -311,13 +311,13 @@ async def get_gallery_video_file(
 ):
     from core.inference import video_gallery
 
-    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned MP4 (readable sidecar), so a guessed stem for a foreign/orphan clip cannot be streamed out.
+    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned MP4, so a guessed stem cannot stream out a foreign clip.
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     from fastapi.responses import FileResponse
 
-    # FileResponse streams from disk and serves range requests (seek without a full fetch). Immutable per id, so let the browser cache it.
+    # FileResponse streams from disk and serves range requests. Immutable per id, so let the browser cache it.
     return FileResponse(
         path,
         media_type = "video/mp4",
@@ -325,9 +325,9 @@ async def get_gallery_video_file(
     )
 
 
-# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob the way it does a PNG: that buffers the whole MP4 before playback starts, defeats seeking, and pins the bytes in the webview for as long as the entry is cached -- one long high-resolution clip can exceed the whole cache budget on its own.
-# The /file route already streams and serves ranges; it just cannot be a <video src> because it is bearer-gated. Mint a short-lived HMAC link instead, the same shape the OpenAI images URLs use, and leave the bearer route untouched.
-# 12 hours rather than the images' 1: these links are for our own UI (not an outside client with an OpenAI-shaped contract), a <video> element re-requests bytes whenever the user seeks or replays, and the per-process secret means a restart invalidates every outstanding link anyway.
+# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob the way it does a PNG: that buffers the
+# whole MP4 before playback, defeats seeking and pins the bytes in the webview. The /file route already streams ranges
+# but is bearer-gated, so mint a short-lived HMAC link. 12 hours, since a <video> re-requests bytes on every seek.
 _VIDEO_LINK_TTL = 12 * 3600
 _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
@@ -425,7 +425,7 @@ async def export_gallery_video(
         except OSError as e:  # noqa: BLE001 -- a leaked temp file must not fail the download
             logger.debug(f"Could not remove the export temp file {path}: {e}")
 
-    # FileResponse streams from disk, so a large VP9 export is never fully resident (the caps allow 2048x2048 x 1024 frames). The temp file is deleted once the response has been sent.
+    # FileResponse streams from disk, so a large VP9 export is never fully resident. The temp file is deleted once sent.
     return FileResponse(
         path,
         media_type = "video/webm" if fmt == "webm" else "image/gif",

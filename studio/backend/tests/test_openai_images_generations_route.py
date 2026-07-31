@@ -45,8 +45,7 @@ def test_default_generation_params(repo_id, expected):
 
 
 def test_default_generation_params_specificity_ordering():
-    # The "-turbo" / "-schnell" entries must win over their broader siblings; a reorder that broke this
-    # would silently mis-default.
+    # The "-turbo" / "-schnell" entries must win over their broader siblings; a reorder would silently mis-default.
     assert default_generation_params("x/Z-Image-Turbo") != default_generation_params("x/Z-Image")
     assert default_generation_params("x/FLUX.1-schnell") != default_generation_params(
         "x/FLUX.1-dev"
@@ -54,8 +53,7 @@ def test_default_generation_params_specificity_ordering():
 
 
 def test_default_generation_params_falls_back_to_base_repo():
-    # A local-path load: repo_id is a filesystem path that names no model, so the resolved base repo is
-    # what identifies it (and distinguishes dev from schnell).
+    # A local-path load: repo_id names no model, so the resolved base repo identifies it (and separates dev from schnell).
     assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-dev") == (28, 3.5)
     assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-schnell") == (
         4,
@@ -110,8 +108,7 @@ class _FakeBackend:
         self._base_repo = base_repo
         # Model the native sd.cpp engine, which returns a distinct seed per image.
         self._native_seeds = native_seeds
-        # When set, generate() raises this; unload_on_generate flips is_loaded off first, to model the
-        # eviction/unload race vs an in-pipeline failure (OOM).
+        # When set, generate() raises this; unload_on_generate flips is_loaded off first, to model the eviction race vs an in-pipeline OOM.
         self._generate_error = generate_error
         self._unload_on_generate = unload_on_generate
         self.calls = []
@@ -207,8 +204,7 @@ def test_url_response_shape(client):
     assert len(body["data"]) == 1
     item = body["data"][0]
     assert "url" in item and "b64_json" not in item  # exclude_none drops the unused key
-    # Signed link, not the bearer-gated /file route: an OpenAI client downloads this URL with a plain
-    # GET and no Authorization header.
+    # Signed link, not the bearer-gated /file route: an OpenAI client downloads this URL with a plain GET and no auth header.
     assert "/images/gallery/img0/file-signed?token=" in item["url"]
     # Z-Image-Turbo defaults (9 steps, 0 guidance) flow into the backend call.
     assert client.backend.calls[0] == dict(
@@ -225,8 +221,7 @@ def test_b64_response_shape(client):
 
 
 def test_local_load_uses_base_repo_for_defaults(monkeypatch):
-    # repo_id is a local path that names no model; base_repo identifies FLUX.1-dev, so the route must
-    # pick 28 steps / 3.5 guidance, not the 9/0 fallback.
+    # repo_id is a local path naming no model; base_repo identifies FLUX.1-dev, so the route picks 28 steps / 3.5 guidance, not the 9/0 fallback.
     backend = _FakeBackend(repo_id = "/models/my-flux", base_repo = "black-forest-labs/FLUX.1-dev")
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -237,8 +232,7 @@ def test_local_load_uses_base_repo_for_defaults(monkeypatch):
 
 
 def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
-    # A RuntimeError raised inside the pipeline while the model stays loaded (e.g. CUDA OOM) must be a
-    # sanitized 500, not a 503 that echoes the raw exception text.
+    # A RuntimeError raised inside the pipeline while the model stays loaded (e.g. CUDA OOM) is a sanitized 500, not a 503 echoing the raw text.
     oom = RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (GPU 0; 47.5 GiB total)")
     backend = _FakeBackend(generate_error = oom)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
@@ -251,8 +245,7 @@ def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
 
 
 def test_unload_race_returns_503(monkeypatch):
-    # The model is evicted/unloaded between the readiness check and the call: a RuntimeError with
-    # is_loaded now False is the one case that maps to 503.
+    # The model is evicted between the readiness check and the call: a RuntimeError with is_loaded now False is the one case that maps to 503.
     backend = _FakeBackend(
         generate_error = RuntimeError("No diffusion model is loaded."),
         unload_on_generate = True,
@@ -269,8 +262,7 @@ def test_unload_race_returns_503(monkeypatch):
 
 
 def test_non_runtime_pipeline_error_is_500(monkeypatch):
-    # A non-RuntimeError from the pipeline (the model stays loaded) must not route to the 503 branch,
-    # which is gated on isinstance RuntimeError, so it is a sanitized 500.
+    # A non-RuntimeError from the pipeline must not take the 503 branch (gated on isinstance RuntimeError), so it is a sanitized 500.
     backend = _FakeBackend(generate_error = ValueError("bad tensor shape"))
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -288,8 +280,7 @@ def test_n_maps_to_batch(client):
 
 
 def test_batch_persists_batch_size(monkeypatch):
-    # n>1 must persist batch_size in each gallery record so the Studio restore path can replay a
-    # batch_index>0 sibling (which shares the batch's single seed).
+    # n>1 must persist batch_size in each record so the restore path can replay a batch_index>0 sibling (which shares the batch seed).
     backend = _FakeBackend()
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -302,8 +293,7 @@ def test_batch_persists_batch_size(monkeypatch):
 
 
 def test_uses_active_engine_not_diffusers_singleton(monkeypatch):
-    # On a no-GPU host the loaded model lives behind the native sd_cpp engine, not the diffusers
-    # singleton, so the route must query get_active_diffusion_engine or it 503s a usable model.
+    # On a no-GPU host the loaded model lives behind the native sd_cpp engine, so the route must query get_active_diffusion_engine or it 503s a usable model.
     active = _FakeBackend(loaded = True)  # the active (e.g. sd_cpp) engine, loaded
     idle_diffusers = _FakeBackend(loaded = False)  # diffusers singleton, empty
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: active)
@@ -316,8 +306,7 @@ def test_uses_active_engine_not_diffusers_singleton(monkeypatch):
 
 
 def test_native_batch_persists_per_image_seed(monkeypatch):
-    # The native sd.cpp engine returns a distinct seed per image (base+index) in "seeds", so each
-    # gallery record must store its own seed or a restored batch_index>0 image shows the wrong one.
+    # The native sd.cpp engine returns a distinct seed per image (base+index), so each record must store its own or a restored batch_index>0 image shows the wrong one.
     backend = _FakeBackend(native_seeds = True)
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -401,9 +390,8 @@ def _signed_link_app(monkeypatch, backend, png: "object"):
 
 
 def test_url_response_link_is_fetchable_without_the_bearer(monkeypatch, tmp_path):
-    # The point of response_format=url: an image client hands data[].url to a plain downloader that
-    # sends no Authorization header. Fetch the returned link with the auth header stripped and assert
-    # the PNG comes back.
+    # The point of response_format=url: an image client hands data[].url to a plain downloader with no Authorization header.
+    # Fetch the returned link with the auth header stripped and assert the PNG comes back.
     png = tmp_path / "img0.png"
     png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
     backend = _FakeBackend()
@@ -430,8 +418,7 @@ def test_url_response_link_is_fetchable_without_the_bearer(monkeypatch, tmp_path
 
 
 def test_signed_image_link_rejects_tampering_and_expiry(monkeypatch, tmp_path):
-    # The token names one image and carries its own expiry, so a swapped id, a forged signature and a
-    # stale link all 401 rather than serving the gallery.
+    # The token names one image and carries its own expiry, so a swapped id, a forged signature and a stale link all 401.
     import routes.inference as inference_routes
 
     png = tmp_path / "img0.png"

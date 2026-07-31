@@ -245,8 +245,7 @@ def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache)
     assert ctx2.shapes == {(1024, 1024, 1)}
     cc.register_shape(ctx2, (1024, 1024, 1), static = True)
     assert cc.save(ctx2) is False
-    # ...but a NEW static shape (its compile just produced new artifacts) does, and the rewritten
-    # manifest covers both.
+    # ...but a NEW static shape (its compile just produced new artifacts) does, and the rewritten manifest covers both.
     cc.register_shape(ctx2, (768, 768, 1), static = True)
     assert ctx2.saved is False
     assert cc.save(ctx2) is True
@@ -255,8 +254,7 @@ def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache)
 
 
 def test_new_batch_size_is_its_own_static_shape(monkeypatch, tmp_path, fake_megacache):
-    # A static compile produces one artifact PER (w, h, batch): a batched generation at an unseen
-    # batch size (incl. an OOM-backoff half) must re-dirty it, and the covered batch must not.
+    # A static compile produces one artifact PER (w, h, batch): an unseen batch size (incl. an OOM-backoff half) must re-dirty it, a covered one must not.
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
@@ -276,8 +274,7 @@ def test_new_batch_size_is_its_own_static_shape(monkeypatch, tmp_path, fake_mega
 
 
 def test_gguf_quant_keys_apart_from_dense():
-    # A GGUF transformer compiles a different graph (the dequant chain) than the dense family; the
-    # load path fingerprints it quant="gguf" so bundles never cross-hit.
+    # A GGUF transformer compiles a different graph (the dequant chain), so the load path fingerprints it quant="gguf" and bundles never cross-hit.
     efp = cc.environment_fingerprint()
     base = dict(
         family = "flux.1",

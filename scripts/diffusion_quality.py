@@ -67,8 +67,7 @@ def _to_rgb(path_or_img: Any) -> Any:
     return np.asarray(img.convert("RGB"), dtype = np.float64)
 
 
-# Finite PSNR (dB) cap for perfect (inf) samples, so a lossless render averages as excellent
-# without hiding diverged ones. Well above the ~37 dB compile and ~21 dB quant noise floors.
+# Finite PSNR cap for identical samples: well above the ~37 dB compile and ~21 dB quant noise floors.
 _PERFECT_MATCH_PSNR = 100.0
 
 
@@ -284,8 +283,7 @@ def _compare(
             clip_sim.append(clip.image_similarity(img, ref))
 
     def _mean(xs: list[float]) -> Optional[float]:
-        # +inf marks an identical render. Report inf only when every sample is inf; otherwise cap the
-        # perfect ones to a high finite PSNR so partial drift still shows. (Only PSNR is ever inf.)
+        # Report inf only when every sample is inf; otherwise cap the perfect ones so partial drift still shows.
         if not xs:
             return None
         if all(x == math.inf for x in xs):

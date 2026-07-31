@@ -98,10 +98,10 @@ from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
 
-# Load kinds (mirror the image backend): gguf (single-file GGUF DiT + base repo), single_file (safetensors DiT, e.g. fp8 LTX-2.3), pipeline (full diffusers repo).
+# Load kinds (mirror the image backend): gguf (single-file GGUF DiT + base repo), single_file (safetensors DiT), pipeline (full diffusers repo).
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
-# Vendor base repos allowed to load as full (non-GGUF) artifacts despite not being under unsloth/. Exact-match, lowercased, safetensors-only, no remote code.
+# Vendor base repos allowed to load as full (non-GGUF) artifacts. Exact-match, lowercased, safetensors-only, no remote code.
 _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
     {
         "lightricks/ltx-2",
@@ -154,7 +154,7 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
 
         path = Path(repo_id).expanduser() / gguf_filename
         if not path.is_file():
-            # Not a local dir: resolve a cached HUB blob (no network). Probe active, legacy AND default cache roots (as the picker listing does) or a non-active-root GGUF 400s.
+            # Not a local dir: resolve a cached HUB blob (no network). Probe active, legacy AND default cache roots, or a non-active-root GGUF 400s.
             from huggingface_hub import try_to_load_from_cache
 
             cached = try_to_load_from_cache(repo_id, gguf_filename)
@@ -224,7 +224,7 @@ def _detect_load_family(
         else None
     )
     if fam is None and gguf_filename and not family_override:
-        # A renamed GGUF carries no family token in its name; resolve via general.architecture (e.g. "ltxv" is a family alias). No-backend archs still yield None, so a 400.
+        # A renamed GGUF carries no family token, so resolve via general.architecture. No-backend archs still yield None (a 400).
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
@@ -268,9 +268,9 @@ class _VideoLoadState:
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
     cache_threshold: Optional[float] = None
-    # Dense transformer quant engaged ("int8"|"fp8"|"nvfp4"|"mxfp8") or None. Pipeline-kind only; torchao-quantised in place onto the low-precision tensor cores.
+    # Dense transformer quant engaged ("int8"|"fp8"|"nvfp4"|"mxfp8") or None. Pipeline-kind only; quantised in place onto the low-precision tensor cores.
     transformer_quant: Optional[str] = None
-    # Text-encoder quant engaged ("fp8"|"fp8_dynamic"|"int8"|"nvfp4") or None. The companion encoder is often the largest resident; shrunk in place.
+    # Text-encoder quant engaged ("fp8"|"fp8_dynamic"|"int8"|"nvfp4") or None. Often the largest resident; shrunk in place.
     text_encoder_quant: Optional[str] = None
     resolved: Optional[dict] = None
 
@@ -288,8 +288,8 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
 
 
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
-# The optimisation helpers and the quantiser all act on ``pipe.transformer``. Wan2.2-A14B is a dual-expert MoE (transformer = high-noise steps, transformer_2 = low-noise), so rather than fork each helper,
-# present the second DiT AS ``pipe.transformer`` via a thin proxy (built only for is_moe) and call the helper again.
+# The optimisation helpers and the quantiser all act on ``pipe.transformer``. Wan2.2-A14B is a dual-expert MoE
+# (transformer = high-noise, transformer_2 = low-noise), so present the second DiT AS ``pipe.transformer`` via a thin proxy.
 
 
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
@@ -323,7 +323,7 @@ class _SecondDiTView:
         return getattr(object.__getattribute__(self, "_pipe"), name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # Writes land on the real pipe (else a helper reassignment vanishes with the view); ``transformer`` mirrors onto the second expert.
+        # Writes land on the real pipe (else a helper reassignment vanishes); ``transformer`` mirrors onto the second expert.
         pipe = object.__getattribute__(self, "_pipe")
         setattr(pipe, "transformer_2" if name == "transformer" else name, value)
 
@@ -349,16 +349,14 @@ class VideoBackend:
         self._load_token = 0
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
-        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline.
-        # A generation queued behind the active one holds no cancel event yet, so the cancel they
-        # signal cannot reach it: without this fence it could win the lock as the active generation
-        # released it, see a still-loaded _state, and denoise a whole new clip against the pipeline
-        # the teardown then frees. A count, not a flag, so concurrent teardowns each own their own
-        # release. Mirrors DiffusionBackend._teardown_waiters.
+        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued
+        # behind the active one holds no cancel event yet, so without this fence it could win the lock once the active
+        # one released it and denoise a whole new clip against a pipeline being freed. A count, not a flag, so concurrent
+        # teardowns each own their own release. Mirrors DiffusionBackend._teardown_waiters.
         self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
-        # True from begin_generate() until its worker records a terminal state, so a second begin_generate() is refused while the first still runs.
+        # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
         self._generate_job_active = False
 
     # ── validation ───────────────────────────────────────────────────────────
@@ -376,7 +374,7 @@ class VideoBackend:
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
-        # A -GGUF repo picked without a quant filename resolves to pipeline kind and would only fail in from_pretrained (no model_index.json) after the route evicts the owner.
+        # A -GGUF repo picked without a quant filename resolves to pipeline kind and would only fail in from_pretrained after eviction.
         if kind == "pipeline" and repo_id.strip().lower().rstrip("/").endswith("-gguf"):
             raise ValueError(
                 f"'{repo_id}' is a GGUF repo: pick one of its .gguf files "
@@ -389,7 +387,7 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
-        # Refuse a too-old diffusers here rather than deep in the load, after the checkpoint downloaded (LTX2Pipeline / HunyuanVideo15Pipeline are 0.39-only).
+        # Refuse a too-old diffusers here rather than deep in the load (LTX2Pipeline / HunyuanVideo15Pipeline are 0.39-only).
         from .diffusion_families import assert_pipeline_class_available
 
         assert_pipeline_class_available(fam.pipeline_class, fam.name)
@@ -398,13 +396,13 @@ class VideoBackend:
                 f"Non-GGUF video loads are limited to unsloth/* repos, the official "
                 f"family base repos, and local paths; '{repo_id}' is neither."
             )
-        # Companions load with from_pretrained, so a base repo is held to the non-GGUF bar: a GGUF pick must not smuggle in an arbitrary remote base.
+        # Companions load with from_pretrained, so a base repo is held to the non-GGUF bar: a GGUF pick must not smuggle in a remote base.
         if base_repo and (base_repo or "").strip() and not _is_trusted_video_repo(base_repo):
             raise ValueError(
                 f"base_repo is limited to unsloth/* repos, the official family base "
                 f"repos, and local paths; '{base_repo}' is neither."
             )
-        # A local base_repo loads as a full pipeline (needs model_index.json); reject a non-pipeline one here, before the load. The shared helper keeps image/video/training in sync.
+        # A local base_repo loads as a full pipeline (needs model_index.json); reject a non-pipeline one here, before the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
 
         _assert_local_base_is_pipeline(base_repo)
@@ -419,7 +417,7 @@ class VideoBackend:
             )
         # A missing local checkpoint must fail HERE, before the route evicts a resident model.
         if kind in ("gguf", "single_file"):
-            # Fail a kind/extension mismatch before the GPU handoff: gguf needs .gguf, single_file needs .safetensors (mirrors the image loader gate).
+            # Fail a kind/extension mismatch before the GPU handoff: gguf needs .gguf, single_file needs .safetensors.
             is_gguf_name = (gguf_filename or "").lower().endswith(".gguf")
             if kind == "gguf" and not is_gguf_name:
                 raise ValueError("a 'gguf' load requires a .gguf checkpoint name.")
@@ -431,7 +429,7 @@ class VideoBackend:
                     f"(expected a .safetensors name; use a .gguf name for a GGUF load)."
                 )
             root = Path(repo_id).expanduser()
-            # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path, so a missing Windows-shaped local pick fails before the handoff, not as a Hub repo.
+            # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path, so a missing local pick fails before the handoff.
             path_shaped = (
                 repo_id.startswith(("/", "\\", "~", ".")) or "\\" in repo_id or root.is_absolute()
             )
@@ -442,7 +440,7 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- surface as client input error
                     raise ValueError(str(exc)) from exc
             elif root.is_file():
-                # The loader hands a local FILE straight through (ignoring gguf_filename), so the file own suffix must match the kind; reject a mismatch before the handoff.
+                # The loader hands a local FILE straight through (ignoring gguf_filename), so the file's own suffix must match the kind.
                 suffix = root.suffix.lower()
                 if kind == "gguf" and suffix != ".gguf":
                     raise ValueError(
@@ -456,7 +454,7 @@ class VideoBackend:
                     )
             elif path_shaped:
                 raise ValueError(f"Local model path '{repo_id}' does not exist.")
-        # A local pipeline pick must be a diffusers directory (model_index.json), else it would only fail in from_pretrained after eviction (mirrors the image loader).
+        # A local pipeline pick must be a diffusers directory (model_index.json), else it would only fail after eviction.
         if kind == "pipeline":
             root = Path(repo_id).expanduser()
             # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
@@ -465,7 +463,7 @@ class VideoBackend:
                     f"Local pipeline path is not a diffusers directory "
                     f"(no model_index.json): {repo_id}"
                 )
-        # Reject a malformed transformer_quant cheaply, before the handoff (pipeline-kind loads only; ignored on gguf/single_file, matching the image backend).
+        # Reject a malformed transformer_quant cheaply, before the handoff (pipeline-kind only, matching the image backend).
         normalize_transformer_quant(transformer_quant)
         # Reject a malformed text_encoder_quant the same way (any kind: the encoder is always dense).
         normalize_te_quant(text_encoder_quant)
@@ -507,8 +505,8 @@ class VideoBackend:
                 raise RuntimeError("A video load is already in progress.")
             self._load_token += 1
             token = self._load_token
-            # A NEW event per load, never a clear() of the shared one. unload() sets the event the running worker holds, but it also drops _loading, so the next begin_load could start before that worker exited and clear the very object it was watching:
-            # the cancelled multi-gigabyte pull then resumed and ran alongside the replacement load until the final token check. A fresh object leaves the old worker event set.
+            # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
+            # drops _loading, so the next begin_load would clear the object that worker watches. A fresh object leaves it set.
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
             self._loading = _VideoLoadingState(repo_id = repo_id, base_repo = fam.base_repo)
@@ -538,7 +536,7 @@ class VideoBackend:
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
-        # This load own event: a later load replaces self._cancel_event rather than clearing it, so a cancelled worker stays cancelled.
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         try:
             fam = _detect_load_family(
@@ -551,7 +549,7 @@ class VideoBackend:
                 else resolve_video_base_repo(fam, kwargs.get("base_repo"))
             )
             kwargs["base_repo"] = base
-            # An fp8 encoder request loads a hosted pre-cast checkpoint instead of the base repo dense encoder, so neither the estimate nor the pull below should include those shards.
+            # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
             te_sources = self._te_prequant_sources(fam, kwargs.get("text_encoder_quant"))
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -565,7 +563,7 @@ class VideoBackend:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
                     self._loading.expected_bytes = expected
-            # Checkpoint downloads outside the lock so an unload/eviction can preempt the multi-GB pull; companions pre-download the same way (scoped, cancellable, resumable).
+            # Checkpoint downloads outside the lock so an unload can preempt the multi-GB pull; companions pre-download the same way.
             checkpoint_local: Optional[Path] = None
             if kwargs.get("gguf_filename") and not Path(kwargs["repo_id"]).expanduser().exists():
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -577,14 +575,14 @@ class VideoBackend:
                         cancel_event = cancel_event,
                     )
                 )
-            # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + text encoder + tokenizer; recompute the estimate to match (detectable only once the checkpoint header is on disk).
+            # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE + tokenizer; recompute the estimate.
             ltx23 = False
             if fam is not None and fam.name == "ltx-2" and kind != "pipeline":
                 from .video_ltx2 import is_ltx23_checkpoint
 
                 probe = checkpoint_local
                 if probe is None:
-                    # Local repos: a bare file, or a dir child via the same resolver load_pipeline uses. Unresolvable means load_pipeline surfaces the real error; keep the wide pull.
+                    # Local repos: a bare file, or a dir child via the same resolver load_pipeline uses. Unresolvable keeps the wide pull.
                     root = Path(kwargs["repo_id"]).expanduser()
                     if root.is_file():
                         probe = root
@@ -624,19 +622,19 @@ class VideoBackend:
                 skip_te_components = te_skipped,
                 cancel_event = cancel_event,
             )
-            # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it only gets the warmed cache; generic paths get the full local snapshot.
+            # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it only gets the warmed cache.
             kwargs["_base_local_dir"] = None if ltx23 else base_local
             self.load_pipeline(**kwargs)
             with self._lock:
                 if self._load_token == token:
                     self._loading = None
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
-            # A failed/cancelled load never commits _VideoLoadState, so roll back the process-wide speed globals here (token-scoped, so a superseded load cannot clobber a newer one).
+            # A failed/cancelled load never commits _VideoLoadState, so roll back the process-wide speed globals here (token-scoped).
             self._rollback_precommit_globals(token)
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
-            # Free the debris of a failed construction (mirrors diffusion.py): nothing was committed, so nothing else releases the VRAM. Guarded so a sticky CUDA error still stamps the real error.
+            # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             try:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001 -- cleanup is best-effort
@@ -740,7 +738,7 @@ class VideoBackend:
         files: list[tuple[str, int]] = []
         for sibling in info.siblings or []:
             name, size = sibling.rfilename, sibling.size or 0
-            # .jinja: tokenizer/chat_template.jinja is a standalone file apply_chat_template needs at generation time; a snapshot without it crashes the first generation.
+            # .jinja: tokenizer/chat_template.jinja is needed at generation time; a snapshot without it crashes the first generation.
             if not name.endswith((".safetensors", ".json", ".model", ".txt", ".jinja")):
                 continue
             if "/" not in name and name.endswith(".safetensors"):
@@ -820,9 +818,9 @@ class VideoBackend:
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
-        # The load narrows the base pull for an LTX-2.3 checkpoint, but can only tell 2.3 from 2.0 by the checkpoint header, which is not on disk yet. Name-based here: a wrong guess costs at most an inline pull at load time, while staging the wide base list costs gigabytes.
+        # The load narrows the base pull for an LTX-2.3 checkpoint, but only its header tells 2.3 from 2.0 and that is not on disk yet. Name-based here: a wrong guess costs an inline pull, the wide base list costs gigabytes.
         ltx23 = self._pick_looks_like_ltx23(fam, repo_id, gguf_filename, kind)
-        # Keyed by repo so a 2.3 pick checkpoint and extras stay ONE scoped job; two entries for one repo would collide on the job key.
+        # Keyed by repo so a 2.3 pick's checkpoint and extras stay ONE scoped job; two entries would collide on the job key.
         entries: dict[str, dict[str, Any]] = {}
         total = 0
 
@@ -860,7 +858,7 @@ class VideoBackend:
                 ]
                 total += add(repo_id, sizes, gguf = gguf_filename)
                 if ltx23:
-                    # The 2.3 assembly reads these companion files at load; without them here they would be pulled inline, outside the panel and its disk preflight.
+                    # The 2.3 assembly reads these companion files at load; without them here they would be pulled inline, outside the panel's disk preflight.
                     from .video_ltx2 import ltx23_extras_files, LTX23_EXTRAS_REPO
 
                     wanted = set(ltx23_extras_files(gguf_filename))
@@ -877,7 +875,7 @@ class VideoBackend:
                             if s.rfilename in wanted
                         ],
                     )
-            # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the base repo dense shards.
+            # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
             te_sources = self._te_prequant_sources(fam, text_encoder_quant)
             te_files = self._te_prequant_hub_files(te_sources, api)
             for component, files in te_files.items():
@@ -936,7 +934,7 @@ class VideoBackend:
 
         fetched: list[str] = []
         for component, source in sources.items():
-            # A local path override is validated (allowlist) by the injection itself; nothing to fetch, and no basis here for skipping the dense download.
+            # A local path override is validated by the injection itself; nothing to fetch, and no basis for skipping the dense download.
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
             try:
@@ -994,7 +992,7 @@ class VideoBackend:
 
             snapshot_root: Optional[Path] = None
             for name, _ in files:
-                # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would otherwise run to completion after an unload cancelled.
+                # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would run to completion after a cancel.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
@@ -1051,12 +1049,12 @@ class VideoBackend:
         expected = loading.expected_bytes
         phase = "downloading"
         if not expected:
-            # No size estimate (metadata failure, or a fully cached load that sized nothing). ``downloaded`` counts what is PRESENT in the cache, not what this load fetched,
-            # so reporting it against an unknown total renders a multi-GB "downloaded" figure for a load that downloads nothing. Report the phase alone.
+            # No size estimate (metadata failure, or a fully cached load). ``downloaded`` counts what is PRESENT in the cache,
+            # not what this load fetched, so it would show a multi-GB figure for a load that fetches nothing. Report the phase alone.
             return _progress(phase)
         if downloaded >= expected:
             phase = "finalizing"
-            # The cache scan counts every blob (incl. files this load never reads), so the raw counter can exceed the scoped estimate; clamp to what the bar reports.
+            # The cache scan counts every blob, so the raw counter can exceed the scoped estimate; clamp to what the bar reports.
             downloaded = expected
         return _progress(
             phase,
@@ -1120,40 +1118,37 @@ class VideoBackend:
             # Signal a generation from the PREVIOUS model (the token check above bailed a superseded worker).
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            # Same fence unload() takes, raised BEFORE the barrier: a generation queued behind the
-            # active one holds no cancel event, so the signal above cannot reach it, and it would
-            # otherwise slip through the moment the barrier released _generate_lock and run against
-            # the pipeline this load is about to free.
+            # Same fence unload() takes, raised BEFORE the barrier: a queued generation holds no cancel event, so the signal
+            # above cannot reach it and it would slip through the moment the barrier released _generate_lock.
             self._teardown_waiters += 1
-        # Barrier: wait for the signalled generation to exit before teardown, or two models coexist in VRAM (the denoise loop holds its pipe ref until the next callback).
+        # Barrier: wait for the signalled generation to exit before teardown, or two models coexist in VRAM.
         with self._generate_lock:
             with self._lock:
                 try:
-                    # The barrier wait can outlive this load (a newer load / unload superseded it); recheck before touching shared state so we do not destroy the current model or build a dead pipe.
+                    # The barrier wait can outlive this load (superseded by a newer load/unload); recheck before touching shared state.
                     if _load_token is not None and _load_token != self._load_token:
                         raise RuntimeError("Video load was cancelled or superseded.")
                     self._teardown_state_locked()
                 finally:
-                    # Released here, not at the end of the load: the old pipe is gone (or this load
-                    # bailed), and a raising teardown must not leave the fence up for the life of
-                    # the process. In a finally for the same reason unload() uses one.
+                    # Released here, not at the end of the load: the old pipe is gone (or this load bailed), and a raising teardown
+                    # must not leave the fence up for the life of the process.
                     self._teardown_waiters -= 1
 
         target = resolve_diffusion_device_target()
         device = target.device
-        # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32 (same rule as fp16-incompatible image families). CPU stays float32.
+        # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32. CPU stays float32.
         dtype = target.dtype
         if fam.fp16_incompatible and dtype is torch.float16:
             dtype = torch.float32
-        # Size tables below are bf16 (2-byte); when the promotion lands fp32 on an accelerator, dense estimates double, so scale them (GGUF stays quantised).
+        # Size tables below are bf16 (2-byte), so scale dense estimates when the promotion lands fp32 on an accelerator.
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
-        # Precision tri-state (mirror image backend): unset/"auto" -> hardware ladder picks a quantised DiT; "none"/"off" pins dense bf16; an explicit scheme pins it. Pipeline-kind only; the offload guard below still skips it.
+        # Precision tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins dense bf16; an explicit scheme pins it. Pipeline-kind only.
         if transformer_quant is None or str(transformer_quant).strip().lower() in (
             "",
             "auto",
         ):
-            # An explicit Speed="off" (bit-exact) load must stay dense bf16: auto-quant would engage int8/fp8 + regional compile and break the request. Suppress the auto default when speed was pinned off.
+            # An explicit Speed="off" (bit-exact) load must stay dense bf16: auto-quant would engage int8/fp8 + compile and break the request.
             speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
             transformer_quant = "off" if speed_off else TQ_AUTO
 
@@ -1181,7 +1176,7 @@ class VideoBackend:
                 if components is not None
                 else None
             )
-            # Budget ALL weights (image-backend contract): companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
+            # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
             model_dense_mib = (
                 transformer_mib + (companion_mib or 0) if transformer_mib is not None else None
             )
@@ -1198,7 +1193,7 @@ class VideoBackend:
             companion_dense_mib = companion_mib,
             requested_mode = normalize_memory_mode(memory_mode),
         )
-        # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need. Re-plan with the scheme steady factor and keep the resident placement if it fits; fall back to this bf16 plan if quant later fails.
+        # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
         bf16_plan = plan
         quant_replanned = False
         if (
@@ -1237,15 +1232,15 @@ class VideoBackend:
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
-        # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across the old and new roots.
+        # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across roots.
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "cache_dir": hub_cache_dir()}
         if getattr(fam, "vae_force_fp32", False):
-            # Wan VAE must decode in float32. A scalar torch_dtype truncates its fp32 weights to bf16 (no _keep_in_fp32_modules) and a later .to(float32) only widens lossy values (banding / black frames).
-            # Use the per-component dtype dict; "default" MUST be set or unlisted components fall back to fp32, over-widening the DiT.
+            # Wan VAE must decode in float32: a scalar torch_dtype truncates its fp32 weights to bf16 and a later widen only
+            # restores lossy values (banding / black frames). "default" MUST be set or unlisted components fall back to fp32.
             pipe_kwargs["torch_dtype"] = {"vae": torch.float32, "default": dtype}
         if hf_token:
             pipe_kwargs["token"] = hf_token
-        # A hosted pre-cast fp8 text encoder skips the dense TE download -- for LTX Gemma3-27B that is the ~50 GB heavyweight of the load. quantize_text_encoders re-applies the cast idempotently.
+        # A hosted pre-cast fp8 text encoder skips the dense TE download (for LTX Gemma3-27B, ~50 GB). The cast re-applies idempotently.
         from .diffusion_te_prequant import te_prequant_pipe_kwargs
 
         pipe_kwargs.update(
@@ -1259,9 +1254,9 @@ class VideoBackend:
                 logger = logger,
             )
         )
-        # Injection is best-effort (a missing / mismatched / unreadable checkpoint falls back to the dense encoder), but the scoped pre-download already dropped those dense shards on the strength of the pre-cast file being on disk.
-        # from_pretrained cannot re-fetch from a local snapshot dir, so top the dense weights up here for any skipped component that did not come back injected.
-        # ltx23 is False by construction: that path is handed the hub id (_base_local_dir is None), where from_pretrained resolves the dense encoder itself.
+        # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download already
+        # dropped those shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up here.
+        # ltx23 is False by construction: that path gets the hub id, where from_pretrained resolves the dense encoder itself.
         missing_dense = [c for c in (_te_prequant_skipped or ()) if c not in pipe_kwargs]
         if missing_dense and _base_local_dir:
             logger.warning(
@@ -1273,7 +1268,7 @@ class VideoBackend:
                 self._predownload_base(base, hf_token, kind, ltx23 = False) or _base_local_dir
             )
         if kind == "pipeline":
-            # The pre-downloaded snapshot dir keeps from_pretrained off the hub (its sweep would also pull root checkpoints + duplicate shards); hub id when pre-download was skipped.
+            # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
             pipe = pipeline_cls.from_pretrained(_base_local_dir or repo_id, **pipe_kwargs)
         else:
             transformer_cls = getattr(diffusers, fam.transformer_class)
@@ -1292,14 +1287,14 @@ class VideoBackend:
             from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
 
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
-                # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and the 2.3 connectors/VAEs/vocoder the base lacks.
+                # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(
                     checkpoint_path,
                     base_repo = base,
                     torch_dtype = dtype,
                     is_gguf = kind == "gguf",
                     hf_token = hf_token,
-                    # The 2.3 assembly builds every component itself, so pipe_kwargs (which carries the pre-cast encoder for from_pretrained) never reaches it. Hand the encoder over explicitly, or an fp8 request silently loads the dense ~49 GB Gemma3.
+                    # The 2.3 assembly builds every component itself and never sees pipe_kwargs, so hand the pre-cast encoder over explicitly.
                     text_encoder = pipe_kwargs.get("text_encoder"),
                 )
             else:
@@ -1308,7 +1303,7 @@ class VideoBackend:
                     _base_local_dir or base, transformer = transformer, **pipe_kwargs
                 )
 
-        # The dtype dict already loads the Wan VAE at float32. Belt-and-suspenders for any path that bypassed it (e.g. a passed-in vae=): re-pin an fp32-force VAE that came back lower.
+        # The dtype dict already loads the Wan VAE at float32; belt-and-suspenders for any path that bypassed it (e.g. a passed-in vae=).
         if getattr(fam, "vae_force_fp32", False):
             vae = getattr(pipe, "vae", None)
             if vae is not None and getattr(vae, "dtype", None) is not torch.float32:
@@ -1319,11 +1314,11 @@ class VideoBackend:
             clear_gpu_cache()
             raise RuntimeError("Video load was cancelled or superseded.")
 
-        # For a dual-DiT MoE (Wan2.2-A14B) every optimisation site below covers BOTH experts: ``views`` is (pipe, _SecondDiTView(pipe)); a single-DiT load resolves to (pipe,).
+        # For a dual-DiT MoE every optimisation site below covers BOTH experts: ``views`` is (pipe, _SecondDiTView(pipe)); single-DiT resolves to (pipe,).
         views = _views_for(pipe, fam)
 
-        # dense transformer quant (opt-in, pipeline-kind only): torchao-quantise the dense bf16 DiT in place onto the low-precision tensor cores (image-backend fast path).
-        # CUDA + bf16 only, best-effort. Quant must precede compile (eager dynamic quant is ~30x slower).
+        # dense transformer quant (opt-in, pipeline-kind only): torchao-quantise the dense bf16 DiT in place onto the
+        # low-precision tensor cores. CUDA + bf16 only, best-effort. Quant must precede compile (eager is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
         quant_skipped_for_offload = False
         if (
@@ -1332,7 +1327,7 @@ class VideoBackend:
             and dense_transformer_supported(target)
             and plan.offload_policy != "none"
         ):
-            # Offload hooks move modules with Module.to(), which torchao quantized tensors reject -- a hard crash on the Wan2.2-A14B gate run. Skip quant (dense-under-offload beats a crash); surfaced in the resolved record, forceable via a resident mode.
+            # Offload hooks move modules with Module.to(), which torchao quantized tensors reject. Skip quant (dense-under-offload beats a crash); forceable via a resident mode.
             logger.info(
                 "video.transformer_quant: skipped (offload policy '%s' moves the "
                 "DiT via Module.to(), unsupported for torchao quantized tensors); "
@@ -1347,7 +1342,7 @@ class VideoBackend:
         ):
             engaged = []
             for view in views:
-                # Pass each expert view so both DiTs quantise with the same arch-chosen scheme. The family name drives the per-family deny table (_FAMILY_SCHEME_DENY).
+                # Pass each expert view so both DiTs quantise with the same scheme. The family name drives _FAMILY_SCHEME_DENY.
                 scheme = quantize_transformer(
                     view,
                     target,
@@ -1357,7 +1352,7 @@ class VideoBackend:
                 )
                 if scheme is not None:
                     engaged.append(scheme)
-            # All experts or none: the first is mutated in place, so a second-expert failure cannot fall back to dense (mismatched precision). Fail cleanly; a full miss stays dense.
+            # All experts or none: the first is mutated in place, so a second-expert failure cannot fall back to dense.
             if engaged and len(engaged) < len(views):
                 del pipe
                 clear_gpu_cache()
@@ -1371,8 +1366,8 @@ class VideoBackend:
         if quant_replanned and transformer_quant_engaged is None:
             plan = bf16_plan
 
-        # dense text-encoder quant (opt-in): the companion encoder loads dense bf16 and is often the largest resident. Quantise in place for every kind, before placement so offload moves the smaller weights.
-        # Best-effort; family drives int8 keep-bf16 schedule.
+        # dense text-encoder quant (opt-in): the companion encoder is often the largest resident, so quantise it in place
+        # before placement, for every kind. Best-effort; family drives the int8 keep-bf16 schedule.
         text_encoder_quant_engaged = quantize_text_encoders(
             pipe,
             target,
@@ -1382,12 +1377,12 @@ class VideoBackend:
             logger = logger,
         )
 
-        # optimisation layers in the image backend order: step cache FIRST (compile keys its fullgraph decision off an active cache), then attention, speed profile, placement last.
-        # A clip denoise runs minutes, so even a dense load amortises the compile: unset resolves to the near-lossless `default`; "off"/explicit honored.
+        # optimisation layers in the image backend order: step cache FIRST (compile keys fullgraph off an active cache),
+        # then attention, speed, placement. A clip denoise runs minutes, so even a dense load amortises the compile.
         effective_speed = resolve_speed_mode(
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
-        # A torchao-quantised DiT must be compiled (eager is ~30x slower), so force at least the regional-compile profile when quant engaged but speed was off (matches diffusion.py).
+        # A torchao-quantised DiT must be compiled (eager is ~30x slower), so force the regional profile when quant engaged but speed was off.
         if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
             logger.info(
                 "video.transformer_quant: forcing speed_mode=default "
@@ -1395,9 +1390,9 @@ class VideoBackend:
             )
             effective_speed = SPEED_DEFAULT
         backend_flags = snapshot_backend_flags()
-        # Until the state commit transfers ownership to _teardown_state_locked, a failure must restore these globals itself (_rollback_precommit_globals). Registered BEFORE the first mutation.
+        # Until the state commit hands ownership to _teardown_state_locked, a failure must restore these globals itself. Registered BEFORE the first mutation.
         self._precommit_globals = (_load_token, backend_flags)
-        # Step cache tri-state: unset/"auto" -> step-count policy decides (FBCACHE_MIN_STEPS, re-checked per generation); "off"/"fbcache" pinned. Run per expert so both denoisers cache.
+        # Step cache tri-state: unset/"auto" -> FBCACHE_MIN_STEPS policy (re-checked per generation); "off"/"fbcache" pinned. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
         # GGUF and torchao-quantised DiTs need the higher threshold to trigger over quant noise.
@@ -1412,7 +1407,7 @@ class VideoBackend:
                 view,
                 mode = cache_request,
                 threshold = transformer_cache_threshold,
-                # A quantized transformer residuals are larger, needing the higher FBCache threshold; both engaged quant and GGUF count as quant-active (cache_quant_active).
+                # A quantized transformer's residuals are larger, so both engaged quant and GGUF need the higher FBCache threshold.
                 quant_active = cache_quant_active,
                 logger = logger,
             )
@@ -1440,7 +1435,7 @@ class VideoBackend:
         attention_engaged = None
         speed_optims: tuple = ()
         for view in views:
-            # Both helpers act on ``view.transformer``; call once per view to set the kernel and compile each expert (engaged values match, so record the first). is_gguf keys off kind==gguf AND no quant having engaged (a dense torchao DiT is not a GGUF one).
+            # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first). is_gguf needs kind==gguf AND no quant engaged.
             gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
             engaged = apply_attention_backend(
                 view,
@@ -1455,7 +1450,7 @@ class VideoBackend:
                 is_gguf = gguf_transformer,
                 family = fam,
                 speed_mode = effective_speed,
-                # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled DiT crashes the first cached generation).
+                # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled DiT crashes).
                 cache_active = cache_engaged is not None or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
             )
@@ -1463,13 +1458,13 @@ class VideoBackend:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
         with self._generate_lock:
-            # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck right before placement (the commit below does the final check).
+            # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck before placement.
             if _load_token is not None and _load_token != self._load_token:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
             offload_policy, vae_tiling = apply_memory_plan(pipe, plan, device = device, logger = logger)
-            # A dual-DiT MoE needs no extra per-expert pass: apply_memory_plan already covers every DiT under all tiers; a second pass would duplicate-hook.
+            # A dual-DiT MoE needs no extra per-expert pass: apply_memory_plan covers every DiT; a second pass would duplicate-hook.
             if not vae_tiling:
                 # Whole-clip decode is the video memory peak; tiling is near-free, so always on.
                 try:
@@ -1507,7 +1502,7 @@ class VideoBackend:
                     "transformer_quant": (
                         transformer_quant,
                         transformer_quant_engaged or "off",
-                        # Honest framing: the shipped torchao schemes cut load time (hosted prequant) and resident memory ~2x, but measured on B200 the per-step GEMMs are at best parity with bf16; the generation-speed lever is a calibrated static-scale fp8 path, not this.
+                        # Honest framing: the shipped torchao schemes cut load time and resident memory ~2x, but per-step GEMMs are at best bf16 parity.
                         "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
                         "load time; per-step speed is roughly bf16 parity)"
                         if transformer_quant_engaged is not None
@@ -1740,7 +1735,7 @@ class VideoBackend:
         with self._lock:
             self._generate_job_active = False
             if cancel_event is not None and self._active_generate_cancel is cancel_event:
-                # Covers a worker that failed before reaching generate() finally; identity-guarded so a direct generate() that re-registered keeps its cancel handle.
+                # Covers a worker that failed before reaching generate()'s finally; identity-guarded so a direct generate() keeps its handle.
                 self._active_generate_cancel = None
             if error is not None:
                 self._gen = {
@@ -1782,9 +1777,8 @@ class VideoBackend:
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
             with self._lock:
-                # An unload / superseding load signalled the active generation and is waiting for
-                # this lock. Python locks are not FIFO, so this request can get in first; refuse
-                # instead of denoising against a pipeline that is already being torn down.
+                # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than denoise against a
+                # pipeline that is already being torn down.
                 if self._teardown_waiters:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 state = self._state
@@ -1824,8 +1818,8 @@ class VideoBackend:
                     "num_frames": frames,
                     "generator": generator,
                 }
-                # The 2.3 distilled DiT was trained against a fixed 8-step sigma curve (ltx_core DISTILLED_SIGMA_VALUES); at the distilled default step count pass it verbatim, with the
-                # scheduler re-shaping transforms neutralised (they distort even explicit sigmas). Any other step count keeps the scheduler own spacing.
+                # The 2.3 distilled DiT was trained on a fixed 8-step sigma curve (DISTILLED_SIGMA_VALUES); at the distilled default
+                # step count pass it verbatim with the scheduler re-shaping neutralised. Any other count keeps the scheduler's spacing.
                 sigma_ctx: Any = contextlib.nullcontext()
                 if fam.name == "ltx-2" and "sigmas" in call_params:
                     from .video_ltx2 import (
@@ -1839,7 +1833,7 @@ class VideoBackend:
                         kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
                 if fam.guidance_via_guider:
-                    # HunyuanVideo-1.5: __call__ has no guidance kwarg; CFG scale is a guider attribute set per request (near-1 scales auto-disable CFG in the guider).
+                    # HunyuanVideo-1.5: __call__ has no guidance kwarg; CFG scale is a guider attribute set per request.
                     pipe.guider.guidance_scale = float(guidance)
                 else:
                     kwargs[fam.cfg_kwarg] = guidance
@@ -1848,7 +1842,7 @@ class VideoBackend:
                 # LTX-2 takes frame_rate (shapes audio length); others fix their rate, fps only at export.
                 if "frame_rate" in call_params:
                     kwargs["frame_rate"] = float(out_fps)
-                # Dual-DiT MoE: thread the low-noise expert guidance kwarg only when the family declares one AND the signature accepts it -- WanPipeline raises if guidance_scale_2 is passed with boundary_ratio=None (pipeline_wan.py:322); TI2V-5B never reaches here.
+                # Dual-DiT MoE: pass the low-noise expert guidance only when the family declares it AND the signature accepts it (WanPipeline raises with boundary_ratio=None).
                 if fam.cfg2_kwarg and fam.cfg2_kwarg in call_params and guidance_2 is not None:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
 
@@ -1878,7 +1872,7 @@ class VideoBackend:
                     return callback_kwargs
 
                 def _on_scheduler_step(done: int) -> None:
-                    # No cooperative _interrupt (the pipeline never checks it), so cancellation must unwind the denoise loop via an exception.
+                    # No cooperative _interrupt here, so cancellation must unwind the denoise loop via an exception.
                     if cancel.is_set():
                         raise _VideoGenerationCancelled()
                     _tick(done)
@@ -1887,7 +1881,7 @@ class VideoBackend:
                     kwargs["callback_on_step_end"] = _on_step
                     progress_ctx = contextlib.nullcontext()
                 else:
-                    # HunyuanVideo-1.5 has no step callback; each scheduler.step is one denoise step, so wrap it for progress + cancel and restore afterwards.
+                    # HunyuanVideo-1.5 has no step callback, so wrap scheduler.step for progress + cancel and restore afterwards.
                     progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
@@ -1918,7 +1912,7 @@ class VideoBackend:
                     with torch.inference_mode(), progress_ctx, sigma_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
-                    # Unwinding by exception skips the pipeline end-of-call maybe_free_model_hooks(); under offload the onloaded modules would stay on the GPU, so free them here.
+                    # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would stay on the GPU.
                     free_hooks = getattr(pipe, "maybe_free_model_hooks", None)
                     if callable(free_hooks):
                         try:
@@ -1936,7 +1930,7 @@ class VideoBackend:
                 mp4_bytes = self._encode_mp4(
                     video_frames, out_fps, audio_track, pipe if fam.has_audio else None
                 )
-                # A cancel during the blocking export/mux must still discard the clip; re-check before it is returned and persisted.
+                # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
@@ -1993,11 +1987,11 @@ class VideoBackend:
     def generate_progress(self) -> dict[str, Any]:
         with self._lock:
             gen = dict(self._gen)
-            # generate() swaps in a bare {"active": False} before the worker records the terminal dict; report active across that gap so a poller sees active drop only with a terminal phase.
+            # generate() swaps in a bare {"active": False} before the worker records the terminal dict; report active across that gap.
             if self._generate_job_active:
                 gen["active"] = True
         gen.setdefault("active", False)
-        # Mirror the image endpoint field names (total_steps / fraction) alongside the native "total": the two generate-progress APIs used to disagree, so a client polling the image shape against video read total_steps=null / fraction=0 while the step counter advanced.
+        # Mirror the image endpoint field names (total_steps / fraction) alongside the native "total": the two generate-progress APIs used to disagree.
         total = int(gen.get("total") or 0)
         step = int(gen.get("step") or 0)
         gen["total_steps"] = total
@@ -2043,7 +2037,7 @@ class VideoBackend:
         state, self._state = self._state, None
         if state is not None:
             restore_backend_flags(state.backend_flags)
-            # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later speed=off load gets the bit-identical path (mirrors image unload).
+            # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later speed=off load is bit-identical.
             from . import diffusion_gguf_compile
 
             diffusion_gguf_compile.uninstall_all()
@@ -2057,21 +2051,17 @@ class VideoBackend:
             self._loading = None
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            # Fence generations queued behind the active one too: they hold no cancel event yet,
-            # so the signal above cannot reach them.
+            # Fence generations queued behind the active one too: they hold no cancel event, so the signal cannot reach them.
             self._teardown_waiters += 1
-        # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free (and let the arbiter start another load) while the clip still holds it.
-        # The teardown runs INSIDE the barrier, not after it: releasing the lock first would hand
-        # the pipeline to a queued generation for one last clip.
+        # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free while
+        # the clip still holds it. Teardown runs INSIDE the barrier: releasing first would hand out one last clip.
         with self._generate_lock:
             with self._lock:
                 try:
                     self._teardown_state_locked()
                 finally:
-                    # Released in a finally: _teardown_state_locked ends in clear_gpu_cache(),
-                    # whose CUDA branch raises on a sticky fault, and an un-drained fence would
-                    # refuse every later generation for the life of the process (a fresh load
-                    # included: its own increment/decrement are symmetric and never drain it).
+                    # Released in a finally: _teardown_state_locked ends in clear_gpu_cache(), which raises on a sticky CUDA fault, and
+                    # an un-drained fence would refuse every later generation for the life of the process.
                     self._teardown_waiters -= 1
         logger.info("video.unloaded")
         return self.status()

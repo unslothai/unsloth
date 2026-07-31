@@ -699,9 +699,8 @@ def _download_scoped_snapshot(
     blob_hashes: frozenset[str] = frozenset()
     if info is not None:
         siblings = [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
-        # Every requested file must resolve. Dropping an unmatched name would shrink the manifest and the
-        # completion check to the survivors, and snapshot_download also succeeds when an allow pattern
-        # matches nothing, so the job would report complete with a required file missing.
+        # Every requested file must resolve: dropping an unmatched name would shrink the manifest and the completion check to the
+        # survivors, and snapshot_download also succeeds when an allow pattern matches nothing, so the job would report complete.
         missing = sorted(set(wanted) - {getattr(s, "rfilename", None) for s in siblings})
         if missing:
             print(
@@ -746,11 +745,9 @@ def _download_scoped_snapshot(
         max_workers = 1,
     )
     if info is None:
-        # With no metadata there is no manifest, so _verify_completed_download below is a no-op -- and
-        # snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER, fetching nothing, when its own repo_info
-        # call also fails. A repo already on disk from a full snapshot job (which ignores *.gguf) would
-        # therefore flip this job to complete having downloaded no weights. The requested list needs no
-        # network, so check it against the disk directly.
+        # With no metadata there is no manifest, so _verify_completed_download below is a no-op, and snapshot_download RETURNS AN
+        # EXISTING SNAPSHOT FOLDER, fetching nothing, when its own repo_info call also fails. A repo already on disk from a full
+        # snapshot job (which ignores *.gguf) would flip this job to complete with no weights, so check the list against disk.
         root = Path(snapshot_path)
         absent = tuple(f for f in files if not (root / f).exists())
         if absent:

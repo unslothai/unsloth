@@ -94,8 +94,7 @@ def test_patched_matches_original(cls, device, dtype):
     with torch.inference_mode():
         got = _first(_call(cls, m, args))
 
-    # The fused ops are FMA-based (addcmul) / fused (F.rms_norm): within ~1 ULP of the stock mul+add
-    # (and more accurate, single rounding), NOT bit-identical in fp32.
+    # The fused ops are FMA-based (addcmul) / fused (F.rms_norm): within ~1 ULP of the stock mul+add and more accurate, but not bit-identical in fp32.
     atol, rtol = (1e-5, 1e-4) if dtype == torch.float32 else (8e-3, 8e-3)
     torch.testing.assert_close(got, ref, atol = atol, rtol = rtol)
 

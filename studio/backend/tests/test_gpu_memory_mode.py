@@ -1344,9 +1344,8 @@ def not_vulkan(monkeypatch):
 
 
 def test_zero_vram_chat_load_only_for_a_deliberate_cpu_only_offload(not_vulkan):
-    # Manual + gpu_layers=0 is the one shape that launches with the GPUs hidden from the child, so it
-    # is the one shape allowed to skip the GPU arbiter. Auto (or any pinned layer count) puts the
-    # model on the GPU and must still evict an image/video pipeline.
+    # Manual + gpu_layers=0 is the one shape that launches with the GPUs hidden from the child, so it is the one shape allowed
+    # to skip the GPU arbiter. Auto (or any pinned layer count) puts the model on the GPU and must still evict a pipeline.
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0) is True
     assert zero("auto", 0) is False
@@ -1355,9 +1354,8 @@ def test_zero_vram_chat_load_only_for_a_deliberate_cpu_only_offload(not_vulkan):
 
 
 def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
-    # The launch-time mask keeps the GPUs visible for a device pin, tensor mode, an mmproj or a
-    # drafter, so those loads DO hold VRAM. --mmproj and --model-draft are added by the backend, so
-    # their intent arrives as flags.
+    # The launch-time mask keeps the GPUs visible for a device pin, tensor mode, an mmproj or a drafter, so those loads DO hold
+    # VRAM. --mmproj and --model-draft are added by the backend, so their intent arrives as flags.
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0, ["--device", "CUDA0"]) is False
     assert zero("manual", 0, ["-dev", "CUDA0"]) is False
@@ -1371,9 +1369,8 @@ def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
 
 
 def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
-    # "off" is a canonical mode the UI persists and sends, and the resolver emits no drafter for it,
-    # so a CPU-only load carrying it holds no VRAM either. Legacy spellings canonicalize the same way,
-    # while every mode that MAY resolve to a drafter stays GPU-bearing.
+    # "off" is a canonical mode the UI persists and the resolver emits no drafter for, so a CPU-only load carrying it holds no
+    # VRAM either. Legacy spellings canonicalize the same way, while every mode that MAY resolve to a drafter stays GPU-bearing.
     zero = llama_cpp_module.zero_vram_chat_load
     assert zero("manual", 0, [], False, "off") is True
     assert zero("manual", 0, [], False, " OFF ") is True
@@ -1390,8 +1387,7 @@ def test_zero_vram_chat_load_is_skipped_on_vulkan(monkeypatch):
 
 
 def test_holds_no_vram_needs_the_launch_to_have_confirmed_it():
-    # The property reports the LAUNCHED server, so it follows _gpu_offload_active: True (something
-    # reached the GPU) and None (no GPU detected) both keep the normal arbiter path.
+    # The property reports the LAUNCHED server, so it follows _gpu_offload_active: True and None both keep the normal arbiter path.
     backend = LlamaCppBackend()
     backend._gpu_memory_mode = "manual"
     backend._gpu_layers = 0
@@ -1410,17 +1406,15 @@ def test_holds_no_vram_needs_the_launch_to_have_confirmed_it():
 
 
 def test_a_cpu_only_chat_load_does_not_take_the_gpu_arbiter():
-    # A load that needs no VRAM must not evict a resident Images/Video pipeline (nor leave CHAT
-    # recorded as owner, which would make the next GPU workload unload it for nothing). The in-flight
-    # marker still goes up, and the post-load ownership recheck is gated on the same flag.
+    # A load that needs no VRAM must not evict a resident Images/Video pipeline, nor leave CHAT recorded as owner (the next GPU
+    # workload would unload it for nothing). The in-flight marker still goes up, and the ownership recheck is gated on the same flag.
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     assert "chat_load_needs_gpu = not (" in load_impl
     gate = load_impl.index("chat_load_needs_gpu = not (")
     acquire = load_impl.index("if chat_load_needs_gpu:", gate)
-    # The stale CHAT claim is dropped only AFTER the load: this load may still be replacing a
-    # GPU-backed chat model, and releasing before it would let an image/video load allocate alongside
-    # the model not yet unloaded.
+    # The stale CHAT claim is dropped only AFTER the load: this one may be replacing a GPU-backed chat model, and releasing
+    # earlier would let an image/video load allocate alongside the model not yet unloaded.
     release = load_impl.index("await asyncio.to_thread(release, CHAT)", acquire)
     assert load_impl.index("if not chat_load_needs_gpu:", acquire) < release
     assert load_impl.index("success = await load_with_tensor_fallback(", acquire) < release

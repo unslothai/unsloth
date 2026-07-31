@@ -36,8 +36,7 @@ def _lpips(ref, arr):
         import lpips
         import torch
 
-        # Keep the metric model on CPU: cached on CUDA it stays resident across variants and its VRAM
-        # is charged to every later measurement (each run resets peak-memory stats).
+        # Keep the metric model on CPU: cached on CUDA it stays resident and is charged to every later measurement.
         if _LP["fn"] is None:
             _LP["fn"] = lpips.LPIPS(net = "alex", verbose = False).eval()
 
@@ -71,8 +70,7 @@ def _reset_inductor_flags():
     ic.coordinate_descent_tuning = False
     ic.coordinate_descent_check_all_directions = False
     ic.epilogue_fusion = True
-    # Reset the int-mm fusion flag too, else it leaks from the inductor_flags variant into every
-    # later compiled row.
+    # Reset the int-mm fusion flag too, else it leaks into every later compiled row.
     try:
         ic.force_fuse_int_mm_with_mul = False
     except Exception:  # noqa: BLE001
@@ -148,8 +146,7 @@ def run(
             torch.cuda.empty_cache()
             return None
     else:
-        # set_attention_backend pins diffusers' process-wide backend and fresh processors inherit it,
-        # so force native for the no-attn variants (else they run under a prior variant's kernel).
+        # set_attention_backend is process-wide and fresh processors inherit it, so force native for no-attn variants.
         try:
             pipe.transformer.set_attention_backend("native")
         except Exception as exc:  # noqa: BLE001 — best-effort isolation

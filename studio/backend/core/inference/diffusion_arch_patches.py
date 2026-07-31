@@ -50,9 +50,7 @@ def _body_has(fn: Callable, *needles: str) -> bool:
     return all(n in src for n in needles)
 
 
-# =====================================================================================
-# qwen-image: QwenImageTransformerBlock._modulate  (modulation addcmul, all 4 call sites)
-# =====================================================================================
+# qwen-image: QwenImageTransformerBlock._modulate (modulation addcmul, all 4 call sites)
 def _qwen_modulate(
     self,
     x,
@@ -100,9 +98,7 @@ def _spec_qwen_modulate():
     return (cls, "_modulate", _qwen_modulate)
 
 
-# =====================================================================================
-# z-image: ZImageTransformerBlock.forward  (the 2 gated-residual addcmuls)
-# =====================================================================================
+# z-image: ZImageTransformerBlock.forward (the 2 gated-residual addcmuls)
 def _zimage_forward(
     self,
     x: torch.Tensor,
@@ -183,11 +179,8 @@ def _spec_zimage_forward():
     return (cls, "forward", _zimage_forward)
 
 
-# =====================================================================================
-# flux.1: FluxTransformerBlock / FluxSingleTransformerBlock
-# (block modulation goes via AdaLayerNormZero; here we fuse the inline norm2 modulation
-#  and the gated residual adds.)
-# =====================================================================================
+# flux.1: FluxTransformerBlock / FluxSingleTransformerBlock. Block modulation goes via AdaLayerNormZero;
+# here we fuse the inline norm2 modulation and the gated residual adds.
 def _flux_double_forward(
     self,
     hidden_states,
@@ -313,10 +306,8 @@ def _spec_flux_single():
     return (cls, "forward", _flux_single_forward)
 
 
-# =====================================================================================
-# flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock
-# (modulation is INLINE, so fuse both; scale/shift/gate are [B,1,dim] so no [:, None].)
-# =====================================================================================
+# flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock. Modulation is INLINE, so fuse both;
+# scale/shift/gate are [B,1,dim], so no [:, None].
 def _flux2_double_forward(
     self,
     hidden_states,
@@ -450,9 +441,7 @@ def _spec_flux2_single():
     return (cls, "forward", _flux2_single_forward)
 
 
-# =====================================================================================
-# krea-2: Krea2TransformerBlock.forward  (2 inline modulations + 2 gated residuals)
-# =====================================================================================
+# krea-2: Krea2TransformerBlock.forward (2 inline modulations + 2 gated residuals)
 def _krea2_block_forward(
     self,
     hidden_states,
@@ -495,10 +484,7 @@ def _spec_krea2_forward():
     return (cls, "forward", _krea2_block_forward)
 
 
-# =====================================================================================
-# registry + lifecycle
-# =====================================================================================
-# Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None. All COMPILE-SAFE.
+# registry + lifecycle. Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None. All COMPILE-SAFE.
 _SPECS: tuple[Callable[[], Optional[tuple]], ...] = (
     _spec_qwen_modulate,
     _spec_zimage_forward,

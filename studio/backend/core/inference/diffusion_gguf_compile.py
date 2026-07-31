@@ -78,8 +78,7 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         import torch  # noqa: PLC0415
 
         compiled = torch.compile(gguf_utils.dequantize_gguf_tensor, dynamic = True)
-        # force=True: the compiled callable's fingerprint differs from the original, which
-        # can_safely_patch would (correctly) reject.
+        # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would correctly reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             return True

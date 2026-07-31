@@ -46,7 +46,7 @@ from core.inference.sd_cpp_args import (  # noqa: E402
 )
 from core.inference.sd_cpp_engine import SdCppEngine, find_sd_cpp_binary  # noqa: E402
 
-# memory-mode (user knob) -> sd.cpp offload policy, matching the diffusers planner.
+# memory mode -> sd.cpp offload policy, matching the diffusers planner
 _MODE_TO_POLICY = {
     MEMORY_MODE_FAST: OFFLOAD_NONE,
     MEMORY_MODE_BALANCED: OFFLOAD_GROUP,

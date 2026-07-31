@@ -217,10 +217,9 @@ class TestMaxBodyMiddleware:
         assert r.json()["total"] == 512
 
     def test_diffusion_dataset_upload_in_body_passthrough(self, main_module):
-        # The diffusion dataset upload route lives under the protected /api/train prefix, so it must be in
-        # the REAL passthrough allowlist with the DB-aware + multipart-overhead cap; otherwise
-        # MaxBodyMiddleware would 413 near-limit batches before the handler's own check runs. It is matched
-        # by EXACT path so its JSON sub-routes keep the normal small cap.
+        # The diffusion dataset upload route lives under the protected /api/train prefix, so it must be in the REAL passthrough
+        # allowlist with the DB-aware + multipart-overhead cap, else MaxBodyMiddleware 413s near-limit batches before the
+        # handler's own check. It is matched by EXACT path so its JSON sub-routes keep the normal small cap.
         from utils.upload_limits import (
             default_request_body_limit_bytes,
             upload_request_limit_bytes,
@@ -234,9 +233,8 @@ class TestMaxBodyMiddleware:
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
-        # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same
-        # /api/train/diffusion/dataset prefix. A prefix match would let a large caption/import body bypass
-        # the default JSON cap and be buffered up to the far larger upload limit.
+        # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
+        # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
         from utils.upload_limits import default_request_body_limit_bytes
         for path in (
             "/api/train/diffusion/dataset/my-set/caption/img.png",
@@ -251,9 +249,8 @@ class TestMaxBodyMiddleware:
             ), path
 
     def test_diffusion_dataset_trailing_slash_gets_upload_cap(self, main_module):
-        # The trailing-slash variant reaches the middleware BEFORE the router's redirect_slashes 307, so it
-        # must resolve to the same passthrough + upload cap or a large upload 413s. JSON sub-routes keep
-        # extra components after normalization, so they stay capped.
+        # The trailing-slash variant reaches the middleware BEFORE the router's redirect_slashes 307, so it must resolve to the
+        # same passthrough + upload cap. JSON sub-routes keep extra components after normalization, so they stay capped.
         from utils.upload_limits import (
             default_request_body_limit_bytes,
             upload_request_limit_bytes,
@@ -263,8 +260,7 @@ class TestMaxBodyMiddleware:
         assert main_module._get_upload_passthrough_request_max_bytes(slashed) == (
             upload_request_limit_bytes()
         )
-        # End-to-end through the middleware: a body over the default cap but under the upload cap passes
-        # on both the canonical and the slashed path.
+        # End to end through the middleware: a body over the default cap but under the upload cap passes on both path spellings.
         app = _make_protected_app(
             128,
             main_module,
@@ -301,9 +297,8 @@ class TestMaxBodyMiddleware:
         )
 
     def test_v1_surface_is_body_protected(self, main_module):
-        # /images/generations is mounted at both /api/inference and /v1; the /v1 alias (and every other /v1
-        # POST route) must be body-capped via the /v1 blanket prefix, or an unbounded prompt buffers
-        # outside the Studio request limit. Also confirms the blanket kept /v1 chat/completions protected.
+        # /images/generations is mounted at both /api/inference and /v1, and every /v1 POST must be body-capped via the blanket
+        # prefix or an unbounded prompt buffers outside the Studio request limit. Also confirms /v1 chat/completions stays protected.
         for path in (
             "/v1/images/generations",
             "/v1/audio/generate",
@@ -352,8 +347,7 @@ class TestMaxBodyMiddleware:
         assert "Content-Length" in r.json()["detail"]
 
     def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
-        # The exact-path passthrough lifts the cap for the upload path itself, but a sibling sub-path under
-        # the same prefix stays on the small protected cap.
+        # The exact-path passthrough lifts the cap for the upload path itself, but a sibling sub-path under the same prefix stays capped.
         app = FastAPI()
         app.add_middleware(
             main_module.MaxBodyMiddleware,

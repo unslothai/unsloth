@@ -60,9 +60,8 @@ export interface ActiveModelDownload {
   transport?: TransportMode | null;
   state: DownloadJobState;
   generation?: number;
-  // Scoped jobs only: the exact files this job is fetching. Every file set of one repo rides the
-  // same "@scope" slot, so an adopting client needs it to tell its own transfer from a sibling
-  // checkpoint's. Absent from an older backend, which is treated as "cannot prove it is mine".
+  // Scoped jobs only: the exact files this job is fetching. Every file set of one repo rides the same "@scope" slot, so an
+  // adopting client needs it to tell its own transfer from a sibling's. Absent from an older backend means unprovable.
   files?: string[] | null;
 }
 

@@ -122,7 +122,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
     except OSError:
         return []
     files = [p for p in children if p.is_file() and p.suffix.lower() in _ALL_EXTS]
-    # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full filename as its id.
+    # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full filename.
     stem_counts: dict[str, int] = {}
     for p in files:
         stem_counts[p.stem] = stem_counts.get(p.stem, 0) + 1
@@ -405,8 +405,8 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "sd3",
     "stable-diffusion",
 )
-# Diffusers quant schemes whose LoRA path is the load-time BAKE (adapters attach on the dense transformer BEFORE torchao quantize_ + compile; peft's post-quant TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ never has).
-# Verified on the Studio stack (peft 0.18.1 / torchao 0.17 / torch 2.10): scale 0 reproduces the quantized base bit-exactly.
+# Diffusers quant schemes whose LoRA path is the load-time BAKE: adapters attach on the dense transformer BEFORE torchao
+# quantize_ + compile (peft's TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ lacks). Verified on peft 0.18.1 / torchao 0.17 / torch 2.10: scale 0 reproduces the quantized base bit-exactly.
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")

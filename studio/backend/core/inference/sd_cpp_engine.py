@@ -44,12 +44,11 @@ _LEGACY_STEM = "sd"
 # The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
-# Ownership marker written by install_sd_cpp_prebuilt.install (and required by setup.sh /
-# uninstall.sh / uninstall.ps1 before they delete a tree). One definition of "ours", shared.
+# Ownership marker written by install_sd_cpp_prebuilt.install and required by setup.sh / uninstall.sh / uninstall.ps1 before they delete a tree.
 OWNER_MARKER = ".unsloth-studio-owned"
 
-# Ceiling for one native run. The native engine exists FOR slow CPU hosts: measured on GPU-less CI runners, a 512x512 4-step Q2_K generation took 900 s on Linux and 1465 s on Windows, so a larger image or step count clears half an hour easily and a 30-minute cap killed jobs that were still progressing.
-# This matches the Images page's own SETTLE_MAX_MS (6 h), past which the UI has given up anyway, so the ceiling only stops a WEDGED process from holding the lock forever. It is not the user-facing abort path: cancel_event interrupts a run at any point.
+# Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step Q2_K generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still progressing.
+# It matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding the lock forever; cancel_event is the user-facing abort.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
 
 
@@ -73,7 +72,7 @@ def _terminate(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 -- best-effort teardown
             pass
-    # Reap the killed child so it doesn't linger as a zombie: callers raise right after _terminate, so without this a burst of cancellations leaks process-table entries.
+    # Reap the killed child so it does not linger as a zombie: callers raise right after _terminate, so a burst of cancellations would leak process-table entries.
     try:
         proc.wait(timeout = 5)
     except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
@@ -208,7 +207,7 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so side-by-side Studios stay isolated; else ~/.unsloth/....
+    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer so side-by-side Studios stay isolated; else ~/.unsloth/....
     default_root = managed_install_root()
     hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
@@ -411,10 +410,10 @@ class SdCppEngine:
             env = run_env,
             # Own session/process group so cancellation/timeout kills the whole tree (POSIX).
             start_new_session = (os.name == "posix"),
-            # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash cannot orphan sd-cli holding VRAM/RAM. Composes with start_new_session.
+            # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash cannot orphan sd-cli holding VRAM/RAM.
             **child_popen_kwargs(),
         )
-        # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for line in proc.stdout` blocks until EOF). The reader pushes lines (then a None sentinel) to a queue the main loop polls against a wall-clock deadline.
+        # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against a wall-clock deadline.
         tail: list[str] = []
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 

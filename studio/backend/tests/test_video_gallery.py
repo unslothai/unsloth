@@ -109,9 +109,8 @@ def test_video_path_returns_mp4_for_saved_id():
 
 
 def test_owned_video_path_serves_only_owned_clips():
-    # A hand-dropped orphan MP4 resolves via video_path (safe stem, on disk) but must NOT be
-    # served: owned_video_path applies the same sidecar check as delete/clear, so the serve and
-    # export routes can't stream/transcode a clip the listing hides.
+    # A hand-dropped orphan MP4 resolves via video_path (safe stem, on disk) but must NOT be served: owned_video_path
+    # applies the same sidecar check as delete/clear, so serve and export cannot stream a clip the listing hides.
     orphan = gallery.gallery_dir() / "recording.mp4"
     orphan.write_bytes(_mp4())
     assert gallery.video_path("recording") is not None  # resolvable...
@@ -124,8 +123,7 @@ def test_owned_video_path_serves_only_owned_clips():
 
 
 def test_transcode_refuses_orphan_mp4():
-    # Export starts from the same resolver as /file, so a guessed stem for an orphan MP4 (no
-    # readable sidecar) must not be re-encoded out either.
+    # Export shares the /file resolver, so a guessed stem for an orphan MP4 must not be re-encoded out either.
     orphan = gallery.gallery_dir() / "recording.mp4"
     orphan.write_bytes(_real_mp4_bytes())
     assert gallery.transcode("recording", "gif") is None
@@ -145,10 +143,9 @@ def test_delete_removes_both_files():
 
 
 def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
-    # delete() must remove the MP4 FIRST: list_videos globs *.mp4 but requires a readable sidecar,
-    # so if the sidecar were dropped first and the mp4 unlink then failed (a Windows lock from a
-    # concurrent stream/transcode), the still-present mp4 would vanish from the gallery with no way
-    # to retry. Simulate the mp4 unlink failing and assert the video stays listable (sidecar kept).
+    # delete() must remove the MP4 FIRST: list_videos globs *.mp4 but needs a readable sidecar, so dropping the sidecar
+    # first and then failing the mp4 unlink (a Windows lock from a concurrent stream) would hide a still-present mp4
+    # with no way to retry. Fail the mp4 unlink and assert the video stays listable.
     record = gallery.save(_mp4(), _meta(prompt = "keep"))
     directory = gallery.gallery_dir()
     mp4 = directory / f"{record['id']}.mp4"
@@ -161,11 +158,9 @@ def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
             raise PermissionError("mp4 locked")
         return real_unlink(self, *a, **k)
 
-    # Patch Path.unlink (what delete() actually calls) rather than os.unlink: on Python 3.10
-    # Path.unlink dispatches through a cached _accessor bound to os.unlink at import, so patching
-    # os.unlink there has no effect and the mp4 delete would wrongly succeed. Scope it to its own
-    # context so undoing it does NOT also revert the autouse fixture's studio_root redirect (both
-    # share the function-scoped monkeypatch); otherwise list_videos below would read the real home.
+    # Patch Path.unlink (what delete() calls) not os.unlink: on 3.10 Path.unlink goes through a cached _accessor bound at
+    # import, so the mp4 delete would wrongly succeed. Scope it to its own context so undoing it does not revert the autouse
+    # fixture's studio_root redirect (shared monkeypatch), which would make list_videos read the real home.
     with pytest.MonkeyPatch.context() as m:
         m.setattr(Path, "unlink", _fail_on_mp4)
         assert gallery.delete(record["id"]) is False  # mp4 unlink failed
@@ -185,8 +180,7 @@ def test_clear_returns_count():
 
 
 def test_clear_preserves_orphan_mp4():
-    # An orphan / foreign MP4 (no readable sidecar) is invisible to list_videos; clear must not
-    # destroy it while removing the owned pair.
+    # An orphan / foreign MP4 is invisible to list_videos; clear must remove the owned pair without destroying it.
     foreign = gallery.gallery_dir() / "recording.mp4"
     foreign.write_bytes(_mp4())
     gallery.save(_mp4(), _meta(prompt = "ours"))
@@ -222,8 +216,7 @@ def test_list_skips_orphan_sidecar_without_mp4():
 
 
 def test_orphan_mp4_in_window_does_not_drop_valid_videos():
-    # An orphan MP4 sorting INTO the requested page must not consume a window slot
-    # and drop a valid video that sorts after it: paging is over readable records.
+    # An orphan MP4 sorting INTO the requested page must not consume a window slot: paging is over readable records.
     _save_with_mtime("p2", 100.0)
     orphan = gallery.gallery_dir() / "zzz_orphan.mp4"
     orphan.write_bytes(_mp4())  # newest by mtime (set below), sorts first
@@ -245,8 +238,7 @@ def test_list_skips_corrupt_sidecar():
 
 
 def test_list_skips_invalid_utf8_sidecar():
-    # Invalid UTF-8 raises UnicodeDecodeError, which is not an OSError: one corrupt sidecar must
-    # be skipped like any other, not 500 the whole gallery listing.
+    # Invalid UTF-8 raises UnicodeDecodeError, not an OSError: one corrupt sidecar is skipped, it does not 500 the listing.
     directory = gallery.gallery_dir()
     (directory / "badbytes.mp4").write_bytes(_mp4())
     (directory / "badbytes.json").write_bytes(b"\xff\xfe{}")
@@ -255,8 +247,7 @@ def test_list_skips_invalid_utf8_sidecar():
 
 
 def test_clear_preserves_mp4_with_present_but_invalid_sidecar():
-    # A hand-dropped MP4 whose sidecar parses but lacks the required recipe keys (e.g. "{}") is
-    # hidden by list_videos, so clear must not destroy it while removing the owned pair.
+    # A hand-dropped MP4 whose sidecar parses but lacks the required recipe keys is hidden by list_videos, so clear must spare it.
     directory = gallery.gallery_dir()
     (directory / "foreign.mp4").write_bytes(_mp4())
     (directory / "foreign.json").write_text("{}", encoding = "utf-8")
@@ -266,8 +257,7 @@ def test_clear_preserves_mp4_with_present_but_invalid_sidecar():
 
 
 def test_delete_refuses_mp4_with_present_but_invalid_sidecar():
-    # A per-id delete of an MP4 whose sidecar parses but is missing required keys must refuse it:
-    # the gallery never surfaced it, so a guessed id must not destroy it.
+    # The gallery never surfaced a record missing required keys, so a guessed id must not destroy it.
     directory = gallery.gallery_dir()
     (directory / "foreign.mp4").write_bytes(_mp4())
     (directory / "foreign.json").write_text(
@@ -278,8 +268,7 @@ def test_delete_refuses_mp4_with_present_but_invalid_sidecar():
 
 
 def test_valid_callback_paginates_over_accepted_records():
-    # ``valid`` must filter before pagination, so offset/limit/has_more count over accepted records;
-    # else a leading bad record returns a short page with more remaining and stalls scroll.
+    # ``valid`` must filter before pagination, else a leading bad record returns a short page with more remaining and stalls scroll.
     _save_with_mtime("BAD", 300.0)  # newest, sorts first
     _save_with_mtime("g1", 200.0)
     _save_with_mtime("g2", 100.0)
@@ -293,8 +282,7 @@ def test_valid_callback_paginates_over_accepted_records():
 
 
 def test_valid_callback_leading_bad_records_do_not_stall_at_offset_zero():
-    # Every record in the first window is schema-invalid: the pager must look past them and return
-    # the good record so has_more is False and the client advances off offset 0.
+    # Every record in the first window is schema-invalid: the pager must look past them so has_more is False and the client advances.
     for i in range(3):
         _save_with_mtime(f"BAD{i}", 300.0 - i)
     _save_with_mtime("good", 10.0)
@@ -307,8 +295,7 @@ def test_valid_callback_leading_bad_records_do_not_stall_at_offset_zero():
 
 
 def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
-    # If the sidecar (the pair's commit marker) fails to publish, the MP4 must not be left as an
-    # invisible orphan. Fail the second os.replace and assert nothing is stranded.
+    # If the sidecar (the pair's commit marker) fails to publish, the MP4 must not be stranded as an invisible orphan.
     real_replace = gallery.os.replace
     calls = {"n": 0}
 
@@ -331,8 +318,7 @@ def _real_mp4_bytes(
     size: int = 32,
     rate: int = 8,
 ) -> bytes:
-    # A real (tiny) MP4 for the transcode tests: flat-color frames encoded with mpeg4 (bundled in
-    # every PyAV build, unlike libx264). The GIF cap tests ask for more/larger frames.
+    # A real tiny MP4 for the transcode tests: flat-color frames in mpeg4 (bundled in every PyAV build, unlike libx264).
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
     import io
@@ -359,8 +345,7 @@ def _real_mp4_with_audio(
     size: int = 32,
     rate: int = 8,
 ) -> bytes:
-    # An LTX-2-shaped clip: video plus a synchronized audio track (a 440 Hz tone), so the WebM
-    # export can be checked for the track rather than assumed silent.
+    # An LTX-2-shaped clip: video plus a synchronized 440 Hz audio track, so the WebM export can be checked for the track.
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
     import io
@@ -434,10 +419,8 @@ def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
     av = pytest.importorskip("av")
     import io
 
-    # The refusal is injected by wrapping the container av.open() hands back, NOT by patching
-    # av.container.OutputContainer.add_stream: that is a C extension type, and on PyAV 17 (what the
-    # 3.10 CI leg resolves) setting an attribute on it raises "cannot set 'add_stream' attribute of
-    # immutable type". Modules stay patchable on every build.
+    # The refusal is injected by wrapping the container av.open() returns, NOT by patching OutputContainer.add_stream: that
+    # is a C extension type and PyAV 17 (the 3.10 CI leg) raises "cannot set 'add_stream' attribute of immutable type".
     real_open = av.open
 
     class _NoOpusContainer:
@@ -500,9 +483,8 @@ def test_transcode_unknown_id_and_bad_format():
 
 
 def test_transcode_to_file_writes_a_temp_file_the_caller_owns():
-    # The route streams the export from disk instead of materialising it: the request caps allow
-    # 2048x2048 x 1024 frames, and a VP9 export of that size held as bytes (then again in the
-    # response) let concurrent exports exhaust the process.
+    # The route streams the export from disk instead of materialising it: the caps allow 2048x2048 x 1024 frames, and holding
+    # a VP9 export of that size as bytes (then again in the response) let concurrent exports exhaust the process.
     record = gallery.save(_real_mp4_bytes(), _meta())
     for fmt, magic in (("webm", b"\x1a\x45\xdf\xa3"), ("gif", b"GIF8")):
         path = gallery.transcode_to_file(record["id"], fmt)

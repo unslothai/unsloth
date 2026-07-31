@@ -138,8 +138,7 @@ def test_find_server_path_fallback(tmp_path, monkeypatch):
 
 
 def test_find_server_not_confused_with_sd_cli(tmp_path, monkeypatch):
-    # A tree that has only sd-cli must NOT be reported as an sd-server (and vice versa), so the backend
-    # correctly falls back to one-shot when only the CLI is present.
+    # A tree with only sd-cli must NOT be reported as an sd-server (and vice versa), so the backend falls back to one-shot.
     _clear_server_env(monkeypatch)
     root = tmp_path / "sdcpp"
     (root / "build" / "bin").mkdir(parents = True)
@@ -155,8 +154,7 @@ def test_find_server_not_confused_with_sd_cli(tmp_path, monkeypatch):
 
 
 def test_engine_unavailable_when_no_binary(monkeypatch):
-    # Force the "no binary anywhere" condition so the test is hermetic even on a host that happens to
-    # have sd-cli installed.
+    # Force the "no binary anywhere" condition so the test is hermetic on a host that happens to have sd-cli installed.
     monkeypatch.setattr(eng, "find_sd_cpp_binary", lambda: None)
     e = SdCppEngine(binary = None)
     assert e.is_available() is False
@@ -193,8 +191,7 @@ def test_runtime_env_prepends_binary_dir_to_lib_path():
 
 
 def test_runtime_env_scrubs_native_path_lease_secret(monkeypatch):
-    # The sd-cli child is an external process and must never receive the native-path lease secret;
-    # every launch funnels through runtime_env.
+    # The sd-cli child is an external process and must never receive the native-path lease secret; every launch funnels through runtime_env.
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET", "top-secret")
     from_os = runtime_env("/opt/sdcpp/bin/sd-cli")
     assert "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET" not in from_os
@@ -212,9 +209,8 @@ def test_runtime_env_handles_missing_lib_path():
 
 
 def test_terminate_reaps_killed_child():
-    # Cancellation/timeout paths call _terminate then immediately raise, so it must reap the killed
-    # child itself, otherwise a burst of image cancellations leaves zombies. After _terminate the
-    # returncode is set, so nothing lingers.
+    # Cancellation/timeout paths call _terminate then raise, so it must reap the killed child itself or a burst of image
+    # cancellations leaves zombies. After _terminate the returncode is set, so nothing lingers.
     import subprocess
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
@@ -346,8 +342,7 @@ def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
 
 
 def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch):
-    # A leftover file at the target path must not satisfy the post-run output check when the run itself
-    # produced nothing: the target is cleared before the run.
+    # A leftover file at the target path must not satisfy the post-run output check when the run produced nothing: the target is cleared first.
     e = _engine(tmp_path)
     out = tmp_path / "img.png"
     out.write_bytes(b"stale")
@@ -517,10 +512,8 @@ def test_routing_prefer_native_overrides_gpu():
 
 
 def test_native_generation_timeout_matches_the_ui_settle_window():
-    # The native engine exists for slow CPU hosts: measured on GPU-less CI runners a 512x512 4-step
-    # Q2_K generation took 900 s (Linux) and 1465 s (Windows), so the old 30-minute default killed
-    # still-progressing jobs at higher resolutions or step counts while the Images page waited hours
-    # for them. The ceiling now matches that page's SETTLE_MAX_MS.
+    # The native engine exists for slow CPU hosts: on GPU-less CI runners a 512x512 4-step Q2_K generation took 900 s (Linux)
+    # and 1465 s (Windows), so the old 30-minute default killed still-progressing jobs. The ceiling now matches SETTLE_MAX_MS.
     from core.inference.sd_cpp_engine import NATIVE_GENERATION_TIMEOUT_S, SdCppEngine
     from core.inference import sd_cpp_backend
 
@@ -529,6 +522,5 @@ def test_native_generation_timeout_matches_the_ui_settle_window():
         assert (
             inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S
         ), fn.__name__
-    # The resident-server path shares the same ceiling (applied per request, see
-    # test_server_generate_splits_batches_above_server_limit).
+    # The resident-server path shares the same ceiling, applied per request (see test_server_generate_splits_batches_above_server_limit).
     assert sd_cpp_backend.NATIVE_GENERATION_TIMEOUT_S == NATIVE_GENERATION_TIMEOUT_S

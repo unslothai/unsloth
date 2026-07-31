@@ -280,8 +280,7 @@ function ModelStatusChips({
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  // The Images/Video pages run these, so they are not "unsupported" to a user even
-  // though chat cannot load them.
+  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
   const showUnsupported =
     !isDataset &&
     unslothSupport.status === "unsupported" &&

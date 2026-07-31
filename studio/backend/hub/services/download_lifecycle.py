@@ -450,9 +450,8 @@ def _try_http_retry(
             cancel_marker_transport = original_metadata.transport,
             hub_cache = original_metadata.hub_cache,
             xet_cache = original_metadata.xet_cache,
-            # Carry the scoped file list across the reclaim. The record it overwrites is what a later start
-            # for this scope slot is compared against, so dropping it makes an identical scoped start read as
-            # a different file set and 409 instead of adopting the running download.
+            # Carry the scoped file list across the reclaim: the record it overwrites is what a later start for this scope slot is
+            # compared against, so dropping it makes an identical start read as a different file set and 409 instead of adopting.
             scoped_files = original_metadata.scoped_files or None,
         )
         if claimed:
@@ -487,8 +486,7 @@ def _try_http_retry(
         args.append("--dataset")
     elif variant:
         args.extend(["--variant", variant])
-    # A scoped job must retry as the SAME scoped download; without its file list the HTTP worker
-    # would fall through to a full snapshot of the repo.
+    # A scoped job must retry as the SAME scoped download; without its file list the HTTP worker would fall through to a full snapshot.
     if original_metadata.scoped_files:
         args.extend(["--files-json", write_files_manifest(original_metadata.scoped_files)])
 
@@ -801,9 +799,8 @@ def active_download_refs(
         else:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key
             variant = None
-        # Scoped jobs share one slot per repo, so publish the file list an adopting client needs
-        # to recognise its own transfer. Absent metadata (a job hydrated before the registry knew
-        # it) reports null, which the client treats as "cannot prove it is mine".
+        # Scoped jobs share one slot per repo, so publish the file list an adopting client needs to recognise its own transfer.
+        # Absent metadata (a job hydrated before the registry knew it) reports null, which the client reads as unprovable.
         scoped_files = list(metadata.scoped_files) if metadata is not None else []
         downloads.append(
             ActiveDownload(

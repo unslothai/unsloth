@@ -65,8 +65,7 @@ except Exception:  # noqa: BLE001
     _NPU = False
 
 
-# Patched forwards, each mirroring diffusers semantics with the fused fast path
-# (``addcmul(input, t1, t2) == input + t1 * t2`` in one kernel).
+# Patched forwards, each mirroring diffusers semantics with the fused fast path (``addcmul(input, t1, t2) == input + t1 * t2``).
 def _adaln_continuous_forward(self, x, conditioning_embedding):
     emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
     scale, shift = torch.chunk(emb, 2, dim = 1)
@@ -107,10 +106,9 @@ _orig_rmsnorm_forward: Optional[Callable] = None
 
 
 def _rmsnorm_forward(self, hidden_states):
-    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers:
-    #   * NPU / bias / fp32-weight -> special handling / an fp32 quirk;
-    #   * tuple `dim` -> diffusers reduces only the LAST dim, F.rms_norm reduces every dim;
-    #   * dtype mismatch -> diffusers computes variance in fp32 from the ORIGINAL tensor.
+    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight (special
+    # handling or an fp32 quirk), a tuple `dim` (diffusers reduces only the LAST dim), or a dtype mismatch (diffusers computes
+    # variance in fp32 from the ORIGINAL tensor).
     if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight
@@ -123,8 +121,7 @@ def _rmsnorm_forward(self, hidden_states):
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 
 
-# Install / uninstall via the shared patch backend: the live original is fingerprinted so a
-# changed forward is left UNPATCHED, and stashed for exact restore.
+# Install / uninstall via the shared patch backend: the live original is fingerprinted so a changed forward is left UNPATCHED, and stashed for exact restore.
 def _specs():
     # (class, patched_fn)
     return [

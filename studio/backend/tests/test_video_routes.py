@@ -76,10 +76,10 @@ class _FakeBackend(video_module.VideoBackend):
     def __init__(self) -> None:
         super().__init__()
         self.last_load_kwargs: dict = {}
-        # Repo ids of in-flight (not yet committed) loads; empty tuple = none. The unload route reads this to keep VIDEO ownership while a concurrent load is still loading.
+        # Repo ids of in-flight loads; empty = none. The unload route reads this to keep VIDEO ownership during a concurrent load.
         self.loading: tuple = ()
 
-    # The real backend keys "loaded" off its committed pipeline state (_state); map the fake flag onto it so the inherited begin_generate sees the same thing.
+    # The real backend keys "loaded" off its committed pipeline state, so map the fake flag onto it for the inherited begin_generate.
     @property
     def loaded(self) -> bool:
         return self._state is not None
@@ -195,13 +195,13 @@ class _FakeBackend(video_module.VideoBackend):
 def client(monkeypatch, tmp_path):
     backend = _FakeBackend()
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
-    # Isolate from the real GPU arbiter: reset ownership and stub the evictors so the load route acquire_for() never touches live backend singletons.
+    # Isolate from the real GPU arbiter: reset ownership and stub the evictors so acquire_for() never touches live singletons.
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.VIDEO, lambda: None)
 
-    # Pin the resolved device to cpu so the load route deterministically follows the non-GPU branch on any host; GPU-arbiter gating is asserted in its own tests by forcing the device to cuda.
+    # Pin the device to cpu so the load route deterministically takes the non-GPU branch; the arbiter gating has its own tests.
     import types
 
     import core.inference.diffusion_device as devmod
@@ -210,7 +210,7 @@ def client(monkeypatch, tmp_path):
         devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
     )
 
-    # Persist to a real tmp gallery so save/list/file/delete/clear run the actual video_gallery code (MP4 + JSON sidecar pair) without touching studio_root.
+    # Persist to a real tmp gallery so save/list/file/delete/clear run the actual video_gallery code without touching studio_root.
     monkeypatch.setattr(gallery_module, "gallery_dir", lambda: tmp_path)
 
     app = FastAPI()
@@ -312,7 +312,7 @@ def test_load_threads_options_through_to_backend(client):
 
 
 def test_load_threads_transformer_quant_and_guidance_2(client):
-    # The new load-time transformer_quant field reaches the backend, and the new per-generation guidance_2 field reaches generate() (dual-DiT MoE second guidance).
+    # The load-time transformer_quant field reaches the backend, and the per-generation guidance_2 reaches generate() (dual-DiT MoE).
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -343,7 +343,7 @@ def test_load_rejects_bad_transformer_quant_422(client):
 
 
 def test_load_threads_text_encoder_quant(client):
-    # The load-time text_encoder_quant field reaches the backend (the video path now quantises the dense companion encoder, not just the DiT).
+    # The load-time text_encoder_quant field reaches the backend (the video path also quantises the dense companion encoder).
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -382,7 +382,7 @@ def test_load_progress_route(client):
 
 
 def test_load_local_single_file_dir_routes_through_single_file(client, tmp_path):
-    # A local video-family dir with one .safetensors and no model_index.json arrives as a pipeline with no filename; the route reinterprets it as a single_file load of the sole checkpoint.
+    # A local video-family dir with one .safetensors and no model_index.json arrives as a pipeline with no filename; the route reinterprets it as a single_file load.
     d = tmp_path / "ltx-2.3-local"
     d.mkdir()
     (d / "ltx-dit.safetensors").write_bytes(b"0")
@@ -417,7 +417,7 @@ def test_generate_happy_path_persists_and_reports_record(client):
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
     )
-    # The POST returns at once ("started"); the saved record arrives through the generate-progress terminal state (asserted inside the helper).
+    # The POST returns at once ("started"); the saved record arrives through the generate-progress terminal state.
     video = _generate_and_wait(client, {"prompt": "a sloth surfing", "seed": 7})
     assert video["seed"] == 7 and video["prompt"] == "a sloth surfing" and video["id"]
     assert video["has_audio"] is True
@@ -442,7 +442,7 @@ def test_generate_without_load_returns_409(client):
 
 
 def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
-    # A cancel mid-run surfaces as the job's terminal failed state carrying the exact sentinel (the frontend suppresses the toast on it), not as an HTTP error.
+    # A cancel mid-run surfaces as the job's terminal failed state carrying the exact sentinel, not as an HTTP error.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -459,7 +459,7 @@ def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
 
 
 def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
-    # A loaded model that fails mid-pipeline (CUDA OOM) is a server failure: the job's terminal state carries a generic message, never the raw exception.
+    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure: the terminal state carries a generic message, never the raw exception.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -492,7 +492,7 @@ def test_generate_value_error_reports_reason(client, monkeypatch):
 
 
 def test_generate_concurrent_second_returns_409(client, monkeypatch):
-    # While a job is running, a second generate is refused synchronously with the busy sentinel; the first job still completes and persists once released.
+    # While a job runs, a second generate is refused synchronously with the busy sentinel; the first still completes and persists.
     backend = video_module.get_video_backend()
     backend.loaded = True
     release = threading.Event()
@@ -535,7 +535,7 @@ def test_cancel_generation_route(client):
 
 
 def test_cancel_running_job(client, monkeypatch):
-    # Cancel still works against the background job: begin_generate registers the cancel event before the worker starts, so the cancel route reports True at once and the job lands in the failed(cancelled) terminal state.
+    # begin_generate registers the cancel event before the worker starts, so the cancel route reports True at once and the job lands in failed(cancelled).
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -563,7 +563,7 @@ def test_file_endpoint_404_for_bad_id(client):
 
 
 def test_serve_and_export_refuse_orphan_mp4(client, tmp_path):
-    # A hand-dropped orphan MP4 (no readable sidecar) is hidden by the listing; the serve and export routes resolve through the ownership guard, so a guessed stem can neither stream nor transcode it out.
+    # An orphan MP4 is hidden by the listing, and serve / export resolve through the ownership guard, so a guessed stem can neither stream nor transcode it out.
     (tmp_path / "recording.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
     assert client.get("/api/inference/video/gallery/recording/file").status_code == 404
     assert client.get("/api/inference/video/gallery/recording/export?format=gif").status_code == 404
@@ -690,8 +690,8 @@ def test_unload_releases_arbiter(client, monkeypatch):
 
 
 def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
-    # A concurrent /video/load re-acquires VIDEO and starts a background load, so the backend is NOT loaded yet (the pipeline commits later) but a load IS in flight. The unload route must keep ownership on the in-flight state alone, or a later chat/image load would see no owner, skip eviction, and OOM against the newly resident pipeline.
-    # The committed-loaded state stays False the whole load window, so the loaded-only check is insufficient here.
+    # A concurrent /video/load re-acquires VIDEO and starts a background load, so the backend is not loaded yet but a load IS in
+    # flight: ownership must be kept on that alone, or a later chat/image load skips eviction and OOMs against the new pipeline.
     backend = video_module.get_video_backend()
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
 
@@ -765,7 +765,7 @@ def test_export_endpoint_validation(client, monkeypatch):
 
 
 def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
-    # For a GGUF / single-file video load the companion base supplies the VAE and text encoders, so it is as much part of the live model as the checkpoint. Deleting it used to sail past the guard, which only compared repo_id.
+    # For a GGUF / single-file video load the companion base supplies the VAE and text encoders, so it is as much the live model as the checkpoint; the guard only compared repo_id.
     from hub.services.models import deletion
 
     class _Backend:
@@ -786,7 +786,7 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
 
 
 def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
-    # The plan drives the staged download, so it must be computed from the same encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the base repo's dense one instead downloads ~49 GB of Gemma3 the pipeline never opens.
+    # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3 the pipeline never opens.
     backend = video_module.get_video_backend()
     seen: dict = {}
 
@@ -814,7 +814,7 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
 
 
 def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(client, monkeypatch):
-    # Same independence rule as the image guard: a raising LLM probe used to return early, so a video load ran straight into an active diffusion trainer on the same GPU.
+    # Same independence rule as the image guard: a raising LLM probe used to return early, so a video load ran into an active diffusion trainer on the same GPU.
     import core.training as core_training
     import routes.video as video_routes
 
@@ -843,7 +843,7 @@ def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(clien
 
 
 def test_signed_video_link_streams_without_a_bearer(client):
-    # A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob the way it does a PNG: that buffers the whole MP4 before playback, kills seeking, and pins the bytes for as long as the entry is cached. The signed link makes the range-capable /file route usable as a plain <video src>.
+    # A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4 before playback, kills seeking and pins the bytes. The signed link makes the range-capable /file route usable as a plain <video src>.
     client.post(
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},

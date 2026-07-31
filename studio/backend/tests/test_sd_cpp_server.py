@@ -339,8 +339,7 @@ def test_img_gen_rejected_after_stop(patched):
 
 
 def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
-    # The server was stopped for a cancel/unload before submit; with the cancel event set this must
-    # surface as a cancellation (route 409), not a generic "not running" 500.
+    # The server was stopped for a cancel/unload before submit; with the cancel event set this is a cancellation (409), not a "not running" 500.
     popen = _FakePopen()
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
     s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {})))
@@ -353,8 +352,7 @@ def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
 
 
 def test_img_gen_abandons_when_cancel_not_honored(patched):
-    # A best-effort cancel the server ignores must not pin this call (and the generate lock) until
-    # natural completion: after the grace window it raises cancellation.
+    # A best-effort cancel the server ignores must not pin this call (and the generate lock) until natural completion: it raises after the grace window.
     patched.setattr(srv, "_CANCEL_GRACE_S", 0.0)
     popen = _FakePopen()
     cancel = threading.Event()
@@ -366,9 +364,8 @@ def test_img_gen_abandons_when_cancel_not_honored(patched):
     s = _server_with(popen, client)
     with pytest.raises(SdCppCancelled):
         s.img_gen({"prompt": "x"}, cancel_event = cancel, poll_interval = 0.01)
-    # And the process is stopped, not left running the abandoned job: sd-server does not interrupt
-    # an in-flight job, so a server that ignored the cancel would otherwise burn a core (or the GPU)
-    # to completion and hold its job slot against the next request.
+    # And the process is stopped, not left running the abandoned job: sd-server does not interrupt an in-flight job, so a server
+    # that ignored the cancel would burn a core (or the GPU) to completion and hold its job slot against the next request.
     assert not s.is_alive()
 
 
@@ -393,16 +390,14 @@ def test_img_gen_non_dict_status_json_raises(patched):
 
 
 def test_decode_images_tolerates_unexpected_shapes():
-    # A misbehaving/older server can return non-dict result/images/items, so _decode_images must raise
-    # a clean "no images" rather than an AttributeError on .get().
+    # A misbehaving/older server can return non-dict result/images/items, so _decode_images must raise a clean "no images" rather than an AttributeError.
     for job in ({"result": ["x"]}, {"result": {"images": "nope"}}, {"result": {"images": [1, 2]}}):
         with pytest.raises(RuntimeError, match = "no images"):
             SdCppServer._decode_images(job)
 
 
 def test_start_aborted_by_concurrent_stop(patched):
-    # A stop() during the readiness wait must abort start() promptly (without waiting out the startup
-    # timeout) and surface as a cancellation.
+    # A stop() during the readiness wait must abort start() promptly, without waiting out the startup timeout, and surface as a cancellation.
     popen = _FakePopen(lines = ["loading model"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
 
@@ -453,10 +448,9 @@ def test_diagnostic_tail_is_bounded():
 
 
 def test_readiness_refuses_a_port_held_by_another_process(patched):
-    # _find_free_port picks an ephemeral port, closes the socket, and sd-server binds it only after
-    # loading the model -- minutes for a big checkpoint. Another local process can take it in that
-    # window, and /v1/models is a stock OpenAI route that llama.cpp's server also answers 200 on, so
-    # readiness would pass and every generation would go to an unrelated listener.
+    # _find_free_port picks an ephemeral port, closes the socket, and sd-server binds it only after loading the model, which takes
+    # minutes for a big checkpoint. Another local process can take it in that window, and /v1/models is a stock OpenAI route that
+    # llama.cpp's server also answers 200 on, so readiness would pass and every generation would go to an unrelated listener.
     import types
 
     popen = _FakePopen(lines = ["loading model"])

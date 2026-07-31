@@ -180,8 +180,7 @@ def test_an_unreadable_engine_state_fails_closed(client, monkeypatch):
 
 
 def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, monkeypatch):
-    # source="training" checked only the LLM trainer, so a delete could rmtree the output
-    # directory a live diffusion LoRA run is about to write its adapter into.
+    # source="training" checked only the LLM trainer, so a delete could rmtree the output directory a live diffusion LoRA run is about to write into.
     import sys
     import types
 

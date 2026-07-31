@@ -103,13 +103,10 @@ function isJobActiveFor(req: DownloadRequest): boolean {
   return !scopedFileSetDiffers(job, req);
 }
 
-// Every file set of one repo rides the same scope slot, so a live job on this key counts
-// as this request's transfer only when it is fetching the same files: adopting a sibling
-// quant's job would report ready for files nobody fetched. A job with no recorded list is
-// adoptable only when the request is unscoped; a scoped request cannot be proven to be that
-// job's, and the old permissive answer let a second browser profile (or a tab opened before
-// the throttled state write, where adoption carries no file list) report "started" for a
-// checkpoint the live job was never fetching.
+// Every file set of one repo rides the same scope slot, so a live job on this key counts as this request's transfer only
+// when it is fetching the same files: adopting a sibling quant's job would report ready for files nobody fetched. A job
+// with no recorded list is adoptable only when the request is unscoped, since a scoped one cannot be proven to be that
+// job's; the old permissive answer let a second browser profile report "started" for a checkpoint nobody was fetching.
 function scopedFileSetDiffers(
   job: ManagedDownload,
   req: DownloadRequest,

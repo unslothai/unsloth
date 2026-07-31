@@ -20,8 +20,7 @@ from core.inference import diffusion_gguf_compile as gc  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _clean():
-    # Always start and end from a clean, unpatched state so tests do not leak the process-wide patch
-    # into each other.
+    # Always start and end from a clean, unpatched state so tests do not leak the process-wide patch into each other.
     gc.uninstall_all()
     yield
     gc.uninstall_all()

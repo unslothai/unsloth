@@ -127,8 +127,7 @@ from .diffusion_transformer_quant import (
 logger = get_logger(__name__)
 
 
-# Load kinds: "gguf" (GGUF transformer dequantised on-device) and "single_file" (safetensors, e.g. fp8)
-# both take companions from the base repo; "pipeline" is a full diffusers repo via from_pretrained.
+# "gguf" and "single_file" take companions from the base repo; "pipeline" is a full diffusers repo.
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
 
@@ -335,19 +334,18 @@ def _compile_shape_dims(workflow: str, init_pil: Any, width: int, height: int) -
     return int(iw), int(ih)
 
 
-# Official non-unsloth bases loadable as a full pipeline: safetensors-only, no remote code, exact lowercased match (the img2img-only SDXL refiner is deliberately absent).
+# Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match.
 _TRUSTED_NON_GGUF_REPOS = frozenset(
     {
         "stabilityai/stable-diffusion-xl-base-1.0",
         "stabilityai/sdxl-turbo",
-        # Vendor safetensors-only bases: LoRA training bases + the BF16 artifact per catalog group.
-        # FLUX.1 repos are Hub-gated (need the user's token); Qwen/Z-Image are open.
+        # Vendor safetensors-only bases: LoRA training bases + the BF16 artifact per group. FLUX.1 is Hub-gated; Qwen/Z-Image open.
         "black-forest-labs/flux.1-dev",
         "black-forest-labs/flux.1-schnell",
         "black-forest-labs/flux.1-kontext-dev",
         # Krea: guidance-distilled FLUX.1-dev finetune, same arch and gating; detected via "flux.1".
         "black-forest-labs/flux.1-krea-dev",
-        # FLUX.2 LoRA training bases (dev gated, klein-4B open); trusted because "Deploy to Create" reloads them as a pipeline.
+        # FLUX.2 LoRA training bases (dev gated, klein-4B open); reloaded as a pipeline by "Deploy to Create".
         "black-forest-labs/flux.2-dev",
         "black-forest-labs/flux.2-klein-4b",
         "tongyi-mai/z-image-turbo",
@@ -365,7 +363,7 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "hidream-ai/hidream-i1-full",
         "hidream-ai/hidream-i1-dev",
         "hidream-ai/hidream-i1-fast",
-        # Ideogram 4: no bf16 ships. -fp8 stores both DiTs as raw float8 (the family base); both nf4 repos are identical bnb-4bit exports.
+        # Ideogram 4: no bf16 ships. -fp8 stores both DiTs as raw float8 (the family base); both nf4 repos are identical.
         "ideogram-ai/ideogram-4-fp8",
         "ideogram-ai/ideogram-4-nf4",
         "ideogram-ai/ideogram-4-nf4-diffusers",
@@ -471,8 +469,7 @@ class _LoadState:
     hf_token: Optional[str] = None
     # Per-control provenance {control: {value, source, reason}}, for status badges.
     resolved: Optional[dict] = None
-    # The single-file checkpoint basename this load committed (None for a pipeline load). Part of the
-    # build identity -- two GGUF quants of one repo make different pixels -- so a generation records it.
+    # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
 
 
@@ -571,17 +568,13 @@ class DiffusionBackend:
         self._loading: Optional[_LoadingState] = None
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress.
         self._load_token = 0
-        # Set by unload() to abort an in-flight (lock-free) download so an eviction preempts it.
-        # Replaced (never cleared) per load, so a cancelled worker's own event stays set.
+        # Set by unload() to abort an in-flight download. Replaced (never cleared) per load, so a cancelled worker stays cancelled.
         self._cancel_event = threading.Event()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
-        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline.
-        # A generation queued behind the active one holds no cancel event yet, so the cancel they
-        # signal cannot reach it: without this fence it could win the lock as the active denoise
-        # released it, see a still-loaded _state, and run a whole new denoise after the model was
-        # told to go away -- stalling a chat/video GPU handoff for minutes and painting an image
-        # after an eject. A count, not a flag, so concurrent teardowns each own their own release.
+        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation
+        # queued behind the active one holds no cancel event yet, so without this fence it could win the lock after
+        # an eject and denoise anyway. A count, not a flag, so concurrent teardowns each own their own release.
         self._teardown_waiters = 0
         # Written by the callback, read lock-free by generate_progress().
         self._gen: Optional[_GenState] = None
@@ -657,7 +650,7 @@ class DiffusionBackend:
             if mm is None and kwargs.get("cpu_offload"):
                 return False
             target = self._resolve_device_target(fam)
-            # Only widen when the loader would take the dense path: resolve the same candidate load_pipeline re-plans against.
+            # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
             candidate = resolve_dense_quant_candidate(
                 fam = fam,
                 target = target,
@@ -670,7 +663,7 @@ class DiffusionBackend:
             # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
             if candidate is None or candidate.prequant:
                 return False
-            # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity (not instantaneous free), since load_pipeline would otherwise decline the dense path anyway.
+            # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense path anyway.
             from .diffusion_memory import (
                 _reserve_mib,
                 snapshot_device_memory,
@@ -744,7 +737,7 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
-            # An excluded model gets its stated reason, not the unknown-family message that invites a doomed family_override retry.
+            # An excluded model gets its stated reason, not the unknown-family message that invites a doomed retry.
             excluded = excluded_model_reason(repo_id)
             if excluded:
                 raise ValueError(f"'{repo_id}' cannot be loaded: {excluded}")
@@ -754,12 +747,10 @@ class DiffusionBackend:
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
             )
-        # Refuse a too-old diffusers here, not deep in the load after the checkpoint downloaded --
-        # but only when this load is the one that builds the diffusers pipeline. A GGUF this host
-        # routes to native sd.cpp never instantiates the pipeline class, so demanding it would
-        # refuse a load that works, with an upgrade instruction that cannot help. The picker gate
-        # reads the same predicate, so what it offers is exactly what this accepts.
-        # Imported here (not at module import) because the router imports this module's siblings.
+        # Refuse a too-old diffusers here, not deep in the load -- but only when this load builds the diffusers
+        # pipeline: a GGUF this host routes to native sd.cpp never instantiates the class, so demanding it would
+        # refuse a working load. The picker gate reads the same predicate. Imported here (not at module import)
+        # because the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
         if not family_buildable_here(fam, model_kind = kind):
@@ -876,12 +867,9 @@ class DiffusionBackend:
                 raise RuntimeError("A diffusion load is already in progress.")
             self._load_token += 1
             token = self._load_token
-            # A NEW event per load, never a clear() of the shared one (same reason video.py takes a
-            # fresh one): unload() sets the event the running worker holds but also drops _loading,
-            # so the next begin_load is admitted before that worker exited and would clear the very
-            # object it is watching -- the cancelled multi-gigabyte pull then resumed alongside the
-            # replacement load. A fresh object leaves the old worker's event set. Best-effort
-            # download preemption either way; the token is the real commit guard.
+            # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds
+            # but also drops _loading, so the next begin_load would clear the very object that worker is watching. A
+            # fresh object leaves it cancelled. Download preemption is best-effort; the token is the real commit guard.
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
             # Seed with the family fallback; the worker resolves the real base and updates this.
@@ -916,7 +904,7 @@ class DiffusionBackend:
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
-        # This load's own event: a later load replaces self._cancel_event rather than clearing it, so a cancelled worker stays cancelled.
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
@@ -932,7 +920,7 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             kwargs["base_repo"] = base
-            # The pre-cast encoder injection replaces these weights, so do not prefetch their dense shards. Same resolver as the injection, so prefetch and load never disagree.
+            # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
             te_prequant_files = self._te_prequant_plan_files(
                 fam, kwargs.get("text_encoder_quant"), kwargs.get("hf_token")
             )
@@ -948,9 +936,8 @@ class DiffusionBackend:
                 and self._dense_quant_prefetch_needed(fam, kwargs),
                 skip_te_components = tuple(te_prequant_files),
             )
-            # Only shards this prefetch actually stages may be materialised by the in-loader dense
-            # fallback; read it off the staged list rather than the request, so a failed size estimate
-            # (which drops every base file) closes the fallback too.
+            # Only shards this prefetch staged may be materialised by the dense fallback, so read it off the staged list:
+            # a failed size estimate drops every base file and closes the fallback too.
             kwargs["_transformer_prefetched"] = any(
                 f.startswith("transformer/") for f in base_files
             )
@@ -1007,7 +994,7 @@ class DiffusionBackend:
         if expected > 0 and downloaded >= expected * 0.999:
             return _progress("finalizing", min(downloaded, expected), expected, 1.0)
         if expected <= 0:
-            # No size estimate (lookup failed, or everything was already cached): report the phase with no byte claim, since `downloaded` scans what is PRESENT, not what this load fetched.
+            # No size estimate: report the phase with no byte claim, since `downloaded` scans what is PRESENT.
             return _progress("downloading")
         return _progress("downloading", downloaded, expected, min(downloaded / expected, 1.0))
 
@@ -1117,7 +1104,7 @@ class DiffusionBackend:
                 if sizes_out is not None:
                     sizes_out[repo_id] = total
                 return total, base_files
-            # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path, and the catch below would force a synchronous companion pull.
+            # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
@@ -1355,14 +1342,12 @@ class DiffusionBackend:
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
-        # LoRA adapters to BAKE into a torchao int8/fp8 build. Ignored elsewhere: bf16/bnb take adapters at generation time, GGUF-as-is has no dense transformer.
+        # LoRA adapters to BAKE into a torchao int8/fp8 build. Ignored elsewhere (bf16/bnb take them at generate time).
         loras: Optional[list[tuple[str, float]]] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
-        # True when the prefetch staged the base repo's ``transformer/`` shards, which is the
-        # only condition under which the dense-quant fallback may materialise them (see
-        # ``dense_fallback_allowed`` below). Defaults True for a direct call, which has no
-        # prefetch phase to skip them.
+        # True when the prefetch staged the base repo's ``transformer/`` shards, the only condition under which the
+        # dense-quant fallback may materialise them. Defaults True for a direct call, which has no prefetch phase.
         _transformer_prefetched: bool = True,
     ) -> dict[str, Any]:
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
@@ -1379,7 +1364,7 @@ class DiffusionBackend:
             model_kind = model_kind,
         )
         kind = resolve_model_kind(gguf_filename, model_kind)
-        # Validate every mode string that can raise BEFORE this load evicts the previous pipeline (transformer_quant validate-only, keeping the unset/auto vs explicit-off tri-state).
+        # Validate every mode string that can raise BEFORE this load evicts the previous pipeline (transformer_quant validate-only).
         normalize_transformer_quant(transformer_quant)
         normalize_speed_mode(speed_mode)
         normalize_attention_backend(attention_backend)
@@ -1394,7 +1379,7 @@ class DiffusionBackend:
 
         import diffusers
 
-        # Pre-install the optional attention kernel before the load locks: the pip install can take 600s and would block unload/cancel. Best-effort; the locked resolve is a no-op.
+        # Pre-install the optional attention kernel before the load locks: the pip install can block unload for 600s.
         try:
             preinstall_backend = select_attention_backend(
                 target, attention_backend, speed_active = True
@@ -1411,8 +1396,7 @@ class DiffusionBackend:
                 raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            # Same fence unload() takes: a generation queued behind the active denoise would
-            # otherwise slip in here and run on the pipeline this load is about to free.
+            # Same fence unload() takes: a queued generation must not run on the pipeline this load is about to free.
             self._teardown_waiters += 1
         with self._generate_lock:
             with self._lock:
@@ -1424,8 +1408,7 @@ class DiffusionBackend:
                     # Free the old pipeline before allocating the new one (never two in VRAM).
                     self._unload_locked()
                 finally:
-                    # Released here, not at the end of the load: the old pipe is gone (or this load
-                    # bailed), and the rest of the load holds _generate_lock anyway.
+                    # Released here, not at the end of the load: the old pipe is gone and the rest of the load holds _generate_lock.
                     self._teardown_waiters -= 1
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
@@ -1449,7 +1432,7 @@ class DiffusionBackend:
                     repo_id = repo_id,
                 )
 
-                # Dtype tri-state: unset/"auto" -> hardware ladder picks a quantised build; "none"/"off" pins GGUF-as-is; an explicit scheme pins it. An overwritten "auto" still records source=auto.
+                # Dtype tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins GGUF-as-is; an explicit scheme pins it.
                 if transformer_quant is None or str(transformer_quant).strip().lower() in (
                     "",
                     "auto",
@@ -1460,22 +1443,17 @@ class DiffusionBackend:
                     )
                     transformer_quant = "off" if speed_off else TQ_AUTO
 
-                # Default-on fast path (GGUF kind only): load the dense bf16 transformer and torchao-quantise it, which beats
-                # GGUF per-matmul dequant on speed AND quality. Needs CUDA + bf16 + a resident fit; any failure falls back to the GGUF build.
+                # Default-on fast path (GGUF kind only): dense bf16 + torchao quant beats GGUF per-matmul dequant on speed AND
+                # quality. Needs CUDA + bf16 + a resident fit; any failure falls back to the GGUF build.
                 pipe = None
                 transformer_quant_engaged = None
                 quant_plan = None
                 # The GGUF-size plan can mis-budget the fast path, so preflight the real footprint pre-eviction.
                 dense_declined = False
-                # False when the plan only holds a PREQUANT-sized build: a failed prequant load must raise, not materialise the unbudgeted dense bf16 transformer.
-                # Also false when the prefetch did not stage the base repo's transformer/ shards: it skips them
-                # whenever a prequant checkpoint is expected (``_dense_quant_prefetch_needed``), so a dense fallback
-                # would pull them HERE -- inside the load lock during "finalizing", after the previous pipeline was
-                # already evicted, where unload/cancellation cannot preempt the download, load_progress has already
-                # reported bytes_downloaded == bytes_total, and the cache-disk gate only reserved the small prequant
-                # checkpoint. A prequant fetch fails for reasons the planner cannot see (unpublished / gated / renamed
-                # artifact, a hub 5xx, a flaky link), so gate the fallback on the shards being on disk already and let
-                # the GGUF build take over otherwise -- exactly what the prequant-sized replan below does.
+                # False when the plan only holds a PREQUANT-sized build: a failed prequant load must raise, not materialise the
+                # unbudgeted dense bf16 transformer. Also false when the prefetch skipped the base repo's transformer/ shards,
+                # since the fallback would then pull them HERE -- inside the load lock, after eviction, where unload cannot
+                # preempt it and progress already reported 100%. Gate on the shards being on disk and let GGUF take over.
                 dense_fallback_allowed = bool(_transformer_prefetched)
                 if (
                     kind == "gguf"
@@ -1483,7 +1461,7 @@ class DiffusionBackend:
                     and dense_transformer_supported(target)
                 ):
                     if plan.offload_policy != OFFLOAD_NONE:
-                        # The GGUF plan picked offload but the quantised artifact is smaller, so re-plan against the candidate: a resident quant build beats an offloaded GGUF.
+                        # The GGUF plan picked offload but the quantised artifact is smaller, so re-plan: a resident quant build wins.
                         candidate = resolve_dense_quant_candidate(
                             fam = fam,
                             target = target,
@@ -1521,7 +1499,7 @@ class DiffusionBackend:
                                 not in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM)
                                 and plan_fits_total_capacity(replanned)
                             ):
-                                # The candidate fits TOTAL capacity but the instantaneous free reading said no; a transient foreign allocation (~100 GB briefly on an idle B200) must not force the GGUF fallback, so re-snapshot (settled) and replan once.
+                                # The candidate fits TOTAL capacity but instantaneous free said no; a transient foreign allocation must not force the GGUF fallback, so re-snapshot (settled) and replan once.
                                 replanned = _replan_candidate()
                             if replanned.offload_policy != OFFLOAD_NONE:
                                 logger.info(
@@ -1539,13 +1517,13 @@ class DiffusionBackend:
                                 if candidate.prequant:
                                     dense_fallback_allowed = False
                     else:
-                        # This path materialises the dense bf16 transformer (bigger than the GGUF), so re-check the fit rather than OOMing after eviction. Skipped for a prequant, which loads a small file.
+                        # This materialises the dense bf16 transformer, so re-check the fit rather than OOMing after eviction. Skipped for a prequant.
                         scheme = select_transformer_quant_scheme(
                             target,
                             transformer_quant,  # normalized above
                             family = getattr(fam, "name", None),
                         )
-                        # usable_prequant_source (not resolve_): a missing/non-allowlisted local path must not count here, or the dense-fit re-check is skipped and materialising OOMs.
+                        # usable_prequant_source (not resolve_): a missing/non-allowlisted local path must not skip the dense-fit re-check.
                         prequant = (
                             # A LoRA bake skips the prequant shortcut, so gate the fast path as if no prequant existed.
                             None
@@ -1576,7 +1554,7 @@ class DiffusionBackend:
                             )
                             if dense_plan.offload_policy != OFFLOAD_NONE:
                                 dense_fallback_allowed = False
-                                # Without a prequant source the dense build is the only path, so a dense misfit skips the fast path; with one, only the dense fallback is forbidden.
+                                # No prequant source: a dense misfit skips the fast path; with one, only the dense fallback is forbidden.
                                 if prequant is None:
                                     dense_declined = True
                 if (
@@ -1627,7 +1605,7 @@ class DiffusionBackend:
                     and normalize_transformer_quant(transformer_quant) is not None
                     and any(w != 0 for (_lid, w) in (loras or ()))
                 ):
-                    # Adapters were requested BAKED but that build was declined or failed, and the GGUF fallback cannot carry them; fail loudly rather than silently dropping the LoRAs.
+                    # Adapters were requested BAKED but that build failed, and the GGUF fallback cannot carry them; fail loudly.
                     raise RuntimeError(
                         "The requested LoRA adapters could not be applied: baking adapters "
                         "requires the quantized (int8/fp8) transformer build, which was "
@@ -1640,7 +1618,7 @@ class DiffusionBackend:
                     if kind == "pipeline":
                         # Full diffusers repo: from_pretrained pulls every component and re-applies embedded quant config.
                         if fam.name == KREA2_FAMILY_NAME:
-                            # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble per-component (diffusion_krea2.py). That path never sees pipe_kwargs, so pass the pre-cast TE.
+                            # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble per-component. That path never sees pipe_kwargs, so pass the pre-cast TE.
                             pipe = load_krea2_pipeline(
                                 repo_id,
                                 dtype,
@@ -1676,7 +1654,7 @@ class DiffusionBackend:
                                         target = target,
                                     )
                                 )
-                            # A hosted pre-cast fp8 text encoder skips the dense TE download; quantize_text_encoders re-applies the cast idempotently.
+                            # A hosted pre-cast fp8 text encoder skips the dense TE download; the cast re-applies idempotently.
                             pipe_kwargs.update(
                                 te_prequant_pipe_kwargs(
                                     fam,
@@ -1693,7 +1671,7 @@ class DiffusionBackend:
                                 _base_local_dir or repo_id, **pipe_kwargs
                             )
                     elif kind == "single_file" and fam.single_file_is_pipeline:
-                        # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline class, with ``config`` pointing at the base repo for the structure.
+                        # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline class, with ``config`` pointing at the base repo.
                         sf_pipe_kwargs: dict[str, Any] = {
                             "torch_dtype": dtype,
                             "config": base,
@@ -1776,7 +1754,7 @@ class DiffusionBackend:
                                 _base_local_dir or base, **pipe_kwargs
                             )
 
-                # Effective speed: GGUF defaults to near-lossless `default` (~2.2x, below the quant noise floor); dense stays bit-identical `off`. Explicit is honored.
+                # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays bit-identical `off`.
                 effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                 # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
                 if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
@@ -1785,16 +1763,16 @@ class DiffusionBackend:
                         "(quantized transformer must be compiled; eager is ~30x slower)"
                     )
                     effective_speed = SPEED_DEFAULT
-                # Deferred speed auto for dense models: stay eager, but generate() engages `default` on the 3rd image, where repeated use amortises the compile. Only when speed was unset.
+                # Deferred speed auto for dense: stay eager, engage `default` on the 3rd image where compile amortises. Only when speed was unset.
                 speed_deferred = (
                     speed_mode is None
                     and effective_speed == SPEED_OFF
                     and transformer_quant_engaged is None
                     and compile_eligible(target, is_gguf = False, family = fam)
                 )
-                # Speed optims run BEFORE placement (channels_last/compile precede offload), so snapshot the global backend flags first for unload restore.
+                # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
                 backend_flags_before = snapshot_backend_flags()
-                # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active (~1.18x); explicit is honored.
+                # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x).
                 attention_engaged = apply_attention_backend(
                     pipe,
                     select_attention_backend(
@@ -1802,8 +1780,8 @@ class DiffusionBackend:
                     ),
                     logger = logger,
                 )
-                # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps (~1.4x on Flux at LPIPS ~0.08) and drops compile fullgraph when engaged.
-                # Tri-state: unset/"auto" -> step-count policy decides (FBCACHE_MIN_STEPS); "off"/"fbcache" pinned.
+                # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps (~1.4x on Flux,
+                # LPIPS ~0.08) and drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
                 cache_request = normalize_transformer_cache(transformer_cache)
                 cache_auto = transformer_cache is None or cache_request == TC_AUTO
                 cache_quant_active = transformer_quant_engaged is not None or bool(gguf_filename)
@@ -1840,8 +1818,8 @@ class DiffusionBackend:
                         )
                 else:
                     cache_reason = "requested"
-                # Everything from here to the _LoadState commit mutates PROCESS-WIDE state (class patches, TORCHINDUCTOR_CACHE_DIR, backend flags); the try/finally below restores it on failure.
-                # gguf_transformer: the dense fast path still sets gguf_filename (fallback) but pipe.transformer is dense (needs REGIONAL block compile), so treat it as non-GGUF.
+                # Everything to the _LoadState commit mutates PROCESS-WIDE state; the try/finally below restores it on failure.
+                # gguf_transformer: the dense fast path still sets gguf_filename, but pipe.transformer is dense (REGIONAL compile).
                 gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
 
                 eager_patched = False
@@ -1877,11 +1855,11 @@ class DiffusionBackend:
                             transformer = getattr(pipe, "transformer", None)
                             or getattr(pipe, "unet", None),
                             dtype = getattr(target, "dtype", None),
-                            # A GGUF transformer compiles a DIFFERENT graph than a dense load of the same family, so it must key its own bundles.
+                            # A GGUF transformer compiles a DIFFERENT graph than a dense load, so it keys its own bundles.
                             quant = "gguf" if gguf_transformer else transformer_quant_engaged,
                             attention_backend = attention_engaged,
                             compile_kwargs = {
-                                # Mirrors apply_speed_optims fullgraph decision (an active or still-toggleable step cache, or a planned offload, graph-breaks), so the bundle keys on the same setting.
+                                # Mirrors apply_speed_optims' fullgraph decision (a step cache or a planned offload graph-breaks), so the bundle keys on the same setting.
                                 "fullgraph": cache_engaged is None
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
@@ -1905,13 +1883,13 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
-                        # Compile could not engage: the quantized transformer runs eager, far slower than the GGUF it replaced. Surface it loudly.
+                        # Compile could not engage: the quantized transformer runs eager, far slower than the GGUF it replaced.
                         logger.warning(
                             "diffusion.transformer_quant: %s engaged but the transformer is NOT "
                             "compiled; eager torchao quant is ~30x slower than GGUF here",
                             transformer_quant_engaged,
                         )
-                    # Quantise the dense companion text encoder(s) before placement so offload moves the smaller weights. Family drives int8 keep-bf16 schedule.
+                    # Quantise the dense companion text encoder(s) before placement so offload moves the smaller weights.
                     te_quant = quantize_text_encoders(
                         pipe,
                         target,
@@ -1921,8 +1899,8 @@ class DiffusionBackend:
                         logger = logger,
                     )
 
-                    # Persistent conditioning cache (opt-in via UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the text-encoder forward, so warm prompts never onload the multi-GB encoders under offload.
-                    # Installed AFTER the TE quant so the key reflects the encoders that run; ``base`` keys the companion repo, so the same checkpoint against a different base cannot reuse its embeddings. Dies with the pipe.
+                    # Persistent conditioning cache (UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the text-encoder
+                    # forward. After the TE quant so the key reflects the encoders that run; ``base`` keys the companion repo.
                     cond_cache.install(
                         pipe,
                         family = fam.name,
@@ -1933,12 +1911,12 @@ class DiffusionBackend:
                         logger = logger,
                     )
 
-                    # Apply the planned placement; apply_memory_plan returns the policy/tiling ACTUALLY engaged so status stays honest. Idempotent for the `none` policy.
+                    # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays honest.
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe, plan, device = device, logger = logger
                     )
 
-                    # Per-control provenance for status. cpu_offload=False is the unset default, so only True is an explicit request.
+                    # Per-control provenance for status. cpu_offload=False is the unset default, so only True is explicit.
                     resolved = build_resolved_record(
                         {
                             "speed_mode": (
@@ -2096,7 +2074,7 @@ class DiffusionBackend:
         scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
         if scheme is None:
             # Bail BEFORE the multi-GB dense download: an unsupported scheme (fp8 on Ampere, nvfp4 off Blackwell) would
-            # materialise the transformer only to fail at quantize, after eviction. load_pipeline catches this and builds the GGUF pipeline.
+            # materialise the transformer only to fail at quantize, after eviction. load_pipeline falls back to GGUF.
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         if fam is not None and not lora_specs:
             # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so skip prequant.
@@ -2114,7 +2092,7 @@ class DiffusionBackend:
                     scheme = scheme,
                     # Reject a checkpoint with a different Linear filter so prequant matches runtime-quant.
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
-                    # Only enforced when the caller forces fp8 fast-accum; a checkpoint that baked the other choice falls to the dense path instead of using the baked kernels.
+                    # Only enforced when the caller forces fp8 fast-accum; a checkpoint that baked the other choice falls to the dense path.
                     fast_accum = fast_accum,
                     logger = logger,
                 )
@@ -2135,7 +2113,7 @@ class DiffusionBackend:
 
         # 2. Fallback: materialise the dense bf16 transformer and quantise it on-device.
         if not allow_dense_fallback:
-            # The memory plan only budgeted the prequant-sized build, so the dense bf16 transformer would exceed it after eviction. Raise to the GGUF build.
+            # The plan only budgeted the prequant-sized build, so the dense bf16 transformer would exceed it after eviction.
             raise RuntimeError(
                 "prequant checkpoint unavailable and the dense transformer does not fit resident"
             )
@@ -2159,8 +2137,8 @@ class DiffusionBackend:
             target = target,
         )
         if lora_specs:
-            # Bake the adapters BEFORE quantize_: peft injects its wrappers on the dense Linears (post-quant torchao dispatch would TypeError), then
-            # quantize_ converts only each wrapper frozen base_layer while the "lora_" side path stays high precision.
+            # Bake the adapters BEFORE quantize_: peft wraps the dense Linears (post-quant torchao dispatch would TypeError),
+            # then quantize_ converts only each wrapper's frozen base_layer while the "lora_" side path stays high precision.
             baked = self._resolve_lora_set(
                 [(i, w) for (i, w) in lora_specs if w != 0],
                 family = getattr(fam, "name", None),
@@ -2207,7 +2185,7 @@ class DiffusionBackend:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
-            # krea ships transformers-5.x configs and no top-level tokenizer files, so from_pretrained dies in the tokenizer; assemble per-component (diffusion_krea2.py).
+            # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
             krea_te = None
             if target is not None:
                 krea_te = te_prequant_pipe_kwargs(
@@ -2246,7 +2224,7 @@ class DiffusionBackend:
                     target = target,
                 )
             )
-        # Same pre-cast TE injection as the other branches: the dense fast path supplies only the transformer, so the companion TE is the big download.
+        # Same pre-cast TE injection as the other branches: the dense path supplies only the transformer.
         if target is not None:
             pipe_kwargs.update(
                 te_prequant_pipe_kwargs(
@@ -2294,10 +2272,10 @@ class DiffusionBackend:
         re-plan, so the base repo's PREFETCHED transformer/ shards -- which land in the
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
         top of transformer_resident_override_mib (a double-count of the transformer)."""
-        # Settled (max-over-reads) on cuda: a transient foreign allocation otherwise makes an empty card look full and silently declines the resident/quant fast path.
+        # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full.
         device_memory = settled_snapshot_device_memory(target)
         if kind == "pipeline":
-            # The whole repo is one cached download, so cached bytes are the resident estimate (bnb-4bit/fp8 stay compressed). A LOCAL path is not cached, so sum its on-disk weights.
+            # The whole repo is one cached download, so cached bytes are the resident estimate. A LOCAL path is not cached, so sum its on-disk weights.
             local_repo = Path(repo_id).expanduser() if repo_id else None
             if local_repo is not None and local_repo.is_dir():
                 cached = self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
@@ -2305,8 +2283,8 @@ class DiffusionBackend:
                 cached = self._cache_bytes(repo_id) if repo_id else 0
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
-            # A repo can store weights NARROWER than the loaded dtype: ideogram-4 ships its DiTs as raw float8, so cached
-            # bytes undershoot the bf16 footprint ~2x and auto would OOM. Plan against the size table bf16 total when it knows this repo.
+            # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
+            # undershoot the bf16 footprint ~2x. Plan against the size table's bf16 total when it knows this repo.
             is_narrow_base = bool(repo_id) and repo_id.strip().lower() == fam.base_repo.lower()
             if (
                 not is_narrow_base
@@ -2314,12 +2292,12 @@ class DiffusionBackend:
                 and local_repo is not None
                 and local_repo.is_dir()
             ):
-                # A local fp8 mirror never string-matches base_repo, so detect fp8 from the shard headers and reserve the bf16 footprint (a local nf4 mirror stays compressed).
+                # A local fp8 mirror never string-matches base_repo, so detect fp8 from the shard headers (a local nf4 mirror stays compressed).
                 is_narrow_base = ideogram4_repo_is_fp8(repo_id)
             if is_narrow_base:
                 table = family_bf16_components_gb(fam, fam.base_repo)
                 if table is not None:
-                    # Reserve the bf16 footprint from this network-free constant even without a cache estimate, else model_dense_mib stays None ("size unknown -> resident") and the ~54 GB pipeline OOMs.
+                    # Reserve the bf16 footprint from this network-free constant, else model_dense_mib stays None ("unknown -> resident") and the ~54 GB pipeline OOMs.
                     table_mib = int(sum(table) * (1000.0**3) / (1024.0 * 1024.0))
                     model_dense_mib = (
                         table_mib if model_dense_mib is None else max(model_dense_mib, table_mib)
@@ -2327,10 +2305,10 @@ class DiffusionBackend:
             companion_mib = None
         else:
             if transformer_resident_override_mib is not None:
-                # Planning for the dense-quant candidate: the auto-policy estimate replaces the file-size derivation; companions stay measured from cache.
+                # Planning the dense-quant candidate: the auto-policy estimate replaces the file-size derivation.
                 transformer_resident = transformer_resident_override_mib
             elif kind == "single_file":
-                # An fp8 checkpoint upcasts to bf16 on load (~2x resident); detect from the basename. Excludes the SDXL (single_file_is_pipeline) case, already bf16.
+                # An fp8 checkpoint upcasts to bf16 on load (~2x resident); detect from the basename. SDXL single-file is already bf16.
                 fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
                     "fp8" in Path(single_file_path).name.lower() if single_file_path else False
                 )
@@ -2339,9 +2317,9 @@ class DiffusionBackend:
                 )
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
-            # Companions (VAE + text encoders) load near on-disk size; sum the base-repo cache, or a LOCAL base on-disk weights (the blob cache is empty for a local path).
+            # Companions (VAE + text encoders) load near on-disk size; sum the base-repo cache, or a LOCAL base's on-disk weights.
             if companion_override_mib is not None:
-                # Re-planning the dense candidate: the prefetched transformer/ shards land in the SAME cache _companion_cache_bytes sums, so use the auto-policy estimate instead of double-counting.
+                # Re-planning the dense candidate: the prefetched transformer/ shards land in the SAME cache, so use the estimate instead of double-counting.
                 companion_mib = companion_override_mib
             else:
                 companion = self._companion_cache_bytes(base)
@@ -2349,7 +2327,7 @@ class DiffusionBackend:
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
-        # Feed the variant hint so estimate_image_runtime_mib sees distilled markers normalized out of fam.name (distilled needs ~15% less headroom).
+        # Feed the variant hint so estimate_image_runtime_mib sees distilled markers (distilled needs ~15% less headroom).
         variant_hint = " ".join(
             p
             for p in (
@@ -2386,10 +2364,10 @@ class DiffusionBackend:
         import diffusers
 
         # torch_dtype=None is load-bearing: from_pipe otherwise recasts EVERY component to fp32, which hard-crashes the
-        # dense-quant path (torchao tensor-subclass weights cannot swap_tensors). None reuses resident modules at their loaded dtype.
+        # dense-quant path (torchao subclasses cannot swap_tensors). None reuses resident modules at their loaded dtype.
         pipe = getattr(diffusers, class_name).from_pipe(state.pipe, torch_dtype = None)
-        # Publish to the shared aux cache only if THIS load is still current: from_pipe runs under _generate_lock but
-        # NOT _lock, so an unload can null _state while it builds and caching would hand a later load stale modules.
+        # Publish to the shared aux cache only if THIS load is still current: from_pipe runs without _lock, so an
+        # unload can null _state while it builds and caching would hand a later load stale modules.
         with self._lock:
             if self._state is state:
                 self._aux_pipes[class_name] = pipe
@@ -2413,8 +2391,8 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            # resolve_controlnet accepts a bare owner/name without the base trust gate and from_pretrained would execute a malicious pickle, so run the same Hub malware preflight the chat/export loaders use (a local dir is exempt).
-            # The preflight fails OPEN, so a remote repo also forces safetensors below, closing the pickle RCE vector when the scan could not run.
+            # resolve_controlnet accepts a bare owner/name without the trust gate and from_pretrained would execute a malicious
+            # pickle, so run the same Hub malware preflight. It fails OPEN, so a remote repo also forces safetensors below.
             remote_cn = not getattr(resolved_cn, "is_local", False)
             if remote_cn:
                 from utils.security import evaluate_file_security
@@ -2430,7 +2408,7 @@ class DiffusionBackend:
 
             # state.dtype is the display string ("bfloat16"), so pass the real dtype and avoid a float32 load.
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
-            # Force safetensors for an untrusted remote repo: if the Hub scan failed open above, an embedded pickle would still deserialize. A local dir the user chose is exempt.
+            # Force safetensors for an untrusted remote repo: if the Hub scan failed open, an embedded pickle would still deserialize.
             cn_from_pretrained_kwargs: dict[str, Any] = {"cache_dir": hub_cache_dir()}
             if remote_cn:
                 cn_from_pretrained_kwargs["use_safetensors"] = True
@@ -2441,10 +2419,10 @@ class DiffusionBackend:
                 **cn_from_pretrained_kwargs,
             )
             if cancel.is_set():
-                # An unload raced the blocking download; bail BEFORE placement so we do not allocate onto a GPU _unload_locked() just freed.
+                # An unload raced the blocking download; bail BEFORE placement so we do not allocate onto a just-freed GPU.
                 del cn_model
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            # Placement follows the base offload policy: a resident base places it resident, an offloaded base streams it via group offloading. Best-effort; failure -> resident.
+            # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload). Best-effort.
             if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and (
                 _offload_controlnet_module(cn_model, state.device, logger)
             ):
@@ -2485,7 +2463,7 @@ class DiffusionBackend:
         if denoiser is None or vae is None:
             return
         try:
-            # Read the dtype from the parameters (a compiled nn.Module may hide .dtype), taking the first FLOATING one (a GGUF transformer leading params are packed uint8).
+            # Read the dtype from the parameters (a compiled nn.Module may hide .dtype), taking the first FLOATING one.
             target_dtype = next(
                 (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
                 None,
@@ -2581,7 +2559,7 @@ class DiffusionBackend:
             transformer_quant = state.transformer_quant,
             compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
         ):
-            # Name only routes the user can actually reach: a GPU host never selects the native engine on its own (see diffusion_engine_router), so suggesting it without the override is a dead end.
+            # Name only routes the user can actually reach: a GPU host never selects the native engine on its own.
             raise ValueError(
                 "LoRA is not supported for this model/quantisation on the diffusers engine "
                 "(GGUF-via-diffusers, or a torch.compile'd Speed=default/max load). Reload with "
@@ -2715,7 +2693,7 @@ class DiffusionBackend:
         install_compile_safe_patches()
         install_arch_patches()
         object.__setattr__(state, "eager_patched", True)
-        # Re-run the load-time selection with the caller ORIGINAL request: auto still upgrades to cuDNN here (speed_active=True), but an explicit backend is honored verbatim.
+        # Re-run the load-time selection with the caller's ORIGINAL request: auto still upgrades to cuDNN here.
         attention_engaged = apply_attention_backend(
             state.pipe,
             select_attention_backend(target, state.attention_request, speed_active = True),
@@ -2734,7 +2712,7 @@ class DiffusionBackend:
                 quant = "gguf" if gguf_transformer else state.transformer_quant,
                 attention_backend = attention_engaged,
                 compile_kwargs = {
-                    # Mirrors the load-time fullgraph decision: an engaged or still-toggleable step cache, or an offload, graph-breaks.
+                    # Mirrors the load-time fullgraph decision: a step cache or an offload graph-breaks.
                     "fullgraph": state.transformer_cache is None
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
@@ -2788,11 +2766,11 @@ class DiffusionBackend:
         guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
-        # Batched multi-image generation (diffusion_batched.py): ``prompts`` renders one image per prompt (txt2img only), ``seeds`` one per seed, ``batch_size`` alone derives base..base+n-1.
-        # Each image gets its OWN torch.Generator, so same-seed repeats at the same batch shape are bit-identical and a solo regeneration matches up to batch-size kernel numerics.
+        # Batched multi-image generation: ``prompts`` renders one image per prompt (txt2img only), ``seeds`` one per seed,
+        # ``batch_size`` alone derives base..base+n-1. Each image gets its OWN Generator, so same-seed repeats are bit-identical.
         prompts: Optional[list[str]] = None,
         seeds: Optional[list[int]] = None,
-        # Image-conditioned (base64/data-URL): init alone = img2img, init + mask = inpaint. ``strength`` is the denoise strength (0 = keep source, 1 = full redraw); None = txt2img.
+        # Image-conditioned (base64/data-URL): init alone = img2img, init + mask = inpaint. ``strength`` 0 = keep source, 1 = full redraw.
         init_image: Optional[str] = None,
         mask_image: Optional[str] = None,
         strength: Optional[float] = None,
@@ -2808,13 +2786,12 @@ class DiffusionBackend:
         import torch
         from PIL import Image
 
-        # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise. _generate_lock is the only lock the denoise holds.
+        # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
         with self._generate_lock:
             with self._lock:
-                # An unload / superseding load signalled the active denoise and is waiting for this
-                # lock. Python locks are not FIFO, so this request can get in first; refuse instead
-                # of starting a denoise on a pipeline that is already being torn down.
+                # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than start a denoise
+                # on a pipeline that is already being torn down.
                 if self._teardown_waiters:
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 state = self._state
@@ -2822,11 +2799,11 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # Register under _lock so unload()/a load can signal THIS generation.
                 self._active_generate_cancel = cancel
-                # Publish an active (step 0) state before the slow pre-denoise setup (deferred compile, LoRA resolution, ControlNet build) so a reload mount probe does not read idle. The per-step callback swaps in its own _GenState.
+                # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:
-                # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image (prompt, seed) jobs up front: N prompts, one prompt x N seeds, or the legacy single
-                # prompt deriving base..base+batch_size-1 (matching the native sd.cpp engine, so a gallery recipe replays any batch member alone). A fresh base seed stays < 2**53 for JSON.
+                # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image (prompt, seed) jobs
+                # up front: N prompts, one prompt x N seeds, or one prompt deriving base..base+batch_size-1 (as the native engine does).
                 jobs, seed = resolve_batch_jobs(
                     prompt = prompt,
                     prompts = prompts,
@@ -2836,10 +2813,10 @@ class DiffusionBackend:
                     draw_seed = torch.Generator(device = state.device).seed,
                 )
 
-                # Deferred speed auto: engage the compile profile on the 3rd image, before the LoRA/workflow wiring. Best-effort; a failure stays eager and never retries.
-                # NOT when a LoRA is requested: a compiled transformer rejects LoRA, which would break every LoRA generation on this load.
+                # Deferred speed auto: engage the compile profile on the 3rd image. Best-effort; a failure stays eager and never retries.
+                # NOT when a LoRA is requested: a compiled transformer rejects LoRA, breaking every LoRA generation on this load.
                 lora_requested = any(w != 0 for (_id, w) in (loras or []))
-                # Also stay eager while a PRIOR generation adapters are attached: _apply_loras runs AFTER this, so compiling would bake the adapter in permanently.
+                # Also stay eager while a PRIOR generation's adapters are attached: compiling would bake them in permanently.
                 loras_attached = bool(getattr(state.pipe, "_unsloth_loras", ()))
                 if (
                     state.speed_deferred
@@ -2858,13 +2835,13 @@ class DiffusionBackend:
                 # Apply/adjust LoRA before picking the workflow pipe; from_pipe pipes share the transformer.
                 self._apply_loras(state, loras, cancel)
 
-                # Select the workflow pipeline: txt2img uses the loaded pipe; img2img/inpaint reuse its modules via from_pipe; an edit model own pipe is already the edit pipeline.
+                # Select the workflow pipe: txt2img uses the loaded pipe; img2img/inpaint reuse its modules via from_pipe.
                 pipe = state.pipe
                 init_pil = mask_pil = None
                 control_pil = None
                 cn_scale = cn_gstart = cn_gend = cn_mode = None
                 ref_extra: list = []
-                # Validate dependencies up front: mask/upscale/reference need an input image, and reference needs a supporting family (else the combo silently falls back to txt2img).
+                # Validate dependencies up front: mask/upscale/reference need an input image, and reference needs a supporting family.
                 if init_image is None:
                     if mask_image is not None:
                         raise ValueError("mask_image requires an input image (init_image).")
@@ -2878,7 +2855,7 @@ class DiffusionBackend:
                         "model family."
                     )
                 if getattr(state.family, "edit", False):
-                    # Instruction editing: the loaded pipe IS the edit pipeline and always needs an input image; the prompt is the instruction. No mask, no from_pipe.
+                    # Instruction editing: the loaded pipe IS the edit pipeline and always needs an input image; the prompt is the instruction.
                     if init_image is None:
                         raise ValueError(
                             f"{state.family.name} is an image-editing model: provide an input image."
@@ -2897,12 +2874,12 @@ class DiffusionBackend:
                     init_pil = _decode_b64_image(init_image, mode = "RGB")
                     mask_pil = _decode_b64_image(mask_image, mode = "L")
                 elif init_image is not None and upscale is not None and upscale > 1.0:
-                    # Upscale (hires fix): enlarge with Lanczos, then re-run img2img at low strength to add detail without redrawing. Shares the img2img pipeline via from_pipe.
+                    # Upscale (hires fix): enlarge with Lanczos, then re-run img2img at low strength to add detail.
                     workflow = "upscale"
                     pipe = self._workflow_pipe(state, state.family.img2img_pipeline_class, workflow)
                     init_pil = _decode_b64_image(init_image, mode = "RGB")
                     iw, ih = init_pil.size
-                    # Cap the factor, then the absolute output (longest side 2048) to avoid an OOM-scale latent; round to a multiple of 16 (VAE downsample + patch).
+                    # Cap the factor, then the absolute output (longest side 2048); round to a multiple of 16 (VAE downsample + patch).
                     factor = max(1.0, min(float(upscale), 4.0))
                     tw_f, th_f = iw * factor, ih * factor
                     max_side = 2048
@@ -2920,7 +2897,7 @@ class DiffusionBackend:
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
                 elif getattr(state.family, "reference", False) and init_image is not None:
-                    # FLUX.2 reference conditioning: the loaded pipe takes the reference via `image` and generates at the REQUESTED size (no from_pipe, no strength). After inpaint/upscale so those route first.
+                    # FLUX.2 reference conditioning: the loaded pipe takes the reference via `image` and generates at the REQUESTED size.
                     workflow = "reference"
                     init_pil = _decode_b64_image(init_image, mode = "RGB")
                     # Additional references (FLUX.2 combines a list); capped to bound VRAM.
@@ -2934,7 +2911,7 @@ class DiffusionBackend:
                 else:
                     workflow = "txt2img"
 
-                # ControlNet (diffusers): txt2img only. Builds the family CN pipeline around resident modules and passes a control map.
+                # ControlNet (diffusers): txt2img only. Builds the family CN pipeline around resident modules.
                 if controlnet is not None:
                     from core.inference import diffusion_controlnet
                     cn_id, cn_image_b64, cn_type, cn_strength, cn_gs, cn_ge = controlnet
@@ -2961,7 +2938,7 @@ class DiffusionBackend:
                                 "diffusers engine (needs a bf16 or bnb-4bit load of a family with a "
                                 "ControlNet pipeline; not GGUF-via-diffusers or torchao fp8/int8)."
                             )
-                        # Decode + preprocess the control image FIRST so a bad image 400s before any CN download/build, at the OUTPUT size to align with latents.
+                        # Decode + preprocess the control image FIRST so a bad image 400s before any CN download, at the OUTPUT size.
                         src = _decode_b64_image(cn_image_b64, mode = "RGB")
                         control_pil = diffusion_controlnet.preprocess_control(src, cn_type).resize(
                             (width, height), Image.LANCZOS
@@ -2978,16 +2955,16 @@ class DiffusionBackend:
                         cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
                         # Flux Union CN selects its head by an integer control_mode; map the type.
                         cn_mode = diffusion_controlnet.union_control_mode(cn_id, cn_type)
-                # A prompt LIST batches plain text-to-image only: the image-conditioned and ControlNet workflows take one
-                # conditioning image per call, and a silent broadcast would pair every prompt with it. Multiple SEEDS of one prompt stay valid everywhere.
+                # A prompt LIST batches plain text-to-image only: conditioned workflows take one image per call and a silent
+                # broadcast would pair every prompt with it. Multiple SEEDS of one prompt stay valid everywhere.
                 if uniform_prompt(jobs) is None and workflow != "txt2img":
                     raise ValueError(
                         "A prompts list is supported for plain text-to-image only; the "
                         f"{workflow} workflow takes one prompt per call (seed lists still work)."
                     )
-                # Snap odd-sized inputs (and the mask) to a multiple of 16 for workflows whose OUTPUT size comes from the input image (img2img/inpaint/edit); txt2img/reference use the slider and upscale is already /16.
+                # Snap odd-sized inputs (and the mask) to a multiple of 16 where the OUTPUT size comes from the input image.
                 if init_pil is not None and workflow in ("img2img", "inpaint", "edit"):
-                    # img2img/inpaint take output size from the upload, so bound the longest side to 2048 first (else a phone photo drives an OOM-scale latent). edit resizes internally.
+                    # img2img/inpaint take output size from the upload, so bound the longest side to 2048 (a phone photo would OOM).
                     if workflow in ("img2img", "inpaint"):
                         init_pil = _clamp_max_side(init_pil, 2048)
                     init_pil = _snap_to_multiple(init_pil, 16)
@@ -3002,20 +2979,20 @@ class DiffusionBackend:
                 call_params = inspect.signature(pipe.__call__).parameters
 
                 kwargs: dict[str, Any] = {
-                    # prompt / generator / num_images_per_prompt are set per chunk below: each chunk carries its own prompt slice and one torch.Generator PER IMAGE.
+                    # prompt / generator / num_images_per_prompt are set per chunk below, one torch.Generator PER IMAGE.
                     "num_inference_steps": steps,
                     # Most pipelines use "guidance_scale"; Qwen-Image uses "true_cfg_scale".
                     state.family.cfg_kwarg: guidance,
                 }
                 if state.family.name == IDEOGRAM4_FAMILY_NAME:
-                    # Ideogram 4 drives CFG via EITHER a constant guidance_scale OR a per-step guidance_schedule (check_inputs rejects both).
+                    # Ideogram 4 drives CFG via EITHER a constant guidance_scale OR a per-step guidance_schedule, never both.
                     # At the advertised defaults drop the constant so the recommended 48-step taper engages; else null the schedule.
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
                         kwargs["guidance_schedule"] = None
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
-                    # Lumina 2 card recipe runs the CFG double-forward over only the first quarter of the trajectory (cfg_trunc_ratio=0.25); the pipeline default (1.0) visibly oversaturates output.
+                    # Lumina 2's card recipe truncates the CFG double-forward to the first quarter (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
                     kwargs["cfg_trunc_ratio"] = 0.25
                 if init_pil is not None:
                     # Reference passes the whole list (FLUX.2 combines); others take the single image.
@@ -3024,8 +3001,8 @@ class DiffusionBackend:
                         kwargs["mask_image"] = mask_pil
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
-                # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE own size, else the
-                # latents mismatch. Many such pipes drop them entirely, so pass only when accepted, derived from the image.
+                # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's own size or the
+                # latents mismatch, and many drop them entirely, so pass only when accepted.
                 if workflow in ("txt2img", "reference", "controlnet"):
                     # These generate at the REQUESTED size (reference/control image resized to match).
                     kwargs["width"] = width
@@ -3039,7 +3016,7 @@ class DiffusionBackend:
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
                 if workflow == "controlnet" and control_pil is not None:
-                    # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg is signature-gated so a family that omits one still runs.
+                    # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg is signature-gated.
                     if "control_image" in call_params:
                         kwargs["control_image"] = control_pil
                     elif "image" in call_params:  # some CN pipelines name it "image"
@@ -3054,11 +3031,11 @@ class DiffusionBackend:
                     if "control_mode" in call_params and cn_mode is not None:
                         kwargs["control_mode"] = cn_mode
 
-                # Per-forward chunks: the whole job list in ONE forward by default (the measured sweet spot: batch 32 on 4-step
-                # models, ~10-22x over serial engines), bounded by an explicit batch_size cap; the OOM backoff below halves a failed chunk.
+                # Per-forward chunks: the whole job list in ONE forward by default (batch 32 on 4-step models is ~10-22x over
+                # serial engines), bounded by an explicit batch_size cap; the OOM backoff below halves a failed chunk.
                 chunks = chunk_jobs(jobs, batch_size)
                 gen = _GenState(total_steps = steps * len(chunks))
-                # Steps completed by FINISHED chunks, so the bar spans the whole multi-chunk call (mutable cell: _on_step closes over it).
+                # Steps completed by FINISHED chunks, so the bar spans the whole multi-chunk call (mutable cell for _on_step).
                 steps_done = [0]
 
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
@@ -3078,9 +3055,9 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # Re-check an AUTO cache decision against the ACTUAL step count (28 steps gains FBCache, a few-step turbo drops it); explicit choices never toggle.
+                # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
-                    # Key on the EFFECTIVE denoise steps: an img2img/upscale request at strength < 1 only denoises a fraction of `steps`, so fold in `strength` (when applied, else the pipe own default) to keep FBCache off the short trajectory.
+                    # Key on the EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, so fold in `strength` to keep FBCache off short trajectories.
                     strength_applied = effective_request_strength(
                         strength,
                         init_pil is not None,
@@ -3096,7 +3073,7 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     if toggled != state.transformer_cache:
-                        # _LoadState is frozen; the one deliberate in-place update, tracking the pipe-level toggle so status() is truthful.
+                        # _LoadState is frozen; the one deliberate in-place update, so status() reports the pipe-level toggle.
                         object.__setattr__(state, "transformer_cache", toggled)
                         entry = (state.resolved or {}).get("transformer_cache")
                         if isinstance(entry, dict):
@@ -3119,7 +3096,7 @@ class DiffusionBackend:
                         torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
                     ]
                     if len(jobs) == 1:
-                        # Single image: scalar prompt + generator, exactly the pre-batching call shape (the regression harness checks this path bit-identical).
+                        # Single image: scalar prompt + generator, exactly the pre-batching call shape (checked bit-identical).
                         chunk_kwargs["prompt"] = shared
                         chunk_kwargs["generator"] = generators[0]
                         chunk_kwargs["num_images_per_prompt"] = 1
@@ -3129,8 +3106,8 @@ class DiffusionBackend:
                         chunk_kwargs["generator"] = generators
                         chunk_kwargs["num_images_per_prompt"] = len(chunk)
                     else:
-                        # Distinct prompts: one image per prompt in a single forward. The negative prompt must be broadcast to match, else
-                        # a pipeline asserts on the length (Z-Image) or fails in the transformer txt/img concat (Qwen-Image, Krea 2, FLUX true-CFG). Pipes that already expand a scalar are unaffected.
+                        # Distinct prompts: one image per prompt in a single forward. The negative prompt must be broadcast to match,
+                        # else a pipeline asserts on the length or fails in the transformer txt/img concat.
                         chunk_kwargs["prompt"] = [p for p, _ in chunk]
                         chunk_kwargs["generator"] = generators
                         chunk_kwargs["num_images_per_prompt"] = 1
@@ -3138,8 +3115,8 @@ class DiffusionBackend:
                             chunk_kwargs["negative_prompt"] = [
                                 chunk_kwargs["negative_prompt"]
                             ] * len(chunk)
-                    # Start every forward from a clean step cache: diffusers only resets FBCache state at the END of a SUCCESSFUL
-                    # __call__, so a raised call (OOM, cancel) leaves a residual the next differently sized forward trips over.
+                    # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL __call__, so a
+                    # raised call (OOM, cancel) leaves a residual the next differently sized forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
                     try:
@@ -3149,7 +3126,7 @@ class DiffusionBackend:
                     except Exception as exc:  # noqa: BLE001 — reraised unless a splittable OOM
                         if len(chunk) < 2 or not is_oom_error(exc):
                             raise
-                        # OOM backoff: halve the failed chunk and retry; finished chunks keep their images and per-image seeds keep every retry reproducible.
+                        # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry reproducible.
                         empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
                         if callable(empty_cache):
                             empty_cache()
@@ -3170,10 +3147,10 @@ class DiffusionBackend:
                     per_image_seeds.extend(s for _, s in chunk)
                     chunk_shapes.append(len(chunk))
                     steps_done[0] += steps
-                # Keep progress ACTIVE through the post-denoise work below: the route persists the image AFTER this returns, so a mount probe reading idle now would refresh the gallery too early. The outer finally clears _gen on any exit.
-                # Persist the warm torch.compile bundle after the first compiled generation; a STATIC compile makes new artifacts per (w,h,batch), so register this shape first. Idempotent, best-effort.
+                # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns, so a mount probe reading idle now would refresh the gallery too early.
+                # Persist the warm compile bundle; a STATIC compile makes new artifacts per (w,h,batch), so register this shape.
                 try:
-                    # Register the dims the forward ACTUALLY compiled with (image-conditioned workflows run at the input image size; see _compile_shape_dims), and every distinct chunk size, since a static compile makes one artifact per batch size too.
+                    # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static compile makes one artifact per batch size too).
                     reg_width, reg_height = _compile_shape_dims(workflow, init_pil, width, height)
                     static_shapes = "compiled" in (
                         state.speed_optims or ()
@@ -3189,21 +3166,21 @@ class DiffusionBackend:
                     pass
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
-                # Return the PIL images (unencoded); the route embeds recipes and persists them. ``seeds`` records each image OWN seed, so every batch member replays individually.
+                # Return the PIL images (unencoded); the route embeds recipes and persists them. ``seeds`` records each image's own seed.
                 return {
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
                     "repo_id": state.repo_id,
-                    # The BUILD this ran on, not just the repo id: a GGUF quant choice and a torchao scheme each change the pixels, so a recipe naming only the repo cannot rebuild the pipeline that made the image once it is unloaded.
+                    # The BUILD this ran on, not just the repo id: a GGUF quant and a torchao scheme each change the pixels.
                     "model_kind": state.kind,
                     "gguf_filename": state.gguf_filename,
                     "transformer_quant": state.transformer_quant,
-                    # Adapters baked in at LOAD time. Disabling them at generate time is scale 0, which is not the same build as one loaded without them, so this is part of the build record rather than of the applied set below.
+                    # Adapters baked in at LOAD time: disabling them at generate time is not the same build, so they belong to the build record.
                     "baked_loras": _baked_lora_names(state.pipe),
                     # The adapters ACTUALLY attached, at non-zero weight, for this generation.
                     "active_loras": _active_lora_pairs(state.pipe),
-                    # The workflow this generation ACTUALLY ran, so a conditioned image is not presented as a plain Create recipe that would replay as something unrelated.
+                    # The workflow this generation ACTUALLY ran, so a conditioned image is not replayed as a plain Create recipe.
                     "workflow": workflow,
                 }
             finally:
@@ -3211,7 +3188,7 @@ class DiffusionBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
-                    # Sole clear of the published progress state, on every exit, so it stays active through post-denoise work but a crashed generation never leaves the UI stuck "active".
+                    # Sole clear of the published progress state, on every exit, so a crashed generation never leaves the UI stuck.
                     self._gen = None
 
     def generate_progress(self) -> dict[str, Any]:
@@ -3235,31 +3212,26 @@ class DiffusionBackend:
 
     def unload(self) -> dict[str, Any]:
         with self._lock:
-            # Abort an in-flight (lock-free) download so unload/eviction returns promptly. Under the
-            # lock, like video.py: begin_load rebinds this attribute, so an unlocked read could set
-            # an event the current load no longer watches.
+            # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py: begin_load
+            # rebinds this attribute, so an unlocked read could set an event the current load no longer watches.
             self._cancel_event.set()
             # Abort an in-flight denoise via ITS cancel event.
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            # Fence queued generations too: they hold no cancel event yet, so the signal above
-            # cannot reach them.
+            # Fence queued generations too: they hold no cancel event yet, so the signal above cannot reach them.
             self._teardown_waiters += 1
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
             self._loading = None
         # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
-        # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on. Mirrors begin_load.
+        # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
         with self._generate_lock:
             with self._lock:
                 try:
                     self._unload_locked()
                 finally:
-                    # Released in a finally, exactly like begin_load: _unload_locked ends in
-                    # clear_gpu_cache(), whose CUDA branch raises on a sticky fault, and an
-                    # un-drained fence would refuse every later generation for the life of the
-                    # process. Teardown is done (or gave up): the next generation gets the plain
-                    # not-loaded message instead.
+                    # Released in a finally, exactly like begin_load: _unload_locked ends in clear_gpu_cache(), which raises on a
+                    # sticky CUDA fault, and an un-drained fence would refuse every later generation for the life of the process.
                     self._teardown_waiters -= 1
         return self.status()
 
@@ -3267,7 +3239,7 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
-        # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical; compile_cache.restore + gguf_compile.uninstall_all likewise. All idempotent.
+        # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All idempotent.
         restore_backend_flags(state.backend_flags_before)
         compile_cache.restore(state.compile_cache_ctx)
         gguf_compile.uninstall_all()
@@ -3278,7 +3250,7 @@ class DiffusionBackend:
 
             uninstall_patches()
             uninstall_arch_patches()
-        # Deliberately NOT unload_lora_weights(): the whole pipe is dropped below, freeing any adapters with it. Both callers hold _generate_lock, so no denoise is in flight.
+        # Deliberately NOT unload_lora_weights(): the whole pipe is dropped below, freeing any adapters with it.
         # Drop the workflow pipes so they do not pin the freed pipeline modules past unload.
         self._aux_pipes.clear()
         # Drop any ControlNet models + pipelines so the freed load carries no extra modules.
@@ -3462,7 +3434,7 @@ def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) 
     return not rfilename.startswith("assets/")
 
 
-# Weight extensions the base repo need NOT supply when the single file is the whole pipeline (SDXL): from_single_file(config=base) reads only the base structure, not its weights.
+# Weight extensions the base repo need NOT supply when the single file is the whole pipeline (SDXL): from_single_file(config=base) reads only the structure.
 _BASE_WEIGHT_EXTS = (
     ".safetensors",
     ".bin",

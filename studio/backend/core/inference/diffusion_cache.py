@@ -27,7 +27,7 @@ TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
 TC_MODES = (TC_FBCACHE,)
 
-# FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the residual distribution, so they need a higher threshold to trigger.
+# FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the residual distribution, so they need a higher threshold.
 DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
@@ -197,12 +197,12 @@ def apply_step_cache(
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
-    # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would also install on a non-CacheMixin transformer whose pipeline opens no cache_context and crashes generation. Such a model runs uncached instead.
+    # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would also install on a non-CacheMixin transformer whose pipeline opens no cache_context and crash generation.
     enable_cache = getattr(transformer, "enable_cache", None)
     if not callable(enable_cache):
         _warn(logger, mode, RuntimeError("transformer has no cache_context (not a CacheMixin)"))
         return None
-    # A CacheMixin transformer is necessary but not sufficient: the hook raises "No context is set" unless the PIPELINE wraps its denoise loop in cache_context(...). Flux Kontext / img2img / inpaint / controlnet reuse FluxTransformer2DModel yet open none, so run uncached.
+    # A CacheMixin transformer is necessary but not sufficient: the hook raises "No context is set" unless the PIPELINE wraps its denoise loop in cache_context(...). Flux Kontext / img2img / inpaint / controlnet open none, so run uncached.
     if not _pipeline_opens_cache_context(pipe):
         _warn(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
@@ -228,7 +228,7 @@ def apply_step_cache(
             logger.info("diffusion.cache: %s engaged (threshold=%s)", mode, thr)
         return mode
     except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
-        # enable_cache can fail after hooking some blocks; drop partial hooks so the reported-uncached model is not half-cached. Restore armed compiled inners FIRST (remove_hook splices original_forward back into module.forward).
+        # enable_cache can fail after hooking some blocks; drop partial hooks so the reported-uncached model is not half-cached. Restore armed compiled inners FIRST (remove_hook splices original_forward back).
         _restore_hooked_block_inners(transformer)
         try:
             transformer.disable_cache()

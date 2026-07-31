@@ -30,10 +30,9 @@ def _isolate_studio_home(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse = True)
 def _restore_hf_cache_settings_module():
-    # _load_storage_roots pops utils.hf_cache_settings so each test gets a fresh resolver. Left
-    # popped, the next import builds a SECOND module object and rebinds it on the utils package, so
-    # a later test writes its setting into one object while the code under test reads the other --
-    # the same split-module failure the xet shim already had. Restore both bindings.
+    # _load_storage_roots pops utils.hf_cache_settings so each test gets a fresh resolver. Left popped, the next import builds
+    # a SECOND module object and rebinds it on the utils package, so a later test writes its setting into one object while
+    # the code under test reads the other. Restore both bindings.
     import utils
 
     name = "utils.hf_cache_settings"

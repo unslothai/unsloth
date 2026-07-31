@@ -144,8 +144,7 @@ def test_explicit_threshold_overrides_quant(monkeypatch):
 
 
 def test_non_cachemixin_runs_uncached(monkeypatch):
-    # A transformer without enable_cache (e.g. Z-Image) must NOT install the standalone hook: its
-    # pipeline opens no cache_context, so it runs uncached instead of crashing at generation.
+    # A transformer without enable_cache (e.g. Z-Image) must NOT get the standalone hook: its pipeline opens no cache_context, so it runs uncached instead of crashing.
     rec: dict = {}
     _stub_diffusers(monkeypatch, hook_recorder = rec)
     t = _NonCacheMixinTransformer()
@@ -154,9 +153,8 @@ def test_non_cachemixin_runs_uncached(monkeypatch):
 
 
 def test_pipeline_without_cache_context_runs_uncached(monkeypatch):
-    # A CacheMixin transformer whose PIPELINE never opens a cache_context (Flux Kontext / img2img /
-    # inpaint / controlnet reuse FluxTransformer2DModel) must run uncached, else the First-Block-Cache
-    # hook raises "No context is set" on the first forward.
+    # A CacheMixin transformer whose PIPELINE never opens a cache_context (Flux Kontext / img2img / inpaint / controlnet reuse
+    # FluxTransformer2DModel) must run uncached, else the First-Block-Cache hook raises "No context is set" on the first forward.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     assert apply_step_cache(_NoCtxPipe(t), mode = "fbcache") is None
@@ -171,8 +169,7 @@ def test_incompatible_model_runs_uncached(monkeypatch):
 
 
 def test_enable_cache_failure_rolls_back_partial_hooks(monkeypatch):
-    # enable_cache can raise after hooking some blocks; the reported-uncached model must not actually
-    # run half-cached, so the failure path calls disable_cache.
+    # enable_cache can raise after hooking some blocks, so the failure path calls disable_cache rather than run half-cached.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer(fail = True)
     t.disabled = False
@@ -200,9 +197,8 @@ def test_missing_transformer_is_none(monkeypatch):
 
 
 def test_diffusers_unavailable_runs_uncached(monkeypatch):
-    # No diffusers import: best-effort returns None and the load proceeds uncached. Block the hooks
-    # module too, since the config import falls back to it and a real earlier import may have left it
-    # cached in sys.modules.
+    # No diffusers import: best-effort returns None and the load proceeds uncached. Block the hooks module too, since the
+    # config import falls back to it and an earlier real import may have cached it in sys.modules.
     monkeypatch.setitem(sys.modules, "diffusers", None)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", None)
     t = _MixinTransformer()
@@ -227,8 +223,7 @@ def test_effective_steps_txt2img_is_full_count():
 
 
 def test_effective_steps_low_strength_shrinks_below_the_bar():
-    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps (diffusers floors the product),
-    # below FBCACHE_MIN_STEPS, so the auto policy must NOT engage FBCache.
+    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps, below FBCACHE_MIN_STEPS, so auto must not engage FBCache.
     eff = effective_denoise_steps(28, 0.35)
     assert eff == 9
     assert eff < FBCACHE_MIN_STEPS
@@ -242,8 +237,7 @@ def test_effective_request_strength_uses_pipe_default_when_omitted():
     assert effective_request_strength(0.5, True, False, None) is None
     # img2img with an explicit strength -> that value.
     assert effective_request_strength(0.2, True, True, 0.6) == 0.2
-    # img2img with an OMITTED strength uses the pipe's own signature default, so the auto policy keys
-    # on the real (short) trajectory: int(28 * 0.6) = 16 real steps, not 28.
+    # img2img with an OMITTED strength uses the pipe's signature default, so auto keys on the real trajectory: int(28 * 0.6) = 16 steps.
     s = effective_request_strength(None, True, True, 0.6)
     assert s == 0.6
     assert effective_denoise_steps(28, s) == 16
@@ -260,8 +254,7 @@ def test_effective_steps_matches_diffusers_get_timesteps():
 
 
 def test_toggle_stays_off_for_low_strength_workflow(monkeypatch):
-    # End to end: a 28-step request would engage FBCache, but at strength 0.35 the effective ~10 steps
-    # keep it uncached.
+    # End to end: a 28-step request would engage FBCache, but at strength 0.35 the effective ~10 steps keep it uncached.
     _stub_diffusers(monkeypatch)
     t = _ToggleTransformer()
     mode = maybe_toggle_step_cache(_pipe(t), steps = effective_denoise_steps(28, 0.35))
@@ -290,8 +283,7 @@ def test_normalize_auto_is_a_distinct_state():
 
 
 def test_apply_treats_stray_auto_as_off(monkeypatch):
-    # AUTO must be resolved by the loader; if it ever reaches the engage call the load runs uncached
-    # instead of crashing.
+    # AUTO is resolved by the loader; if it ever reaches the engage call the load runs uncached instead of crashing.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     assert apply_step_cache(_pipe(t), mode = "auto") is None
@@ -428,8 +420,7 @@ def test_arming_is_idempotent(monkeypatch):
 
 
 def test_arming_skips_uncompiled_blocks(monkeypatch):
-    # An eager-tier load has no _compiled_call_impl: the hook must stay untouched (compiling the inner
-    # would ADD compile where the user chose eager).
+    # An eager-tier load has no _compiled_call_impl: the hook must stay untouched, else compiling the inner adds compile the user declined.
     _stub_torch_compile(monkeypatch)
     block, hook, orig = _hooked_block(compiled = False)
     assert _compile_hooked_block_inners(_fake_dit([block])) == 0
@@ -437,8 +428,7 @@ def test_arming_skips_uncompiled_blocks(monkeypatch):
 
 
 def test_arming_skips_partial_captured_inner(monkeypatch):
-    # A stacked hook chain (e.g. group offload) captures a functools.partial, not the plain bound
-    # method; arming would compile the wrong layer of the chain.
+    # A stacked hook chain (e.g. group offload) captures a functools.partial, not the bound method; arming would compile the wrong layer.
     _stub_torch_compile(monkeypatch)
     block, hook, orig = _hooked_block(bound = False)
     assert _compile_hooked_block_inners(_fake_dit([block])) == 0
@@ -446,8 +436,7 @@ def test_arming_skips_partial_captured_inner(monkeypatch):
 
 
 def test_arming_covers_every_cache_hook_family(monkeypatch):
-    # FBCache is the image cache today, but the hook-name table already covers the MagCache layout
-    # (same fn_ref shape), so a future mode arms for free.
+    # FBCache is the image cache today, but the hook-name table already covers the MagCache layout, so a future mode arms for free.
     _stub_torch_compile(monkeypatch)
     names = (
         "mag_cache_leader_block_hook",
@@ -474,8 +463,7 @@ def test_restore_tolerates_fakes_without_modules():
 
 
 def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
-    # The generation-time toggle engages the cache AFTER the load already compiled the blocks, so
-    # apply_step_cache must arm the fresh hooks itself.
+    # The generation-time toggle engages the cache AFTER the load compiled the blocks, so apply_step_cache must arm the fresh hooks itself.
     _stub_diffusers(monkeypatch)
     _stub_torch_compile(monkeypatch)
     block, hook, orig = _hooked_block()
@@ -492,8 +480,7 @@ def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
 
 
 def test_toggle_disable_restores_inners_before_disable(monkeypatch):
-    # remove_hook splices fn_ref.original_forward back into module.forward, so the compiled wrapper
-    # must be swapped out BEFORE disable_cache runs.
+    # remove_hook splices fn_ref.original_forward back into module.forward, so the compiled wrapper must be swapped out BEFORE disable_cache.
     _stub_diffusers(monkeypatch)
     order = []
 
@@ -514,8 +501,7 @@ def test_toggle_disable_restores_inners_before_disable(monkeypatch):
 
 
 def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
-    # enable_cache can fail after hooking (and arming) some blocks; the partial-hook cleanup must
-    # un-arm them before disable_cache splices original_forward back.
+    # enable_cache can fail after hooking (and arming) some blocks, so the partial-hook cleanup must un-arm them before disable_cache.
     _stub_diffusers(monkeypatch)
     order = []
 
@@ -540,9 +526,8 @@ def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
 
 
 def test_enable_invalidates_stale_child_registry_cache(monkeypatch):
-    # diffusers 0.39 caches the child-registry list on first cache_context use, and an UNCACHED
-    # generation already populates it (empty), so a later toggle-time enable_cache would install hooks
-    # the context never reaches ("No context is set").
+    # diffusers 0.39 caches the child-registry list on first cache_context use and an UNCACHED generation already populates it
+    # (empty), so a later toggle-time enable_cache would install hooks the context never reaches ("No context is set").
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = ["stale"])

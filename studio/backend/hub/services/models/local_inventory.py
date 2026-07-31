@@ -716,9 +716,8 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         )
         local_models += await _collect_models_from_custom_folders()
         models = _dedupe_local_models(_filter_hidden_models(local_models))
-        # Tag each row with its pipeline task, as /api/models/local does: the Images and Video
-        # pickers filter On Device rows on it and the chat picker routes a diffusion pick by it, so
-        # an untagged row is dropped from those lists. Imported lazily to keep the cycle out.
+        # Tag each row with its pipeline task, as /api/models/local does: the Images and Video pickers filter On Device rows on
+        # it and the chat picker routes a diffusion pick by it, so an untagged row is dropped. Imported lazily to avoid a cycle.
         try:
             from routes.models import _local_model_task
             models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]

@@ -234,8 +234,7 @@ def _diff_load(**kw):
 
 
 def test_attention_backend_casing_and_whitespace_normalized():
-    # The dispatcher accepts case/whitespace variants; the before-validator must fold them so the
-    # lowercase Literal does not 422 an otherwise-valid request.
+    # The dispatcher accepts case/whitespace variants, so the before-validator must fold them or the lowercase Literal 422s a valid request.
     assert _diff_load(attention_backend = "CuDNN").attention_backend == "cudnn"
     assert _diff_load(attention_backend = "  sage ").attention_backend == "sage"
 

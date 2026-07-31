@@ -69,8 +69,7 @@ def main(argv = None) -> int:
     print(f"  loading dense encoder from {args.base} (subfolder={subfolder!r}) ...", flush = True)
     t0 = time.time()
     config = transformers.AutoConfig.from_pretrained(args.base, **from_pretrained_kwargs)
-    # Prefer the checkpoint's own architecture; AutoModel.from_config gives the bare base class,
-    # whose state dict the pipeline cannot use.
+    # Prefer the checkpoint's own architecture; AutoModel.from_config gives an unusable bare base class.
     arch = (getattr(config, "architectures", None) or [None])[0]
     if arch and hasattr(transformers, arch):
         encoder_cls_name = arch

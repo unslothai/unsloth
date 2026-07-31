@@ -86,11 +86,7 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     connections: false,
   };
 
-/**
- * Sidebar NAVIGATION rows the user can pin and reorder, distinct from the
- * profile-menu entries above. Array order is render order. Unpinned rows go to
- * the "More" flyout, except a lone one, which is hidden.
- */
+/** Sidebar NAVIGATION rows the user can pin and reorder, distinct from the profile-menu entries above. Array order is render order. Unpinned rows go to the "More" flyout, except a lone one, which is hidden. */
 export const SIDEBAR_NAV_ITEM_IDS = [
   "projects",
   "hub",

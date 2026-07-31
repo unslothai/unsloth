@@ -96,8 +96,7 @@ def test_device_argument_excluded_from_the_key(cache_env):
 
 
 def test_warm_reuse_across_installs(cache_env):
-    # A NEW pipe (fresh load) over the same directory hits the persisted entry without ever encoding:
-    # the property that lets warm loads keep the text encoder off GPU.
+    # A NEW pipe (fresh load) over the same directory hits the persisted entry without encoding: the property that lets warm loads keep the text encoder off GPU.
     first = _EncodePipe()
     _install(first)
     reference = first.encode_prompt("a sloth")
@@ -123,9 +122,8 @@ def test_load_fingerprint_keys_apart(cache_env):
 
 
 def test_companion_base_keys_apart(cache_env):
-    # A GGUF / single-file checkpoint takes its TEXT ENCODERS from the companion base, so the SAME
-    # checkpoint reloaded against a different base must re-encode rather than reuse the previous
-    # base's embeddings.
+    # A GGUF / single-file checkpoint takes its TEXT ENCODERS from the companion base, so the same checkpoint reloaded
+    # against a different base must re-encode rather than reuse the previous base's embeddings.
     first = _EncodePipe()
     _install(first, repo_id = "org/model-GGUF", base_repo = "base/one")
     first.encode_prompt("a sloth")
@@ -141,8 +139,7 @@ def test_companion_base_keys_apart(cache_env):
 
 
 def test_a_local_base_updated_in_place_keys_apart(cache_env, tmp_path):
-    # A directory path is not a version: editing the text encoder in place must MISS, or the run
-    # silently conditions on embeddings from the encoder that was there before.
+    # A directory path is not a version: editing the text encoder in place must MISS, or the run conditions on the old encoder's embeddings.
     base = tmp_path / "base"
     (base / "text_encoder").mkdir(parents = True)
     weights = base / "text_encoder" / "model.safetensors"
@@ -164,8 +161,7 @@ def test_a_local_base_updated_in_place_keys_apart(cache_env, tmp_path):
 
 
 def test_source_revision_never_raises():
-    # Best-effort by contract: a missing path, a bare name and junk all resolve to a marker instead of
-    # blocking the load.
+    # Best-effort by contract: a missing path, a bare name and junk all resolve to a marker instead of blocking the load.
     for ref in (None, "", "no/such/repo-xyz", "/does/not/exist", 1234):
         assert isinstance(cond_cache._source_revision(ref), str)
 
@@ -196,8 +192,7 @@ class _ListEncodePipe(_EncodePipe):
 
 
 def test_tensor_list_slots_round_trip(cache_env):
-    # Z-Image returns list-of-tensors slots; the flatten/unflatten layout must reproduce them exactly
-    # on a warm hit.
+    # Z-Image returns list-of-tensors slots, so the flatten/unflatten layout must reproduce them exactly on a warm hit.
     pipe = _ListEncodePipe()
     _install(pipe)
     cold = pipe.encode_prompt(["a", "bb"])

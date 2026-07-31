@@ -49,8 +49,7 @@ def _stub_torch(
     torch.float16 = "float16"
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
-    # _cast_fp8 skips nn.Embedding tables to keep prompt tokens full precision, and
-    # _keep_bf16_block_fqns walks for nn.ModuleList block stacks, so the stub torch must expose both.
+    # _cast_fp8 skips nn.Embedding tables and _keep_bf16_block_fqns walks nn.ModuleList stacks, so the stub torch exposes both.
     torch.nn = types.SimpleNamespace(
         Embedding = type("Embedding", (), {}),
         ModuleList = type("ModuleList", (list,), {}),
@@ -205,8 +204,7 @@ def test_quantize_tolerates_caster_failure(monkeypatch):
 
 
 def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
-    # int8 for a family with a measured schedule routes to the selective caster with that family's
-    # (skip_first, skip_last); qwen-image keeps first+last 6 blocks bf16.
+    # int8 for a family with a measured schedule routes to the selective caster with that family's (skip_first, skip_last); qwen-image keeps first+last 6 blocks bf16.
     _stub_torch(monkeypatch, cc = (10, 0))
     calls: list = []
     monkeypatch.setattr(
@@ -220,8 +218,7 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
 
 
 def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
-    # A family without an int8 keep-bf16 schedule falls back to layerwise fp8 (logged), never silently
-    # running full int8 that would degrade the encoder.
+    # A family without an int8 keep-bf16 schedule falls back to layerwise fp8 (logged), never silent full int8 that would degrade the encoder.
     _stub_torch(monkeypatch, cc = (10, 0))
     int8_calls: list = []
     fp8_calls: list = []
@@ -235,8 +232,7 @@ def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
 
 
 def test_quantize_fp8_dynamic_uses_compute_caster(monkeypatch):
-    # fp8_dynamic routes to the torchao per-row compute caster (not the layerwise one) and needs no
-    # per-family schedule.
+    # fp8_dynamic routes to the torchao per-row compute caster (not the layerwise one) and needs no per-family schedule.
     _stub_torch(monkeypatch, cc = (9, 0))
     calls: list = []
     monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda enc, tgt: calls.append(enc))
@@ -256,9 +252,8 @@ def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):
 
 
 def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
-    # The torchao modes produce tensor subclasses that reject Module.to(), which an offload hook uses,
-    # so they must be skipped under offload. Hardware supports every mode here, so a None result
-    # proves the offload skip, not a capability gate; the casters fail if wrongly invoked.
+    # The torchao modes produce tensor subclasses that reject Module.to(), which an offload hook uses, so they are skipped under
+    # offload. Hardware supports every mode here, so a None result proves the skip; the casters fail if wrongly invoked.
     _stub_torch(monkeypatch, cc = (10, 0))
     monkeypatch.setattr(
         dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("torchao caster must not run")
@@ -290,8 +285,7 @@ def test_keep_bf16_block_fqns_selects_first_and_last(monkeypatch):
     torch = _stub_torch(monkeypatch)
     module_list = torch.nn.ModuleList
     layers = module_list([object() for _ in range(10)])
-    # A short stack (at most skip_first + skip_last) contributes nothing, since keeping it all would
-    # leave no interior to quantise.
+    # A short stack (at most skip_first + skip_last) contributes nothing, since keeping it all would leave no interior to quantise.
     short = module_list([object() for _ in range(4)])
     enc = types.SimpleNamespace()
     enc.named_modules = lambda: [("", enc), ("model.layers", layers), ("aux.blocks", short)]
@@ -347,8 +341,7 @@ def _stub_transformer_quant(monkeypatch, captured):
 
 
 def test_int8_filter_keeps_blocks_and_towers_dense(monkeypatch):
-    # The real selective closure: interior Linears quantise, but the kept first blocks, the vision
-    # tower, lm_head, and the encoder's fp32-kept modules (T5 "wo") stay bf16.
+    # The real selective closure: interior Linears quantise while the kept first blocks, the vision tower, lm_head and the encoder's fp32-kept modules (T5 "wo") stay bf16.
     torch = _stub_torch(monkeypatch)
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -371,9 +364,8 @@ def test_int8_filter_keeps_blocks_and_towers_dense(monkeypatch):
 
 
 def test_nvfp4_filter_keeps_vision_tower_dense(monkeypatch):
-    # Weight-only NVFP4 on a text encoder must exclude the VLM vision tower / lm_head / T5 "wo" like
-    # the int8 / fp8 torchao TE modes, since 4-bit-ing a Qwen2.5-VL image tower degrades the edit
-    # conditioning. Before the fix _cast_nvfp4 quantised every nn.Linear (no filter_fn).
+    # Weight-only NVFP4 on a text encoder must exclude the VLM vision tower / lm_head / T5 "wo" like the int8 / fp8 TE modes,
+    # since 4-bit-ing a Qwen2.5-VL image tower degrades the edit conditioning. _cast_nvfp4 used to quantise every nn.Linear.
     _stub_torch(monkeypatch)
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -431,9 +423,8 @@ class _FakeWeight:
 
 
 def test_weight_zero_output_row_detection():
-    # A dead output row NaNs torchao's per-row fp8 (scale 0 -> 0/0); SDXL's text_encoder_2 really
-    # ships one in layers.2.self_attn.out_proj -- measured: every fp8_dynamic SDXL render was black
-    # until the row is kept dense.
+    # A dead output row NaNs torchao's per-row fp8 (scale 0 -> 0/0), and SDXL's text_encoder_2 really ships one in
+    # layers.2.self_attn.out_proj: every fp8_dynamic SDXL render was black until the row is kept dense.
     zero_row = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.0, 0.0]]))
     dense = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.3, 0.0]]))
     assert dp._weight_has_zero_output_row(zero_row) is True
@@ -454,8 +445,7 @@ def test_weight_zero_output_row_detection():
 
 
 def test_fp8_dynamic_filter_skips_zero_row_linear(monkeypatch):
-    # The fp8_dynamic caster must leave a zero-output-row Linear dense while the rest of the encoder
-    # still quantises (a family-wide deny would forfeit the whole win).
+    # The fp8_dynamic caster leaves a zero-output-row Linear dense while the rest of the encoder still quantises (a family-wide deny would forfeit the win).
     _stub_torch(monkeypatch)
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)

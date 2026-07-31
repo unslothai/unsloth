@@ -61,12 +61,10 @@ def test_specs_cover_the_dit_families():
 
 
 def test_flux2_specs_share_targets_and_split_conditioners():
-    # dev and Klein share the transformer (and so the LoRA target set) but load different conditioning
-    # pipelines and save through their own pipeline class.
+    # dev and Klein share the transformer (so the LoRA target set) but load different conditioning pipelines and save through their own class.
     klein, dev = _SPECS["flux.2-klein"], _SPECS["flux.2-dev"]
     assert klein.lora_targets == dev.lora_targets == _FLUX2_TARGETS
-    # The fused single-stream projection is targeted; the plain to_out suffix is not (it would also
-    # match the double-stream ModuleList container, which peft cannot wrap).
+    # The fused single-stream projection is targeted; the plain to_out suffix is not (it also matches the double-stream ModuleList, which peft cannot wrap).
     assert "to_qkv_mlp_proj" in _FLUX2_TARGETS
     assert "to_out.0" in _FLUX2_TARGETS
     assert "to_out" not in _FLUX2_TARGETS
@@ -78,8 +76,7 @@ def test_flux2_specs_share_targets_and_split_conditioners():
 
 
 def test_select_lora_targets_uses_family_default_for_generic_config():
-    # normalized() fills lora_target_modules with the generic DEFAULT_LORA_TARGETS when a caller
-    # doesn't set it, so that value must resolve to the family's targets, not stay on the SDXL list.
+    # normalized() fills lora_target_modules with DEFAULT_LORA_TARGETS, so that value must resolve to the family's targets, not stay on the SDXL list.
     assert _select_lora_targets(DEFAULT_LORA_TARGETS, _FLUX_TARGETS) == _FLUX_TARGETS
     assert _select_lora_targets(DEFAULT_LORA_TARGETS, _QWEN_TARGETS) == _QWEN_TARGETS
     assert _select_lora_targets(DEFAULT_LORA_TARGETS, _ZIMAGE_TARGETS) == _ZIMAGE_TARGETS
@@ -127,9 +124,8 @@ def test_zimage_rejects_fp16_before_loading():
 
 
 def test_flux2_rejects_fp16_before_loading():
-    # Both FLUX.2 variants resolve from their repo names and are bf16-only: an explicit fp16 request
-    # fails in normalized() itself. Klein's base is ungated, so this exercises the precision guard
-    # directly.
+    # Both FLUX.2 variants resolve from their repo names and are bf16-only, so an explicit fp16 fails in normalized() itself.
+    # Klein's base is ungated, so this exercises the precision guard directly.
     ok = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.2-klein-4B", data_dir = "d", output_dir = "o"
     ).normalized()
@@ -151,8 +147,7 @@ def test_flux2_rejects_fp16_before_loading():
 
 
 def test_flux2_bases_pass_the_trusted_base_gate():
-    # The FLUX.2 bases are training-side additions to the loader's trust allowlist, so the
-    # pre-download trust gate must accept them (and still refuse an arbitrary repo).
+    # The FLUX.2 bases are training-side additions to the loader's trust allowlist, so the pre-download trust gate must accept them.
     from core.training.diffusion_train_common import _assert_trusted_base_model
 
     _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-4B")
@@ -162,9 +157,8 @@ def test_flux2_bases_pass_the_trusted_base_gate():
 
 
 def test_every_train_base_is_deployable_as_an_inference_pipeline():
-    # "Deploy to Create" reloads the trained-on base (or the family's deploy_base) through
-    # /images/load as a PIPELINE, gated on _is_trusted_diffusion_repo. Any advertised training base
-    # failing that gate makes Deploy 400 for every adapter trained on it.
+    # "Deploy to Create" reloads the trained-on base (or the family's deploy_base) through /images/load as a PIPELINE, gated on
+    # _is_trusted_diffusion_repo, so an advertised training base failing that gate makes Deploy 400 for every adapter.
     from core.inference.diffusion import _is_trusted_diffusion_repo
     from core.inference.diffusion_families import _FAMILIES
     for fam in _FAMILIES:
@@ -216,9 +210,8 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
 def test_family_train_infos_sdxl_supports_compile_without_precision_modes(
     monkeypatch, dit_train_host
 ):
-    # Regional compile now applies to every family (the SDXL trainer compiles its U-Net blocks too),
-    # but base_precision stays DiT-only, so SDXL advertises no precision modes while z-image keeps
-    # its own. Pin the precision list so the assertion holds regardless of the host GPU.
+    # Regional compile applies to every family (SDXL compiles its U-Net blocks too) but base_precision stays DiT-only, so SDXL
+    # advertises no precision modes while z-image keeps its own. Pin the list so the assertion holds on any host GPU.
     import core.training.diffusion_train_common as dtc
 
     monkeypatch.setattr(dtc, "train_precision_modes", lambda: (["nf4", "bf16", "auto"], "auto"))
@@ -245,14 +238,12 @@ def test_mx_module_filter_accepts_dense_block_linear():
 
 
 def test_mx_module_filter_skips_biased_linear():
-    # The torchao 0.17 MX training path drops the bias term, so an mxfp8'd biased FROZEN linear would
-    # silently lose its bias and corrupt the base output the LoRA regresses against.
+    # The torchao 0.17 MX training path drops the bias, so an mxfp8'd biased FROZEN linear would corrupt the base output the LoRA regresses against.
     assert _mx_module_filter(_linear(3072, 3072, bias = True), "blocks.0.ff.up") is False
 
 
 def test_resolve_base_precision_explicit_mxfp8_requires_blackwell(monkeypatch):
-    # An explicit mxfp8 request on a non-Blackwell CUDA GPU must fail fast: its MX GEMM has no kernel
-    # below sm100 and would otherwise crash at the first training step, after a full dense load.
+    # An explicit mxfp8 on a non-Blackwell CUDA GPU must fail fast: the MX GEMM has no kernel below sm100 and would crash at the first step, after a full dense load.
     import torch
 
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
@@ -290,8 +281,7 @@ def test_mx_module_filter_rejects_non_linear():
 
 
 def test_should_compile_auto_mxfp8_on_cuda():
-    # auto compiles the dense speed modes on cuda; int8 stays eager (torchao subclass); an explicit
-    # "off" wins over the mode.
+    # auto compiles the dense speed modes on cuda; int8 stays eager (torchao subclass); an explicit "off" wins over the mode.
     cfg = DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o")
     assert _should_compile(cfg, False, "cuda", base_precision = "mxfp8") is True
     assert _should_compile(cfg, False, "cuda", base_precision = "int8") is False
@@ -302,8 +292,7 @@ def test_should_compile_auto_mxfp8_on_cuda():
 
 
 def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
-    # An unavailable torchao MX path must never be fatal: force both API revisions' imports to raise,
-    # then assert the helper returns False with exactly one warning naming mxfp8.
+    # An unavailable torchao MX path must never be fatal: force both API revisions' imports to raise and assert one warning naming mxfp8.
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
     monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", None)
     events = []
@@ -315,9 +304,8 @@ def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
 
 
 def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
-    # torchao 0.17 removed prototype.mx_formats.MXLinearConfig in favour of the MXFP8TrainingOpConfig
-    # recipe API, so the config helper must fall back to it or the advertised mxfp8 mode silently
-    # trains dense bf16.
+    # torchao 0.17 replaced prototype.mx_formats.MXLinearConfig with the MXFP8TrainingOpConfig recipe API, so the config helper
+    # must fall back to it or the advertised mxfp8 mode silently trains dense bf16.
     from types import SimpleNamespace
 
     from core.training.diffusion_dit_trainer import _mxfp8_training_config
@@ -344,10 +332,8 @@ def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
 
 
 def _patch_capability(monkeypatch, capability):
-    # Drive train_precision_modes' GPU probe: pretend CUDA is present at the given capability (fp8
-    # needs sm89+, mxfp8 sm100+). torchao is stubbed functional so these exercise the CAPABILITY gate
-    # on hosts without it, and is_bf16_supported is stubbed True (an Ada/Blackwell GPU is bf16-capable
-    # by definition, and the dense modes gate on it).
+    # Drive train_precision_modes' GPU probe: pretend CUDA is present at the given capability (fp8 needs sm89+, mxfp8 sm100+).
+    # torchao is stubbed functional so these test the CAPABILITY gate, and is_bf16_supported is stubbed True (Ada/Blackwell always are).
     import torch
 
     import core.training.diffusion_train_common as dtc
@@ -384,9 +370,8 @@ def test_train_precision_modes_newer_blackwell_has_mxfp8(monkeypatch):
 
 
 def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
-    # A pre-Ampere GPU EMULATES bf16 but has no native bf16 tensor cores, and the DiT trainer requires
-    # native bf16, so /info must offer nf4 only. Otherwise it advertises a start that evicts resident
-    # models and then fails the trainer's bf16 guard.
+    # A pre-Ampere GPU EMULATES bf16 with no native tensor cores and the DiT trainer requires native bf16, so /info must offer
+    # nf4 only, else it advertises a start that evicts resident models and then fails the trainer's bf16 guard.
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)

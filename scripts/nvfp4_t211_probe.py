@@ -47,8 +47,7 @@ def diagnostics() -> None:
         f"e8m0={hasattr(torch, 'float8_e8m0fnu')} _scaled_mm={hasattr(torch, '_scaled_mm')}",
         flush = True,
     )
-    # torchao prints "Skipping import of cpp extensions ..." on torch<2.11; absence of that line
-    # on 2.11 means the CUTLASS FP4 GEMM extension is live.
+    # torchao prints "Skipping import of cpp extensions" on torch<2.11; its absence means CUTLASS FP4 is live.
     print(
         "  (no 'Skipping import of cpp extensions' line above => cpp/CUTLASS ext loaded)",
         flush = True,

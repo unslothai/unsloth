@@ -5160,12 +5160,12 @@ def _guard_chat_load_against_training(
     try:
         llm_active = get_training_backend().is_training_active()
     except Exception as e:
-        # Independent probes: an unreadable LLM backend must still fall through to the diffusion check below, which reads a different service and may know a trainer IS running.
+        # Independent probes: an unreadable LLM backend must still fall through to the diffusion check, which reads a different service.
         logger.warning("Could not check training state for chat-load guard: %s", e)
         llm_active = False
 
     if not llm_active:
-        # An SDXL LoRA trainer runs in its own subprocess and its VRAM cannot be cheaply fit-checked here, so refuse the chat load while one is active. Symmetric with the image-load guard.
+        # An SDXL LoRA trainer runs in its own subprocess and cannot be cheaply fit-checked, so refuse the chat load while one is active.
         if _diffusion_training_active():
             raise HTTPException(
                 status_code = 409,
@@ -5795,8 +5795,8 @@ async def _load_model_impl(
             user_override = request.chat_template_override,
         )
 
-        # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the load is known viable: the already-loaded fast paths below re-assert CHAT ownership themselves.
-        # The real handoff is deferred past identifier / gpu_ids / training-memory validation so a doomed load cannot evict a working image/video model and then error. Mirrors the image/video loaders.
+        # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the load is known viable; the
+        # already-loaded fast paths below re-assert CHAT themselves. Deferred past validation so a doomed load evicts nothing.
         from core.inference.gpu_arbiter import acquire_for, current_owner, release, CHAT
 
         # ── Already-loaded check: skip reload if the exact model is active ──
@@ -5848,8 +5848,8 @@ async def _load_model_impl(
 
                 _gguf_audio = getattr(llama_backend, "_audio_type", None)
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
-                # Requested GGUF chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted arbiter owner. A guaranteed-success path, so evicting here is correct.
-                # Unless the resident server is a confirmed zero-VRAM one, which coexists with an image/video pipeline and so must not evict it to re-announce itself.
+                # Requested GGUF chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
+                # Unless the resident server is a confirmed zero-VRAM one, which coexists with an image/video pipeline.
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
@@ -5917,7 +5917,7 @@ async def _load_model_impl(
                 _sf_flags = _detect_safetensors_features(backend, _chat_template)
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
-                # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted arbiter owner. A guaranteed-success path, so evicting here is correct.
+                # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
                 await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
@@ -6066,8 +6066,8 @@ async def _load_model_impl(
             diffusion_kind = diffusion_kind,
         )
 
-        # Mark the load and refuse one the download manager already owns, BEFORE the eviction below: this 409 leaves nothing loaded, so checking it afterwards destroyed a working Images/Video pipeline for a load that could never start. The marker/check order is the handshake with the download manager.
-        # It also runs after pass-through argument inheritance, since a carried --no-mmproj changes the companion requirement exactly as it does for the load.
+        # Mark the load and refuse one the download manager already owns BEFORE the eviction below: this 409 leaves nothing
+        # loaded. It runs after argument inheritance, since a carried --no-mmproj changes the companion requirement.
         if config.is_gguf and config.gguf_hf_repo:
             from core.inference.llama_cpp import gguf_load_in_flight
 
@@ -6093,12 +6093,12 @@ async def _load_model_impl(
                     ),
                 )
 
-        # Load now known viable (valid identifier, gpu_ids ok, fits alongside any active training): reclaim the GPU for chat, evicting a resident Images/Video pipeline. Doing this only here keeps a doomed load from evicting a working model and then erroring. No-op when chat already owns the GPU.
-        # The in-flight marker is entered UNDER the arbiter lock, as the image and video loads do: a chat load holds no llama-server process until its GGUF downloaded, so a competing acquire in that window found nothing to evict and both allocated VRAM at once.
+        # Load now known viable: reclaim the GPU for chat, evicting a resident Images/Video pipeline, so a doomed load evicts
+        # nothing. The marker is entered UNDER the arbiter lock, since a chat load holds no process until its GGUF lands.
         from core.inference.llama_cpp import chat_load_in_flight, zero_vram_chat_load
 
-        # ...but only when this load will actually use the GPU, exactly as the image and video loaders gate on their resolved device.
-        # A manual gpu_layers=0 GGUF load runs on the CPU with the GPUs hidden from the child, so taking the arbiter would cancel a running image/video generation for a model that needs no VRAM, and leave CHAT recorded as owner.
+        # ...but only when this load will actually use the GPU, exactly as the image and video loaders gate on their device:
+        # a manual gpu_layers=0 load runs on CPU, so taking the arbiter would cancel an image/video generation for nothing.
         chat_load_needs_gpu = not (
             config.is_gguf
             and await asyncio.to_thread(
@@ -6117,8 +6117,8 @@ async def _load_model_impl(
                 lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
             )
         else:
-            # The marker still goes up (the download manager handshake reads it, and it keeps this load cancellable).
-            # Any stale CHAT claim is dropped AFTER the load, not here: this load may still be replacing a GPU-backed chat model, and releasing up front would let an image/video load allocate alongside the model not yet unloaded.
+            # The marker still goes up (the download manager handshake reads it, and it keeps this load cancellable). A stale CHAT
+            # claim is dropped AFTER the load: this one may still be replacing a GPU-backed model.
             gguf_load_stack.enter_context(chat_load_in_flight())
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -6329,8 +6329,8 @@ async def _load_model_impl(
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
                 )
 
-            # An Images/Video acquire can land in the gap between the acquire above and load_model clearing the cancel event, so its cancellation is lost and this load spawns anyway.
-            # Ownership survives that gap: whoever took the GPU keeps it, and this load undoes itself rather than leaving two models resident on one device. A zero-VRAM load never took ownership, so it never yields.
+            # An Images/Video acquire can land in the gap between the acquire above and load_model clearing the cancel event, so
+            # its cancellation is lost. Ownership survives that gap, so this load undoes itself. A zero-VRAM load never yields.
             if chat_load_needs_gpu and current_owner() != CHAT:
                 await asyncio.to_thread(llama_backend.unload_model)
                 raise HTTPException(
@@ -6341,7 +6341,7 @@ async def _load_model_impl(
                     ),
                 )
             if not chat_load_needs_gpu:
-                # Zero-VRAM load done, and whatever GPU-backed chat model it replaced went with it, so drop a now-stale CHAT claim: leaving it would make the next image/video load "evict" a server holding nothing. Owner-guarded, so it no-ops when an image/video model took the GPU meanwhile.
+                # Zero-VRAM load done, so drop a now-stale CHAT claim: leaving it would make the next image/video load "evict" a server holding nothing. Owner-guarded.
                 await asyncio.to_thread(release, CHAT)
 
             logger.info(
@@ -6491,10 +6491,10 @@ async def _load_model_impl(
                 detail = f"Failed to load model: {model_log_label if native_grant_backed else config.display_name}",
             )
 
-        # Same guard the GGUF branch runs above: an Images/Video acquire can land in the gap between this load cancellation and its publish, so the eviction is lost and the model lands anyway. Ownership survives that gap, so this load undoes itself rather than leaving two models resident.
+        # Same guard the GGUF branch runs above: an Images/Video acquire can land between this load's cancellation and its publish, so this load undoes itself.
         if current_owner() != CHAT:
             await asyncio.to_thread(backend.unload_model, config.identifier)
-            # The worker base CUDA context outlives the model unload, so kill it too -- that VRAM is exactly what the image/video pipeline just took the GPU for.
+            # The worker's base CUDA context outlives the model unload, so kill it too.
             await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
             raise HTTPException(
                 status_code = 409,
@@ -18477,7 +18477,7 @@ async def _openai_passthrough_non_streaming_upstream(
 
 # ──────────────────────────────────────────────────────────────────────────
 # Diffusion (local text-to-image)
-# Studio-only routes (studio_router is not mounted under /v1). The diffusion backend runs in-process and synchronously, so blocking load/generate/unload calls are offloaded with asyncio.to_thread.
+# Studio-only routes (studio_router is not mounted under /v1). The backend is in-process and synchronous, so blocking calls are offloaded with asyncio.to_thread.
 # Single error boundary: the backend raises, we map to HTTP.
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -18525,10 +18525,10 @@ def _guard_diffusion_load_against_training() -> None:
     try:
         llm_active = get_training_backend().is_training_active()
     except Exception as e:
-        # The two probes are independent: an unreadable LLM backend must not disable the diffusion interlock below, which reads a different service and may well know a trainer IS running.
+        # The two probes are independent: an unreadable LLM backend must not disable the diffusion interlock below.
         logger.warning("Could not check training state for image-load guard: %s", e)
         llm_active = False
-    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so an image load must be refused while one is active or the pipeline contends with the trainer for VRAM. Symmetric with the diffusion-start interlock.
+    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so an image load must be refused while one is active.
     if not llm_active and not _diffusion_training_active():
         return
     raise HTTPException(
@@ -18576,9 +18576,8 @@ async def diffusion_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
         )
-        # Plan for the engine /images/load will pick, not for diffusers unconditionally. On a host with no usable GPU a GGUF pick routes to native sd.cpp, which reads single-file VAE + text encoders and never opens the base repo sharded components.
-        # Planning with the wrong engine stages GB the load discards and then leaves the assets it does need to be fetched inline, outside the manager progress and disk preflight.
-        # predict_engine applies the selection policy without activating anything (staging must not unload a resident model).
+        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
+        # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
         planner = backend
         if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
@@ -18592,12 +18591,10 @@ async def diffusion_download_plan(
             model_kind = kind,
             hf_token = request.hf_token,
             transformer_quant = request.transformer_quant,
-            # An fp8 encoder request loads a hosted pre-cast checkpoint, so the plan has to stage that file instead of the base repo dense encoder shards.
-            # Otherwise the manager downloads tens of GB the load never opens and then pulls the pre-cast file inline, outside its progress and disk preflight.
+            # An fp8 encoder request loads a hosted pre-cast checkpoint, so the plan must stage that file instead of the dense encoder shards.
             text_encoder_quant = request.text_encoder_quant,
             speed_mode = request.speed_mode,
-            # The dense-quant prefetch decision reads the memory policy, the prequant path and the adapter selection too (an offload policy never runs the dense build; a baked LoRA always does), so the plan has to see the same values the load will.
-            # Without them it stages the base transformer/ shards for a low-VRAM load that never opens them, or omits them for a baked-LoRA load that does.
+            # The dense-quant prefetch decision also reads the memory policy, prequant path and adapter selection, so the plan must see the same values the load will.
             memory_mode = request.memory_mode,
             cpu_offload = request.cpu_offload,
             transformer_prequant_path = request.transformer_prequant_path,
@@ -18628,16 +18625,15 @@ async def load_diffusion_model(
 
     backend = get_diffusion_backend()
     try:
-        # Resolve the load kind once (gguf / single_file / pipeline) so validation, engine selection and the load all agree. A bad explicit kind raises here, so a 400.
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation, engine selection and the load agree. A bad kind raises here, so a 400.
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
-        # A local On-Device pick can be a bare single-file .safetensors directory (no model_index.json): the scanner advertises it as text-to-image, but the picker starts it as a pipeline with no filename, so a pipeline load would 400.
-        # If the directory holds exactly one checkpoint, reinterpret the pick as a single_file load of it, so all three paths agree.
+        # A local On-Device pick can be a bare single-file .safetensors directory; if it holds exactly one checkpoint, reinterpret it as a single_file load so all three paths agree.
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
-        # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family, missing local GGUF, non-unsloth non-GGUF repo) must not evict a working chat model and then 400. The validated family also drives engine selection below.
+        # Validate cheaply BEFORE touching the GPU: an unloadable pick must not evict a working chat model and then 400. The family also drives engine selection.
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
@@ -18646,19 +18642,18 @@ async def load_diffusion_model(
             model_kind = kind,
             base_repo = request.base_repo,
         )
-        # Refuse while training is running: a multi-GB diffusion pipeline would compete with the training subprocess for VRAM. The image sibling of _guard_chat_load_against_training.
+        # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
         _guard_diffusion_load_against_training()
-        # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU), installing the sd-cli binary if needed, all BEFORE evicting chat so a native fallback never strands a half-loaded state. Non-GGUF kinds force diffusers.
+        # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
         )
-        # Take the GPU from chat only when this load will actually use it, i.e. the resolved device is non-CPU. diffusers on an accelerator and a force-native sd.cpp load on CUDA/XPU/MPS both resolve to a device;
-        # a native load on a pure-CPU host, and a CPU-only host falling back to diffusers, do not. Gate on the device, not the engine name.
+        # Take the GPU from chat only when the resolved device is non-CPU: gate on the device, not the engine name.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
 
         def _start_engine_load():
-            # Kicks the (slow) load onto a background thread and returns at once (the client polls images/load-progress); begin_load itself validates network-free.
+            # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
                 gguf_filename = request.gguf_filename,
@@ -18680,20 +18675,19 @@ async def load_diffusion_model(
             )
 
         def _begin_load():
-            # Under the router transition lock, refusing if a competing load switched engines since select_and_activate_engine above: begin_load on a deactivated engine leaves a resident model that generate / status / unload and the evictor can no longer reach.
+            # Under the router transition lock: begin_load on a deactivated engine leaves a resident model nothing can reach.
             return begin_load_on(engine, _start_engine_load)
 
         if needs_gpu:
-            # Register the in-flight load UNDER the arbiter lock (not after acquire_for returns): otherwise a competing Video/chat acquire in that gap evicts DIFFUSION before the load is marked in-flight, finds nothing to cancel, and both loaders allocate VRAM at once.
-            # The training admission wraps the same span for the OTHER competitor: a diffusion-training start reserving here would free residents this load has not registered yet (see _diffusion_training_admission).
+            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
+            # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
                 with _diffusion_training_admission():
                     return acquire_for(DIFFUSION, _begin_load)
 
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
-            # A CPU-only native load never touches the GPU, so it neither acquires nor is tracked by the arbiter. But switching here FROM a previous diffusers/GPU load leaves DIFFUSION still marked as owner, so a later chat acquire would "evict" this CPU model for no reason.
-            # release() is owner-guarded, so it no-ops when diffusion never owned the GPU.
+            # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
             await asyncio.to_thread(release, DIFFUSION)
             status_dict = await asyncio.to_thread(_begin_load)
         return DiffusionStatusResponse(**annotate_status(status_dict))
@@ -18704,12 +18698,12 @@ async def load_diffusion_model(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
-# Count of finished generations still writing their PNG/gallery records. generate-progress reports active while this is above 0, so a reload mount probe never reads idle between the denoise finishing and the image reaching the gallery. Mutated only on the event loop, so no lock.
+# Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
 
 _GENERATE_FAILURE_FALLBACK = "Image generation failed."
-# Failure classes worth naming in the UI, as FIXED text. The engine own message can embed local paths and argv (a native tail, a Metal abort backtrace), so none of it is echoed: only the class is reported, and the full text stays in the server log.
+# Failure classes worth naming in the UI, as FIXED text: the engine's own message can embed local paths and argv, so only the class is reported.
 _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         ("out of memory", "outofmemory", "oom"),
@@ -18782,11 +18776,11 @@ async def generate_diffusion_image(
             ),
         )
     except ValueError as exc:
-        # Bad client input (undecodable image/mask, or a workflow the loaded family does not support): a 400 with the reason, not a generic 500.
+        # Bad client input (undecodable image/mask, or an unsupported workflow): a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
-        # Only "no model loaded" / user-cancelled are client-state (409); both engines raise these two EXACT messages.
-        # The native sd.cpp engine also raises RuntimeError for execution failures whose text can embed the raw sd-cli tail (local paths / argv), which are 500s returned as a fixed literal. Match the sentinels exactly so an sd-cli failure containing "cancelled" cannot 409.
+        # Only "no model loaded" / user-cancelled are client-state (409); both engines raise these two EXACT messages. The
+        # native engine also raises RuntimeError for failures whose text embeds the sd-cli tail, so match the sentinels exactly.
         msg = str(exc)
         if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
             raise HTTPException(status_code = 409, detail = msg)
@@ -18796,10 +18790,10 @@ async def generate_diffusion_image(
         logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
-    # Persist each image with its full recipe embedded. BOTH engines batch with a distinct seed per image (diffusers via one torch.Generator per image, native sd.cpp via base + index), returned in ``seeds`` so each image is individually reproducible.
+    # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
-    # A prompts/seeds LIST drives the image count and each image own seed, so ``batch_size`` is only a per-forward cap there and the base seed no longer replays image i. Persist those outputs as single-image recipes keyed on their OWN seed, so Restore reproduces every image.
+    # A prompts/seeds LIST drives the image count and each image's own seed, so persist those as single-image recipes keyed on that seed.
     list_driven = bool(request.prompts or request.seeds)
 
     def _persist() -> list[dict]:
@@ -18821,26 +18815,26 @@ async def generate_diffusion_image(
                             else request.prompt
                         ),
                         "negative_prompt": request.negative_prompt,
-                        # Persist the ACTUAL output size, not the request sliders: Transform/Inpaint/Edit derive it from the uploaded image, Extend grows the canvas and Upscale resizes it, so request.width/height would record the wrong dims.
+                        # Persist the ACTUAL output size, not the request sliders: the conditioned workflows derive it from the upload.
                         "width": getattr(image, "width", None) or request.width,
                         "height": getattr(image, "height", None) or request.height,
                         "steps": request.steps,
                         "guidance": request.guidance,
                         "seed": seed,
-                        # Base seed the batch launched with. The native engine derives per-image seeds as base + index, so ``seed`` above is already advanced for index>0 and restore replays from this base (diffusers shares one seed, so base == seed). A list-driven image carries its OWN seed instead.
+                        # Base seed the batch launched with. The native engine derives per-image seeds as base + index, so restore replays from this base. A list-driven image carries its OWN seed.
                         "batch_seed": seed if list_driven else result["seed"],
                         # Position within the batch (shared timestamp), so the export filename stays unique.
                         "batch_index": index,
-                        # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size: persist it so restore can replay. A list-driven image restores on its own seed instead.
+                        # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
                         "model": result.get("repo_id"),
-                        # The BUILD the image came off, not just the repo id. The repo alone cannot be rebuilt into the same pipeline: a GGUF repo holds many quants, a dense load may be torchao-quantised, and a torchao load bakes its LoRA adapters in before quantize + compile -- a build that is measurably NOT the same as the adapter-less one even when every adapter is disabled at generate time.
-                        # So once the model is unloaded or swapped, these are what the recipe needs to get back to the pipeline that made the image. Absent (None/[]) on records written before they were recorded, and on engines that do not report them.
+                        # The BUILD the image came off, not just the repo id: a GGUF repo holds many quants, a dense load may be torchao-
+                        # quantised, and a bake is not the same build as the adapter-less one. Absent on records written before this existed.
                         "model_kind": result.get("model_kind"),
                         "gguf_filename": result.get("gguf_filename"),
                         "transformer_quant": result.get("transformer_quant"),
                         "baked_loras": list(result.get("baked_loras") or []),
-                        # The adapters APPLIED to this generation. A baked-but-disabled adapter is deliberately not listed here (its scale was 0, so it contributed nothing): it is recorded above as part of the build instead.
+                        # The adapters APPLIED to this generation. A baked-but-disabled adapter is recorded above as part of the build instead.
                         "loras": [f"{l.id}:{l.weight:g}" for l in request.loras or []],
                         "controlnet": (
                             f"{request.controlnet.id}:{request.controlnet.control_type}:"
@@ -18849,9 +18843,8 @@ async def generate_diffusion_image(
                             if request.controlnet and request.controlnet.strength > 0
                             else None
                         ),
-                        # The conditioned workflows (Transform/Inpaint/Extend/Upscale/Edit/reference/ControlNet) keep their scalar settings here.
-                        # The source, mask, reference and control IMAGES are deliberately not persisted -- they are user uploads with their own lifetime, and copying them into every recipe would grow the gallery without bound.
-                        # So a recipe records what it ran, and the client says plainly that the images have to be supplied again rather than silently replaying as a plain Create.
+                        # The conditioned workflows keep their scalar settings here. The source, mask, reference and control IMAGES are
+                        # deliberately not persisted (user uploads with their own lifetime), so the client asks for them again on restore.
                         "workflow": result.get("workflow"),
                         "strength": request.strength,
                         "upscale": request.upscale,
@@ -18867,7 +18860,7 @@ async def generate_diffusion_image(
             )
         return records
 
-    # Hold generate-progress "active" across the persist so a concurrent reload mount probe cannot see idle and refresh the gallery before these records exist. Set synchronously right after the engine returned (no await between), cleared in the finally.
+    # Hold generate-progress "active" across the persist so a reload mount probe cannot refresh the gallery before these records exist.
     global _diffusion_persist_active
     _diffusion_persist_active += 1
     try:
@@ -18894,8 +18887,8 @@ async def list_gallery_images(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    # Validate inside the pager so offset / limit / has_more all count over the accepted domain.
-    # A recipe with all keys but a wrong value type passes the presence-only read yet fails GalleryImage(**r); dropping it only after slicing let a leading bad record return an empty page with has_more=True, stalling infinite scroll at offset 0.
+    # Validate inside the pager so offset / limit / has_more all count over the accepted domain: a record that fails
+    # GalleryImage(**r) only after slicing let a leading bad row return an empty page with has_more=True, stalling scroll.
     def _valid_gallery_image(record: dict) -> bool:
         try:
             GalleryImage(**record)
@@ -18918,7 +18911,7 @@ async def get_gallery_image_file(
 ):
     from core.inference import image_gallery
 
-    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned PNG (readable recipe), so a guessed stem for a hand-dropped foreign PNG cannot be streamed out.
+    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned PNG, so a guessed stem cannot stream out a foreign file.
     path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
@@ -18954,8 +18947,8 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
     status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
-    # Drop DIFFUSION ownership only if nothing is resident AND no new load is in flight: a concurrent /images/load that re-acquired DIFFUSION while this slow unload ran must keep ownership, or a later chat load sees no owner, skips eviction, and OOMs the newly resident pipeline.
-    # An in-flight load has is_loaded False for its whole window, so gate on loading_repo_ids() too. The idle check and release must be ATOMIC (release_if), since the load register takes the lock.
+    # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
+    # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()
     await asyncio.to_thread(
         release_if,
@@ -18992,7 +18985,7 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     progress = get_active_diffusion_engine().generate_progress()
-    # A finished generation still persisting its gallery record counts as active, so a reload mount probe keeps polling instead of refreshing the gallery before the image lands.
+    # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
         progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
@@ -19000,12 +18993,12 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
 # ──────────────────────────────────────────────────────────────────────────
 # OpenAI-compatible images API (POST /v1/images/generations)
-# The inference router is mounted at both /api/inference and /v1, so this also answers /v1/images/generations for off-the-shelf OpenAI clients, mapping CreateImageRequest onto the in-process diffusion backend.
-# Studio Image tab uses the richer /images/generate above; this is the spec-shaped surface and the single error boundary mapping backend exceptions to OpenAI error envelopes.
+# The inference router is mounted at both /api/inference and /v1, so this also answers /v1/images/generations for OpenAI clients.
+# The Studio Image tab uses the richer /images/generate above; this is the spec-shaped surface and the error boundary.
 # ──────────────────────────────────────────────────────────────────────────
 
 
-# Diffusion dims must land in [256, 2048] on a multiple of 16 (8x VAE downsample x 2x patch); the named OpenAI sizes all satisfy this. Mirrors DiffusionGenerateRequest bounds so both generate paths accept the same geometry.
+# Diffusion dims must land in [256, 2048] on a multiple of 16; the named OpenAI sizes all satisfy this. Mirrors DiffusionGenerateRequest.
 _IMAGE_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
 _IMAGE_DIM_MIN, _IMAGE_DIM_MAX = 256, 2048
 # Sanitized 503 detail shared by the pre-check and the unload-race branch, so both "no image model" responses stay identical.
@@ -19030,9 +19023,8 @@ def _parse_openai_image_size(size: str) -> tuple[int, int]:
     return width, height
 
 
-# response_format=url links have to be fetchable by whoever received them: an OpenAI client hands data[].url back to the caller, who downloads it with a plain GET and no Authorization header, so a link to the bearer-gated gallery route answered 401 and the default response format was unusable.
-# Mint a short-lived HMAC link instead -- the shape RAG already uses to feed pdf.js range requests -- and leave the gallery route itself bearer-only.
-# One hour matches OpenAI own URL lifetime, and the per-process secret means a restart invalidates every outstanding link.
+# response_format=url links must be fetchable by whoever received them: a client downloads data[].url with a plain GET
+# and no Authorization header, so mint a short-lived HMAC link (1h, like OpenAI) and leave the gallery route bearer-only.
 _IMAGE_LINK_TTL = 3600
 _IMAGE_LINK_SECRET = _secrets.token_bytes(32)
 
@@ -19127,14 +19119,14 @@ async def openai_image_generations(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
 
-    # Use the active engine (diffusers OR native sd.cpp on a no-GPU host), the same accessor /images/generate uses, so a native-engine model is not wrongly reported unloaded.
+    # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
     status = backend.status()
     if not status.get("loaded"):
-        # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded; the global handler turns this into the OpenAI envelope.
+        # Mirror /v1/completions and /v1/embeddings, which 503 when their backend is not loaded.
         raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
 
-    # An edit-only model (Qwen-Image-Edit, FLUX Kontext) needs an input image this API cannot supply; refuse up front with a 400 rather than let the backend ValueError become a 500.
+    # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
     workflows = status.get("workflows") or []
     if workflows and "txt2img" not in workflows:
         raise HTTPException(
@@ -19147,7 +19139,7 @@ async def openai_image_generations(
             ),
         )
 
-    # Fall back to the resolved base repo so a local-path load (whose repo_id is a filesystem path) still gets the right per-model steps/guidance.
+    # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
     steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
     try:
         result = await asyncio.to_thread(
@@ -19160,7 +19152,7 @@ async def openai_image_generations(
             batch_size = body.n,
         )
     except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
-        # A RuntimeError with the model now unloaded means it was evicted between the readiness check and the call (a transient race): 503. Every other failure (CUDA OOM, a diffusers shape/device error) is a real 500 whose raw message must not reach the client.
+        # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
         if isinstance(exc, RuntimeError) and not backend.is_loaded:
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
         logger.error("openai_images.generate_failed: %s", exc)
@@ -19168,7 +19160,7 @@ async def openai_image_generations(
 
     created = int(time.time())
     want_b64 = body.response_format == "b64_json"
-    # Persist each image with its full recipe, like /images/generate, so response_format=url links resolve and the images show up in the gallery.
+    # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.
     recipe = {
         "prompt": body.prompt,
         "negative_prompt": None,
@@ -19176,12 +19168,12 @@ async def openai_image_generations(
         "height": height,
         "steps": steps,
         "guidance": guidance,
-        # The batch shares one base seed, so restoring a batch_index>0 sibling needs the original batch_size to replay (same as /images/generate).
+        # The batch shares one base seed, so restoring a batch_index>0 sibling needs the original batch_size.
         "batch_size": body.n,
         "model": result.get("repo_id"),
         "created_at": float(created),
     }
-    # The diffusers batch shares one seed; the native sd.cpp batch uses a distinct seed per image (returned in ``seeds``), so record each image own seed like /images/generate, or a native batch_index>0 image shows the wrong seed.
+    # The diffusers batch shares one seed; the native batch uses a distinct seed per image, so record each image's own seed.
     per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:
@@ -19192,7 +19184,7 @@ async def openai_image_generations(
                 if per_image_seeds and index < len(per_image_seeds)
                 else result["seed"]
             )
-            # batch_seed is the base the native engine derives per-image seeds from (base + index), so restore replays from it rather than double-advancing the derived seed above.
+            # batch_seed is the base the native engine derives per-image seeds from, so restore does not double-advance.
             record = image_gallery.save(
                 image,
                 {**recipe, "batch_index": index, "seed": seed, "batch_seed": result["seed"]},

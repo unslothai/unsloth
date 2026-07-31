@@ -42,8 +42,7 @@ def test_detect_family_ideogram4_override():
 
 
 def test_ideogram4_repos_are_trusted_non_gguf():
-    # The three official vendor pipelines load via from_pretrained, gated to the unsloth org + the
-    # explicit allowlist.
+    # The three official vendor pipelines load via from_pretrained, gated to the unsloth org + the explicit allowlist.
     for rid in (
         "ideogram-ai/ideogram-4-fp8",
         "ideogram-ai/ideogram-4-nf4",
@@ -64,8 +63,7 @@ def test_ideogram4_repos_are_trusted_non_gguf():
     ],
 )
 def test_detect_family_flux1_krea_dev(repo_id):
-    # Krea's FLUX.1-dev finetune keeps the exact dev layout, so it must resolve to the existing flux.1
-    # family, never to krea-2 (a different arch).
+    # Krea's FLUX.1-dev finetune keeps the exact dev layout, so it resolves to flux.1, never krea-2 (a different arch).
     fam = detect_family(repo_id)
     assert fam is not None and fam.name == "flux.1"
     assert fam.pipeline_class == "FluxPipeline"
@@ -77,8 +75,8 @@ def test_flux1_krea_dev_is_trusted_non_gguf():
 
 
 def test_flux1_krea_dev_generation_defaults():
-    # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG
-    # shape) must NOT swallow it, and the krea-2 defaults must stay intact.
+    # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG shape)
+    # must NOT swallow it, and the krea-2 defaults must stay intact.
     assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (28, 4.5)
     assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (28, 4.5)
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
@@ -107,8 +105,7 @@ def test_detect_family_lumina2_repos(repo_id):
 def test_detect_family_lumina2_override_and_next_rejected():
     assert detect_family("x", override = "lumina-2").name == "lumina-2"
     assert detect_family("x", override = "lumina2").name == "lumina-2"
-    # Lumina-Next is a DIFFERENT arch (LuminaText2ImgPipeline): it must stay unknown instead of
-    # resolving here and crashing mid-load.
+    # Lumina-Next is a DIFFERENT arch (LuminaText2ImgPipeline): it must stay unknown, not resolve here and crash mid-load.
     assert detect_family("Alpha-VLLM/Lumina-Next-SFT-diffusers") is None
 
 
@@ -119,8 +116,7 @@ def test_lumina2_is_trusted_non_gguf():
 
 
 def test_lumina2_generation_defaults():
-    # Model-card recipe: 50 steps at guidance 4.0 (cfg_trunc_ratio is added by the backend generate
-    # call itself, not the defaults table).
+    # Model-card recipe: 50 steps at guidance 4.0 (cfg_trunc_ratio is added by the backend generate call itself).
     assert default_generation_params("Alpha-VLLM/Lumina-Image-2.0") == (50, 4.0)
 
 
@@ -149,8 +145,7 @@ def test_lumina2_bf16_component_table_present():
     [
         "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
         "QuantStack/HunyuanImage-2.1-GGUF",
-        # A local GGUF pick where the family keyword lives in the filename (QuantStack's naming drops the
-        # dash, which the hunyuanimage2.1 alias covers).
+        # A local GGUF pick whose family keyword lives in the filename (QuantStack drops the dash, covered by the hunyuanimage2.1 alias).
         "QuantStack/HunyuanImage-2.1-GGUF/HunyuanImage2.1-Q4_K_M.gguf",
     ],
 )
@@ -169,8 +164,7 @@ def test_detect_family_hunyuanimage21_repos(repo_id):
 def test_detect_family_hunyuanimage21_override_and_30_still_excluded():
     assert detect_family("x", override = "hunyuanimage-2.1").name == "hunyuanimage-2.1"
     assert detect_family("x", override = "hunyuanimage2.1").name == "hunyuanimage-2.1"
-    # The HunyuanImage-3.0 structured exclusion must survive the 2.1 family: 3.0 has no diffusers
-    # pipeline and must stay unknown with its stated reason.
+    # HunyuanImage-3.0 has no diffusers pipeline, so its structured exclusion must survive the 2.1 family.
     assert detect_family("tencent/HunyuanImage-3.0") is None
     assert excluded_model_reason("tencent/HunyuanImage-3.0") is not None
     assert excluded_model_reason("hunyuanvideo-community/HunyuanImage-2.1-Diffusers") is None
@@ -183,8 +177,7 @@ def test_hunyuanimage21_is_trusted_non_gguf():
 
 
 def test_hunyuanimage21_generation_defaults():
-    # Card recipe: 50 steps; guidance feeds the call's distilled_guidance_scale, while classifier-free
-    # guidance runs inside the repo's guider components.
+    # Card recipe: 50 steps; guidance feeds distilled_guidance_scale, while CFG runs inside the repo's guider components.
     assert default_generation_params("hunyuanvideo-community/HunyuanImage-2.1-Diffusers") == (
         50,
         3.25,
@@ -233,8 +226,7 @@ def test_detect_family_hidream_repos(repo_id):
 def test_hidream_override_and_trust():
     assert detect_family("x", override = "hidream-i1").name == "hidream-i1"
     assert detect_family("x", override = "hidream").name == "hidream-i1"
-    # The three official repos load via from_pretrained, so they are allowlisted; the Llama TE4 comes
-    # from the unsloth mirror, which the org prefix already trusts.
+    # The three official repos load via from_pretrained so they are allowlisted; the Llama TE4 rides the trusted unsloth mirror.
     for rid in (
         "HiDream-ai/HiDream-I1-Full",
         "HiDream-ai/HiDream-I1-Dev",
@@ -246,8 +238,8 @@ def test_hidream_override_and_trust():
 
 
 def test_hidream_generation_defaults():
-    # Upstream inference.py: Full 50 steps / guidance 5; Dev and Fast are distilled and run
-    # guidance-free at 28 / 16 steps. The specific keys must beat the generic "hidream".
+    # Upstream inference.py: Full 50 steps / guidance 5; Dev and Fast are distilled and guidance-free at 28 /
+    # 16 steps. The specific keys must beat the generic "hidream".
     assert default_generation_params("HiDream-ai/HiDream-I1-Full") == (50, 5.0)
     assert default_generation_params("HiDream-ai/HiDream-I1-Dev") == (28, 0.0)
     assert default_generation_params("HiDream-ai/HiDream-I1-Fast") == (16, 0.0)
@@ -258,23 +250,20 @@ def test_hidream_bf16_component_table_present():
     sizes = family_bf16_components_gb(fam)
     assert sizes is not None
     transformer_gb, encoders_gb, vae_gb = sizes
-    # 17B MoE DiT 34.2 GB; TEs are CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5 from the repo plus the ~16 GB
-    # Llama TE4 from the mirror, so ~28.8 GB.
+    # 17B MoE DiT 34.2 GB; TEs are CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5 plus the ~16 GB Llama TE4 mirror, so ~28.8 GB.
     assert 32.0 <= transformer_gb <= 37.0
     assert 26.0 <= encoders_gb <= 32.0
     assert vae_gb <= 0.5
 
 
 def test_ideogram4_generation_defaults():
-    # Model-card settings: 48 steps, guidance 7 (the backend keeps the pipeline's recommended tapered
-    # schedule when the request matches exactly).
+    # Model-card settings: 48 steps, guidance 7 (an exact match keeps the pipeline's recommended tapered schedule).
     assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (48, 7.0)
 
 
 def test_ideogram4_bf16_reservation_table_present():
-    # The memory planner reserves this bf16 footprint for a narrow (fp8) ideogram-4 base even when the
-    # blob-cache estimate is absent, so the ~54 GB pipeline never plans a resident placement it cannot
-    # fit. If the table went None that safeguard would silently disable, so pin its presence and sum.
+    # The memory planner reserves this bf16 footprint for a narrow (fp8) ideogram-4 base even with no blob-cache
+    # estimate, so the ~54 GB pipeline never plans a resident placement it cannot fit. Pin its presence and sum.
     fam = detect_family("ideogram-ai/ideogram-4-fp8")
     table = family_bf16_components_gb(fam, fam.base_repo)
     assert table is not None
@@ -286,15 +275,13 @@ def test_ideogram4_memory_table_counts_both_dits():
     components = family_bf16_components_gb(fam)
     assert components is not None
     transformer_gb, text_encoders_gb, _vae_gb = components
-    # Two ~9.3B DiTs (conditional + unconditional) at bf16: well above one DiT's ~18.6 GB. A
-    # single-DiT entry would let auto planning under-reserve and OOM.
+    # Two ~9.3B bf16 DiTs, well above one DiT's ~18.6 GB: a single-DiT entry would let auto planning under-reserve and OOM.
     assert transformer_gb > 30.0
     assert text_encoders_gb > 5.0
 
 
 def test_hidream_prequant_wiring():
-    # Hosted int8/fp8 checkpoints (28/28 per-case gate pairs per scheme; int8 verified bit-identical
-    # to on-the-fly quantize) serve the family default base.
+    # Hosted int8/fp8 checkpoints (28/28 per-case gate pairs each; int8 bit-identical to on-the-fly) serve the family default base.
     from core.inference.diffusion_families import family_prequant_repo
     fam = detect_family("HiDream-ai/HiDream-I1-Full")
     for scheme in ("int8", "fp8"):
@@ -302,9 +289,8 @@ def test_hidream_prequant_wiring():
 
 
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
-    # Measured on a B200: int8 and fp8 both engage and render cleanly, including a 2-3 token prompt on
-    # int8 -- the routed MoE expert Linears only ever see the concatenated image+text stream (M well
-    # above 16), so the torch._int_mm minimum never binds and no family exclude tokens are needed.
+    # Measured on a B200: int8 and fp8 both engage and render cleanly, including 2-3 token prompts on int8. The routed
+    # MoE expert Linears only see the concatenated image+text stream (M >> 16), so torch._int_mm's minimum never binds.
     from core.inference.diffusion_transformer_quant import (
         _FAMILY_SCHEME_DENY,
         _INT8_EXCLUDE_NAME_TOKENS,
@@ -359,9 +345,8 @@ def test_list_loras_family_filter_gates_krea_entries():
 
 # ── ideogram-4 fp8 transformer remap ─────────────────────────────────────────
 def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
-    # The vendor fp8 transformer stores fused attention.qkv (Q/K/V rows stacked) + attention.o, each
-    # with a per-output-channel weight_scale; diffusers expects split to_q/to_k/to_v/to_out.0 with the
-    # scale already applied. The converter must undo both, or every attention weight loads wrong.
+    # The vendor fp8 transformer stores fused attention.qkv + attention.o with per-output-channel weight_scale, while
+    # diffusers wants split to_q/to_k/to_v/to_out.0 with the scale applied. Undo both or every attention weight loads wrong.
     torch = pytest.importorskip("torch")
 
     from core.inference.diffusion_ideogram4 import _convert_fp8_state_dict
@@ -389,8 +374,7 @@ def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
     }
     out = _convert_fp8_state_dict(raw, hidden, torch.bfloat16)
 
-    # Every converted tensor is cast to the requested compute dtype (the load_state_dict copy would
-    # silently up/down-cast otherwise).
+    # Every converted tensor is cast to the requested compute dtype (the load_state_dict copy would silently re-cast).
     assert all(t.dtype == torch.bfloat16 for t in out.values())
     # Re-run in float32 for the exact value checks below (bf16 loses precision).
     out = _convert_fp8_state_dict(raw, hidden, torch.float32)
@@ -412,9 +396,8 @@ def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
 
 
 def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
-    # A local mirror of the fp8 base never string-matches base_repo, so memory planning relies on this
-    # shard-header probe to reserve the bf16 footprint. The fp8 layout is marked by a companion
-    # ``*.weight_scale``; the bnb-4bit mirror carries none and must read as not-fp8.
+    # A local mirror of the fp8 base never string-matches base_repo, so memory planning relies on this shard-header
+    # probe. The fp8 layout is marked by a companion ``*.weight_scale``; the bnb-4bit mirror carries none.
     torch = pytest.importorskip("torch")
     st = pytest.importorskip("safetensors.torch")
 
@@ -444,9 +427,8 @@ def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
 
 
 def test_create_causal_mask_patch_is_self_disabling_and_idempotent():
-    # The patch adapts the pipeline's inputs_embeds kwarg to the installed transformers
-    # create_causal_mask signature; on a matching signature it forwards unchanged, and a second apply
-    # must not double-wrap.
+    # The patch adapts the pipeline's inputs_embeds kwarg to the installed transformers create_causal_mask
+    # signature; a matching signature forwards unchanged, and a second apply must not double-wrap.
     pytest.importorskip("torch")
     pytest.importorskip("diffusers")
 

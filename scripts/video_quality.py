@@ -158,9 +158,7 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    # num_frames is fixed for reference and candidate, so both clips must decode to the same frame
-    # count. A shorter candidate is truncated: comparing the shared prefix would let good early
-    # frames mask the missing tail, so the mismatch is gated as FAIL (see verdict()).
+    # A truncated candidate is gated FAIL, not prefix-compared: good early frames would mask the missing tail.
     ref_count, cand_count = len(ref_frames), len(cand_frames)
     frame_count_mismatch = ref_count != cand_count
     n = min(ref_count, cand_count)

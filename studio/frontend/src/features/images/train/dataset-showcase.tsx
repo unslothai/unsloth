@@ -26,8 +26,7 @@ function ShowcaseTile({ dataset, filename }: { dataset: string; filename: string
     let obj: string | null = null;
     let cancelled = false;
     fetchGalleryObjectUrl(diffusionDatasetImageUrl(dataset, filename, 256))
-      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a
-      // single thumbnail tile revokes on unmount, so it only needs the URL.
+      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a single tile only needs the URL.
       .then(({ url: u }) => {
         if (cancelled) {
           URL.revokeObjectURL(u);
@@ -58,10 +57,8 @@ function ShowcaseTile({ dataset, filename }: { dataset: string; filename: string
   );
 }
 
-// A compact preview strip of a dataset's images: up to 8 sampled thumbnails, plus a
-// "+N more" tile that opens the full labeling grid. Refreshes when the dataset selection or
-// `refreshKey` changes (e.g. after an upload/import). The whole strip is a button so a click
-// anywhere jumps to Review captions.
+// A compact preview strip of a dataset's images: up to 8 sampled thumbnails plus a "+N more" tile that opens the full
+// labeling grid. Refreshes on selection or `refreshKey` change; the whole strip is a button to Review captions.
 export function DatasetShowcase({
   dataset,
   imageCount,
@@ -81,8 +78,7 @@ export function DatasetShowcase({
     listDiffusionDatasetImages(dataset)
       .then((r) => {
         if (cancelled) return;
-        // Sample up to MAX_TILES evenly across the folder so the strip represents the whole
-        // set, not just the first few files.
+        // Sample up to MAX_TILES evenly across the folder so the strip represents the whole set, not just the first few files.
         const all = r.images.map((im) => im.filename);
         if (all.length <= MAX_TILES) {
           setNames(all);

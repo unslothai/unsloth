@@ -27,8 +27,7 @@ import {
   uploadDiffusionDataset,
 } from "./api";
 
-// The two official SDXL bases the backend allowlists for non-GGUF loads. Everything the
-// dropdown offers is trainable; "custom" is the escape hatch for local SDXL checkpoints.
+// The two official SDXL bases the backend allowlists for non-GGUF loads; "custom" is the escape hatch for local SDXL checkpoints.
 const SDXL_BASES: Array<{ id: string; label: string }> = [
   { id: "stabilityai/stable-diffusion-xl-base-1.0", label: "SDXL Base 1.0 (best quality)" },
   { id: "stabilityai/sdxl-turbo", label: "SDXL Turbo (fast, good for quick tests)" },
@@ -40,10 +39,8 @@ const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
 const selectClass =
   "h-8 w-full rounded-md border border-input bg-background px-2 text-xs";
 
-// A self-contained "Train an SDXL LoRA" dialog. It posts to /api/train/diffusion/start
-// and polls /status while open, so it never blocks the page and works whether or not a
-// model is loaded for generation. Only SDXL is trainable today; the backend refuses
-// known non-SDXL picks instantly, and the base-model dropdown keeps users on safe picks.
+// A self-contained "Train an SDXL LoRA" dialog: posts to /api/train/diffusion/start and polls /status while open, so it
+// never blocks the page. Only SDXL is trainable today, and the dropdown keeps users on picks the backend accepts.
 export function DiffusionTrainDialog({
   open,
   onOpenChange,
@@ -75,9 +72,8 @@ export function DiffusionTrainDialog({
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
 
-  // The dialog stays mounted (ImagesPage is keep-alive), so seed per-open state here:
-  // the base-model choice from the currently loaded SDXL pipeline (when there is one),
-  // and the dataset list from the backend.
+  // The dialog stays mounted (ImagesPage is keep-alive), so seed per-open state here: the base model from the currently
+  // loaded SDXL pipeline, and the dataset list from the backend.
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
     try {
       const i = await getDiffusionTrainingInfo();
@@ -94,8 +90,7 @@ export function DiffusionTrainDialog({
       setBaseChoice(defaultBaseModel);
     }
     void refreshInfo().then((i) => {
-      // Preselect the only dataset, or the freshest-looking state: with no datasets
-      // yet, the picker sits on "Upload new images".
+      // Preselect the only dataset, or the freshest-looking state; with none the picker sits on "Upload new images".
       setDataset((cur) => {
         if (cur !== UPLOAD_DATASET && i?.datasets.some((d) => d.name === cur)) return cur;
         return i && i.datasets.length > 0 ? i.datasets[0].name : UPLOAD_DATASET;
@@ -120,8 +115,7 @@ export function DiffusionTrainDialog({
   }, [open, poll]);
 
   const active = Boolean(status?.active) || status?.status === "running";
-  // A stopped run still saves + publishes a deployable adapter (catalog_path set), so
-  // treat it as finished-with-adapter too; a save=False cancel has no catalog_path.
+  // A stopped run still saves + publishes a deployable adapter (catalog_path set), so it counts as finished-with-adapter; a save=False cancel has none.
   const hasSavedAdapter =
     status?.status === "completed" ||
     (status?.status === "stopped" && Boolean(status?.catalog_path));
@@ -194,8 +188,7 @@ export function DiffusionTrainDialog({
       );
       return;
     }
-    // Mirror the backend's numeric validation so obvious mistakes are caught before the
-    // request (the backend returns 400 for these; catching here gives a clearer message).
+    // Mirror the backend's numeric validation so obvious mistakes are caught before the request, with a clearer message than its 400.
     if (steps < 1) return toast.error("Steps must be at least 1.");
     if (rank < 1) return toast.error("LoRA rank must be at least 1.");
     if (resolution < 64 || resolution % 8 !== 0) {
@@ -216,8 +209,7 @@ export function DiffusionTrainDialog({
         train_batch_size: batchSize,
         lora_rank: rank,
         mixed_precision: precision,
-        // Forward the saved Hub token so a gated/private SDXL base can be trained (the
-        // image load flow already sends it, so a model you can load, you can also train).
+        // Forward the saved Hub token so a gated/private SDXL base can be trained, exactly as the image load flow does.
         hf_token: hfApiToken(getHfToken()) || undefined,
       });
       toast.success("Training started");
@@ -266,9 +258,7 @@ export function DiffusionTrainDialog({
         </DialogHeader>
 
         <div className="grid gap-3 overflow-y-auto py-2 pr-1">
-          {/* 1. Base model: a constrained dropdown instead of free text, so the "SDXL
-              only" rule is embodied by the control. Custom stays available for local
-              SDXL checkpoints; a known non-SDXL pick is refused instantly by the API. */}
+          {/* 1. Base model: a constrained dropdown instead of free text, so the "SDXL only" rule is embodied by the control. Custom stays available for local checkpoints; a known non-SDXL pick is refused instantly. */}
           <div className="grid gap-1.5">
             <Label className="text-xs">Base model to train on</Label>
             <select
@@ -297,8 +287,7 @@ export function DiffusionTrainDialog({
             )}
           </div>
 
-          {/* 2. Training images: pick an existing dataset folder or upload straight from
-              the browser - no shell access or Studio-home knowledge needed. */}
+          {/* 2. Training images: pick an existing dataset folder or upload straight from the browser. */}
           <div className="grid gap-1.5">
             <Label className="text-xs">Training images</Label>
             <select
@@ -380,8 +369,7 @@ export function DiffusionTrainDialog({
             />
           </div>
 
-          {/* 4. Hyperparameters, collapsed: the defaults suit a first run, and hiding
-              them keeps the primary flow at three decisions. */}
+          {/* 4. Hyperparameters, collapsed: the defaults suit a first run, and hiding them keeps the primary flow at three decisions. */}
           <button
             type="button"
             className="w-fit text-xs text-muted-foreground underline-offset-2 hover:underline"

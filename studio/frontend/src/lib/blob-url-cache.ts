@@ -1,20 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A byte-budgeted LRU of object URLs for auth-protected gallery media.
-//
-// Gallery images and clips can't be plain <img>/<video> src attributes (the endpoints need the
-// auth header), so each one is fetched into a blob and wrapped in an object URL. An object URL
-// pins its blob until it is revoked, and the galleries keep their page component mounted after
-// the first visit, so an unbounded map of them grows for the whole session: a video clip is tens
-// to hundreds of MB, and scrolling a few pages of the strip could pin gigabytes in the webview.
-//
-// Budgeting by BYTES rather than by entry count is the point: clip sizes vary by two orders of
-// magnitude, so any entry cap is either useless for long clips or wasteful for short ones.
-//
-// Recency is driven by the caller (``touch`` on the visibility signal that already exists for
-// near-viewport fetching), and ``prune`` never evicts an id the caller marks as protected -- the
-// on-screen and selected media stay resident no matter how small the budget is.
+// A byte-budgeted LRU of object URLs for auth-protected gallery media. The endpoints need an auth header, so each item is
+// fetched into a blob wrapped in an object URL, which pins that blob until revoked. The galleries stay mounted after the
+// first visit, so an unbounded map grows for the whole session: a clip is tens to hundreds of MB and scrolling a few pages
+// could pin gigabytes in the webview. Budgeting by BYTES matters because clip sizes vary by two orders of magnitude, so
+// any entry cap is useless for long clips or wasteful for short ones. Recency is driven by the caller (``touch`` on the
+// existing visibility signal), and ``prune`` never evicts an id the caller marks protected, so on-screen media stays resident.
 
 export interface CachedBlobUrl {
   url: string;
@@ -25,8 +17,7 @@ export class BlobUrlCache {
   // Insertion order IS the LRU order: touch() re-inserts, so the oldest use is always first.
   private readonly entries = new Map<string, CachedBlobUrl>();
   private totalBytes = 0;
-  // Declared as a field, not a constructor parameter property: tsconfig sets
-  // erasableSyntaxOnly, so `constructor(private readonly x: number)` is a build error.
+  // Declared as a field, not a constructor parameter property: tsconfig sets erasableSyntaxOnly, so that form is a build error.
   private readonly budgetBytes: number;
 
   constructor(budgetBytes: number) {
@@ -93,11 +84,7 @@ export class BlobUrlCache {
     this.totalBytes = 0;
   }
 
-  /**
-   * Evict least-recently-used entries until the total is within budget, skipping ``protectedIds``.
-   * Returns the evicted ids so the caller can drop them from its render state; those cards then
-   * re-fetch if they come back into view.
-   */
+  /** Evict least-recently-used entries until the total is within budget, skipping ``protectedIds``. Returns the evicted ids so the caller can drop them from its render state; those cards re-fetch if they come back into view. */
   prune(protectedIds: Iterable<string> = []): string[] {
     const keep = protectedIds instanceof Set ? protectedIds : new Set(protectedIds);
     const evicted: string[] = [];

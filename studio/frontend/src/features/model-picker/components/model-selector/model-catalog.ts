@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One canonical name per diffusion model, with its published artifacts (GGUF quants, prequant FP8 / bnb-4bit repos, official BF16 pipelines) as a second level, plus a deterministic router picking the best artifact for the device.
-// Pure helpers -- no React/DOM deps, so easy to test (see model-catalog.check.ts, run via `npm run catalog:check`).
+// One canonical name per diffusion model, its published artifacts (GGUF quants, prequant FP8 / bnb-4bit repos, official BF16 pipelines), and a deterministic router picking the best artifact for the device.
+// Pure helpers, no React/DOM deps. See model-catalog.check.ts (`npm run catalog:check`).
 
 import type { ModelOption } from "./types";
 
@@ -18,11 +18,11 @@ export interface ModelArtifact {
   filename?: string;
   /** Second-level row label ("GGUF", "FP8", "BF16 (official)", "BF16 - 720p"). */
   label: string;
-  /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless already downloaded. GGUF artifacts omit it too -- their per-quant ladder self-fits via pickDefaultQuant. */
+  /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
   approxSizeGb?: number;
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
-  /** Gated on the Hub (license acceptance + token needed). A bare group click must not auto-route to it when it is not already downloaded, so the not-downloaded ladder skips it and falls through to an open artifact (e.g. the GGUF). An already-downloaded gated artifact is still returned. */
+  /** Gated on the Hub (license + token). A bare group click skips it when not downloaded and falls through to an open artifact (e.g. the GGUF); an already-downloaded gated artifact is still returned. */
   gated?: boolean;
 }
 
@@ -35,7 +35,7 @@ export interface CatalogGroup {
   scope: "image" | "video";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
-  /** Cross-owner ids that resolve to this group. Suffix stripping never merges two owners on its own, so arbitrary cached repos cannot be mis-grouped. */
+  /** Cross-owner ids that resolve to this group. Suffix stripping never merges two owners on its own. */
   aliases?: readonly string[];
 }
 
@@ -101,7 +101,7 @@ const bf16Pipeline = (
   ...extra,
 });
 
-// A bf16 single-file DiT checkpoint (e.g. Lightricks distilled LTX-2.3): loads via from_single_file against the family base repo for the VAE / text encoder, same load path as the fp8 single-file checkpoints.
+// A bf16 single-file DiT checkpoint (e.g. Lightricks' distilled LTX-2.3): from_single_file against the family base repo for the VAE / text encoder, like the fp8 single-file checkpoints.
 const bf16Single = (
   repoId: string,
   filename: string,
@@ -117,7 +117,7 @@ const bf16Single = (
 });
 
 // ── curated catalogs ────────────────────────────────────────────────────────────
-// Sizes are steady resident estimates (GB) used only for routing; a missing size means "never auto-pick unless downloaded". GGUF entries carry no size -- the quant ladder (pickDefaultQuant) sizes the individual .gguf files.
+// Sizes are steady resident estimates (GB) used only for routing; missing = never auto-pick unless downloaded. GGUF entries carry none: pickDefaultQuant sizes the individual .gguf files.
 
 export const IMAGE_CATALOG: CatalogGroup[] = [
   {
@@ -186,7 +186,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // Krea guidance-distilled FLUX.1-dev finetune ("opinionated aesthetics"): same arch/layout as FLUX.1-dev, so it runs under the existing flux.1 family. The base repo is gated like dev; QuantStack publishes the open GGUF quants.
+    // Krea guidance-distilled FLUX.1-dev finetune: same arch/layout as dev, so it runs under the flux.1 family. The base repo is gated like dev; QuantStack publishes the open GGUF quants.
     canonicalId: "black-forest-labs/FLUX.1-Krea-dev",
     displayName: "FLUX.1 Krea dev",
     description: "Text-to-image",
@@ -239,7 +239,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("krea/Krea-2-Turbo", 18)],
   },
   {
-    // 2.6B DiT + Gemma2-2B encoder, ~11 GB bf16-resident (ships fp32, cast on load). Apache-2.0, not gated. No GGUF quants exist upstream, so the official pipeline is the only artifact.
+    // 2.6B DiT + Gemma2-2B encoder, ~11 GB bf16-resident (ships fp32, cast on load). Apache-2.0, ungated. No upstream GGUF quants, so the official pipeline is the only artifact.
     canonicalId: "Alpha-VLLM/Lumina-Image-2.0",
     displayName: "Lumina Image 2.0",
     description: "Text-to-image",
@@ -247,7 +247,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11)],
   },
   {
-    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39. ~50 GB bf16-resident, so consumer GPUs route to the QuantStack GGUF quants.
+    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39. ~50 GB bf16-resident, so consumer GPUs route to the QuantStack GGUF.
     canonicalId: "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
     displayName: "HunyuanImage 2.1",
     description: "Text-to-image",
@@ -258,9 +258,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // 17B MoE DiT + four text encoders. The repos are open (MIT weights) but ship no Llama text_encoder_4; the backend assembles it from the open unsloth mirror at load time, adding ~16 GB: ~63 GB bf16-resident total, so this stays a datacenter-GPU pick.
-    // Full is the undistilled base; Dev and Fast are its guidance-free distillations with their own step defaults.
-    // city96 GGUF is not wired: the GGUF path would need the same TE4 assembly for tiny demand.
+    // 17B MoE DiT + four text encoders. The MIT repos ship no Llama text_encoder_4, so the backend assembles it from the open
+    // unsloth mirror at load time (+16 GB): ~63 GB bf16-resident, a datacenter-GPU pick. Full is the undistilled base; Dev and
+    // Fast are its guidance-free distillations. city96 GGUF is not wired: it would need the same TE4 assembly for tiny demand.
     canonicalId: "HiDream-ai/HiDream-I1-Full",
     displayName: "HiDream I1",
     description: "Text-to-image",
@@ -278,7 +278,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // No bf16 repo exists for Ideogram 4: -fp8 stores its two DiTs as raw float8 (~46 GB resident after the bf16 cast); -nf4-diffusers is the bnb-4bit export (~11 GB).
+    // No bf16 repo exists for Ideogram 4: -fp8 stores its two DiTs as raw float8 (~46 GB after the bf16 cast); -nf4-diffusers is the bnb-4bit export (~11 GB).
     canonicalId: "ideogram-ai/ideogram-4",
     displayName: "Ideogram 4",
     description: "Text-to-image",
@@ -288,7 +288,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bnb4bit("ideogram-ai/ideogram-4-nf4-diffusers", 11),
     ],
   },
-  // SDXL Turbo and Base are different checkpoints with different step/guidance defaults -- two groups, not two formats of one model.
+  // SDXL Turbo and Base are different checkpoints with different step/guidance defaults, so two groups.
   {
     canonicalId: "stabilityai/sdxl-turbo",
     displayName: "SDXL Turbo",
@@ -311,8 +311,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
-    // The distilled 2.3 release: Lightricks own bf16/fp8 single-file DiT checkpoints (loaded against the LTX-2 base for the VAE / Gemma3 text encoder, both already trusted) plus the GGUF quants.
-    // The single-file checkpoints keep the ~50 GB Gemma3-27B encoder in bf16, so their resident footprint is datacenter-scale; consumer GPUs route to GGUF, which offloads.
+    // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT checkpoints (loaded against the already-trusted LTX-2
+    // base for the VAE / Gemma3 encoder) plus the GGUF quants. The single-file ones keep the ~50 GB encoder in bf16, so consumer GPUs route to GGUF.
     canonicalId: "unsloth/LTX-2.3",
     displayName: "LTX 2.3 distilled",
     description: "Text-to-video with audio",
@@ -323,7 +323,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         "ltx-2.3-22b-distilled.safetensors",
         90,
       ),
-      // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries .weight_scale/.input_scale tensors) and points users to GGUF/BF16, so advertising it would route a bare click or manual pick to a ~76 GB download that always fails on load.
+      // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries .weight_scale/.input_scale), so advertising it would route a click to a ~76 GB download that always fails.
       gguf("unsloth/LTX-2.3-GGUF"),
     ],
   },
@@ -354,8 +354,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video",
     scope: "video",
     artifacts: [
-      // Highest-quality first: pickDefaultArtifact sorts only by FORMAT, so among these two bf16 artifacts it keeps catalog order and the fit loop returns the FIRST that fits.
-      // The 720p (52 GB) must precede the 480p (40 GB) so a bare click on a GPU where 720p fits (e.g. 80 GB, 0.7*budget=56) picks 720p, falling back to 480p only on smaller cards.
+      // Highest-quality first: pickDefaultArtifact sorts only by FORMAT, so these two bf16 artifacts keep catalog order and the fit
+      // loop returns the first that fits. 720p (52 GB) precedes 480p (40 GB), so an 80 GB card (0.7*budget=56) picks 720p.
       bf16Pipeline("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v", 52, {
         label: "BF16 - 720p",
         keywords: ["bf16", "720p"],
@@ -370,7 +370,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
 
 // ── canonical keys and lookups ──────────────────────────────────────────────────
 
-// Artifact/format suffixes stripped (repeatedly, longest-first) off the NAME part of a repo id to reach its generic key. Owner is preserved: cross-owner merges happen only through the explicit alias tables above.
+// Artifact/format suffixes stripped (repeatedly, longest-first) off the NAME part of a repo id. Owner is preserved: cross-owner merges happen only via the alias tables above.
 const ARTIFACT_SUFFIXES = [
   "-unsloth-bnb-4bit",
   "-nf4-diffusers",
@@ -388,7 +388,7 @@ const ARTIFACT_SUFFIXES = [
   "-bf16",
 ] as const;
 
-/** Owner-preserving generic key: lowercase, artifact suffixes stripped off the name part. "unsloth/Qwen-Image-2512-GGUF" -> "unsloth/qwen-image-2512". */
+/** Owner-preserving generic key: lowercase, artifact suffixes stripped off the name. "unsloth/Qwen-Image-2512-GGUF" -> "unsloth/qwen-image-2512". */
 export function canonicalKeyFor(repoId: string): string {
   const lowered = repoId.trim().toLowerCase();
   const slash = lowered.indexOf("/");
@@ -407,7 +407,7 @@ export function canonicalKeyFor(repoId: string): string {
   return owner + name;
 }
 
-/** Case-preserving display name: artifact suffixes stripped off the name part, keeping the original casing and owner prefix. Used by the diffusion pickers so rows OUTSIDE the curated catalog still read as their base model name ("ERNIE-Image-Turbo-GGUF" -> "ERNIE-Image-Turbo"); the format badge carries the artifact kind. The id used for loading is never touched. */
+/** Case-preserving display name: artifact suffixes stripped off the name part, so uncurated rows read as their base model ("ERNIE-Image-Turbo-GGUF" -> "ERNIE-Image-Turbo"). The format badge carries the artifact kind; the id used for loading is untouched. */
 export function stripArtifactSuffixesForDisplay(repoId: string): string {
   const trimmed = repoId.trim();
   const slash = trimmed.indexOf("/");
@@ -437,7 +437,7 @@ interface CatalogIndex {
   artifactById: Map<string, ModelArtifact>;
 }
 
-// Rebuilt only when a new catalog array identity shows up (the curated arrays are module constants, so in practice this builds twice: images + video).
+// Rebuilt only on a new catalog array identity; the curated arrays are module constants, so in practice twice (images + video).
 const indexCache = new WeakMap<CatalogGroup[], CatalogIndex>();
 
 function indexFor(catalog: CatalogGroup[]): CatalogIndex {
@@ -451,7 +451,7 @@ function indexFor(catalog: CatalogGroup[]): CatalogIndex {
     byKey.set(canonicalKeyFor(group.canonicalId), group);
     for (const alias of group.aliases ?? []) {
       byId.set(alias.toLowerCase(), group);
-      // An alias also claims its own suffix-stripped key so sibling artifacts of the aliased owner group correctly (Qwen/Qwen-Image-2512-FP8 etc.).
+      // An alias also claims its own suffix-stripped key so sibling artifacts of the aliased owner group correctly.
       byKey.set(canonicalKeyFor(alias), group);
     }
     for (const artifact of group.artifacts) {
@@ -465,7 +465,7 @@ function indexFor(catalog: CatalogGroup[]): CatalogIndex {
   return built;
 }
 
-/** The group a repo id belongs to, or null for unknown repos (callers render those ungrouped, exactly as before the catalog existed). */
+/** The group a repo id belongs to, or null for unknown repos (callers render those ungrouped). */
 export function groupForRepoId(
   repoId: string,
   catalog: CatalogGroup[],
@@ -475,7 +475,7 @@ export function groupForRepoId(
   return index.byId.get(lowered) ?? index.byKey.get(canonicalKeyFor(lowered)) ?? null;
 }
 
-/** The exact curated artifact for a repo id (null when the repo only matches a group by key/alias -- e.g. a cached quant repo we know but did not curate). */
+/** The exact curated artifact for a repo id (null when the repo only matches a group by key/alias). */
 export function artifactForRepoId(
   repoId: string,
   catalog: CatalogGroup[],
@@ -487,7 +487,7 @@ export function artifactForRepoId(
   return group ? { group, artifact } : null;
 }
 
-/** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT (old ids keep working everywhere). */
+/** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
 export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   const options: ModelOption[] = [];
   for (const group of catalog) {
@@ -506,7 +506,7 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   return options;
 }
 
-/** How to load a curated artifact: replaces the pages SAFETENSORS_MODELS / PIPELINE_MODELS lookup tables. Null for unknown ids (GGUF picks carry their own variant metadata; local paths and hub GGUFs resolve elsewhere). */
+/** How to load a curated artifact. Null for unknown ids (GGUF picks carry their own variant metadata; local paths and hub GGUFs resolve elsewhere). */
 export function loadSpecFor(
   repoId: string,
   catalog: CatalogGroup[],
@@ -532,7 +532,7 @@ const GGUF_QUANT_TOKENS = [
   "f16",
 ] as const;
 
-/** Whether a (lowercased, trimmed) query matches the group: canonical id, display name, any artifact id, any label/keyword, or a quant-class token. */
+/** Whether a (lowercased, trimmed) query matches the group: canonical id, display name, artifact id, label/keyword, or quant-class token. */
 export function groupMatchesQuery(group: CatalogGroup, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -564,7 +564,7 @@ export interface DeviceBudget {
   systemRamGb: number;
 }
 
-/** GGUF fit classification matching llama-server _select_gpus logic: fits = model <= 0.7 * GPU; tight = fits with 0.7 * RAM offload; oom = neither. Extracted from GgufVariantExpander so the badge and the router agree. */
+/** GGUF fit classification matching llama-server _select_gpus: fits = model <= 0.7 * GPU; tight = fits with 0.7 * RAM offload; oom = neither. */
 export function classifyGgufFit(
   sizeBytes: number,
   budget: DeviceBudget,
@@ -586,7 +586,7 @@ export interface QuantVariant {
   downloaded?: boolean;
 }
 
-/** The quant a bare group/repo click should load. Preference order: largest downloaded non-OOM quant, the repo default when non-OOM, the largest fitting quant, then the smallest overall (closest to running). Mirrors the expander effectiveRecommended, extended to prefer what is already on disk. */
+/** The quant a bare group/repo click loads: largest downloaded non-OOM quant, else the repo default when non-OOM, else the largest fitting, else the smallest overall. */
 export function pickDefaultQuant(
   variants: QuantVariant[],
   defaultVariant: string | null,
@@ -632,7 +632,7 @@ function fitsResident(artifact: ModelArtifact, gpuGb: number): boolean {
   return artifact.approxSizeGb <= gpuGb * 0.7;
 }
 
-/** The artifact a bare group click loads. Ladder: (1) highest-quality DOWNLOADED artifact fitting the 0.7 * GPU budget, else a downloaded GGUF (its quant ladder self-fits), else the smallest-footprint downloaded artifact; (2) no budget known -> the group GGUF if it has one, else the first artifact; (3) best sized artifact that fits resident, walking descending quality (BF16 official, FP8, bnb-4bit), unknown sizes never auto-picked; (4) fallback GGUF, else the smallest-footprint artifact. */
+/** The artifact a bare group click loads. Ladder: (1) highest-quality DOWNLOADED artifact within the 0.7 * GPU budget, else a downloaded GGUF, else the smallest downloaded; (2) no budget known -> the group GGUF, else the first artifact; (3) best sized artifact that fits, descending quality (BF16, FP8, bnb-4bit), unsized never auto-picked; (4) fallback GGUF, else the smallest artifact. */
 export function pickDefaultArtifact(
   group: CatalogGroup,
   input: RoutingInput,
@@ -657,7 +657,7 @@ export function pickDefaultArtifact(
     return ggufArtifact ?? artifacts[0];
   }
   for (const artifact of artifacts) {
-    // Skip a gated, NOT-downloaded artifact: auto-routing to it would fail the download for a user without license/token access, so fall through to an open artifact (the GGUF below). The downloaded branch above still returns a gated artifact the user already fetched.
+    // Skip a gated, NOT-downloaded artifact: auto-routing there fails the download without license/token access, so fall through to an open one. The downloaded branch above still returns gated artifacts.
     if (artifact.format !== "gguf" && !artifact.gated && fitsResident(artifact, input.gpuGb)) {
       return artifact;
     }
@@ -668,7 +668,7 @@ export function pickDefaultArtifact(
   )[0];
 }
 
-/** Whether the "fit on device" toggle should keep a catalog group. A group stays visible when at least one artifact can actually run here: one already on disk, a GGUF (its per-quant ladder self-fits and the backend plans its own offload), or a sized artifact within the 0.7*GPU + 0.7*RAM budget. A group of only over-budget (or unsized) full-precision artifacts is hidden, so a bare click on a fit-filtered list can no longer start an OOM load the toggle was meant to hide. An unknown device budget keeps everything. */
+/** Whether the "fit on device" toggle keeps a group: it stays when at least one artifact can run here (already on disk, a GGUF, or a sized artifact within the 0.7*GPU + 0.7*RAM budget). Otherwise a bare click on a filtered list could start an OOM load. An unknown budget keeps everything. */
 export function catalogGroupFitsDevice(
   group: CatalogGroup,
   budget: DeviceBudget,
@@ -680,7 +680,7 @@ export function catalogGroupFitsDevice(
   if (budgetGb <= 0) return true;
   return group.artifacts.some((a) => {
     if (isDownloaded(a.repoId)) return true;
-    // A GGUF quant ladder self-fits (llama-server offloads), so it is always a runnable fallback -- matching pickDefaultArtifact returning it on any budget.
+    // A GGUF quant ladder self-fits (llama-server offloads), so it is always a runnable fallback, matching pickDefaultArtifact.
     if (a.format === "gguf") return true;
     return a.approxSizeGb !== undefined && a.approxSizeGb <= budgetGb;
   });

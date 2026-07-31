@@ -101,8 +101,7 @@ def run(
             from diffusers.hooks import apply_first_block_cache
             apply_first_block_cache(pipe.transformer, FirstBlockCacheConfig(threshold = threshold))
     if compile_:
-        # FBCache's per-step decision is a graph break, so cached runs compile with fullgraph=False as
-        # production does; fullgraph=True would fail warmup and silently fall back to eager.
+        # FBCache's per-step decision breaks the graph, so cached runs compile with fullgraph=False like production.
         fullgraph = threshold is None
         try:
             pipe.transformer.compile_repeated_blocks(fullgraph = fullgraph, dynamic = True)

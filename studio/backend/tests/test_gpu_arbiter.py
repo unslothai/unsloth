@@ -71,8 +71,7 @@ def test_unknown_owner_raises(calls):
 
 
 def test_evict_chat_unloads_a_still_loading_chat_backend(monkeypatch):
-    # A chat model still starting up is is_active (process exists) but not yet is_loaded (healthy).
-    # Eviction must still unload it, or the load keeps allocating VRAM after the GPU was handed over.
+    # A chat model still starting up is is_active but not yet is_loaded, and eviction must still unload it or the load keeps allocating VRAM after the handover.
     import core.inference as core_inference
     import routes.inference as routes_inference
 
@@ -125,8 +124,7 @@ def test_release_if_by_non_owner_is_noop(calls):
 
 
 def test_release_if_predicate_sees_a_reregistered_same_owner_load(calls):
-    # The race release_if closes: a slow unload's predicate reports a load now in flight, so ownership
-    # must stay with DIFFUSION.
+    # The race release_if closes: a slow unload's predicate reports a load now in flight, so ownership stays with DIFFUSION.
     arb.acquire_for(arb.DIFFUSION)
     loading = {"in_flight": True}
     assert arb.release_if(arb.DIFFUSION, lambda: not loading["in_flight"]) is False
@@ -134,8 +132,7 @@ def test_release_if_predicate_sees_a_reregistered_same_owner_load(calls):
 
 
 def test_register_runs_under_ownership_and_returns_result(calls):
-    # A register callback runs after ownership transfers and its return value is forwarded; the route
-    # uses this to register the in-flight load.
+    # A register callback runs after ownership transfers and its return value is forwarded; the route registers the in-flight load with it.
     seen_owner: list = []
 
     def register():
@@ -149,8 +146,7 @@ def test_register_runs_under_ownership_and_returns_result(calls):
 
 
 def test_register_failure_leaves_ownership_in_place(calls):
-    # A failing register (e.g. begin_load reporting a load already in progress) propagates but must not
-    # drop ownership: the prior handoff stands.
+    # A failing register (e.g. begin_load reporting a load in progress) propagates but must not drop ownership: the prior handoff stands.
     arb.acquire_for(arb.CHAT)
 
     def register():
@@ -163,8 +159,7 @@ def test_register_failure_leaves_ownership_in_place(calls):
 
 
 def test_competing_acquire_blocks_until_register_completes(monkeypatch):
-    # While DIFFUSION registers its load, a competing VIDEO acquire must block (not evict) until the
-    # load is in-flight; holding the lock across register makes eviction never race it.
+    # While DIFFUSION registers its load, a competing VIDEO acquire must block (not evict) until the load is in-flight; holding the lock across register stops eviction racing it.
     import threading
     import time
 
@@ -205,10 +200,8 @@ def test_competing_acquire_blocks_until_register_completes(monkeypatch):
 
 
 def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
-    # An HF chat load has no llama-server process until its GGUF finished downloading, which is
-    # minutes. Gating only on is_active let the evictor find nothing to cancel, grant the GPU to the
-    # image/video load, and the chat load then spawned onto the same device. The in-flight marker is
-    # what makes that load cancellable.
+    # An HF chat load has no llama-server process until its GGUF finished downloading, which takes minutes. Gating only on
+    # is_active let the evictor find nothing to cancel and the chat load spawn onto the same device; the in-flight marker makes it cancellable.
     import core.inference as core_inference
     import routes.inference as routes_inference
     from core.inference.llama_cpp import chat_load_in_flight
@@ -251,10 +244,8 @@ def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
 
 
 def test_evict_chat_cancels_an_in_flight_safetensors_load(monkeypatch):
-    # The orchestrator publishes active_model_name only once its worker reports success, so an
-    # in-flight safetensors load is visible ONLY in loading_models. Gating the cancellation on
-    # active_model_name let that worker finish after ownership transferred and allocate alongside the
-    # image/video pipeline.
+    # The orchestrator publishes active_model_name only once its worker reports success, so an in-flight safetensors load is
+    # visible ONLY in loading_models; gating the cancellation on active_model_name let that worker allocate alongside the new pipeline.
     import core.inference as core_inference
     import routes.inference as routes_inference
 
@@ -293,8 +284,7 @@ def test_evict_chat_cancels_an_in_flight_safetensors_load(monkeypatch):
 
 
 def test_evict_chat_cancels_every_pending_load_over_a_live_snapshot(monkeypatch):
-    # cancel_load discards the marker it cancels, so iterate a snapshot rather than the live set
-    # (mutating during iteration raises).
+    # cancel_load discards the marker it cancels, so iterate a snapshot (mutating the live set during iteration raises).
     import core.inference as core_inference
     import routes.inference as routes_inference
 
@@ -335,9 +325,8 @@ def test_evict_chat_cancels_every_pending_load_over_a_live_snapshot(monkeypatch)
 
 
 def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
-    # Mirror of the GGUF branch's guard: an Images/Video acquire can land in the gap between the
-    # eviction and the load's publish, so the load has to undo itself instead of leaving two models
-    # resident.
+    # Mirror of the GGUF branch's guard: an Images/Video acquire can land in the gap between the eviction and the load's
+    # publish, so the load has to undo itself instead of leaving two models resident.
     from pathlib import Path
 
     route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(

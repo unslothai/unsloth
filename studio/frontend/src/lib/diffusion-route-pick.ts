@@ -7,28 +7,14 @@ export interface DiffusionRoutePick {
   opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
 }
 
-/**
- * What `/images?model=...&quant=...` (or the Video twin) should load.
- *
- * A pick routed from the chat picker carries no picker metadata, only the two search params, so
- * a bare local single file has to be recognised here. Loading one as a pipeline evicts the
- * resident model and then fails on the missing `model_index.json`, since an explicit
- * `model_kind` wins over the backend's filename sniffing. Split into (parent dir, basename) the
- * same way the pages' own picker handlers do.
- *
- * `spec` is the target page's catalog entry for the repo (`loadSpecFor`), which the chat picker
- * cannot put in the URL: `ggufFilename` is GGUF-specific, so a curated single-file artifact
- * (LTX-2.3, an FP8 checkpoint) arrives with no `quant` and would be read as a pipeline. Passing
- * the spec makes a routed pick load exactly what a direct pick on that page loads.
- */
+/** What `/images?model=...&quant=...` (or the Video twin) should load. A pick routed from the chat picker carries no picker metadata, only the two search params, so a bare local single file has to be recognised here: loading one as a pipeline evicts the resident model and then fails on the missing `model_index.json`. `spec` is the target page's catalog entry (`loadSpecFor`), which the chat picker cannot put in the URL, so a curated single-file artifact (LTX-2.3, an FP8 checkpoint) would otherwise arrive with no `quant` and read as a pipeline. */
 export function diffusionRoutePick(
   model: string,
   quant?: string | null,
   spec?: { kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null,
 ): DiffusionRoutePick {
   if (quant) return { repoId: model, opts: { kind: "gguf", filename: quant } };
-  // A spec exists only for a catalog repo id (loadSpecFor matches on that), never for a local
-  // path, so it takes precedence over the extension sniffing below.
+  // A spec exists only for a catalog repo id (loadSpecFor matches on that), never a local path, so it beats the extension sniffing below.
   if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };
   const norm = model.replace(/\\/g, "/");
   const slash = norm.lastIndexOf("/");

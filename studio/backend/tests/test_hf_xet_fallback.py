@@ -421,8 +421,7 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
-        # The retry only applies to a host with no accelerator (see _gpu_present); pin that on the
-        # freshly imported module so this keeps exercising the light-init path.
+        # The retry only applies to a host with no accelerator (see _gpu_present); pin that on the freshly imported module.
         monkeypatch.setattr(degraded, "_gpu_present", lambda: False)
         # Import is light (lazy backend); unsloth_zoo not loaded yet.
         assert seen_env == [], seen_env

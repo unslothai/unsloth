@@ -30,12 +30,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# Upper bound on images per generation call (mirrors the route's cap): a longer prompt/seed
-# list is a client error, not an OOM to back off from.
+# Upper bound on images per generation call (mirrors the route's cap): a longer prompt/seed list is a client error, not an OOM to back off from.
 MAX_BATCH_IMAGES = 32
 
-# Seeds stay in JS's safe-integer range so they round-trip through the JSON gallery recipes
-# (a raw 64-bit seed loses precision).
+# Seeds stay in JS's safe-integer range so they round-trip through the JSON gallery recipes (a raw 64-bit seed loses precision).
 SEED_MASK = (1 << 53) - 1
 
 

@@ -44,7 +44,7 @@ TE_PREQUANT_SCHEMES = ("fp8",)
 # Components the pipeline-assembly injection covers (text_encoder_4 is family-assembled separately, see diffusion_hidream.py).
 TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# Bases whose text-encoder weights are VERIFIED byte-identical, so one hosted artifact serves all of them (every shard LFS sha256 compared across repos on 2026-07-18). The checkpoint validator accepts a base_model_id from the same group; everything else keeps the strict refusal. Ids are lowercased.
+# Bases whose text-encoder weights are VERIFIED byte-identical, so one hosted artifact serves them all (every shard LFS sha256 compared on 2026-07-18). The checkpoint validator accepts a base_model_id from the same group; anything else keeps the strict refusal. Ids are lowercased.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
     # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set.
     frozenset(
@@ -53,7 +53,7 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
         }
     ),
-    # T5-XXL (text_encoder_2): 2 shards, 9,524,648,584 bytes, identical sha256 set across every FLUX.1 release; HiDream-I1 ships the same bytes as text_encoder_3 (cross-component mapping is not wired yet, this entry documents the identity).
+    # T5-XXL (text_encoder_2): 2 shards, 9,524,648,584 bytes, identical sha256 across every FLUX.1 release; HiDream-I1 ships the same bytes as text_encoder_3 (cross-component mapping is not wired yet).
     frozenset(
         {
             "black-forest-labs/flux.1-schnell",
@@ -162,7 +162,7 @@ def te_prequant_sources(
         if mode != TE_QUANT_FP8:
             return {}
         family = getattr(fam, "name", None)
-        # The per-family TE deny table ships on the video branch precision module; the image branch has no denials. Resolve lazily so one module serves both.
+        # The per-family TE deny table ships on the video branch precision module (the image branch has no denials), so resolve it lazily and one module serves both.
         denied = getattr(precision, "_te_family_denied", None)
         if callable(denied) and denied(family, mode):
             return {}
@@ -178,7 +178,7 @@ def te_prequant_sources(
         return {}
 
 
-# Weight files a dense encoder folder holds. Everything else in the folder (config.json, the shard index, tokenizer JSON) is kept when the pre-cast checkpoint replaces the weights: the pre-cast loader still meta-inits the encoder from the base repo component config.
+# Weight files a dense encoder folder holds. Everything else (config.json, the shard index, tokenizer JSON) is kept when the pre-cast checkpoint replaces the weights: the pre-cast loader still meta-inits from the base repo component config.
 _TE_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pth", ".pt", ".msgpack", ".h5")
 
 
@@ -234,7 +234,7 @@ def load_prequant_text_encoder(
 
         import torch
 
-        # The layerwise-fp8 state dict is plain tensors, so weights_only=True suffices: no pickle code runs even for a local-path artifact. A future torchao-subclass scheme needs a format bump AND weights_only=False behind the same allowlist as the DiT module.
+        # The layerwise-fp8 state dict is plain tensors, so weights_only=True suffices and no pickle code runs even for a local path. A future torchao-subclass scheme needs a format bump AND the DiT module's allowlist.
         ckpt = torch.load(path, weights_only = True, map_location = "cpu")
         if not _validate_checkpoint(ckpt, scheme, component, base, logger):
             return None
@@ -256,7 +256,7 @@ def load_prequant_text_encoder(
         if subfolder:
             config_kwargs["subfolder"] = subfolder
         config = transformers.AutoConfig.from_pretrained(base, **config_kwargs)
-        # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken rope. No-op for every other family.
+        # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken rope.
         from .diffusion_krea2 import remap_rope_parameters
 
         remap_rope_parameters(getattr(config, "text_config", config))
@@ -272,13 +272,13 @@ def load_prequant_text_encoder(
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the cast weights.
             encoder = encoder_cls(config)
             encoder.load_state_dict(state_dict, strict = True, assign = True)
-        # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g. Qwen3's lm_head from embed_tokens. An untied head defeats _cast_fp8's tied-projection skip below, breaking bit-identity and duplicating the embedding. Re-tie to the builder-identical structure; a no-op for untied configs.
+        # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g. Qwen3's lm_head from embed_tokens. That defeats _cast_fp8's tied-projection skip below, so re-tie to the builder-identical structure; a no-op for untied configs.
         tie = getattr(encoder, "tie_weights", None)
         if callable(tie):
             tie()
         encoder.eval()
 
-        # Install the SAME upcast hooks the runtime cast applies. The weight cast inside is idempotent, so this only arms the per-layer upcast; without it the fp8 storage weights would meet bf16 activations at the first forward. A hook failure means the encoder cannot run.
+        # Install the SAME upcast hooks the runtime cast applies. The weight cast inside is idempotent, so this only arms the per-layer upcast; without it the fp8 storage weights would meet bf16 activations at the first forward.
         from .diffusion_precision import _cast_fp8
 
         class _Target:
@@ -381,7 +381,7 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
         return False
     ckpt_base = meta.get("base_model_id")
     if base:
-        # Keys matching a different base can load strict=True and encode prompts with the wrong weights. The builder always records base_model_id; refuse one that omits it.
+        # Keys matching a different base can load strict=True and encode prompts with the wrong weights. The builder always records base_model_id, so refuse one that omits it.
         if not ckpt_base:
             _warn(
                 logger,

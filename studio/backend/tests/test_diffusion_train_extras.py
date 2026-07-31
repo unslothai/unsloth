@@ -269,8 +269,7 @@ def test_config_blank_cond_cache_dir_means_off():
 
 
 def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
-    # The trainer namespaces its conditioning cache on this, so an in-place checkpoint update must
-    # change the marker or a warm run trains on the old encoder's embeddings.
+    # The trainer namespaces its conditioning cache on this, so an in-place checkpoint update must change the marker or a warm run trains on the old embeddings.
     from core.training.diffusion_train_extras import source_revision
 
     d = tmp_path / "ckpt"
@@ -330,8 +329,7 @@ def test_hub_cache_roots_puts_the_active_studio_cache_first(monkeypatch, tmp_pat
 
 
 def test_hub_cache_roots_survives_without_studio_settings(monkeypatch, tmp_path):
-    # The trainer subprocess may run without Studio's settings module importable; the env and the
-    # library constant still have to work.
+    # The trainer subprocess may run without Studio's settings module importable, so the env and the library constant still have to work.
     import builtins
 
     from core.training import diffusion_train_extras as extras

@@ -1354,9 +1354,8 @@ with sync_playwright() as p:
                 btn = c
                 break
         if btn is None:
-            # Unpinned rows (Video, Recipes, Export by default) live in the sidebar's
-            # "More" flyout. It opens on hover, so hover first; a click would toggle it
-            # straight back shut. Click is the fallback for a no-hover environment.
+            # Unpinned rows (Video, Recipes, Export by default) live in the sidebar's "More" flyout, which opens on hover, so hover
+            # first: a click would toggle it back shut. Click is the fallback for a no-hover environment.
             more_btn = page.get_by_role("button", name = re.compile(r"^\s*More\s*$", re.I)).first
             if more_btn.count() > 0:
                 more_btn.hover()

@@ -54,8 +54,7 @@ def test_sdxl_detection_by_repo_and_override():
 
 
 def test_dit_families_keep_transformer_denoiser():
-    # The generalisation must not change existing DiT families: they stay on pipe.transformer and
-    # their single file is transformer-only.
+    # The generalisation must not change existing DiT families: they stay on pipe.transformer and their single file is transformer-only.
     for rid in ("unsloth/FLUX.1-schnell-GGUF", "unsloth/Qwen-Image-GGUF", "unsloth/Z-Image-GGUF"):
         fam = detect_family(rid)
         assert fam.denoiser_attr == "transformer"
@@ -63,8 +62,7 @@ def test_dit_families_keep_transformer_denoiser():
 
 
 def test_sdxl_has_no_native_sd_cpp_mapping():
-    # No single-file VAE/TE mapping yet, so the no-GPU route falls back to diffusers rather than
-    # trying to drive sd-cli.
+    # No single-file VAE/TE mapping yet, so the no-GPU route falls back to diffusers rather than driving sd-cli.
     assert family_sd_cpp_supported(detect_family("stabilityai/sdxl-turbo")) is False
 
 
@@ -72,8 +70,7 @@ def test_sdxl_base_repos_are_trusted_non_gguf():
     # Official safetensors-only base repos are allowlisted so their catalog entries load.
     assert _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-base-1.0")
     assert _is_trusted_diffusion_repo("stabilityai/sdxl-turbo")
-    # The refiner is img2img-only and intentionally NOT allowlisted (see
-    # test_sdxl_refiner_not_trusted). Case-insensitive match.
+    # The refiner is img2img-only and intentionally NOT allowlisted (see test_sdxl_refiner_not_trusted). Case-insensitive match.
     assert _is_trusted_diffusion_repo("StabilityAI/SDXL-Turbo")
     # A random repo (even one that detects as SDXL) is NOT trusted for a non-GGUF load.
     assert not _is_trusted_diffusion_repo("randomorg/my-sdxl-merge")
@@ -81,8 +78,7 @@ def test_sdxl_base_repos_are_trusted_non_gguf():
 
 
 def test_sdxl_model_kind_resolution():
-    # A full-pipeline load (no single-file name) is "pipeline"; a single .safetensors is
-    # "single_file" (handled by the whole-pipeline branch for SDXL).
+    # A full-pipeline load (no single-file name) is "pipeline"; a single .safetensors is "single_file".
     assert resolve_model_kind(None) == "pipeline"
     assert resolve_model_kind("sdxl.safetensors") == "single_file"
 
@@ -101,9 +97,8 @@ class _FakeVae:
 
 
 def test_align_vae_dtype_uses_unet_denoiser():
-    # For SDXL the denoiser lives at pipe.unet; _align_vae_dtype must read it (a pipe with only .unet)
-    # and cast the VAE to the U-Net's dtype. The dtype comes from a parameter, so use a _FakeVae
-    # denoiser.
+    # For SDXL the denoiser lives at pipe.unet, so _align_vae_dtype must read it and cast the VAE to the U-Net's dtype. The
+    # dtype comes from a parameter, hence the _FakeVae denoiser.
     import torch
 
     vae = _FakeVae(dtype = torch.float32)
@@ -129,9 +124,8 @@ def test_align_vae_dtype_transformer_default_unchanged():
 
 
 def test_align_vae_dtype_skips_gguf_packed_uint8_params():
-    # A GGUF-quantized transformer's leading parameters are packed uint8 storage, so the dtype probe
-    # must skip them and use the first FLOATING dtype, or nn.Module.to() rejects the integer dtype and
-    # an Edit/img2img call 500s. All-integer params must be a clean no-op.
+    # A GGUF-quantized transformer's leading parameters are packed uint8, so the dtype probe must skip them and use the first
+    # FLOATING dtype, else nn.Module.to() rejects the integer dtype and an Edit/img2img call 500s. All-integer is a no-op.
     import torch
 
     class _GgufDenoiser:
@@ -164,9 +158,8 @@ def test_sdxl_lora_supported_on_diffusers():
 
 
 def test_pipeline_prefetch_skips_non_torch_artifacts():
-    # The SDXL Base repo ships fp16 variants, ONNX, OpenVINO and Flax exports next to the default
-    # safetensors; from_pretrained loads only the default torch weights, so the prefetch filter must
-    # skip everything else or a catalog load pulls tens of GB of unused artifacts.
+    # The SDXL Base repo ships fp16 variants, ONNX, OpenVINO and Flax exports beside the default safetensors, and
+    # from_pretrained loads only the default torch weights, so the prefetch filter must skip the rest or pull tens of GB.
     from core.inference.diffusion import _pipeline_file_downloaded as keep
 
     assert keep("model_index.json")
@@ -183,8 +176,7 @@ def test_pipeline_prefetch_skips_non_torch_artifacts():
 
 
 def test_sdxl_refiner_not_trusted():
-    # The refiner is an img2img-only pipeline, and the sdxl family loads every repo as the base
-    # txt2img pipeline, so it must NOT be allowlisted for a non-GGUF load.
+    # The refiner is img2img-only and the sdxl family loads every repo as the base txt2img pipeline, so it must NOT be allowlisted for a non-GGUF load.
     assert not _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-refiner-1.0")
     # The base and turbo remain trusted.
     assert _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-base-1.0")
@@ -192,8 +184,7 @@ def test_sdxl_refiner_not_trusted():
 
 
 def test_sdxl_gguf_load_rejected_up_front():
-    # SDXL has no transformer-only GGUF variant (its single file is the whole pipeline), so a GGUF
-    # request must fail cheap validation before the GPU handoff.
+    # SDXL has no transformer-only GGUF variant (its single file is the whole pipeline), so a GGUF request fails cheap validation before the GPU handoff.
     backend = DiffusionBackend()
     with pytest.raises(ValueError, match = "no GGUF"):
         backend.validate_load_request(
@@ -202,8 +193,7 @@ def test_sdxl_gguf_load_rejected_up_front():
 
 
 def test_base_config_filter_skips_weights():
-    # For a whole-pipeline single file, the base repo supplies only config/tokenizer, not its (unused)
-    # weight tensors.
+    # For a whole-pipeline single file the base repo supplies only config/tokenizer, not its unused weight tensors.
     from core.inference.diffusion import _base_config_file_downloaded as keep
 
     assert keep("model_index.json")

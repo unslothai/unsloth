@@ -705,8 +705,7 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(monkeypa
 
 
 def test_list_cached_models_prefers_complete_over_larger_partial(monkeypatch, tmp_path):
-    # The same repo cached in two roots: a LARGER but PARTIAL copy must not shadow a SMALLER but
-    # COMPLETE one, or the picker (which drops partial rows) hides a usable model.
+    # The same repo cached in two roots: a LARGER but PARTIAL copy must not shadow a SMALLER but COMPLETE one, or the picker hides a usable model.
     complete = _repo(
         "Org/Dup",
         [_file("model.safetensors", 10_000)],
@@ -1319,8 +1318,7 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("qwen_image") == "text-to-image"
     assert models_route._arch_to_task("llama") == "text-generation"
     assert models_route._arch_to_task(None) is None
-    # Known-but-unsupported diffusion archs get a task that is NEITHER chat nor a loadable image
-    # task, so the chat picker hides them and the Images picker leaves them out.
+    # Known-but-unsupported diffusion archs get a task that is neither chat nor a loadable image task, so both pickers skip them.
     for arch in ("sdxl", "sd1", "sd3", "lumina2", "hidream", "cosmos", "hyvid"):
         task = models_route._arch_to_task(arch)
         assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
@@ -1328,12 +1326,10 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     # A video arch with a REGISTERED VideoFamily surfaces with the Video-picker task.
     assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
     assert models_route._arch_to_task("ltxv") not in ("text-generation", "text-to-image")
-    # A video arch that does not resolve from the bare arch alone ("wan" covers both the loadable
-    # TI2V-5B and the A14B MoE) stays unsupported when no name is available to disambiguate.
+    # A video arch that does not resolve from the bare arch alone ("wan" covers TI2V-5B and the A14B MoE) stays unsupported.
     assert models_route._arch_to_task("wan") == models_route._UNSUPPORTED_DIFFUSION_TASK
     assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
-    # With a repo/file name hint, the loadable TI2V-5B Wan GGUF resolves to the Video task while the
-    # A14B MoE stays unsupported, matching the loader's own name-aware detection.
+    # With a repo/file name hint the loadable TI2V-5B resolves to Video while the A14B MoE stays unsupported, matching the loader.
     assert (
         models_route._arch_to_task("wan", ("QuantStack/Wan2.2-TI2V-5B-GGUF",))
         == models_route._VIDEO_GEN_TASK
@@ -1346,8 +1342,7 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
         models_route._arch_to_task("wan", ("QuantStack/Wan2.2-T2V-A14B-GGUF",))
         == models_route._UNSUPPORTED_DIFFUSION_TASK
     )
-    # Drift guard: every diffusion arch llama.cpp rejects as a chat model must classify here as some
-    # non-chat task (image, video, or unsupported).
+    # Drift guard: every diffusion arch llama.cpp rejects as a chat model must classify here as some non-chat task.
     from core.inference.llama_cpp import LlamaCppBackend
 
     classified = (
@@ -1361,10 +1356,8 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
 
 
 def test_arch_to_task_resolves_z_image_gguf_tagged_lumina2():
-    # Z-Image's DiT is a Lumina2 derivative, so unsloth/Z-Image-GGUF and unsloth/Z-Image-Turbo-GGUF
-    # both declare general.architecture = "lumina2". Reading the arch alone tagged the whole
-    # Z-Image GGUF line unsupported and hid it from the Images "On Device" list, even though
-    # validate_load_request loads it happily.
+    # Z-Image's DiT is a Lumina2 derivative, so both Z-Image GGUF repos declare general.architecture = "lumina2". Reading
+    # the arch alone tagged the whole line unsupported and hid it, even though validate_load_request loads it happily.
     for repo, fname in (
         ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"),
         ("unsloth/Z-Image-GGUF", "z-image-Q8_0.gguf"),
@@ -1380,10 +1373,8 @@ def test_arch_to_task_resolves_z_image_gguf_tagged_lumina2():
 
 
 def test_arch_to_task_agrees_with_the_loader_on_ambiguous_archs():
-    # The picker and the loader must not disagree: whatever _arch_to_task advertises as a loadable
-    # image model on a shared arch, validate_load_request must accept, and whatever it hides,
-    # validate_load_request must reject. Otherwise the Images list either hides a working model
-    # (the Z-Image bug) or offers one that 400s on click.
+    # The picker and the loader must not disagree: whatever _arch_to_task advertises as loadable, validate_load_request
+    # must accept, and whatever it hides must be rejected. Otherwise the Images list hides a working model or offers a 400.
     from core.inference.diffusion import DiffusionBackend
     from core.inference.diffusion_families import _FAMILIES
 
@@ -1440,8 +1431,7 @@ def _idle_diffusion_engine():
 
 
 def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
-    # The cached-delete guard refuses deleting a repo the diffusion (Images) backend has loaded, so
-    # its GGUF can't be removed from under a live pipeline.
+    # The cached-delete guard refuses deleting a repo the Images backend has loaded, so its GGUF cannot vanish from under a live pipeline.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1494,9 +1484,8 @@ def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
 
 
 def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
-    # The native sd.cpp one-shot engine re-reads its companion VAE / text-encoder files every
-    # generation, so deleting a companion repo while a FLUX GGUF is loaded must be refused. The
-    # loaded repo_id does not match the companion, so the guard relies on loaded_repo_ids().
+    # The native sd.cpp one-shot engine re-reads its companion VAE / text-encoder files every generation, so deleting a
+    # companion repo while a FLUX GGUF is loaded must be refused. The repo_id does not match, so the guard needs loaded_repo_ids().
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1527,8 +1516,7 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
 
 
 def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch):
-    # status().loaded is still False while a background Images load DOWNLOADS the repo, but deleting
-    # then would remove blobs from under it, so loading_repo_ids() must refuse.
+    # status().loaded is still False while a background Images load downloads the repo, so loading_repo_ids() must refuse the delete.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1555,8 +1543,7 @@ def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch)
 
 
 def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
-    # A loaded Images repo must not block deleting a DIFFERENT cached repo that merely shares a name
-    # prefix (Qwen/Qwen-Image vs Qwen/Qwen-Image-2512). The guard is `/`-boundary aware.
+    # A loaded Images repo must not block deleting a different cached repo sharing a name prefix; the guard is `/`-boundary aware.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1597,9 +1584,8 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
 
 
 def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
-    # The partial probe must be scoped to the snapshot row being listed: unscoped, a stale
-    # .incomplete copy in one cache root would flag a complete copy in another as partial and hide
-    # the usable model.
+    # The partial probe must be scoped to the snapshot row being listed: unscoped, a stale .incomplete copy in one cache
+    # root would flag a complete copy in another as partial and hide the usable model.
     import hub.utils.inventory_scan as scan
 
     calls = []
@@ -1629,9 +1615,8 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
 
 
 def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
-    # Only a ROOT model_index.json makes a repo pipeline-loadable, so a nested subdir one must NOT
-    # clear the single_file flag. CachedFileInfo.file_name is the basename, so the helper scopes by
-    # snapshot path -- a name-only match would claim both.
+    # Only a ROOT model_index.json makes a repo pipeline-loadable, so a nested subdir one must NOT clear the single_file
+    # flag. CachedFileInfo.file_name is the basename, so the helper scopes by snapshot path.
     snap = tmp_path / "snapshots" / "abc"
     nested = SimpleNamespace(
         file_name = "model_index.json",
@@ -1655,11 +1640,9 @@ def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
 
 
 def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
-    # A repo cached twice -- an older complete snapshot plus a newer companion-only one, the shape a
-    # GGUF load leaves when it prefetches the base repo's VAE / text encoder and skips the
-    # transformer -- must be judged on the snapshot from_pretrained resolves, i.e. the newest by
-    # mtime. Scanning every revision let the OLD snapshot's transformer satisfy completeness, so the
-    # row read as on-device while the load would fail offline or silently pull multi-GB weights.
+    # A repo cached twice -- an older complete snapshot plus a newer companion-only one, the shape a GGUF load leaves when
+    # it prefetches the base repo and skips the transformer -- must be judged on the snapshot from_pretrained resolves, the
+    # newest by mtime. Scanning every revision let the OLD transformer satisfy completeness, so the row read as on-device.
     import os
 
     import hub.utils.inventory_scan as scan
@@ -1703,8 +1686,7 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
 
 
 def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
-    # A diffusion-tagged repo with NO top-level model_index.json is a single-file checkpoint, so it
-    # carries single_file=True; a full pipeline repo and a chat repo carry no flag.
+    # A diffusion-tagged repo with NO top-level model_index.json is a single-file checkpoint (single_file=True); a full pipeline or chat repo carries no flag.
     single = _repo(
         "unsloth/Qwen-Image-fp8-single",
         [_file("qwen-image-fp8.safetensors", 10_000)],
@@ -1804,8 +1786,7 @@ def test_hub_cached_rows_carry_the_task_the_pickers_filter_on(monkeypatch, tmp_p
 
 
 def test_hub_cached_row_task_never_hides_a_row_when_classification_fails(monkeypatch, tmp_path):
-    # Best-effort, like the models API: a classifier that raises leaves the row untagged rather
-    # than dropping it from the listing.
+    # Best-effort, like the models API: a classifier that raises leaves the row untagged rather than dropping it.
     from hub.services.models import cache_inventory
 
     def _boom(repo_info):
@@ -1829,10 +1810,8 @@ def test_hub_local_rows_are_tagged_with_their_task():
 
 
 def test_pipeline_class_guard_fires_before_any_download():
-    # The 0.39-only families (Flux2Klein, Z-Image, Krea 2, LTX-2, HunyuanImage) used to die with a
-    # bare AttributeError deep in the load, after the checkpoint had been fetched, on the older
-    # diffusers that packaging still allows on Python 3.9. Validation refuses first, with the
-    # version and the fix in the message.
+    # The 0.39-only families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on
+    # the older diffusers packaging still allows on Python 3.9. Validation refuses first, naming the version and the fix.
     import pytest
 
     from core.inference.diffusion_families import _FAMILIES, assert_pipeline_class_available
@@ -1847,8 +1826,7 @@ def test_pipeline_class_guard_fires_before_any_download():
     real = sys.modules.get("diffusers")
     sys.modules["diffusers"] = stub
     try:
-        # ValueError, like every other unloadable-pick refusal: RuntimeError reached /images/load's
-        # 409 ("a load is already in progress") and escaped /images/download-plan as a bare 500.
+        # ValueError, like every other unloadable-pick refusal: RuntimeError reached /images/load's 409 and escaped download-plan as a 500.
         with pytest.raises(ValueError) as excinfo:
             assert_pipeline_class_available("ZImagePipeline", "z-image")
     finally:
@@ -1864,10 +1842,9 @@ def test_pipeline_class_guard_fires_before_any_download():
 
 
 def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
-    # A top-level model_index.json only proves the repo is a diffusers pipeline. An unsloth-hosted
-    # pipeline of a class this backend cannot assemble cleared the trust gate, was advertised to the
-    # Images picker as text-to-image, and then deterministically failed validate_load_request, which
-    # resolves the family the same way. Both gates now, mirroring the video branch above.
+    # A top-level model_index.json only proves the repo is a diffusers pipeline. An unsloth-hosted pipeline of a class this
+    # backend cannot assemble cleared the trust gate, was advertised to the picker, then failed validate_load_request.
+    # Both gates now, mirroring the video branch above.
     monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info: True)
 
     def _task(repo_id):
@@ -1883,8 +1860,7 @@ def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
 
 
 def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
-    # Same invariant as the GGUF arch test: whatever the picker advertises as a loadable image
-    # model, validate_load_request must accept.
+    # Same invariant as the GGUF arch test: whatever the picker advertises as loadable, validate_load_request must accept.
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info: True)
@@ -1907,10 +1883,8 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
 
 
 def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
-    # The newer families exist only from diffusers 0.39, which cannot be installed on Python 3.9 at
-    # all (diffusers dropped 3.9 in 0.38). Advertising one there is a pick that can only fail, and
-    # `pip install -U diffusers` cannot fix it without a Python upgrade -- so the picker applies the
-    # same availability check validate_load_request does.
+    # The newer families exist only from diffusers 0.39, which cannot be installed on Python 3.9 at all, so advertising one
+    # there is a pick that can only fail; the picker applies the same availability check validate_load_request does.
     import types
 
     import routes.models as models_module
@@ -1934,8 +1908,7 @@ def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
 
 
 def test_family_pipeline_available_fails_open_without_diffusers(monkeypatch):
-    # No diffusers at all is a different problem; the load path reports it properly, and a listing
-    # must not silently hide every image model over it.
+    # No diffusers at all is a different problem the load path reports properly; a listing must not hide every image model over it.
     import sys
 
     from core.inference.diffusion_families import detect_family, family_pipeline_available
@@ -1963,9 +1936,8 @@ def _pretend_old_diffusers(monkeypatch, *, engine):
 
 
 def test_gguf_picker_hides_a_family_no_engine_here_can_build(monkeypatch):
-    # The gate landed on the cached-repo picker only, so the GGUF repos -- the ones the Images
-    # picker actually offers for these families -- still showed as text-to-image on a diffusers too
-    # old to build them, and every pick died in validate_load_request.
+    # The gate landed on the cached-repo picker only, so the GGUF repos -- the ones the Images picker actually offers for
+    # these families -- still showed as text-to-image on a diffusers too old to build them, and every pick died.
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
 
     _pretend_old_diffusers(monkeypatch, engine = ENGINE_DIFFUSERS)
@@ -1987,9 +1959,8 @@ def test_gguf_picker_hides_a_family_no_engine_here_can_build(monkeypatch):
 
 
 def test_gguf_picker_keeps_a_family_the_native_engine_serves(monkeypatch):
-    # The opposite mistake: on a CPU/MPS or force-native host the GGUF is loaded by sd.cpp, which
-    # never instantiates a diffusers pipeline class, so hiding the row over a missing class would
-    # withhold a model that loads fine -- on exactly the hosts the native engine exists for.
+    # The opposite mistake: on a CPU/MPS or force-native host sd.cpp loads the GGUF and never instantiates a diffusers
+    # class, so hiding the row over a missing class would withhold a model that loads fine.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
     _pretend_old_diffusers(monkeypatch, engine = ENGINE_SD_CPP)
@@ -1999,8 +1970,7 @@ def test_gguf_picker_keeps_a_family_the_native_engine_serves(monkeypatch):
 
 
 def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(monkeypatch):
-    # Same predicate on the load path: refuse a too-old diffusers before the download when this load
-    # builds the diffusers pipeline, and never when sd.cpp will serve the GGUF instead.
+    # Same predicate on the load path: refuse a too-old diffusers before the download, and never when sd.cpp serves the GGUF.
     import pytest
 
     from core.inference.diffusion import DiffusionBackend
@@ -2023,16 +1993,14 @@ def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(mon
             gguf_filename = "flux2-klein-4b-Q4_0.gguf",
             model_kind = "gguf",
         )
-    # ValueError, not RuntimeError: /images/load maps RuntimeError to 409 ("a load is already in
-    # progress") and /images/download-plan catches only (ValueError, FileNotFoundError), so the
-    # message escaped as a bare 500.
+    # ValueError, not RuntimeError: /images/load maps RuntimeError to 409 and /images/download-plan catches only
+    # (ValueError, FileNotFoundError), so the message escaped as a bare 500.
     assert "Flux2KleinPipeline" in str(excinfo.value)
 
 
 def test_the_video_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
-    # Same gap on the video branches, which the image gate never reached: LTX-2's pipeline class is
-    # 0.39-only too, and video has no native engine to fall back to, so the load asserts it
-    # unconditionally (video.py -> assert_pipeline_class_available).
+    # Same gap on the video branches: LTX-2's pipeline class is 0.39-only too, and video has no native engine to fall back
+    # to, so the load asserts it unconditionally (video.py -> assert_pipeline_class_available).
     monkeypatch.setattr(models_route, "_repo_is_diffusers", lambda info: True)
     info = SimpleNamespace(repo_id = "Lightricks/LTX-2", repo_path = "/x")
     # Offered on this environment's diffusers ...
@@ -2046,9 +2014,8 @@ def test_the_video_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch
 
 
 def test_every_shipped_video_family_resolves_on_this_diffusers():
-    # Drift guard for the gate above: the video picker now hides a family whose pipeline class the
-    # installed diffusers does not have, so a stale class name in the table would hide a working
-    # model rather than just fail late. Mirrors the image-family loop in the guard test above.
+    # Drift guard: the video picker now hides a family whose pipeline class the installed diffusers lacks, so a stale class
+    # name in the table would hide a working model rather than just fail late.
     from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
     for fam in _VIDEO_FAMILIES:
@@ -2058,9 +2025,8 @@ def test_every_shipped_video_family_resolves_on_this_diffusers():
 
 
 def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypatch):
-    # The invariant test_cached_repo_task_agrees_with_the_image_loader states for cached repos,
-    # applied to the GGUF path on both kinds of host: whatever the picker advertises as loadable,
-    # validate_load_request must accept, and whatever it hides must be refused.
+    # The invariant test_cached_repo_task_agrees_with_the_image_loader states for cached repos, applied to the GGUF path on
+    # both host kinds: whatever the picker advertises must be accepted, and whatever it hides must be refused.
     from core.inference.diffusion import DiffusionBackend
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
 

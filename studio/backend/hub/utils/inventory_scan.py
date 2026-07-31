@@ -539,8 +539,7 @@ def repo_pipeline_missing_denoiser(repo_info) -> bool:
                     except ValueError:
                         parts = ()
                 if not parts:
-                    # No snapshot scoping: fall back to the recorded name, which may itself carry the component
-                    # subdir (e.g. 'transformer/model...').
+                    # No snapshot scoping: fall back to the recorded name, which may itself carry the component subdir.
                     parts = Path(name).parts
                 if (
                     len(parts) >= 2

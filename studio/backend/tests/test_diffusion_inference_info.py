@@ -41,8 +41,7 @@ def test_component_sizes_match_the_table():
 
 
 def test_quantised_estimate_is_below_bf16():
-    # A quantised transformer is smaller than bf16, so its resident estimate must be too (the
-    # companions are shared, and every steady factor is below 1).
+    # A quantised transformer is smaller than bf16, so its resident estimate must be too (companions are shared, every steady factor is below 1).
     for info in family_inference_infos():
         estimated = info["estimated_resident_gb"]
         for scheme in _QUANT_STEADY_FACTOR:
@@ -50,8 +49,7 @@ def test_quantised_estimate_is_below_bf16():
 
 
 def test_nvfp4_is_below_int8():
-    # nvfp4 packs two params per byte vs int8's one, so nvfp4's estimate is the smaller on every
-    # family.
+    # nvfp4 packs two params per byte vs int8's one, so nvfp4's estimate is the smaller on every family.
     for info in family_inference_infos():
         estimated = info["estimated_resident_gb"]
         assert estimated["nvfp4"] < estimated["int8"], info["family"]

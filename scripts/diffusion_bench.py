@@ -41,8 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# Put the backend root on sys.path so ``core.inference.diffusion`` imports as the server does.
-# (The backend import is deferred into main() so --help never triggers torch.)
+# Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main()
+# so --help never triggers torch).
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
@@ -368,8 +368,7 @@ def _compare(args: argparse.Namespace) -> int:
             print("   refusing noisy comparison (pass --force-compare to override).", flush = True)
             return 2
 
-    # PSNR vs the stored reference. reference_png is absolute, so fall back to reference.png beside
-    # the baseline JSON; a still-missing reference fails below rather than passing silently.
+    # PSNR vs the stored reference; reference_png is absolute, so fall back to reference.png beside the baseline.
     ref_png = Path(baseline.get("accuracy", {}).get("reference_png", ""))
     if not ref_png.is_file():
         ref_png = baseline_path.parent / "reference.png"

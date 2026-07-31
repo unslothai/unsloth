@@ -76,8 +76,7 @@ def test_resolve_variant_base_picks_variant_repo():
 
 
 def test_resolve_variant_base_falls_back_to_default():
-    # An unknown variant base (or none at all) keeps the family default entry: the loader's
-    # base_model_id validation then refuses it and dense-quantises, as before.
+    # An unknown variant base (or none) keeps the family default entry: base_model_id validation then refuses it and dense-quantises.
     fam = _fam(
         prequant_repos = (("int8", "org/default-fp8"),),
         prequant_variant_repos = (("org/model-dev", "int8", "org/dev-fp8"),),
@@ -118,9 +117,8 @@ def test_resolve_nothing_configured_is_none():
 
 
 def test_local_prequant_path_ready(tmp_path, monkeypatch):
-    # The auto-policy planner budgets the small prequant plan only when a request-supplied path would
-    # actually load: present AND inside an allowlisted root. Otherwise the loader refuses it and
-    # rebuilds dense after evicting.
+    # The auto-policy planner budgets the small prequant plan only when a request-supplied path would actually load: present
+    # AND inside an allowlisted root. Otherwise the loader refuses it and rebuilds dense after evicting.
     import os
 
     ckpt = tmp_path / "model.pt"
@@ -135,9 +133,8 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
 
 # ── usable_prequant_source ───────────────────────────────────────────────────────
 def test_usable_source_missing_path_is_none(tmp_path, monkeypatch):
-    # An allowlisted but ABSENT request-supplied path must not count as a prequant source:
-    # load_prequantized_transformer would find no file and fall back to the dense bf16 build after the
-    # resident pipeline was already evicted, so the planner must run the dense fit checks up front.
+    # An allowlisted but ABSENT path is not a prequant source: load_prequantized_transformer would find no file and fall back
+    # to the dense bf16 build after evicting, so the planner must run the dense fit checks up front.
     import os
 
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
@@ -147,8 +144,7 @@ def test_usable_source_missing_path_is_none(tmp_path, monkeypatch):
 
 
 def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch):
-    # A path OUTSIDE the UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH allowlist (including the default empty one)
-    # is refused by the loader, so it must resolve to None here even when the file exists.
+    # A path OUTSIDE the UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH allowlist (including the empty default) is refused by the loader, so it resolves to None even when it exists.
     ckpt = tmp_path / "model.pt"
     ckpt.write_bytes(b"x")
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [])
@@ -157,8 +153,7 @@ def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch):
 
 
 def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch):
-    # Allowlisted AND present: the override is usable and takes priority over the hosted repo, exactly
-    # like resolve_prequant_source.
+    # Allowlisted AND present: the override is usable and beats the hosted repo, exactly like resolve_prequant_source.
     import os
 
     ckpt = tmp_path / "model.pt"
@@ -275,8 +270,7 @@ def _load(
 ):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
-    # The local-path branch is opt-in via a directory ALLOWLIST (it unpickles an arbitrary file);
-    # these tests exercise the load mechanics, so allowlist tmp_path unless a test checks the gate.
+    # The local-path branch is opt-in via a directory ALLOWLIST (it unpickles an arbitrary file); allowlist tmp_path unless a test checks the gate.
     if allow_local:
         monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     else:
@@ -311,8 +305,7 @@ def test_load_meta_init_and_assign(monkeypatch, tmp_path):
 
 
 def test_load_puts_transformer_in_eval_mode(monkeypatch, tmp_path):
-    # Built via from_config (not from_pretrained), so the loader must eval() it to match the
-    # dense/GGUF paths; otherwise train-mode dropout makes inference nondeterministic.
+    # Built via from_config, so the loader must eval() it like the dense/GGUF paths or train-mode dropout makes inference nondeterministic.
     t = _load(monkeypatch, tmp_path, _good_ckpt())
     assert t is not None
     assert t.eval_called is True
@@ -342,8 +335,7 @@ def test_load_base_mismatch_is_none(monkeypatch, tmp_path):
 
 
 def test_load_fp8_stale_per_tensor_is_rejected(monkeypatch, tmp_path):
-    # A pre-fix fp8 checkpoint has no fp8_granularity (old per-tensor layout); it must be rejected so
-    # the loader rebuilds instead of reproducing the noise failure.
+    # A pre-fix fp8 checkpoint has no fp8_granularity (old per-tensor layout), so it must be rejected and rebuilt rather than reproduce the noise failure.
     stale = _good_ckpt(scheme = "fp8")
     del stale["metadata"]["fp8_granularity"]
     assert _load(monkeypatch, tmp_path, stale, scheme = "fp8") is None
@@ -359,16 +351,14 @@ def test_load_int8_ignores_fp8_granularity(monkeypatch, tmp_path):
 
 
 def test_load_missing_base_metadata_is_none(monkeypatch, tmp_path):
-    # A checkpoint whose keys happen to match a different base can load strict=True and then render
-    # from the wrong weights, so one requested with a base but recording none must be refused.
+    # A checkpoint whose keys match a different base loads strict=True and renders from the wrong weights, so one requested with a base but recording none is refused.
     ckpt = _good_ckpt()
     del ckpt["metadata"]["base_model_id"]
     assert _load(monkeypatch, tmp_path, ckpt) is None
 
 
 def test_load_fast_accum_mismatch_is_none(monkeypatch, tmp_path):
-    # fp8 fast-accum is baked into the saved kernels; an explicit request that contradicts the recorded
-    # value must fall to the dense path (which honors it), not silently use it.
+    # fp8 fast-accum is baked into the saved kernels, so a request contradicting the recorded value falls to the dense path, which honors it.
     ckpt = _good_ckpt()
     ckpt["metadata"]["fast_accum"] = True
     assert _load(monkeypatch, tmp_path, ckpt, fast_accum = False) is None
@@ -388,8 +378,7 @@ def test_load_fast_accum_auto_ignores_baked(monkeypatch, tmp_path):
 
 
 def test_load_exclude_tokens_mismatch_is_none(monkeypatch, tmp_path):
-    # An int8 checkpoint recording a stale exclusion set (which would bake M=1 modulation linears as
-    # int8 and crash) must be rejected rather than loaded.
+    # An int8 checkpoint recording a stale exclusion set would bake M=1 modulation linears as int8 and crash, so it is rejected.
     ckpt = _good_ckpt(scheme = "int8")
     ckpt["metadata"]["exclude_name_tokens"] = ["stale_token"]
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
@@ -404,10 +393,9 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
 
 
 def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
-    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under
-    # _int_mm's M floor of 16). An artifact that recorded the family but built its exclusion set with
-    # family=None baked those linears as int8, so the loader must reject it and accept only the
-    # family-aware set. Pins the offline builder to exclude_tokens_for_scheme(scheme, fam.name).
+    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor of 16), so
+    # an artifact recording the family but building its set with family=None is rejected. Pins the offline builder to
+    # exclude_tokens_for_scheme(scheme, fam.name).
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
     for family in ("qwen-image", "qwen-image-edit"):
         family_less = _good_ckpt(scheme = "int8")
@@ -424,8 +412,7 @@ def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
 
 
 def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):
-    # An fp8 (scaled_mm) checkpoint built WITHOUT the bf16 gate quantised a different layer set than
-    # the runtime filter now produces, so it must be rejected.
+    # An fp8 (scaled_mm) checkpoint built WITHOUT the bf16 gate quantised a different layer set than the runtime filter produces, so it is rejected.
     ckpt = _good_ckpt(scheme = "fp8")
     ckpt["metadata"]["require_bf16"] = False
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
@@ -438,32 +425,28 @@ def test_load_require_bf16_match_ok(monkeypatch, tmp_path):
 
 
 def test_load_require_bf16_int8_true_is_none(monkeypatch, tmp_path):
-    # int8 (torch._int_mm) tolerates non-bf16 weights, so it never sets the gate; a checkpoint claiming
-    # it did contradicts the runtime filter and must be rejected.
+    # int8 (torch._int_mm) tolerates non-bf16 weights so it never sets the gate; a checkpoint claiming it did is rejected.
     ckpt = _good_ckpt(scheme = "int8")
     ckpt["metadata"]["require_bf16"] = True
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
 
 
 def test_load_require_bf16_nvfp4_false_ok(monkeypatch, tmp_path):
-    # nvfp4 quantises fp32 weights fine, so the runtime filter does NOT set the bf16 gate; a checkpoint
-    # built the same way matches and loads.
+    # nvfp4 quantises fp32 fine, so the runtime filter leaves the bf16 gate off and a checkpoint built the same way matches.
     ckpt = _good_ckpt(scheme = "nvfp4")
     ckpt["metadata"]["require_bf16"] = False
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
 
 
 def test_load_require_bf16_nvfp4_true_is_none(monkeypatch, tmp_path):
-    # An nvfp4 checkpoint claiming the bf16 gate contradicts the runtime filter, so it quantised a
-    # different layer set and must be rejected.
+    # An nvfp4 checkpoint claiming the bf16 gate quantised a different layer set, so it is rejected.
     ckpt = _good_ckpt(scheme = "nvfp4")
     ckpt["metadata"]["require_bf16"] = True
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is None
 
 
 def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
-    # The allowlist gate expands ~, so the existence check must too, or a "~/..." checkpoint that
-    # passed the gate is silently skipped.
+    # The allowlist gate expands ~, so the existence check must too, or a "~/..." checkpoint that passed the gate is silently skipped.
     import os
 
     real = tmp_path / "transformer_fp8.pt"
@@ -475,8 +458,7 @@ def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
 
 # ── local-path opt-in gate (RCE guard) ───────────────────────────────────────────
 def test_load_local_path_refused_by_default(monkeypatch, tmp_path):
-    # A valid checkpoint at a real file is still refused: torch.load must never run on a
-    # request-supplied path without the operator opt-in.
+    # Even a valid checkpoint is refused: torch.load must never run on a request-supplied path without the operator opt-in.
     called = {"load": False}
 
     def _explode(*a, **k):
@@ -536,8 +518,7 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
 
 
 def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
-    # A repo still carrying the legacy transformer_<scheme>.pt name serves the download after the
-    # model-name filename 404s; both names are requested in order.
+    # A repo still carrying the legacy transformer_<scheme>.pt name serves the download after the model-name filename 404s; both are requested in order.
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, _good_ckpt())
     monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
@@ -589,8 +570,7 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
 
 
 def test_load_local_path_outside_allowlist_refused(monkeypatch, tmp_path):
-    # Even with the opt-in set, a path OUTSIDE every allowlisted directory must not be unpickled:
-    # enabling one trusted dir is not a wildcard for arbitrary request paths.
+    # Even with the opt-in set, a path outside every allowlisted directory must not be unpickled: one trusted dir is not a wildcard.
     called = {"load": False}
 
     def _explode(*a, **k):
@@ -623,8 +603,7 @@ def test_load_local_path_outside_allowlist_refused(monkeypatch, tmp_path):
 
 
 def test_load_min_features_mismatch_is_none(monkeypatch, tmp_path):
-    # A checkpoint built with a different --min-features quantises a different Linear set, so it must
-    # be rejected when the runtime threshold is supplied.
+    # A checkpoint built with a different --min-features quantises a different Linear set, so it is rejected when the runtime threshold is supplied.
     ckpt = _good_ckpt()
     ckpt["metadata"]["min_features"] = 256  # built with 256, runtime asks for 512
     _FakeTransformer.calls = {}

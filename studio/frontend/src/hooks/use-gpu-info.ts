@@ -32,14 +32,9 @@ export interface GpuInfo {
   budgetKnown: boolean;
   name: string;
   memoryTotalGb: number;
-  /** Largest single device's VRAM. Image/video loads live on ONE device (no
-   * tensor split), so their fit math must use a single device, not the multi-GPU sum. */
+  /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
   maxDeviceMemoryGb: number;
-  /** VRAM of the device an image/video load will actually land on: the lowest visible
-   * ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places
-   * on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing
-   * a pick against the larger card would recommend a checkpoint that then OOMs the smaller
-   * one it loads onto. */
+  /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that then OOMs the smaller one. */
   loadDeviceMemoryGb: number;
   cpuCore: number;
   cpuThread: number;
@@ -88,13 +83,11 @@ function toGpuInfo(
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
-    // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted
-    // once rather than summed per device.
+    // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted once rather than summed.
     memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
     maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
-    // Lowest visible ordinal = torch's current device = where the pipeline lands. The list is
-    // already filtered by any CUDA_VISIBLE_DEVICES mask, so the minimum index is right whether
-    // the reported indices are physical or relative.
+    // Lowest visible ordinal = torch's current device = where the pipeline lands. The list is already filtered by any
+    // CUDA_VISIBLE_DEVICES mask, so the minimum index is right whether the indices are physical or relative.
     loadDeviceMemoryGb:
       devices.reduce(
         (pick, d) => ((d.index ?? 0) < (pick.index ?? 0) ? d : pick),

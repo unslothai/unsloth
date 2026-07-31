@@ -112,10 +112,9 @@ import {
 } from "./train/train-base-selector";
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per artifact via loadSpecFor.
-// The picker renders groups with a format second level and routes bare clicks to the best artifact for the device.
 const MODELS: ModelOption[] = catalogToModelOptions(IMAGE_CATALOG);
 
-// Workflow tabs. `requires` is the backend workflow id (status.workflows) the loaded model must support for the tab to enable; null = always available.
+// Workflow tabs. `requires` is the backend workflow id (status.workflows) the loaded model must support; null = always available.
 type WorkflowId = "create" | "transform" | "inpaint" | "extend" | "upscale" | "reference" | "edit";
 
 const WORKFLOW_TABS: Array<{
@@ -176,9 +175,9 @@ const WORKFLOW_TABS: Array<{
   },
 ];
 
-// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first: distilled turbo/schnell want few steps and little guidance, full "dev" models more steps and real CFG.
-// The images each conditioned workflow consumed, named for the restore toast: a recipe keeps the scalar settings but not the uploads, so restoring one lands on Create and the user must know which input to add back.
-// Keys are the backend own workflow strings (diffusion.py); txt2img is absent because it restores completely.
+// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
+// The images each conditioned workflow consumed, named for the restore toast: a recipe keeps the scalar settings but not the uploads.
+// Keys are the backend's own workflow strings; txt2img is absent because it restores completely.
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
@@ -193,14 +192,14 @@ const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "z-image-turbo", steps: 9, guidance: 0 },
-  // Krea 2 Raw is the undistilled base (also inference-loadable): 52 steps at guidance 3.5, so it must precede the distilled "krea-2" key below.
+  // Krea 2 Raw is the undistilled base: 52 steps at guidance 3.5, so it must precede the distilled "krea-2" key below.
   { match: "krea-2-raw", steps: 52, guidance: 3.5 },
   // Krea 2 Turbo is distilled (TDM): 8 steps, no CFG. "krea-2" covers Turbo and any other krea id but Raw, matched above.
   { match: "krea-2", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   // Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
   { match: "kontext", steps: 28, guidance: 2.5 },
-  // Krea FLUX.1-dev finetune runs its card recipe (28 steps, guidance 4.5); before the generic flux.1 key, and it never hits the krea-2 keys.
+  // Krea FLUX.1-dev finetune runs its card recipe (28 steps, guidance 4.5); before the generic flux.1 key.
   { match: "flux.1-krea", steps: 28, guidance: 4.5 },
   { match: "flux.1", steps: 28, guidance: 3.5 },
   { match: "flux.2-klein", steps: 4, guidance: 0 },
@@ -208,17 +207,17 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "flux.2-dev", steps: 28, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
-  // Ideogram 4 model-card settings (48 steps, guidance 7). At exactly these the backend keeps the pipeline recommended tapered guidance schedule instead of a flat constant.
+  // Ideogram 4 card settings (48 steps, guidance 7). At exactly these the backend keeps its tapered guidance schedule.
   { match: "ideogram", steps: 48, guidance: 7 },
   // Lumina Image 2.0 model-card recipe (the backend adds cfg_trunc_ratio itself).
   { match: "lumina", steps: 50, guidance: 4 },
-  // HunyuanImage 2.1: 50 steps; guidance feeds distilled_guidance_scale (default 3.25), real CFG runs in the repo guider components.
+  // HunyuanImage 2.1: 50 steps; guidance feeds distilled_guidance_scale, real CFG runs in the repo guiders.
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
-  // HiDream-I1: Full runs 50 steps at guidance 5; the Dev/Fast distillations are guidance-free. Specific keys before the generic "hidream".
+  // HiDream-I1: Full runs 50 steps at guidance 5; the Dev/Fast distillations are guidance-free.
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },
   { match: "hidream-i1-fast", steps: 16, guidance: 0 },
   { match: "hidream", steps: 50, guidance: 5 },
-  // SDXL: Turbo is distilled (few steps, no CFG), base wants ~30 steps and real CFG (~7); "sdxl-turbo" must precede the generic "sdxl".
+  // SDXL: Turbo is distilled (few steps, no CFG), base wants ~30 steps and CFG ~7; "sdxl-turbo" precedes "sdxl".
   { match: "sdxl-turbo", steps: 3, guidance: 0 },
   { match: "stable-diffusion-xl", steps: 30, guidance: 7 },
   { match: "sdxl", steps: 30, guidance: 7 },
@@ -230,7 +229,7 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
   return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
 }
 
-// Common aspect ratios (landscape; Flip gives the portrait mirror). Picking one locks the W:H proportion; the sliders set the size.
+// Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks the W:H proportion; the sliders set the size.
 const ASPECT_RATIOS: Record<string, [number, number]> = {
   "1:1": [1, 1],
   "3:2": [3, 2],
@@ -240,7 +239,7 @@ const ASPECT_RATIOS: Record<string, [number, number]> = {
 };
 const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
 
-// Friendly labels for ControlNet control types: "canny" traces edges from a source image, every other type is an already-made map. Unknown types fall back to a capitalized "(map)" label.
+// Friendly labels for ControlNet control types; unknown types fall back to a capitalized "(map)" label.
 const CONTROL_TYPE_LABELS: Record<string, string> = {
   passthrough: "Passthrough (already a map)",
   canny: "Canny (trace edges)",
@@ -251,14 +250,14 @@ const CONTROL_TYPE_LABELS: Record<string, string> = {
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
-// Convenient drag range for the Runs slider. The number box accepts higher typed values on purpose (set it large to generate all night); the loop only floors at 1 and ignores non-numeric input.
+// Convenient drag range for the Runs slider; the number box accepts higher typed values on purpose.
 const RUNS_SLIDER_MAX = 128;
 function snapDim(value: number): number {
   if (!Number.isFinite(value)) return 1024;
   return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(value / 16) * 16));
 }
 
-// The ratio key (compared by long:short, so it survives orientation) matching width/height, plus whether the orientation is portrait.
+// The ratio key (compared long:short, so it survives orientation) matching width/height, plus whether portrait.
 function matchAspect(width: number, height: number): { key: string; portrait: boolean } {
   const target = Math.max(width, height) / Math.min(width, height);
   const found = Object.entries(ASPECT_RATIOS).find(
@@ -267,9 +266,8 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
   return { key: found ? found[0] : "custom", portrait: height > width };
 }
 
-// Module cache of the backend-persisted gallery, so a tab switch re-renders instantly. Object URLs are revoked only on delete (not unmount), so they stay valid across remounts.
-// Blob budget for cached gallery PNGs. A 1024x1024 PNG is ~1-2 MB and the page stays mounted after its first visit, so an unbounded cache grew all session as the user scrolled.
-// 192 MB is ~100-200 images: far more than any viewport holds, while capping what the webview can be made to pin. On-screen and open-in-the-viewer images are never evicted.
+// Module cache of the backend-persisted gallery, so a tab switch re-renders instantly. Object URLs are revoked only on delete.
+// Blob budget for cached PNGs: 192 MB is ~100-200 images, far more than a viewport holds. On-screen and open images are never evicted.
 const IMAGE_BLOB_BUDGET_BYTES = 192 * 1024 * 1024;
 
 const galleryCache: {
@@ -280,7 +278,7 @@ const galleryCache: {
   srcById: BlobUrlCache;
   // Ids with a fetch in flight, so concurrent ensureSrc calls do not double-fetch (and leak the duplicate object URL).
   inflight: Set<string>;
-  // Ids deleted while their PNG was still downloading: the delete revoked whatever URL existed, so a fetch landing afterwards must throw its blob away rather than cache one no card can release.
+  // Ids deleted while their PNG was still downloading: a fetch landing afterwards must throw its blob away.
   deleted: Set<string>;
 } = {
   images: [],
@@ -295,7 +293,7 @@ const galleryCache: {
 // Images loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
-// Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share the seed + timestamp, so they get a "_<n>" suffix past the first one.
+// Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
 type ImageExportFormat = "png" | "jpeg" | "webp";
 
 function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
@@ -316,7 +314,7 @@ function saveBlobUrl(href: string, filename: string) {
   link.click();
 }
 
-// PNG saves the stored bytes verbatim (keeping the embedded recipe metadata); JPEG / WebP re-encode client-side from the already-fetched object URL, and JPEG is flattened onto white (no alpha).
+// PNG saves the stored bytes verbatim (keeping the embedded recipe); JPEG / WebP re-encode client-side, JPEG flattened onto white.
 async function downloadImage(
   src: string,
   image: GalleryImage,
@@ -362,21 +360,21 @@ function formatTimestamp(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-// Bar label for an in-flight generation: step count plus an ETA once known (formatEta returns "" for non-positive, so the last step shows just the step).
+// Bar label for an in-flight generation: step count plus an ETA once known.
 function genStepLabel(p: DiffusionGenerateProgress): string {
-  // Text encoding (and any first-run warmup) happens before the first scheduler tick, so step 0 means "working, not denoising yet" rather than "Step 0/N".
+  // Text encoding (and warmup) happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
 }
 
-// Settling a generation whose POST response was lost (a tunnel timeout, say): the backend keeps denoising, so poll until it goes idle rather than failing the run.
+// Settling a generation whose POST response was lost: the backend keeps denoising, so poll until it goes idle.
 const SETTLE_POLL_MS = 1000;
 const SETTLE_MAX_MS = 6 * 60 * 60 * 1000; // hard cap; a native-CPU batch can run for hours
 const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the backend gone
 
-/** Wait for the generation that outlived its POST, and confirm one existed: a rejected fetch does not say whether the request reached the backend, so idle progress is ambiguous. The wait needs evidence (progress seen active, or a gallery record that was not there when the POST went out) and reports a failed submission otherwise. Throws if the backend stays unreachable, or past SETTLE_MAX_MS, so a real outage or a wedged generation surfaces instead of counting the run as done. */
+/** Wait for a generation that outlived its POST and confirm one existed: idle progress alone is ambiguous, so the wait needs evidence (progress seen active, or a gallery record that was not there when the POST went out) and reports a failed submission otherwise. Throws if the backend stays unreachable, or past SETTLE_MAX_MS, so a wedged generation surfaces. */
 async function settleLostGeneration(
   isCurrent: () => boolean,
   knownIds: ReadonlySet<string>,
@@ -399,7 +397,7 @@ async function settleLostGeneration(
     }
     if (!idle) continue;
     if (sawActive) return;
-    // Idle on the very first look: the run may already have finished (a batch shorter than one poll still persists its records first) or never started. A gallery record we had not seen is the proof.
+    // Idle on the very first look: the run may already have finished or never started. A gallery record we had not seen is the proof.
     try {
       const page = await getGallery(0, 1);
       if (page.images.some((image) => !knownIds.has(image.id))) return;
@@ -410,7 +408,7 @@ async function settleLostGeneration(
     }
     throw new Error("The image generation request did not reach the server.");
   }
-  // Out of budget with the run still active. Returning here would report success and let the next run start against a busy backend, so surface it as a failure.
+  // Out of budget with the run still active: returning here would report success and start the next run against a busy backend.
   throw new Error("Timed out waiting for the image generation to finish.");
 }
 
@@ -422,9 +420,9 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-// Render the chat ModelLoadDescription for a progress poll. The base repo (text-encoder/VAE) downloads alongside the GGUF, so the total exceeds the picked quant size.
+// Render the chat ModelLoadDescription for a progress poll. The base repo downloads alongside the GGUF, so the total exceeds the quant size.
 function loadToastDescription(p: DiffusionLoadProgress) {
-  // "Downloading" only when bytes actually remain: a cached model (or the pre-estimate window, total still 0) must not claim a download.
+  // "Downloading" only when bytes actually remain: a cached model (or the pre-estimate window) must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
   const title = downloading
     ? "Downloading model…"
@@ -448,7 +446,7 @@ function loadToastDescription(p: DiffusionLoadProgress) {
   );
 }
 
-// Toast args mirroring chat: persistent, closeable, content in `description`. Pass `id` to update the existing toast in place instead of stacking a new one.
+// Toast args mirroring chat: persistent, closeable, content in `description`. Pass `id` to update in place.
 function loadToastArgs(p: DiffusionLoadProgress, id?: string | number) {
   return {
     ...(id != null ? { id } : {}),
@@ -467,7 +465,7 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
   error: null,
 };
 
-// Mirrors the Train page SliderRow (studio/sections/params-section.tsx): label + standard Slider + number input. The Images sliders are Chat ParamSlider, so both pages share one control.
+// Mirrors the Train page SliderRow: label + Slider + number input. The Images sliders are Chat ParamSlider, so both pages share one control.
 function SliderField({
   label,
   hint,
@@ -519,7 +517,7 @@ function Field({
   );
 }
 
-// The engaged value of a resolved Advanced control, formatted for its "Auto: X" badge: short scheme/mode tokens uppercase (INT8, FP8, FBCACHE), `_native_cudnn` as cuDNN, cpu_offload as On/Off.
+// The engaged value of a resolved Advanced control, formatted for its "Auto: X" badge.
 function formatResolvedValue(key: string, value: string | boolean | null): string {
   if (key === "cpu_offload") return value ? "On" : "Off";
   if (value === null || value === "") return "Off";
@@ -530,7 +528,7 @@ function formatResolvedValue(key: string, value: string | boolean | null): strin
   return value.toUpperCase();
 }
 
-// The "Auto: X" badge for one Advanced control, rendered only when the backend resolved that control (source === "auto"); an explicit choice renders nothing and the reason is a hover tooltip.
+// The "Auto: X" badge for one Advanced control, rendered only when source === "auto"; the reason is a hover tooltip.
 function ResolvedBadge({
   status,
   controlKey,
@@ -568,7 +566,7 @@ function AdvancedSelect({
   hint?: ReactNode;
   // An optional inline badge next to the label (e.g. the "Auto: X" resolved-value pill).
   badge?: ReactNode;
-  // A short always-visible description under the row, for controls whose label alone does not convey what they do (the hint tooltip carries the full detail).
+  // A short always-visible description under the row, for controls whose label alone is not enough.
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
@@ -600,7 +598,7 @@ function AdvancedSelect({
   );
 }
 
-// Source-image picker for the Transform (img2img) workflow: click or drag-drop an image, read it to a data URL the generate request sends as init_image. Shows a thumbnail with a Clear button once set.
+// Source-image picker for Transform (img2img): click or drag-drop an image, read it to a data URL sent as init_image.
 function ImageDropzone({
   value,
   onChange,
@@ -685,8 +683,8 @@ function ImageDropzone({
   );
 }
 
-// A brush-based mask editor for inpainting: the source image with a paintable overlay, exporting a grayscale PNG mask at the image NATIVE resolution (diffusers convention: white = repaint, black = keep).
-// Strokes draw to the visible tinted overlay and an offscreen mask canvas in lockstep, so the exported mask matches what the user sees. `brushPct` sizes the brush as a fraction of the shorter side.
+// A brush-based mask editor for inpainting: the source image with a paintable overlay, exporting a grayscale PNG mask at
+// the image's NATIVE resolution (white = repaint). `brushPct` sizes the brush as a fraction of the shorter side.
 function MaskCanvas({
   image,
   brushPct,
@@ -705,7 +703,7 @@ function MaskCanvas({
   const last = useRef<{ x: number; y: number } | null>(null);
   const [ready, setReady] = useState(false);
 
-  // (Re)initialise both canvases whenever the image changes or Clear is pressed: size them to the image native pixels and reset the mask to all-black (keep all).
+  // (Re)initialise both canvases when the image changes or Clear is pressed: size to native pixels, reset to all-black.
   useEffect(() => {
     setReady(false);
     const img = new Image();
@@ -835,7 +833,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 // Which sides to grow when outpainting.
 type ExtendSides = { left: boolean; right: boolean; top: boolean; bottom: boolean };
 
-// Redraw an image/canvas at (w, h). Used to clamp an outpaint source (and the built pair) to a size the browser can back and the backend can decode.
+// Redraw an image/canvas at (w, h). Clamps an outpaint source to a size the browser can back and the backend can decode.
 function scaleToCanvas(source: CanvasImageSource, w: number, h: number): HTMLCanvasElement {
   const dst = document.createElement("canvas");
   dst.width = w;
@@ -846,17 +844,16 @@ function scaleToCanvas(source: CanvasImageSource, w: number, h: number): HTMLCan
   return dst;
 }
 
-// Build the (image, mask) pair for outpaint by reusing the inpaint backend: grow the canvas by `pct` per dimension on the selected sides and edge-bleed the original pixels into the new bands, so the VAE encodes plausible content.
-// Mask the new bands white (= repaint), with a small overlap into the original on each grown side so the seam blends.
+// Build the (image, mask) pair for outpaint by reusing the inpaint backend: grow the canvas by `pct` per dimension on the
+// selected sides, edge-bleed the original pixels in, and mask the new bands white with a small overlap so the seam blends.
 async function buildOutpaint(
   src: string,
   sides: ExtendSides,
   pct: number,
 ): Promise<{ image: string; mask: string }> {
   const source = await loadImage(src);
-  // Scale the SOURCE so the grown canvas fits MAX_SIDE, before allocating anything. Growing all four sides by 100% multiplies the source area by 9, and a canvas past the browser limit is
-  // "unusable -- drawing commands will not work" (MDN): every drawImage silently no-ops, so Extend posted a fully transparent init_image + mask instead of the photo. Measured Chromium cap is
-  // 268,435,456 px of area; iOS caps a canvas at 4096x4096. Pre-scaling also keeps the two full-size allocations (image + mask) under a gigabyte. The backend rounds to /16, so exact dims are not required.
+  // Scale the SOURCE so the grown canvas fits MAX_SIDE before allocating: growing all four sides by 100% multiplies the area
+  // by 9, and a canvas past the browser limit silently no-ops every drawImage. Also keeps both allocations under a gigabyte.
   const MAX_SIDE = 4096;
   const grow = (a: boolean, b: boolean) => 1 + (a ? pct / 100 : 0) + (b ? pct / 100 : 0);
   const fit = Math.min(
@@ -910,7 +907,7 @@ async function buildOutpaint(
   mctx.fillStyle = "#000000"; // ...except the kept original (inset by the seam overlap).
   mctx.fillRect(l + ol, t + ot, w - ol - or, h - ot - ob);
 
-  // The source pre-scale sizes the canvases to fit MAX_SIDE, but the per-side rounding can overshoot by a pixel or two, which the backend 4096px-per-side decode limit would 400. Trim that slack here.
+  // The pre-scale sizes the canvases to fit MAX_SIDE, but per-side rounding can overshoot past the backend's 4096px limit; trim the slack.
   const longest = Math.max(nw, nh);
   if (longest > MAX_SIDE) {
     const scale = MAX_SIDE / longest;
@@ -963,7 +960,7 @@ function RecipePopover({
   onRestore: (image: GalleryImage) => void;
   active: boolean;
 }) {
-  // Controlled + force-closed off-tab: PopoverContent portals to body, so the hidden/inert page wrapper cannot contain it when the page is kept mounted.
+  // Controlled + force-closed off-tab: PopoverContent portals to body, so the inert page wrapper cannot contain it.
   const [open, setOpen] = useState(false);
   // Also clear the flag when leaving the tab so it does not reopen on return.
   useEffect(() => {
@@ -988,7 +985,7 @@ function RecipePopover({
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
           ) : null}
           {image.model ? <RecipeRow label="Model" value={image.model} /> : null}
-          {/* The load-time build, so the recipe still names the pipeline once the model is unloaded or swapped: the repo id alone does not say which GGUF quant ran, whether the dense transformer was torchao-quantised, or that an adapter was baked in before quantize + compile. */}
+          {/* The load-time build, so the recipe still names the pipeline once the model is unloaded: the repo id alone does not say which quant ran or whether an adapter was baked in. */}
           {image.gguf_filename ? <RecipeRow label="File" value={image.gguf_filename} mono /> : null}
           {image.transformer_quant ? (
             <RecipeRow label="Quant" value={image.transformer_quant} />
@@ -1014,7 +1011,7 @@ function RecipePopover({
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
-// The Advanced controls a load sends, with the "auto" sentinels already resolved to omitted. A staged download pins one at pick time so the load matches the file set planned and downloaded for it.
+// The Advanced controls a load sends, with "auto" sentinels resolved to omitted. A staged download pins one at pick time.
 type LoadAdvanced = Pick<
   DiffusionLoadRequest,
   | "cpu_offload"
@@ -1032,12 +1029,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
-  // width/height are the source of truth; `aspect` locks their proportion ("custom" = free) and `portrait` tracks orientation, so Flip keeps the lock.
+  // width/height are the source of truth; `aspect` locks their proportion and `portrait` tracks orientation, so Flip keeps the lock.
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
   const [aspect, setAspect] = useState("1:1");
   const [portrait, setPortrait] = useState(false);
-  // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled CFG-free; a negative prompt is ignored at this guidance).
+  // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [seed, setSeed] = useState("");
@@ -1046,14 +1043,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [count, setCount] = useState(1);
   // Active workflow tab: "create" = text-to-image, "transform" = img2img, "inpaint" = mask-guided redraw. More tabs slot in here.
   const [workflow, setWorkflow] = useState<WorkflowId>("create");
-  // Transform (img2img) / Inpaint inputs: the uploaded source image as a data URL, and the denoise strength (low = keep source, high = reimagine).
+  // Transform (img2img) / Inpaint inputs: the source image as a data URL, and the denoise strength.
   const [initImage, setInitImage] = useState<string | null>(null);
   const [strength, setStrength] = useState(0.6);
-  // Inpaint mask (grayscale PNG data URL, white = repaint), the brush size as a percent of the image shorter side, and a key bumped to clear the painted mask.
+  // Inpaint mask (grayscale PNG data URL, white = repaint), brush size as a percent of the shorter side, and a clear key.
   const [maskImage, setMaskImage] = useState<string | null>(null);
   const [brushPct, setBrushPct] = useState(8);
   const [maskResetKey, setMaskResetKey] = useState(0);
-  // Extend (outpaint): how far to grow each dimension and which sides. Reuses the inpaint backend by building a padded image + border mask at generate time.
+  // Extend (outpaint): how far to grow each dimension and which sides; reuses the inpaint backend at generate time.
   const [extendPct, setExtendPct] = useState(25);
   const [extendSides, setExtendSides] = useState<ExtendSides>({
     left: true,
@@ -1061,32 +1058,32 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     top: true,
     bottom: true,
   });
-  // Upscale (hires fix): the enlargement factor and the low denoise strength used to re-detail the enlarged image. The backend caps the factor and rounds the target size.
+  // Upscale (hires fix): the enlargement factor and the low denoise strength that re-details the result.
   const [upscaleFactor, setUpscaleFactor] = useState(2);
   const [upscaleStrength, setUpscaleStrength] = useState(0.35);
-  // Reference (FLUX.2): up to 3 ADDITIONAL reference images beyond the primary one, combined by the model (subject + style, character + scene).
+  // Reference (FLUX.2): up to 3 ADDITIONAL reference images beyond the primary one, combined by the model.
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
-  // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers. Applied at generate time; refreshed per loaded family.
+  // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
-  // Page mode: "create" is the generation workspace, "train" the full-page LoRA training workspace. Independent of the loaded generation model.
+  // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const [pageMode, setPageMode] = useState<"create" | "train">("create");
-  // Train family + base live here so the top bar can pick them: on Train it replaces the generation model selector, which only offers untrainable GGUFs.
+  // Train family + base live here so the top bar can pick them, replacing the generation model selector on Train.
   const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
   const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
-  // Bumped when a training run completes, forcing the LoRA discovery effect to rescan so a freshly-trained adapter appears without a model reload.
+  // Bumped when a training run completes, so the LoRA discovery effect rescans without a model reload.
   const [loraRefreshKey, setLoraRefreshKey] = useState(0);
-  // ControlNet for the next generation: model id, control image (data URL), how to derive the control map, and the conditioning strength. Options refresh per family; applied only when a model + control image are set.
+  // ControlNet for the next generation: model id, control image, how to derive the map, and the strength.
   const [controlnetId, setControlnetId] = useState<string>("");
   const [controlImage, setControlImage] = useState<string | null>(null);
-  // Free-form: a union ControlNet advertises depth/pose/etc alongside the preprocessing "canny", and the backend maps the exact control_type to the union control_mode. The picker is built from the model own control_types.
+  // Free-form: a union ControlNet advertises depth/pose alongside "canny"; the picker is built from its own control_types.
   const [controlType, setControlType] = useState<string>("passthrough");
   const [controlStrength, setControlStrength] = useState(0.7);
   const [availableControlNets, setAvailableControlNets] = useState<DiffusionControlNetInfo[]>([]);
-  // Advanced options live in a right-docked panel (like Chat settings panel), closed by default; one fixed top-bar toggle opens/closes it so the icon never moves.
+  // Advanced options live in a right-docked panel, closed by default; one fixed top-bar toggle opens it.
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. They apply when a model loads, and changing them while one is loaded shows a "Reapply" button.
+  // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing them while loaded shows "Reapply".
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
@@ -1101,25 +1098,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
-  // Render-safe mirror of "lastLoad.current was set by a user-initiated load": a resident GGUF/single_file discovered by refresh carries no checkpoint filename in status, so lastLoad stays null and Reapply would be dead.
-  // Set only from event handlers; the resident-pipeline case is derived from status at render time (mirrors the video page).
+  // Render-safe mirror of "lastLoad.current was set by a user-initiated load": a resident GGUF discovered by refresh carries
+  // no filename, so lastLoad stays null and Reapply would be dead. Set only from handlers; the resident case derives from status.
   const [canReapply, setCanReapply] = useState(false);
-  // Repo id whose defaults were already seeded from a discovered resident model, so we seed once per resident model and never clobber a later manual edit.
+  // Repo id whose defaults were already seeded from a discovered resident model, so we seed once and never clobber a manual edit.
   const seededResident = useRef<string | null>(null);
 
   const [busy, setBusy] = useState<Busy>(null);
-  // {done, total} while a multi-run generation is in flight (null = idle). The total is just `count`, so it is not stored separately.
+  // {done, total} while a multi-run generation is in flight (null = idle); the total is just `count`.
   const [genDone, setGenDone] = useState<number | null>(null);
   // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval to >=1s (and can suspend it after ~5 min), so returning to the tab fires one immediate poll.
+  // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
-  // Controlled so the body-portaled overlays (model selector, aspect-ratio dropdown) force-close while this page is mounted but off-tab; a hidden/inert parent cannot contain a body portal.
+  // Controlled so the body-portaled overlays force-close while this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
-  // Records come from the backend (durable); srcById maps each id to its object URL (loaded images) or data URL (the one just generated).
+  // Records come from the backend (durable); srcById maps each id to its object URL or data URL.
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
@@ -1128,24 +1125,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
-  // The gallery strip, used as the IntersectionObserver root so a tile PNG is fetched as it nears view instead of every tile of every page up front.
+  // The gallery strip, used as the IntersectionObserver root so a tile PNG is fetched as it nears view.
   const stripRef = useRef<HTMLDivElement | null>(null);
-  // Ids currently intersecting the strip. The blob cache never evicts these, so pruning cannot pull an image out from under a visible tile.
+  // Ids currently intersecting the strip; the blob cache never evicts these.
   const visibleIds = useRef<Set<string>>(new Set());
-  // False once the page truly unmounts (app close / chat-only eject). Tab switches keep it mounted, so a batch keeps generating off-tab; the multi-run loop only stops on a real unmount.
+  // False once the page truly unmounts. Tab switches keep it mounted, so a batch keeps generating off-tab.
   const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
-  // The quant to restore if the optimistic swap fails. A same-repo quant change sets `quant` immediately for picker feedback; if the load then fails AFTER starting the old pipeline stays loaded,
-  // so the poll rolls the label back rather than advertise the failed quant. `{ prev }` distinguishes "revert to null" from "nothing pending".
+  // The quant to restore if the optimistic swap fails: a same-repo change sets `quant` immediately for picker feedback, but a
+  // load failing AFTER starting leaves the old pipeline. `{ prev }` distinguishes "revert to null" from "nothing pending".
   const quantRevert = useRef<{ prev: string | null } | null>(null);
-  // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current with the pending pick at load start, and a load that fails AFTER starting leaves the previous pipeline resident.
-  // The poll then rolls lastLoad back to what is actually resident. Mirrors quantRevert; `{ prev }` distinguishes "restore null" from "nothing pending".
+  // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current at load start, and a
+  // load failing after that leaves the previous pipeline resident. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
-  // A trained adapter awaiting deployment: after Deploy loads the base, the LoRA discovery effect applies this once the model is loaded + LoRA-capable for the matching family.
+  // A trained adapter awaiting deployment: applied once the base is loaded and LoRA-capable for its family.
   const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
 
   const dismissLoadToast = useCallback(() => {
@@ -1161,16 +1158,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     galleryCache.quant = quant;
   }, [images, hasMore, selectedId, quant]);
 
-  // Refresh the LoRA picker suggestions when the loaded family changes. A LoRA is trained for a specific base family, so a real model SWAP invalidates the selection -- clear it then.
-  // But NOT on the first load or an unload: a user can restore a saved recipe before the model finishes loading, and clearing on that load->capable transition would drop the restored adapters, so track the previous family in a ref.
-  // We also do NOT filter the selection against the catalog: a valid pick can be a free-text HF repo id absent from the (often empty) curated list.
+  // Refresh the LoRA picker when the loaded family changes: a LoRA is trained for one base family, so a real SWAP invalidates
+  // the selection. NOT on the first load or an unload (a restore can precede the load), so track the previous family in a ref.
+  // The selection is deliberately not filtered against the catalog: a valid pick can be a free-text HF repo id.
   const loraCapable = Boolean(status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
     if (!loraCapable) {
-      // Options are gone with the model, but keep the selection: it may have just been restored while the model is (re)loading. It is only SENT when loraCapable, and a real family swap below clears it.
+      // Options are gone with the model, but keep the selection: it may have just been restored while the model reloads.
       setAvailableLoras([]);
       return;
     }
@@ -1180,7 +1177,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       setLoras([]);
     }
     prevLoraFamilyRef.current = fam;
-    // A just-deployed adapter: now that the base is loaded + LoRA-capable, apply it (after the family-swap clear above). Only when the family matches what it was trained for; otherwise warn.
+    // A just-deployed adapter: apply it now that the base is loaded and LoRA-capable, if the family matches.
     const deploy = pendingDeploy.current;
     if (deploy) {
       pendingDeploy.current = null;
@@ -1199,8 +1196,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!cancelled) setAvailableLoras(list);
       })
       .catch(() => {
-        // Clear only the OPTIONS on a failed catalog refresh: unlike the catalog-only picker below, this free-text picker holds selections (bare HF repo ids) valid without being in the catalog, so a transient failure must not wipe them.
-        // Stale cross-family selections are already cleared by the family-swap check above, and hidden LoRAs are never sent (handleGenerate is gated on loraCapable).
+        // Clear only the OPTIONS on a failed catalog refresh: this free-text picker holds selections valid without being in the
+        // catalog, so a transient failure must not wipe them. Stale cross-family picks are cleared by the family-swap check above.
         if (!cancelled) setAvailableLoras([]);
       });
     return () => {
@@ -1208,8 +1205,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     };
   }, [loraCapable, status?.family, loraRefreshKey]);
 
-  // A torchao int8/fp8 build takes adapters ONLY at load time, baked in before quantize_ and compile. Switching artifact within one family keeps the selection (the family-swap clear sees no change) while the new load did not bake it,
-  // so the next Generate would 400 against a picker still showing the adapter as active. Drop it once per resident build and say why.
+  // A torchao int8/fp8 build takes adapters ONLY at load time. Switching artifact within one family keeps the selection while
+  // the new load did not bake it, so drop it once per resident build and say why, rather than 400 on the next Generate.
   const residentBuildKey = `${status?.repo_id ?? ""}|${String(
     status?.resolved?.transformer_quant?.value ?? "",
   )}`;
@@ -1227,7 +1224,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     });
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
-  // Refresh the ControlNet picker options when the loaded model (family) changes, and clear a stale selection the new model cannot use.
+  // Refresh the ControlNet options when the loaded family changes, and clear a stale selection the new model cannot use.
   const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
   useEffect(() => {
     if (!controlnetCapable) {
@@ -1251,14 +1248,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     };
   }, [controlnetCapable, status?.family]);
 
-  // The control types offered for the selected ControlNet: a union model advertises several (canny/depth/pose/passthrough), a plain model its own. Falls back to the preprocessing pair when nothing is selected.
+  // The control types offered for the selected ControlNet: a union model advertises several, a plain model its own.
   const controlTypeOptions = useMemo(() => {
     const cn = availableControlNets.find((c) => c.id === controlnetId);
     const types = cn?.control_types?.length ? cn.control_types : ["passthrough", "canny"];
     return types;
   }, [availableControlNets, controlnetId]);
 
-  // Keep controlType valid for the selected model: if the current choice is not among its advertised types, snap to the first (prefer passthrough when offered).
+  // Keep controlType valid for the selected model: snap to the first (prefer passthrough) when the choice is gone.
   useEffect(() => {
     if (!controlTypeOptions.includes(controlType)) {
       setControlType(
@@ -1284,7 +1281,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       galleryCache.srcById.set(image.id, url, bytes);
-      // Evict the coldest off-screen images this one pushed over budget. On-screen tiles and the image open in the viewer are protected, so eviction is never visible; an evicted tile re-fetches when scrolled back to.
+      // Evict the coldest off-screen images this one pushed over budget; on-screen and open tiles are protected.
       const evicted = galleryCache.srcById.prune(
         new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
       );
@@ -1307,7 +1304,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       galleryCache.hasMore = page.has_more;
       setImages(page.images);
       setHasMore(page.has_more);
-      // No visibility signal without IntersectionObserver (jsdom / an old webview), so keep the eager fetch there rather than render a strip of permanent spinners.
+      // No visibility signal without IntersectionObserver (jsdom / old webview), so keep the eager fetch there.
       if (typeof IntersectionObserver === "undefined") {
         page.images.forEach((image) => void ensureSrc(image));
       }
@@ -1316,7 +1313,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [ensureSrc]);
 
-  // Load the next older page. offset = how many are loaded so far; a newly generated image sorts to the front on the backend too, so the offset keeps pointing at the same older images.
+  // Load the next older page. offset = how many are loaded so far; a new image sorts to the front on the backend too.
   const loadMore = useCallback(async () => {
     if (loadingMore.current || !galleryCache.hasMore) return;
     loadingMore.current = true;
@@ -1340,9 +1337,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [ensureSrc]);
 
-  // A gallery page holds PAGE_SIZE multi-megabyte PNGs and an object URL lives until the page closes, so fetching every record of every page up front grew memory without bound for tiles the user may never look at.
-  // Fetch a tile as it nears the strip edge instead; it already shows a spinner until its src lands. Observed from here rather than through a ref on each tile,
-  // and re-run per page so "load more" tiles are picked up and removed ones go with the observer. Mirrors the Video page strip.
+  // A gallery page holds PAGE_SIZE multi-megabyte PNGs and an object URL lives until the page closes, so fetching every
+  // record up front grew memory without bound. Fetch a tile as it nears the strip edge instead, re-run per page. Mirrors Video.
   useEffect(() => {
     const root = stripRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
@@ -1351,7 +1347,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         for (const entry of entries) {
           const id = (entry.target as HTMLElement).dataset.imageId;
           if (!id) continue;
-          // Visibility is also the cache recency and protection signal: an on-screen tile is never evicted, and leaving the viewport makes it a candidate again.
+          // Visibility is also the cache recency and protection signal: an on-screen tile is never evicted.
           if (!entry.isIntersecting) {
             visibleIds.current.delete(id);
             continue;
@@ -1362,14 +1358,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           if (image) void ensureSrc(image);
         }
       },
-      // rootMargin applies to the ROOT box only, so the root must be the horizontally scrolling strip: a tile past its right edge is clipped, and a viewport-root margin would never reach it. The sideways margin starts a fetch a few tiles early.
+      // rootMargin applies to the ROOT box only, so the root must be the scrolling strip; the sideways margin fetches a few tiles early.
       { root, rootMargin: "0px 600px" },
     );
     for (const tile of root.querySelectorAll("[data-image-id]")) io.observe(tile);
     return () => io.disconnect();
   }, [images, ensureSrc]);
 
-  // The preview is what the user actually looks at, so the selected image is fetched whether or not its tile is on screen (a restored selection, a fresh generation, or a pick just before the strip scrolls it away).
+  // The preview is what the user looks at, so the selected image is fetched whether or not its tile is on screen.
   useEffect(() => {
     if (!selected) return;
     void (async () => {
@@ -1408,17 +1404,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setNegativePrompt(image.guidance > 0 ? (image.negative_prompt ?? "") : "");
     setSteps(image.steps);
     setGuidance(image.guidance);
-    // Restore from the BASE batch seed, not this image own derived seed (base + index), or replaying with batch_size would advance again and reproduce a different image. Diffusers shares one seed; older records fall back to seed.
+    // Restore from the BASE batch seed, not this image's derived seed, or replaying with batch_size would advance again.
     setSeed(String(image.batch_seed ?? image.seed));
     setWidth(image.width);
     setHeight(image.height);
-    // The batch shared one base seed, so an image with batch_index>0 only reproduces by replaying the whole batch: restore the batch size too (older recipes default to 1).
+    // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.
     setBatchSize(image.batch_size ?? 1);
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
-    // Restore selected LoRA adapters from the recipe ("id:weight" strings); split on the LAST colon so an id containing ':' is preserved, and skip unparseable entries.
-    // A recipe with no LoRAs clears the selection, so the restore reproduces the image faithfully rather than leaking a stale form selection.
+    // Restore selected LoRA adapters from the recipe ("id:weight"); split on the LAST colon so an id containing ':' survives.
+    // A recipe with no LoRAs clears the selection, so the restore reproduces the image faithfully.
     const restoredLoras: LoraSpecInput[] = [];
     for (const entry of image.loras ?? []) {
       const idx = entry.lastIndexOf(":");
@@ -1428,14 +1424,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
     }
     setLoras(restoredLoras);
-    // The conditioned workflows scalar settings ARE persisted, so restore them even though the form returns to Create: they are what the user re-applies after adding the image back.
+    // The conditioned workflows' scalar settings ARE persisted, so restore them even though the form returns to Create.
     if (typeof image.strength === "number") {
       if (image.workflow === "upscale") setUpscaleStrength(image.strength);
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
-    // None of the conditioning images are persisted in a recipe, so a restore must not leave the form pointing at whatever is loaded in the Transform / Inpaint / Edit tabs: the next Generate would condition on an unrelated image.
-    // Clear them all and return to Create (the workflow-validity effect snaps back if the loaded model is edit-only).
+    // None of the conditioning images are persisted, so a restore must not leave the form pointing at whatever is loaded in the
+    // Transform / Inpaint / Edit tabs. Clear them all and return to Create.
     setWorkflow("create");
     setInitImage(null);
     setMaskImage(null);
@@ -1443,7 +1439,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // The control image isn't persisted, so clear any stale ControlNet selection.
     setControlnetId("");
     setControlImage(null);
-    // Say so, rather than letting a conditioned image restore as a plain Create that quietly generates something unrelated. The scalar settings ARE restored above; only the images have to be supplied again.
+    // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
     const conditioned = CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
     if (conditioned) {
       toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`);
@@ -1452,7 +1448,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  // A locked ratio keeps the paired dimension in step while dragging; "custom" frees both, Flip swaps W/H. ratioHW is h/w for ratio [a,b] (long:short): landscape h = w*b/a, portrait h = w*a/b.
+  // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
   const changeAspect = (key: string) => {
     setAspect(key);
@@ -1486,8 +1482,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  // Track mount so a long generate run stops issuing GPU work only on a true unmount (app close / chat-only eject). The page stays mounted across tab switches (RootLayout keeps it alive like chat), so a batch keeps generating off-tab.
-  // The mount-time refreshStatus and timer/toast cleanup live in the load-resume effect below, so this one carries only the mount flag.
+  // Track mount so a long generate run stops issuing GPU work only on a true unmount; the page stays mounted across tab
+  // switches, so a batch keeps generating off-tab. The mount-time refresh and cleanup live in the load-resume effect below.
   useEffect(() => {
     isMounted.current = true;
     return () => {
@@ -1495,7 +1491,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     };
   }, []);
 
-  // Re-sync model status when the tab becomes active again: while off-tab the diffusion model may have been evicted (a chat load claimed the GPU) and the page no longer remounts on return.
+  // Re-sync model status when the tab becomes active: the model may have been evicted while off-tab.
   useEffect(() => {
     if (!active) return;
     void (async () => {
@@ -1503,7 +1499,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     })();
   }, [active, refreshStatus]);
 
-  // Collapse the body-ported popovers when leaving the tab: their open state is force-closed via `active && open` while off-tab, but the underlying flag stays set, so returning would pop them back open.
+  // Collapse the body-ported popovers when leaving the tab: the open flag stays set, so returning would pop them back open.
   useEffect(() => {
     if (active) return;
     setSelectorOpen(false);
@@ -1529,23 +1525,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         dismissLoadToast();
         toast.error(p.error || "Failed to load model");
         setBusy(null);
-        // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back to what is actually loaded (status carries no quant, so refreshStatus alone cannot correct it).
+        // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back.
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
           quantRevert.current = null;
         }
-        // Same rollback for the Reapply target: the previous pipeline is still resident, so point Reapply back at it rather than the failed pick.
+        // Same rollback for the Reapply target: the previous pipeline is still resident.
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
           setCanReapply(lastLoadRevert.current.prev != null);
           lastLoadRevert.current = null;
         }
-        // A failed load may have freed a previously-loaded model, so resync to the real backend state (the synchronous failure path does the same).
+        // A failed load may have freed a previously-loaded model, so resync to the real backend state.
         void refreshStatus();
         return;
       }
       if (p.phase === null) {
-        // No load in flight and nothing loaded: the load was cancelled or evicted (a chat load took the GPU) and the backend cleared its state. Terminal -- else this loop spins forever and busy sticks on "loading".
+        // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this loop spins forever.
         dismissLoadToast();
         setBusy(null);
         // Same optimistic-quant rollback as the error path: the swap did not take.
@@ -1553,7 +1549,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           setQuant(quantRevert.current.prev);
           quantRevert.current = null;
         }
-        // Restore the Reapply target too (symmetric with the error/quant rollback), so it never lingers on the failed pick after the load is cancelled/evicted.
+        // Restore the Reapply target too, so it never lingers on the failed pick after a cancel or eviction.
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
           setCanReapply(lastLoadRevert.current.prev != null);
@@ -1562,7 +1558,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void refreshStatus();
         return;
       }
-      // Include bytes_total: the estimate lands as a 0->real jump while phase and bytes_downloaded hold, and the toast shows the percentage off that total.
+      // Include bytes_total: the estimate lands as a 0->real jump while phase and bytes_downloaded hold.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
       if (loadToastId.current != null && sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
@@ -1574,8 +1570,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
   }, [dismissLoadToast, refreshStatus]);
 
-  // Re-enter the per-step poll for a generation already in flight on the backend that this page did not start (another client, or a reload mid-generate), instead of showing a stale idle view.
-  // generate-progress carries no terminal record, so refresh the gallery on completion to merge any image saved after the mount fetch. Separate from handleGenerate own loop.
+  // Re-enter the per-step poll for a generation already in flight that this page did not start, instead of a stale idle view.
+  // generate-progress carries no terminal record, so refresh the gallery on completion to merge any image saved after mount.
   const resumeGeneratePoll = useCallback(() => {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
     if (genVisibilityListener.current)
@@ -1621,7 +1617,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     void (async () => {
       await refreshStatus();
-      // A load runs on the backend as a daemon thread that survives navigation. On (re)mount, resume tracking one still in flight so the page shows progress and updates on completion, not a stale view.
+      // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
       try {
         const p = await getDiffusionLoadProgress();
         if (p.phase === "downloading" || p.phase === "finalizing") {
@@ -1634,7 +1630,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
-      // Resume tracking a generation started elsewhere (another client, or before a reload) so the page shows the in-flight run instead of a stale idle view. Mirrors the video page.
+      // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
         const g = await getGenerateProgress();
         if (g.active) {
@@ -1646,7 +1642,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
     })();
-    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the load toast: its poll loop is gone, so it would hang forever (duration: Infinity) on whatever page the user navigated to.
+    // Stop polling if the page unmounts mid-load/generate, and dismiss the load toast: its poll loop is gone.
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       if (genPollTimer.current) clearInterval(genPollTimer.current);
@@ -1658,30 +1654,30 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll]);
 
-  // Seed the generation sliders to a resident model recipe when the page discovers one it did not load itself (left by a prior session or another route); refreshStatus() only sets `status`.
-  // Without this the sliders keep the unrecognised-model fallback (few-step / no-CFG), so a resident full model (flux.1-dev) generates at 9 steps / guidance 0 and produces garbage until re-picked.
-  // Guarded by lastLoad.current === null (a user-initiated load seeds its own defaults) and a per-repo ref, so a manual edit after the seed is never clobbered.
+  // Seed the generation sliders to a resident model's recipe when the page discovers one it did not load itself.
+  // Without this the sliders keep the unrecognised-model fallback, so a resident flux.1-dev generates garbage at 9 steps.
+  // Guarded by lastLoad.current === null and a per-repo ref, so a manual edit after the seed is never clobbered.
   useEffect(() => {
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
-    // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF/single_file/local-path resident has a repo_id with no family substring, so defaultsFor(repoId) would pick the wrong distilled recipe.
+    // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
     const d = defaultsFor(status?.base_repo ?? repoId);
     setSteps(d.steps);
     setGuidance(d.guidance);
-    // Wire "Reapply" to the resident model too, so an advanced-option reload works without re-picking from the dropdown. Only a full pipeline load needs no checkpoint filename;
-    // a resident GGUF/single_file carries none in status and the backend rejects such a load (400 before it evicts), so leave lastLoad null for those rather than wire a reload that can never complete.
+    // Wire "Reapply" to the resident model too, so an advanced-option reload works without re-picking. Only a full pipeline
+    // needs no checkpoint filename; a resident GGUF/single_file carries none, so leave lastLoad null for those.
     const kind = status?.model_kind;
     if (kind === "pipeline") {
       lastLoad.current = { repoId, kind };
     }
   }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
-  // The adapter list a load of *repoId* would BAKE into the build, shared by the load itself and by the download plan so the two never disagree.
-  // A torchao int8/fp8 transformer can only take adapters before quantize_ + compile, so a baked selection forces the dense build path, which needs different files staged.
-  // Only a reload of the SAME target bakes: a fresh pick of another model can still hold a cross-family selection the family-swap effect clears after the load. Reads lastLoad.current, so call it before the load overwrites it.
+  // The adapter list a load of *repoId* would BAKE into the build, shared by the load and by the download plan.
+  // A torchao int8/fp8 transformer takes adapters only before quantize_ + compile, so a baked selection forces the dense build.
+  // Only a reload of the SAME target bakes. Reads lastLoad.current, so call it before the load overwrites it.
   const bakedLorasFor = useCallback(
     (repoId: string): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
@@ -1693,7 +1689,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [loras, status?.repo_id],
   );
 
-  // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it planned against and the load cannot drift from them. Sentinels ("auto") map to undefined here once, not at each call site.
+  // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it planned against.
   const currentLoadAdvanced = useCallback(
     (repoId: string): LoadAdvanced => {
       const baked = bakedLorasFor(repoId);
@@ -1719,15 +1715,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
 
   const handleLoad = useCallback(
-    // Resolves true when the background load STARTED (callers may revert optimistic picker state on false); poll outcomes are handled internally.
+    // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
     async (
       repoId: string,
       opts: {
         kind: "gguf" | "single_file" | "pipeline";
         filename?: string;
       },
-      // The Advanced values this load must use, when they were pinned earlier. A staged download plans its file set from the controls as they stood at pick time and only loads minutes later,
-      // so reading the live state here would run a load the staged files may not cover (the rest then pulled inline, outside the manager) or leave gigabytes staged for a build this load no longer uses.
+      // The Advanced values this load must use, when pinned earlier: a staged download plans its file set at pick time and loads
+      // minutes later, so reading live state here could run a load the staged files do not cover.
       pinned?: LoadAdvanced,
     ): Promise<boolean> => {
       // Cancel any prior poll loop so two can't run at once.
@@ -1737,24 +1733,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       dismissLoadToast();
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
-      // Remember what was loaded so "Reapply" can reload it with new advanced options. Snapshot the prior target first: a load that fails to START (validation, gated repo, training guard)
-      // leaves the previous model resident, so Reapply and the resident-default seeding must keep pointing at it, not the failed pick.
+      // Remember what was loaded so "Reapply" can reload it with new advanced options. Snapshot the prior target first: a load
+      // that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
-      // A torchao int8/fp8 transformer (what the default GGUF fast path resolves to on any capable GPU) can only take adapters at LOAD time: they attach on the dense transformer before quantize_ + compile.
-      // Generation-time /images/generate then rejects a new adapter set with "reload the model with the adapter selection", so a reload that drops the selection leaves the LoRA picker permanently unusable.
+      // A torchao int8/fp8 transformer (what the default GGUF fast path resolves to on a capable GPU) takes adapters only at LOAD
+      // time. /images/generate then rejects a new adapter set, so a reload that drops the selection leaves the picker unusable.
       // Ignored by every other load kind (bf16 / bnb-4bit apply adapters at generation time).
       const advanced = pinned ?? currentLoadAdvanced(repoId);
       const bakeLoras = advanced.loras ?? [];
-      // Whether THIS load carries the selection into the build, so a quantized load that did not can drop a selection it can never apply rather than failing the next Generate.
+      // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
-      // Carry the prior target so the async poll can restore it if the background load fails after starting (the previous pipeline stays resident); the sync catch clears it.
+      // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
       try {
-        // Returns immediately -- the load runs in the background and we poll for it. The backend infers the family + base diffusers repo from the id; forward the saved HF token so gated bases (FLUX dev/klein) download.
-        // A pipeline load carries no filename (the repo IS the pipeline); single-file kinds send the GGUF / safetensors filename.
-        // Advanced sentinels ("auto"/"off"/"none") map to omitted so the backend uses its defaults.
+        // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id;
+        // forward the saved HF token for gated bases. A pipeline load carries no filename; the "auto" sentinels map to omitted.
         await loadDiffusionModel({
           model_path: repoId,
           model_kind: opts.kind,
@@ -1791,18 +1786,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setMaskResetKey((k) => k + 1);
   }, []);
 
-  // Downloads go through the Hub download manager like every other model, sharing its panel, progress, cancel/resume, disk preflight and manifest verification; the load then finds a warm cache. Held in a ref so the completion callback is not a render dep.
+  // Downloads go through the Hub download manager like every other model, so the load finds a warm cache. In a ref so the callback is not a render dep.
   const pendingStagedLoad = useRef<{
     repoId: string;
     opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
-    // The Advanced values the plan was built from. Staging does not set `busy`, so the user can change precision, memory mode, speed or the baked LoRAs while the download runs;
-    // without this the completed load would use the new values against the old file set, pulling whatever is missing inline (no progress, no disk preflight) or leaving gigabytes staged for nothing.
+    // The Advanced values the plan was built from. Staging does not set `busy`, so the user can change precision or LoRAs while
+    // the download runs; without this the completed load would use the new values against the old file set.
     advanced: LoadAdvanced;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
-  // Set when a staged download finished while this page was hidden. Both diffusion pages stay mounted and a load evicts whatever holds the GPU, so a download landing in the background must not take the model out from under the page the user is on.
-  // The pick is not dropped: it fires when this page comes back.
+  // Set when a staged download finished while this page was hidden: both diffusion pages stay mounted and a load evicts
+  // whatever holds the GPU. The pick is not dropped; it fires when this page comes back.
   const stagedLoadDeferred = useRef(false);
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
@@ -1825,7 +1820,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (pending) void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced);
   }, [active]);
 
-  // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick was accepted either way, so the callers optimistic picker state stands.
+  // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick was accepted either way.
   const loadOrStage = useCallback(
     async (
       repoId: string,
@@ -1833,23 +1828,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       isDownloaded?: boolean,
     ): Promise<boolean> => {
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
-      // ONE snapshot for the plan and for the load it will fire: the download runs for minutes without setting `busy`, so anything read separately at completion time could have changed.
+      // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
       try {
         const plan = await getDiffusionDownloadPlan({
           model_path: repoId,
           gguf_filename: opts.filename,
           model_kind: opts.kind,
-          // The same token and Advanced values handleLoad sends, so the plan describes the load that will actually run.
-          // Without the token the backend metadata lookup fails on a gated base and quietly plans no companion entry, leaving the load to pull those multi-GB files inline, outside this manager;
-          // without the memory and quant controls an explicit Speed/Precision Off or low-VRAM pick stages base transformer/ shards the load never opens.
+          // The same token and Advanced values handleLoad sends, so the plan describes the load that will actually run. Without the
+          // token a gated base plans no companion entry; without the memory/quant controls it stages shards the load never opens.
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
           transformer_quant: advanced.transformer_quant,
           memory_mode: advanced.memory_mode,
-          // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it here planned a quantized load file set and
-          // staged too little for the load that actually ran, which pulled the rest inline outside the download manager. Same list handleLoad bakes.
+          // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
+          // planned a quantized file set and staged too little. Same list handleLoad bakes.
           loras: advanced.loras,
         });
         if (plan.entries.length > 0) {
@@ -1872,7 +1866,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [stage, currentLoadAdvanced],
   );
 
-  // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params so a refresh or a later manual eject does not reload it.
+  // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
   const routeSearch = useSearch({ strict: false }) as {
     model?: string;
     quant?: string;
@@ -1880,12 +1874,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
-    // Only the page being shown consumes the query. This hook is loose (`strict: false`) and both diffusion pages stay mounted once visited, so the hidden one saw /video?model= too and raced this one:
-    // it navigated back to its own route and tried to load the other page checkpoint as its own kind of model.
+    // Only the page being shown consumes the query: this hook is loose and both diffusion pages stay mounted, so the hidden one
+    // saw /video?model= too and raced this one, loading the other page's checkpoint as its own kind of model.
     if (!active) return;
     const wanted = routeSearch.model;
-    // Key on the model AND the quant, and release the marker once the query is gone. This page stays mounted, so a marker that outlived the query made re-picking the same checkpoint a click that neither loaded nor cleared the URL.
-    // It only has to survive the re-renders between consuming a pick and the clear landing.
+    // Key on the model AND the quant, and release the marker once the query is gone: this page stays mounted, so a marker that
+    // outlived the query made re-picking the same checkpoint a click that neither loaded nor cleared the URL.
     if (!wanted) {
       handledRouteModel.current = null;
       return;
@@ -1894,7 +1888,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
-    // Same catalog lookup a direct pick makes: the chat picker can only forward a GGUF filename, so a curated single-file artifact would otherwise be loaded as a pipeline and fail.
+    // Same catalog lookup a direct pick makes: the chat picker can only forward a GGUF filename.
     const pick = diffusionRoutePick(
       wanted,
       routeSearch.quant,
@@ -1909,10 +1903,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
   }, [handleLoad]);
 
-  // The chat picker emits (modelId, picked quant + its exact filename) for a GGUF, or just (modelId) for a curated non-GGUF safetensors pick; load it and seed the inputs with that model defaults.
+  // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated safetensors pick.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      // Ignore picks while a load/generation/unload is in flight: a replacement load now would tear down the live poll/toast and reset busy, and the backend rejects the second load with a 409.
+      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
       if (busy !== null) return;
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
@@ -1924,8 +1918,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
         return;
       }
-      // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START (400/409/network) or LATER in the poll (download/preflight error/eviction):
-      // in both cases the old pipeline stays loaded, so do not advertise the failed quant. The poll owns the after-start revert via quantRevert; here we only handle the never-started case.
+      // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
+      // or LATER in the poll: the old pipeline stays loaded either way. The poll owns the after-start revert via quantRevert.
       if (meta.ggufVariant && meta.ggufFilename) {
         const prevQuant = quant;
         quantRevert.current = { prev: prevQuant };
@@ -1945,19 +1939,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
-      // A direct single-file local .gguf pick has no variant/filename (custom folder / LM Studio). Load it by splitting the path into (parent dir, basename) the backend resolves, instead of silently doing nothing.
+      // A direct local .gguf pick has no variant/filename; load it by splitting the path into (parent dir, basename).
       if (meta.isGguf) {
         const norm = id.replace(/\\/g, "/");
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
         if (!filename.toLowerCase().endsWith(".gguf")) {
-          // A repo pick that reached here has no filename to load, and the backend cannot map a quant label back to one. Say so instead of doing nothing.
+          // A repo pick that reached here has no filename to load, and a quant label cannot be mapped back to one.
           toast.error("Pick a quantization for this model to load it");
           return;
         }
-        // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the previously loaded quant.
-        // Optimistic, reverted if the load fails to start OR fails later in the poll (mirrors the curated branch above; the poll owns the after-start revert via quantRevert).
+        // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
+        // Optimistic, reverted if the load fails to start OR later in the poll (mirrors the curated branch above).
         const prevQuant = quant;
         quantRevert.current = { prev: prevQuant };
         setQuant(filename);
@@ -1972,8 +1966,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
-      // A direct local single-file .safetensors pick (custom folder / on-device file) must load via from_single_file: the pipeline route rejects a bare file (no model_index.json), and only after evicting the resident model.
-      // Split into (parent dir, basename) like the local GGUF branch above.
+      // A direct local single-file .safetensors pick must load via from_single_file: the pipeline route rejects a bare file, and
+      // only after evicting the resident model. Split into (parent dir, basename) like the local GGUF branch above.
       if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
         const norm = id.replace(/\\/g, "/");
         const slash = norm.lastIndexOf("/");
@@ -1993,7 +1987,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
-      // Otherwise treat it as a full diffusers repo (safetensors / bnb-4bit). The backend infers the family + base repo from the id and gates loads to unsloth/* repos or on-device paths, so only attempt those.
+      // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
         toast.error("Only unsloth or on-device image models can be loaded here");
         return;
@@ -2015,7 +2009,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [busy, handleLoad, loadOrStage, quant],
   );
 
-  // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base as a pipeline, and queue the adapter so the LoRA discovery effect applies it once the base is loaded + LoRA-capable. Seeds the prompt with the trigger phrase when provided.
+  // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and queue the adapter for the LoRA discovery effect.
   const handleDeployAdapter = useCallback(
     (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
       if (busy !== null) {
@@ -2044,13 +2038,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
 
   const handleUnload = useCallback(async () => {
-    // Ejecting cancels any in-flight replacement load on the backend, so tear down its client-side tracking too: the load poll reschedules on phase null and the persistent toast never resolves, so both would leak forever.
+    // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();
     lastLoadSig.current = null;
-    // Drop the Reapply target with the model (like the Video page): the ejected pick is no longer resident, and leaving it set makes the resident-status seeding effect above skip repair (guarded on lastLoad.current === null)
-    // while "Reapply to loaded model" reloads the ejected model instead of whatever another client/session left loaded.
+    // Drop the Reapply target with the model: the ejected pick is no longer resident, and leaving it set makes the
+    // resident-status seeding effect skip repair while Reapply would reload the ejected model.
     lastLoad.current = null;
     setCanReapply(false);
     setBusy("unloading");
@@ -2101,7 +2095,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       return;
     }
 
-    // Resolve the conditioning image/mask/strength for this workflow up front. Extend (outpaint) is built here from the source by padding + masking the new border, then sent through the same inpaint path. txt2img leaves all three undefined.
+    // Resolve the conditioning image/mask/strength up front. Extend is built here by padding + masking, then sent through inpaint.
     let condInit: string | undefined;
     let condMask: string | undefined;
     let condStrength: number | undefined;
@@ -2121,24 +2115,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         condMask = built.mask;
         condStrength = 1; // the new border is blank canvas: redraw it fully
       } else if (isUpscale) {
-        // Hires fix: the backend enlarges the source by `upscale` and re-denoises at this low strength, so it gains detail without changing the content.
+        // Hires fix: the backend enlarges the source and re-denoises at this low strength, gaining detail without changing content.
         condInit = initImage ?? undefined;
         condUpscale = upscaleFactor;
         condStrength = upscaleStrength;
       } else if (isReference) {
-        // FLUX.2 reference conditioning: send the primary reference + any extra references (combined by the model). A fresh image is generated at the slider size guided by the references + prompt. No mask, no strength.
+        // FLUX.2 reference conditioning: send the primary + extra references. A fresh image is generated at the slider size.
         condInit = initImage ?? undefined;
         const extras = referenceImages.filter(Boolean);
         if (extras.length) condRefImages = extras;
       } else if (isEdit) {
-        // Instruction editing: send the source image; the prompt IS the instruction. No mask, no strength (the edit pipeline fully regenerates).
+        // Instruction editing: send the source image; the prompt IS the instruction. No mask, no strength.
         condInit = initImage ?? undefined;
       }
     } catch {
       toast.error("Could not prepare the source image");
       return;
     }
-    // Resolve a base seed up front. With an explicit seed the run is fully reproducible; with a random one we still pick a concrete base now so each sequential image gets a distinct, reproducible seed (base + i).
+    // Resolve a base seed up front, so each sequential image gets a distinct, reproducible seed (base + i).
     let baseSeed: number;
     if (seed.trim()) {
       const n = Number(seed);
@@ -2155,12 +2149,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const w = snapDim(width);
     const h = snapDim(height);
 
-    // A large run count (generate all night) is legitimate, so there is no upper cap: floor at 1 and ignore non-numeric input (the number box can yield NaN), which would otherwise make the loop a silent no-op.
+    // A large run count is legitimate, so no upper cap: floor at 1 and ignore non-numeric input (the box can yield NaN).
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
 
-    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run offset (base + i*batchSize) and the engine in-batch +j offsets are added, 422ing a later run AFTER earlier images generated.
-    // Fail before any GPU work. Subtraction keeps the comparison exact where the sum would round.
+    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run and in-batch offsets are added, 422ing a later
+    // run AFTER earlier images generated. Fail before any GPU work; subtraction keeps the comparison exact.
     if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
       toast.error("Seed too large for this run count and batch size; use a smaller seed");
       return;
@@ -2169,8 +2163,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
-    // Poll the backend per-step progress across the whole run (all sequential generations) so the bar tracks live denoising steps.
-    // A named poll body (guarded against overlap) also serves the visibilitychange listener: a background tab throttled interval catches up the moment the tab is visible.
+    // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
+    // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
     const pollGenerateOnce = async () => {
       if (pollInFlight) return;
@@ -2196,12 +2190,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-    // Every gallery id this page has already seen, captured BEFORE the first POST and grown as the run produces records. settleLostGeneration proves a lost POST reached the backend by finding a record outside this set,
-    // so the set must not be rebuilt inside the catch: by then run 1 own images are on the page, and run 2 would accept one of them as its proof.
+    // Every gallery id this page has seen, captured BEFORE the first POST and grown as the run produces records:
+    // settleLostGeneration proves a lost POST landed by finding a record outside this set, so it must not be rebuilt in the catch.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
-        // The page truly unmounted mid-run (app close / chat-only eject): stop issuing more GPU generations. A plain tab switch keeps it mounted.
+        // The page truly unmounted mid-run: stop issuing more GPU generations. A plain tab switch keeps it mounted.
         if (!isMounted.current) break;
         let res: DiffusionGenerateResponse;
         try {
@@ -2213,17 +2207,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             height: h,
             steps,
             guidance,
-            // Offset runs by the batch size: the native engine seeds image j of a run at seed+j, so a +1 run offset would regenerate the previous run batch-mates. Unique per image on both engines, reproducible via recipes.
+            // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset would regenerate batch-mates.
             seed: baseSeed + i * batchSize,
             batch_size: batchSize,
-            // Transform/Inpaint/Extend send the source image (+ mask for inpaint/extend) and a denoise strength, resolved above. The backend derives output size from the image, so width/height are advisory.
+            // Transform/Inpaint/Extend send the source image (+ mask) and a strength. The backend derives output size from the image.
             init_image: condInit,
             mask_image: condMask,
             strength: condStrength,
             upscale: condUpscale,
             reference_images: condRefImages,
-            // Drop empty (no id yet) and zero-weight rows, and trim hand-typed repo ids, so the recipe records only adapters that applied.
-            // Gate on loraCapable: a restore can leave adapters in state while the loaded model does not support LoRA (picker hidden), and sending them would fail generation with no visible row to remove.
+            // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only adapters that applied.
+            // Gate on loraCapable: a restore can leave adapters in state while the loaded model does not support LoRA.
             loras: (() => {
               if (!loraCapable) return undefined;
               const active = loras
@@ -2231,7 +2225,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 .filter((l) => l.id && l.weight > 0);
               return active.length ? active : undefined;
             })(),
-            // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only, so skip it for image-conditioned workflows.
+            // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
             controlnet:
               controlnetCapable && controlnetId && controlImage && workflow === "create"
                 ? {
@@ -2243,14 +2237,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 : undefined,
           });
         } catch (err) {
-          // The POST response was lost while the backend kept generating (secure mode tunnel caps the origin response near 100s, which a native-CPU or high-step run exceeds).
-          // Retrying would duplicate the work, so wait the run out and read its images off the gallery, where they are persisted anyway.
+          // The POST response was lost while the backend kept generating (the secure-mode tunnel caps the response near 100s).
+          // Retrying would duplicate the work, so wait the run out and read its images off the gallery.
           if (!(err instanceof GenerateResponseLostError)) throw err;
-          // The ids known before the POST went out: a record outside them proves the request reached the backend when progress reads idle straight away.
+          // The ids known before the POST went out: a record outside them proves the request reached the backend.
           await settleLostGeneration(() => isMounted.current, knownIds);
           if (!isMounted.current) break;
           await loadGallery();
-          // loadGallery refreshes the module cache synchronously, so this run settled records are folded in before the next run can mistake one for its own proof.
+          // loadGallery refreshes the module cache synchronously, so this run's records are folded in before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
           setGenDone(i + 1);
           continue;
@@ -2263,8 +2257,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
-      // A generation can change server-side status: Speed=Auto compiles the transformer on the 3rd LoRA-free run (supports_lora flips to false), so without a refresh the LoRA picker stays enabled and the next LoRA run fails.
-      // Cheap status GET; also picks up any other drift.
+      // A generation can change server-side status: Speed=Auto compiles on the 3rd LoRA-free run (supports_lora flips false),
+      // so without a refresh the LoRA picker stays enabled and the next LoRA run fails. Cheap status GET.
       if (isMounted.current) void refreshStatus();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Image generation failed");
@@ -2281,8 +2275,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus]);
 
-  // Keep the active workflow valid for the loaded model: an edit-only model has no Create/Transform tabs, a base model no Edit tab. Snap to the first supported workflow when capabilities change.
-  // supported workflow whenever the loaded model's capabilities change.
+  // Keep the active workflow valid for the loaded model: snap to the first supported one when capabilities change.
   useEffect(() => {
     if (!status?.loaded) return;
     const wf = status.workflows ?? [];
@@ -2297,8 +2290,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [status?.loaded, status?.workflows, workflow]);
 
-  // Create (requires null) needs txt2img once a model is loaded: an edit-only model (workflows: ["edit"]) has no text-to-image mode, so its Create row is disabled and Edit is the only enabled one.
-  // With nothing loaded, Create stays available so the user can pick a model.
+  // Create (requires null) needs txt2img once a model is loaded: an edit-only model has no text-to-image mode, so its Create
+  // row is disabled. With nothing loaded, Create stays available so the user can pick a model.
   const workflowEnabled = (t: (typeof WORKFLOW_TABS)[number]) => {
     const wf = status?.workflows ?? [];
     return t.requires === null
@@ -2325,7 +2318,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           ["max", "Max"],
         ]}
       />
-      {/* The dense transformer_quant fast path only engages on the GGUF kind; on a loaded safetensors pipeline / single-file model it is a silent no-op, so gate the control to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
+      {/* The dense transformer_quant fast path only engages on the GGUF kind, so gate the control to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
       {!status?.loaded || status.model_kind === "gguf" ? (
         <AdvancedSelect
           label="Precision"
@@ -2397,7 +2390,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
-      {/* A resident full pipeline is reloadable by repo id alone (the resident effect wires lastLoad for it), so it keeps Reapply even before any user-initiated load; GGUF/single_file residents have no reload target and hide the button. */}
+      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a user-initiated load; GGUF/single_file residents hide the button. */}
       {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -2419,7 +2412,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* Top: the model selector, kept at the chat tab exact position so the shared element matches. Load progress shows in a chat-style toast, not here. */}
+      {/* Top: the model selector, kept at the chat tab's exact position so the shared element matches. Load progress shows in a toast. */}
       <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <div className="flex items-center gap-2">
           {pageMode === "train" ? (
@@ -2428,7 +2421,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               familyName={trainFamilyName}
               base={trainBaseChoice}
               onSelect={(family, repo) => {
-                // Set both together: the panel reseed effect keeps a base that is valid for the new family, so the pick survives the family switch.
+                // Set both together: the panel reseed effect keeps a base valid for the new family.
                 setTrainFamilyName(family);
                 setTrainBaseChoice(repo);
               }}
@@ -2450,7 +2443,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             />
           )}
         </div>
-        {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width (the selector stays leftmost, its position shared with Chat). PillTabs is the app segmented control; icons match the sidebar New chat / Train rows. */}
+        {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
         <div className="pointer-events-none absolute inset-x-0 top-[11px] flex justify-center">
           <PillTabs
             ariaLabel="Page mode"
@@ -2480,7 +2473,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           />
         </div>
         <div className="flex items-center gap-2">
-          {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat settings toggle, same icon in both states so it never moves). Highlighted when open, and hidden while training since it only tunes loads. */}
+          {/* Single fixed toggle for the right-docked Advanced panel (same icon in both states so it never moves). Hidden while training. */}
           {pageMode === "create" && (
             <Tooltip>
               <TooltipTrigger asChild={true}>
@@ -2504,13 +2497,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           )}
         </div>
       </div>
-      {/* Train mode: the full-page training workspace. Kept unmounted in Create mode so its polling stops; Create own state (gallery, model, workflow) is untouched. */}
+      {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops; Create's own state is untouched. */}
       {pageMode === "train" ? (
         <DiffusionTrainPanel
           active={active && pageMode === "train"}
           loadedFamily={status?.family ?? null}
           loadedBaseRepo={
-            // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF or single-file load repo_id is the checkpoint path, not a trainable base.
+            // Prefer base_repo (the full diffusers pipeline) over repo_id: for a GGUF load repo_id is a checkpoint path, not a trainable base.
             status?.base_repo ?? status?.repo_id ?? null
           }
           onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
@@ -2522,12 +2515,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onFamiliesChange={setTrainFamilies}
         />
       ) : (
-      /* Controls rail + preview canvas. No cards: both sit on the page background, split by a rule, on the Hub centered measure. No bottom padding, so the rule runs the full page height; each pane pads its own content. */
+      /* Controls rail + preview canvas: both on the page background, split by a rule, on the Hub centered measure. Each pane pads its own content. */
       <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
         <div className="flex w-[368px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
-            {/* Seven workflows do not fit a segmented strip in this rail, so: a dropdown. A row stays disabled until the loaded model supports it (status.workflows). */}
+            {/* Seven workflows do not fit a segmented strip in this rail, so: a dropdown. A row stays disabled until the model supports it. */}
             <div className="grid gap-1.5">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>
@@ -2781,7 +2774,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       <ImageDropzone
                         value={img}
                         onChange={(v) =>
-                          // Keep the slot in place (empty string when cleared) so other slots do not renumber mid-edit; empty slots are dropped only at send time and removed explicitly via the button below. Stable key={i}.
+                          // Keep the slot in place (empty string when cleared) so other slots do not renumber mid-edit; empty slots are dropped at send time.
                           setReferenceImages((prev) =>
                             prev.map((p, j) => (j === i ? (v ?? "") : p)),
                           )
@@ -2835,7 +2828,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
-            {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a Hugging Face repo id (owner/name, or owner/name:weight-file.safetensors) or pick a discovered adapter; stack multiple, each with a 0-2 weight. The backend owns how they apply; the UI only sends {id, weight}. */}
+            {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a Hugging Face repo id or pick a discovered adapter; each carries a 0-2 weight. */}
             {loraCapable && (
               <Field
                 label="LoRAs"
@@ -2901,7 +2894,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       size="sm"
                       className="w-full"
                       onClick={() => {
-                        // Prefill with the first unused suggestion when a curated catalog exists, else an empty row the user fills with a Hugging Face repo id.
+                        // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
                         const taken = new Set(loras.map((l) => l.id));
                         const next = availableLoras.find((a) => !taken.has(a.id));
                         setLoras((prev) => [
@@ -2917,7 +2910,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 </div>
               </Field>
             )}
-            {/* ControlNet: shown when the loaded model supports it, a model is discoverable, and the plain text-to-image workflow is active (v1 conditions txt2img only). Pick a model, add a control image, choose how to derive the map, set the strength. */}
+            {/* ControlNet: shown when the model supports it, one is discoverable, and the txt2img workflow is active (v1 conditions txt2img only). */}
             {controlnetCapable && availableControlNets.length > 0 && workflow === "create" && (
               <Field
                 label="ControlNet"
@@ -2968,7 +2961,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 </div>
               </Field>
             )}
-            {/* A negative prompt only does anything with guidance on, so hide it at guidance 0 (Z-Image-Turbo default) instead of showing a dead field. */}
+            {/* A negative prompt only does anything with guidance on, so hide it at guidance 0 instead of showing a dead field. */}
             {guidance > 0 && (
               <Field
                 label="Negative prompt"
@@ -3096,7 +3089,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   alt={selected.prompt}
                   className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
                 />
-                {/* Actions grouped in one glass toolbar so they stay legible over any image and read as a unit instead of blending into the canvas. Size/seed live in the Recipe popover. */}
+                {/* Actions grouped in one glass toolbar so they stay legible over any image. Size/seed live in the Recipe popover. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
@@ -3158,7 +3151,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               </div>
             )}
 
-            {/* Live generation progress: a per-step bar with ETA, centered when there is nothing else to show, tucked at the bottom over an image. */}
+            {/* Live generation progress: a per-step bar with ETA, centered when there is nothing else to show. */}
             {busy === "generating" && (
               <div
                 className={cn(
@@ -3168,7 +3161,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
-                    // Drop the chat min-height: this floating card has no layout to stabilise, and it would center the thin bar and leave empty space above it.
+                    // Drop the chat min-height: this floating card has no layout to stabilise.
                     className="min-h-0"
                     title={
                       genDone != null && count > 1
@@ -3235,7 +3228,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           )}
         </div>
 
-        {/* Right-docked Advanced panel (mirrors Chat settings panel): closed by default, opened by the single fixed top-bar toggle above (which never moves between states), so the optimisation controls are discoverable without being docked open or buried at the bottom of the left rail. */}
+        {/* Right-docked Advanced panel (mirrors Chat's settings panel): closed by default, opened by the fixed top-bar toggle above, so the optimisation controls are discoverable without being docked open. */}
         {advancedOpen && (
           <div className="ml-4 flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border/60 pl-4">
             <div className="flex h-[52px] shrink-0 items-center border-b border-border/60">

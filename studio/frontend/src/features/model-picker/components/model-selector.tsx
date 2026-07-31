@@ -152,12 +152,9 @@ interface ModelSelectorProps {
   showCloudIndicator?: boolean;
   /** Restrict the Hub tab to a pipeline task (e.g. text-to-image). */
   task?: HfTaskFilter;
-  /** Canonical model groups (Images / Video pages): collapses a model's
-   *  artifact repos into one row with a format second level and device-aware
-   *  routing. Undefined (chat) changes nothing. */
+  /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
   catalog?: CatalogGroup[];
-  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name
-   *  what they pick so it reads as separate from the chat model. */
+  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
 
@@ -170,8 +167,7 @@ function ModelSelectorTrigger({
   className,
   dataTour,
   onEject,
-  // Task pages name what they pick ("Select image model"), so it is clear the choice is
-  // separate from the chat model.
+  // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
   currentModel?: ModelOption;
@@ -827,9 +823,8 @@ export function ModelSelector({
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
-        // The image tab (the only caller passing `task`) is a self-contained
-        // curated + on-device picker, so it omits the "Search Hub" button that
-        // navigates to the general Hub page.
+        // The image tab (the only caller passing `task`) is a self-contained curated + on-device picker, so it omits the
+        // "Search Hub" button.
         onBrowseHub={task ? undefined : handleBrowseHub}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}

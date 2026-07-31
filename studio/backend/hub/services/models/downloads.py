@@ -45,8 +45,7 @@ def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
     )
 
 
-# A scope rides the variant slot as "@name". No GGUF quant label starts with "@", so a scoped job
-# never collides with a real variant or with the repo's full snapshot.
+# A scope rides the variant slot as "@name". No GGUF quant label starts with "@", so a scoped job never collides with a real variant or the full snapshot.
 _SCOPE_PREFIX = "@"
 
 

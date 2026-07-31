@@ -40,8 +40,7 @@ from typing import Any, Optional
 
 _ENV_DIR = "UNSLOTH_DIFFUSION_COND_CACHE_DIR"
 
-# Bound arguments that never change the returned embeddings: the target device is a placement
-# detail (the hit is moved there) and no encode path draws RNG.
+# Bound arguments that never change the returned embeddings: device is a placement detail (the hit is moved there) and no encode path draws RNG.
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
 
 
@@ -60,8 +59,7 @@ def _json_safe(value: Any) -> bool:
     return False
 
 
-# Per-slot layout codes for _flatten/_unflatten (the leading int64 tensor): -1 = None slot,
-# -2 = a bare tensor, n >= 0 = a LIST of n tensors (Z-Image returns per-prompt lists).
+# Per-slot layout codes for _flatten/_unflatten (the leading int64 tensor): -1 = None, -2 = a bare tensor, n >= 0 = a LIST of n tensors.
 _SLOT_NONE = -1
 _SLOT_TENSOR = -2
 
@@ -142,11 +140,9 @@ def install(
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
 
-    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file
-    # checkpoint takes its TEXT ENCODERS from the companion base repo, so the base identity keys the
-    # cache too, else the same checkpoint against a different base would hit the previous base's
-    # entries. Both identifiers are paired with a revision marker, so a Hub repo advancing a commit
-    # or a local directory updated in place misses instead of reusing the old encoder.
+    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file checkpoint takes its TEXT
+    # ENCODERS from the companion base repo, so the base identity keys the cache too. Both identifiers are paired with a
+    # revision marker, so a Hub repo advancing a commit or a local dir updated in place misses instead of reusing the old encoder.
     base_ref = base_repo if base_repo else repo_id
     load_fp = {
         "repo": str(repo_id),

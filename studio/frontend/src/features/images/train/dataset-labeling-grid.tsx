@@ -29,9 +29,8 @@ import {
   setDiffusionDatasetCaption,
 } from "../api";
 
-// One tile: an auth-fetched thumbnail (object URL, revoked on unmount) plus a caption
-// Textarea saved on blur. Uncaptioned tiles get a highlighted ring so a user labeling a
-// small set can see at a glance what still needs a caption.
+// One tile: an auth-fetched thumbnail (object URL, revoked on unmount) plus a caption Textarea saved on blur.
+// Uncaptioned tiles get a highlighted ring so a user labeling a small set sees what still needs a caption.
 function LabelTile({
   dataset,
   record,
@@ -56,8 +55,7 @@ function LabelTile({
     let url: string | null = null;
     let cancelled = false;
     fetchGalleryObjectUrl(diffusionDatasetImageUrl(dataset, record.filename, 256))
-      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a
-      // dataset thumbnail revokes on unmount, so it only needs the URL.
+      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a dataset thumbnail only needs the URL.
       .then(({ url: u }) => {
         if (cancelled) {
           URL.revokeObjectURL(u);
@@ -164,8 +162,7 @@ function LabelTile({
   );
 }
 
-// A responsive grid over a dataset folder's images with per-image caption editing. Fetches
-// the image list on open (and whenever `refreshKey` changes, e.g. after an upload/import).
+// A responsive grid over a dataset folder's images with per-image caption editing. Fetches the list on open and whenever `refreshKey` changes.
 export function DatasetLabelingGrid({
   dataset,
   refreshKey = 0,
