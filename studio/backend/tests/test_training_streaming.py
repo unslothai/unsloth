@@ -418,6 +418,7 @@ def test_streaming_start_happy_path_reaches_backend():
     )
     request = TrainingStartRequest(
         model_name = "unsloth/test",
+        start_request_id = "start-request-123",
         training_type = "LoRA/QLoRA",
         hf_dataset = "org/dataset",
         format_type = "chatml",
@@ -456,6 +457,30 @@ def test_streaming_start_happy_path_reaches_backend():
     assert captured["dataset_streaming"] is True
     assert captured["max_steps"] == 10
     assert captured["eval_split"] == "validation"
+    assert captured["start_request_id"] == "start-request-123"
+
+
+def test_training_status_exposes_the_current_start_request_id():
+    training_route = _load_route_module(
+        "training_route_module_for_start_request_status_test",
+        "routes/training.py",
+    )
+    backend = SimpleNamespace(
+        current_job_id = "job_test",
+        current_start_request_id = "start-request-123",
+        is_training_active = lambda: True,
+        trainer = SimpleNamespace(get_training_progress = lambda: None),
+        eval_enabled = False,
+        step_history = [],
+    )
+
+    with patch.object(training_route, "get_training_backend", return_value = backend):
+        status = asyncio.run(
+            training_route.get_training_status(current_subject = "test-user")
+        )
+
+    assert status.job_id == "job_test"
+    assert status.start_request_id == "start-request-123"
 
 
 # streaming rejects HF slice syntax in train_split / eval_split

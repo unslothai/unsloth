@@ -4,7 +4,15 @@
 import type { TrainingStatusResponse } from "../types/runtime";
 
 export function statusConfirmsActiveTrainingStart(
-  status: Pick<TrainingStatusResponse, "job_id" | "is_training_running">,
+  status: Pick<
+    TrainingStatusResponse,
+    "job_id" | "is_training_running" | "start_request_id"
+  >,
+  expectedStartRequestId: string,
 ): boolean {
-  return status.is_training_running && status.job_id.trim().length > 0;
+  return (
+    status.is_training_running &&
+    status.job_id.trim().length > 0 &&
+    status.start_request_id === expectedStartRequestId
+  );
 }

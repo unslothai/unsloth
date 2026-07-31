@@ -8,7 +8,6 @@ import {
 } from "@/features/hub";
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { cacheLocalPathMatchesSelection } from "../lib/cache-reference";
 import { isLocalTrainingModelSelection } from "../lib/model-selection";
 import { isUntrainableModelFormat } from "../lib/model-support";
 import {
@@ -18,46 +17,16 @@ import {
 } from "../lib/resource-availability";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 
-const EMPTY_RESOURCE_SET = new Set<string>();
-
 type ModelInventoryRow = CachedInventoryRow | LocalInventoryRow;
 
-function modelRowPath(row: ModelInventoryRow): string | null {
-  return row.kind === "cache" ? (row.cachePath ?? null) : row.path;
-}
-
-function modelRowMatchesSelection(
-  row: ModelInventoryRow,
-  model: string | null,
-  localPath: string | null,
-): boolean {
-  const key = model?.trim().toLowerCase();
-  if (!key) {
-    return false;
-  }
-  if (
-    row.id.toLowerCase() !== key &&
-    row.loadId.toLowerCase() !== key &&
-    row.repoId?.toLowerCase() !== key
-  ) {
-    return false;
-  }
-  return (
-    !localPath || cacheLocalPathMatchesSelection(modelRowPath(row), localPath)
-  );
-}
-
-function usableModelRow(
-  row: ModelInventoryRow,
-  requiresQuantizedCache: boolean,
-): boolean {
+function usableModelRow(row: ModelInventoryRow): boolean {
   if (isUntrainableModelFormat(row.modelFormat)) {
     return false;
   }
   if (row.kind !== "cache" && row.source !== "hf_cache") {
     return false;
   }
-  return !requiresQuantizedCache || !!row.quantMethod;
+  return true;
 }
 
 function resolveModelNotice({
@@ -65,7 +34,6 @@ function resolveModelNotice({
   isLocal,
   knownCached,
   localPath,
-  requiresQuantizedCache,
   rows,
   partialSet,
 }: {
@@ -73,25 +41,17 @@ function resolveModelNotice({
   isLocal: boolean;
   knownCached: boolean;
   localPath: string | null;
-  requiresQuantizedCache: boolean;
   rows: readonly ModelInventoryRow[];
   partialSet: ReadonlySet<string>;
 }): TrainingResourceNotice | null {
-  const usableRows = rows.filter((row) =>
-    usableModelRow(row, requiresQuantizedCache),
-  );
-  const selectedCacheIsUsable =
-    !(knownCached && requiresQuantizedCache) ||
-    usableRows.some((row) => modelRowMatchesSelection(row, id, localPath));
+  const usableRows = rows.filter(usableModelRow);
   return resolveTrainingResourceNotice({
     kind: "model",
     id,
     isLocal,
-    knownCached: knownCached && selectedCacheIsUsable,
-    localPath: selectedCacheIsUsable ? localPath : null,
-    completeSet: selectedCacheIsUsable
-      ? completeResourceSet(usableRows)
-      : EMPTY_RESOURCE_SET,
+    knownCached,
+    localPath,
+    completeSet: completeResourceSet(usableRows),
     partialSet,
   });
 }
@@ -132,7 +92,6 @@ export function useTrainingResourceNotices(): TrainingResourceNotice[] {
     selectedModel,
     modelKnownCached,
     modelLocalPath,
-    trainingMethod,
     datasetSource,
     dataset,
     datasetKnownCached,
@@ -143,7 +102,6 @@ export function useTrainingResourceNotices(): TrainingResourceNotice[] {
       selectedModel: s.selectedModel,
       modelKnownCached: s.modelKnownCached,
       modelLocalPath: s.modelLocalPath,
-      trainingMethod: s.trainingMethod,
       datasetSource: s.datasetSource,
       dataset: s.dataset,
       datasetKnownCached: s.datasetKnownCached,
@@ -173,7 +131,6 @@ export function useTrainingResourceNotices(): TrainingResourceNotice[] {
       isLocal: modelIsLocal,
       knownCached: modelKnownCached,
       localPath: modelLocalPath,
-      requiresQuantizedCache: trainingMethod === "qlora",
       rows: [...modelInventory.cachedRows, ...modelInventory.localRows],
       partialSet: modelInventory.partialSet,
     });
@@ -194,7 +151,6 @@ export function useTrainingResourceNotices(): TrainingResourceNotice[] {
     modelIsLocal,
     modelKnownCached,
     modelLocalPath,
-    trainingMethod,
     modelInventory.cachedRows,
     modelInventory.localRows,
     modelInventory.partialSet,

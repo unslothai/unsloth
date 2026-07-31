@@ -1122,7 +1122,7 @@ export const en = {
       hubUnreachable: "Couldn't reach Hugging Face",
       cantUseDataset: "Can't use dataset",
       reasonInvalidHubId:
-        "Enter a valid Hugging Face dataset ID: repo or owner/repo, using only letters, numbers, ., _, or - (maximum 96 characters per part).",
+        "Enter a valid Hugging Face dataset ID: repo or owner/repo, with no consecutive periods or hyphens and no .git suffix (maximum 96 characters per part).",
       sourceRecipe: "Recipe",
       sourceUpload: "Upload",
       sourceLocal: "Local",
@@ -1153,7 +1153,7 @@ export const en = {
       reasonUnsupportedFormat:
         "This model format is not supported for training.",
       reasonInvalidHubId:
-        "Enter a valid Hugging Face model ID: repo or owner/repo, using only letters, numbers, ., _, or - (maximum 96 characters per part).",
+        "Enter a valid Hugging Face model ID: repo or owner/repo, with no consecutive periods or hyphens and no .git suffix (maximum 96 characters per part).",
       sourceModelsFolder: "Models folder",
       sourceHfCache: "HF cache",
       sourceLmStudio: "LM Studio",

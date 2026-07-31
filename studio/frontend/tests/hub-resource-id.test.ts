@@ -3,7 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateHubResourceId } from "../src/components/resource-picker/hub-resource-id.ts";
+import {
+  isValidHubResourceId,
+  validateHubResourceId,
+} from "../src/components/resource-picker/hub-resource-id.ts";
 
 test("accepts canonical Hugging Face resource ids", () => {
   assert.deepEqual(validateHubResourceId("bert-base-uncased"), {
@@ -35,4 +38,9 @@ test("rejects malformed or unsafe Hugging Face resource ids", () => {
   ]) {
     assert.equal(validateHubResourceId(value).ok, false, value);
   }
+});
+
+test("exposes a predicate for filtering unselectable Hub results", () => {
+  assert.equal(isValidHubResourceId("owner/repo"), true);
+  assert.equal(isValidHubResourceId("owner/repo--cache-ambiguous"), false);
 });

@@ -8,24 +8,47 @@ import { statusConfirmsActiveTrainingStart } from "../src/features/training/lib/
 
 test("transport reconciliation requires an active backend job", () => {
   assert.equal(
-    statusConfirmsActiveTrainingStart({
-      job_id: "job_123",
-      is_training_running: true,
-    }),
+    statusConfirmsActiveTrainingStart(
+      {
+        job_id: "job_123",
+        is_training_running: true,
+        start_request_id: "request_123",
+      },
+      "request_123",
+    ),
     true,
   );
   assert.equal(
-    statusConfirmsActiveTrainingStart({
-      job_id: "",
-      is_training_running: true,
-    }),
+    statusConfirmsActiveTrainingStart(
+      {
+        job_id: "",
+        is_training_running: true,
+        start_request_id: "request_123",
+      },
+      "request_123",
+    ),
     false,
   );
   assert.equal(
-    statusConfirmsActiveTrainingStart({
-      job_id: "job_123",
-      is_training_running: false,
-    }),
+    statusConfirmsActiveTrainingStart(
+      {
+        job_id: "job_123",
+        is_training_running: false,
+        start_request_id: "request_123",
+      },
+      "request_123",
+    ),
+    false,
+  );
+  assert.equal(
+    statusConfirmsActiveTrainingStart(
+      {
+        job_id: "job_other",
+        is_training_running: true,
+        start_request_id: "request_other",
+      },
+      "request_123",
+    ),
     false,
   );
 });

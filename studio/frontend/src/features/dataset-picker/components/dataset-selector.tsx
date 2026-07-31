@@ -4,6 +4,7 @@
 import { resolveDevicePickerItem } from "@/components/resource-picker/device-item-match";
 import {
   hubResourceIdsEqual,
+  isValidHubResourceId,
   validateHubResourceId,
 } from "@/components/resource-picker/hub-resource-id";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
@@ -17,7 +18,6 @@ import { usePickerState } from "@/components/resource-picker/use-picker-state";
 import {
   type CachedInventoryRow,
   hfApiToken,
-  looksLikeLocalPath,
   matchTokens,
   tokenizeQuery,
   useHfTokenStore,
@@ -45,11 +45,6 @@ import {
 } from "./dataset-selector-lists";
 
 const DATASET_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.datasetPickerTab";
-
-function explicitLocalDatasetPath(path: string): string {
-  const trimmed = path.trim();
-  return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;
-}
 
 function resolveExactDatasetDeviceItem(
   query: string,
@@ -218,14 +213,18 @@ export function DatasetSelector() {
   useHfErrorToast(hubSearchActive ? hfError : null, "datasets");
 
   const hubItems = useMemo(() => {
+    const selectableResults = hfResults.filter((item) =>
+      isValidHubResourceId(item.id),
+    );
     if (
       datasetSource !== "huggingface" ||
       !dataset ||
-      hfResults.some((item) => hubResourceIdsEqual(item.id, dataset))
+      !isValidHubResourceId(dataset) ||
+      selectableResults.some((item) => hubResourceIdsEqual(item.id, dataset))
     ) {
-      return hfResults;
+      return selectableResults;
     }
-    return [...hfResults, { id: dataset }];
+    return [...selectableResults, { id: dataset }];
   }, [dataset, datasetSource, hfResults]);
 
   const hubPagination = usePickerHubPagination({
@@ -263,23 +262,19 @@ export function DatasetSelector() {
     hubItems,
     deviceItems,
   );
-  const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;
-  const useThisLabel =
-    tab === "hub"
-      ? t("studio.datasetPicker.useAsHubDataset")
-      : t("studio.datasetPicker.useAsLocalPath");
+  const showUseThis =
+    tab === "hub" &&
+    activeQuery.trim().length > 0 &&
+    !hasExactMatch &&
+    isValidHubResourceId(activeQuery);
 
-  const commitRaw = (raw: string) => {
+  const commitHubQuery = (raw: string) => {
     const next = raw.trim();
     if (!next) {
       return;
     }
-    if (tab === "hub") {
-      if (!selectHubDataset(next)) {
-        return;
-      }
-    } else {
-      selectLocalDataset(explicitLocalDatasetPath(next));
+    if (!selectHubDataset(next)) {
+      return;
     }
     closePicker();
   };
@@ -356,8 +351,8 @@ export function DatasetSelector() {
       noun={t("studio.datasetPicker.noun")}
       isHubLoading={isLoadingHf}
       showUseThis={showUseThis}
-      useThisLabel={useThisLabel}
-      onUseThis={() => commitRaw(activeQuery)}
+      useThisLabel={t("studio.datasetPicker.useAsHubDataset")}
+      onUseThis={() => commitHubQuery(activeQuery)}
       onExactQueryCommit={commitExactQuery}
       placeholder={{
         hub: t("studio.datasetPicker.hubPlaceholder"),

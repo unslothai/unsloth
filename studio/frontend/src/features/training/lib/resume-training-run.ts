@@ -8,7 +8,10 @@ import { type TranslationKey, translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { getTrainingRun } from "../api/history-api";
-import { startTraining } from "../api/train-api";
+import {
+  isTrainingStartOutcomeUnknownError,
+  startTraining,
+} from "../api/train-api";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import { resolveResumeRemoteCodeCache } from "./resume-remote-code-cache";
@@ -86,6 +89,10 @@ class ResumeTrainingStartAttempt {
     return this.expectedHfToken;
   }
 
+  get startRequestId(): string {
+    return this.lease.startRequestId;
+  }
+
   isPreflightActive(): boolean {
     if (this.phase !== "preflight") {
       return false;
@@ -144,6 +151,7 @@ class ResumeTrainingStartAttempt {
     }
     if (
       this.phase === "transport" &&
+      isTrainingStartOutcomeUnknownError(error) &&
       (await reconcileTrainingStartTransportFailure(this.lease))
     ) {
       this.phase = "finished";
@@ -253,7 +261,7 @@ async function submitResumeTrainingRun(
   if (!attempt.enterTransport()) {
     return false;
   }
-  const response = await startTraining(payload);
+  const response = await startTraining(payload, attempt.startRequestId);
   if (response.status === "error") {
     throw new Error(response.error || response.message);
   }

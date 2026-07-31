@@ -17,6 +17,7 @@ export const TRAINING_SETUP_CHANGED_ERROR =
 
 export interface TrainingStartLease {
   resetGeneration: number;
+  startRequestId: string;
 }
 
 export function tryAcquireTrainingStart(): TrainingStartLease | null {
@@ -26,6 +27,7 @@ export function tryAcquireTrainingStart(): TrainingStartLease | null {
   }
   return {
     resetGeneration: useTrainingRuntimeStore.getState().resetGeneration,
+    startRequestId: crypto.randomUUID(),
   };
 }
 
@@ -92,7 +94,10 @@ export async function reconcileTrainingStartTransportFailure(
     return false;
   }
   const status = await getTrainingStatus().catch(() => null);
-  if (!status || !statusConfirmsActiveTrainingStart(status)) {
+  if (
+    !status ||
+    !statusConfirmsActiveTrainingStart(status, lease.startRequestId)
+  ) {
     return false;
   }
   if (!isTrainingStartLeaseActive(lease)) {

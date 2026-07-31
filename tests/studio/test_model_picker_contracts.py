@@ -1335,6 +1335,16 @@ def test_streaming_dataset_omits_full_download_notice():
     assert "partialSet: streaming ?" not in resolver
 
 
+def test_full_precision_cached_models_do_not_warn_about_a_qlora_download():
+    src = _read("features/training/hooks/use-training-resource-notices.ts")
+    resolver = src.split("function resolveModelNotice", 1)[1]
+    resolver = resolver.split("function resolveDatasetNotice", 1)[0]
+    assert "requiresQuantizedCache" not in src
+    assert "quantMethod" not in src
+    assert "knownCached," in resolver
+    assert "localPath," in resolver
+
+
 def test_local_dataset_picker_uses_cross_platform_path_identity():
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
     display = _read("features/dataset-picker/lib/display.ts")
@@ -1371,8 +1381,8 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
 
     assert "export type PickerExactQueryCommitResult" in shell
     assert "onExactQueryCommit?: (query: string) => PickerExactQueryCommitResult;" in shell
-    assert "const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;" in selector
-    assert "const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;" in model_selector
+    assert "isValidHubResourceId(activeQuery)" in selector
+    assert "isValidHubResourceId(activeQuery)" in model_selector
     assert shell.index('commitResult?.kind === "handled"') < shell.index("if (showUseThis)")
     assert shell.index('commitResult?.kind === "ambiguous"') < shell.index(
         "const exactMatch = scrollRef.current"
@@ -1875,12 +1885,15 @@ def test_freeform_model_validation_rejects_binary_peft_artifact():
     assert r"model\.(?:safetensors|bin)" in validation
 
 
-def test_freeform_device_dataset_keeps_local_path_intent():
+def test_dataset_picker_restricts_local_selection_to_inventory():
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
-    assert "return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;" in selector
-    commit = selector.split("const commitRaw", 1)[1]
+    assert "explicitLocalDatasetPath" not in selector
+    assert "looksLikeLocalPath" not in selector
+    commit = selector.split("const commitHubQuery", 1)[1]
     commit = commit.split("const commitExactQuery", 1)[0]
-    assert "selectLocalDataset(explicitLocalDatasetPath(next));" in commit
+    assert "selectHubDataset(next)" in commit
+    assert "selectLocalDataset" not in commit
+    assert "isValidHubResourceId(activeQuery)" in selector
 
 
 def test_dataset_hub_list_retains_the_active_hf_selection():
@@ -1888,8 +1901,10 @@ def test_dataset_hub_list_retains_the_active_hf_selection():
     hub_items = selector.split("const hubItems = useMemo", 1)[1]
     hub_items = hub_items.split("const hubPagination", 1)[0]
     assert 'datasetSource !== "huggingface"' in hub_items
-    assert "hfResults.some((item) => hubResourceIdsEqual(item.id, dataset))" in hub_items
-    assert "return [...hfResults, { id: dataset }];" in hub_items
+    assert "isValidHubResourceId(item.id)" in hub_items
+    assert "isValidHubResourceId(dataset)" in hub_items
+    assert "selectableResults.some((item) => hubResourceIdsEqual(item.id, dataset))" in hub_items
+    assert "return [...selectableResults, { id: dataset }];" in hub_items
     assert "hasExactDatasetMatch(" in selector
     assert re.search(r"hasExactDatasetMatch\(\s*activeQuery,\s*tab,\s*hubItems,", selector)
     assert "<DatasetHubList" in selector
@@ -1946,10 +1961,22 @@ def test_train_hub_selections_preserve_canonical_identity():
     assert "second?.trim().toLowerCase()" in helper
     assert "findCanonicalHubResourceId(query, hubIds)" in model_view
     assert "findCanonicalHubResourceId(query, hubResultIds)" in model_selector
+    assert ".filter(isValidHubResourceId)" in model_selector
+    assert "isValidHubResourceId(selectedModel)" in model_selector
     assert "hubTrainingModelCandidate(canonicalId," in model_selector
     assert "pick(\n      canonicalId," in model_selector
     assert "const canonicalId = cached?.repoId ?? validation.id;" in dataset_selector
+    assert "isValidHubResourceId(item.id)" in dataset_selector
     assert "hubResourceIdsEqual(candidate.id, query)" in dataset_selector
+
+
+def test_persisted_invalid_hub_selections_are_blocked_with_picker_errors():
+    validation = _read("features/training/lib/validation.ts")
+    assert "isLocalTrainingModelSelection({" in validation
+    assert "validateHubResourceId(config.selectedModel)" in validation
+    assert 'errorKey: "studio.modelPicker.reasonInvalidHubId"' in validation
+    assert "validateHubResourceId(config.dataset)" in validation
+    assert 'errorKey: "studio.datasetPicker.reasonInvalidHubId"' in validation
 
 
 def test_new_model_selection_replaces_the_previous_model_type():
@@ -2135,15 +2162,26 @@ def test_dataset_panel_treats_the_explicit_hub_source_as_authoritative():
 
 
 def test_training_transport_failures_reconcile_with_the_backend_before_failing():
+    api = _read("features/training/api/train-api.ts")
     runtime = _read("features/training/lib/training-start-runtime.ts")
     fresh = _read("features/training/lib/start-fresh-training-run.ts")
     resume = _read("features/training/lib/resume-training-run.ts")
+    backend_models = _read_backend("models/training.py")
+    backend_route = _read_backend("routes/training.py")
+    backend_runtime = _read_backend("core/training/training.py")
 
     assert "await getTrainingStatus().catch(() => null)" in runtime
-    assert "statusConfirmsActiveTrainingStart(status)" in runtime
+    assert "statusConfirmsActiveTrainingStart(status, lease.startRequestId)" in runtime
     assert "runtime.setStartQueued(status.job_id, status.message)" in runtime
+    assert "isTrainingStartOutcomeUnknownError(error)" in fresh
     assert "await attempt.recoverTransportFailure()" in fresh
+    assert "isTrainingStartOutcomeUnknownError(error)" in resume
     assert "await reconcileTrainingStartTransportFailure(this.lease)" in resume
+    assert "start_request_id: startRequestId" in api
+    assert "start_request_id: Optional[str]" in backend_models
+    assert "start_request_id = request.start_request_id" in backend_route
+    assert "start_request_id = start_request_id" in backend_route
+    assert "self.current_start_request_id = start_request_id" in backend_runtime
 
 
 def test_multitask_model_search_fans_out_concurrently_and_closes_iterators():

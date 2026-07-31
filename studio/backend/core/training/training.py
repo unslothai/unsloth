@@ -1033,6 +1033,7 @@ class TrainingBackend:
 
         # Job metadata
         self.current_job_id: Optional[str] = None
+        self.current_start_request_id: Optional[str] = None
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
@@ -1064,6 +1065,7 @@ class TrainingBackend:
         *,
         before_spawn = None,
         resume_source_run_id: Optional[str] = None,
+        start_request_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
         from .lifecycle import training_lifecycle_guard
@@ -1082,6 +1084,7 @@ class TrainingBackend:
                 job_id,
                 before_spawn = before_spawn,
                 resume_source_run_id = resume_source_run_id,
+                start_request_id = start_request_id,
                 **kwargs,
             )
 
@@ -1091,6 +1094,7 @@ class TrainingBackend:
         *,
         before_spawn = None,
         resume_source_run_id: Optional[str] = None,
+        start_request_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
@@ -1246,6 +1250,7 @@ class TrainingBackend:
 
             # Reset state (old pump thread dead, proc.start() succeeded).
             self.current_job_id = job_id
+            self.current_start_request_id = start_request_id
             self._should_stop = False
             self._cancel_requested = False
             self._cancel_cleanup_output_dir = None

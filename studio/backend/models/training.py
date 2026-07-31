@@ -107,6 +107,13 @@ class TrainingStartRequest(BaseModel):
         max_length = 80,
         description = "Optional user-defined project name appended to run folders and shown in history",
     )
+    start_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = "Opaque client-generated identifier used to reconcile an ambiguous start response",
+    )
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(
         ...,
         description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
@@ -634,6 +641,9 @@ class TrainingStatus(BaseModel):
     """Current training job status - works for streaming or polling"""
 
     job_id: str = Field(..., description = "Training job identifier")
+    start_request_id: Optional[str] = Field(
+        None, description = "Client-generated identifier for the current training start request"
+    )
     phase: Literal[
         "idle",
         "loading_model",

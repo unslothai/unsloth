@@ -1048,6 +1048,7 @@ async def start_training(
             success = await asyncio.to_thread(
                 backend.start_training,
                 job_id = job_id,
+                start_request_id = request.start_request_id,
                 before_spawn = _free_vram_for_training,
                 resume_source_run_id = resume_run["id"] if resume_run else None,
                 **training_kwargs,
@@ -1173,6 +1174,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
     try:
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
+        start_request_id: Optional[str] = getattr(backend, "current_start_request_id", None)
 
         is_active = await asyncio.to_thread(backend.is_training_active)
 
@@ -1234,6 +1236,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
 
         return TrainingStatus(
             job_id = job_id,
+            start_request_id = start_request_id,
             phase = phase,
             is_training_running = is_active,
             eval_enabled = backend.eval_enabled,

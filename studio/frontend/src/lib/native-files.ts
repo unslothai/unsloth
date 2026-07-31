@@ -24,10 +24,12 @@ function encodeNativeFilename(filename: string): string {
   return btoa(binary);
 }
 
-export interface NativeChatImport {
+export interface NativeImportedTextFile {
   name: string;
   content: string;
 }
+
+export type NativeChatImport = NativeImportedTextFile;
 
 function browserDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -83,4 +85,12 @@ export async function pickNativeChatImport(): Promise<NativeChatImport | null> {
   }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<NativeChatImport | null>("pick_native_chat_import");
+}
+
+export async function pickNativeTrainingConfig(): Promise<NativeImportedTextFile | null> {
+  if (!isTauri) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<NativeImportedTextFile | null>("pick_native_training_config");
 }

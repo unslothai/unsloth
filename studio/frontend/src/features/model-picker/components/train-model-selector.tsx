@@ -3,6 +3,7 @@
 
 import {
   findCanonicalHubResourceId,
+  isValidHubResourceId,
   validateHubResourceId,
 } from "@/components/resource-picker/hub-resource-id";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
@@ -331,10 +332,13 @@ export function TrainModelSelector() {
   useHfErrorToast(hubSearchActive ? hfError : null, "models");
 
   const hubResultIds = useMemo(() => {
-    const ids = hfResults.map((r) => r.id);
+    const ids = hfResults
+      .map((result) => result.id)
+      .filter(isValidHubResourceId);
     const seen = new Set(ids.map((id) => id.toLowerCase()));
     if (
       selectedModel &&
+      isValidHubResourceId(selectedModel) &&
       !isLocalTrainingModelSelection({
         model: selectedModel,
         knownCached: modelKnownCached,
@@ -561,7 +565,10 @@ export function TrainModelSelector() {
     hubResultIds,
     trainableLocalModels,
   );
-  const showUseThis = activeQuery.trim().length > 0 && !hasExactMatch;
+  const showUseThis =
+    activeQuery.trim().length > 0 &&
+    !hasExactMatch &&
+    (tab === "device" || isValidHubResourceId(activeQuery));
   const useThisLabel =
     tab === "hub"
       ? t("studio.modelPicker.useAsHubModel")

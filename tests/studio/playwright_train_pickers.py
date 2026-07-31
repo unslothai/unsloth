@@ -39,7 +39,7 @@ LOCAL_MODEL_ALPHA = "/fixtures/models/alpha"
 LOCAL_MODEL_BETA = "/fixtures/models/beta"
 LOCAL_DATASET_ALPHA = "/fixtures/datasets/alpha/parquet-files/train.parquet"
 LOCAL_DATASET_BETA = "/fixtures/datasets/beta/parquet-files/train.parquet"
-IME_DATASET_PATH = r"C:\fixtures\datasets\ime-freeform.jsonl"
+UNMANAGED_DATASET_PATH = r"C:\fixtures\datasets\unmanaged.jsonl"
 FINAL_DATASET_ID = "playwright/dataset-072"
 
 
@@ -556,16 +556,16 @@ def test_dataset_picker(page) -> None:
     wait_for_training_value(page, "uploadedFile", LOCAL_DATASET_BETA)
     expect(dataset_trigger).to_contain_text("Twin Dataset")
 
-    info("dataset picker: IME Enter suppression and local freeform commit")
+    info("dataset picker: IME Enter suppression and unmanaged path rejection")
     _, search = open_picker(page, "studio-dataset-picker", "datasets")
     select_picker_tab(page, "On Device")
     search = page.get_by_role("textbox", name = "Search datasets").first
     before = training_state(page).get("uploadedFile")
-    search.fill(IME_DATASET_PATH)
+    search.fill(UNMANAGED_DATASET_PATH)
     search.dispatch_event(
         "compositionstart",
         {
-            "data": IME_DATASET_PATH,
+            "data": UNMANAGED_DATASET_PATH,
             "bubbles": True,
             "cancelable": True,
         },
@@ -576,14 +576,15 @@ def test_dataset_picker(page) -> None:
     search.dispatch_event(
         "compositionend",
         {
-            "data": IME_DATASET_PATH,
+            "data": UNMANAGED_DATASET_PATH,
             "bubbles": True,
             "cancelable": True,
         },
     )
     search.press("Enter")
-    expect(search).to_be_hidden(timeout = TIMEOUT_MS)
-    wait_for_training_value(page, "uploadedFile", IME_DATASET_PATH)
+    expect(search).to_be_visible()
+    assert training_state(page).get("uploadedFile") == before
+    close_picker(page, search)
 
     info("dataset picker: invalid Hub ID, 48+ result pagination, selection")
     _, search = open_picker(page, "studio-dataset-picker", "datasets")
@@ -592,7 +593,7 @@ def test_dataset_picker(page) -> None:
     search.fill("bad dataset id!")
     search.press("Enter")
     expect(search).to_be_visible()
-    assert training_state(page).get("uploadedFile") == IME_DATASET_PATH
+    assert training_state(page).get("uploadedFile") == before
 
     search.fill("playwright-dataset")
     first_result = page.locator(

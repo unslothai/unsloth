@@ -330,6 +330,7 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
             native_intents::register_native_attachment_path,

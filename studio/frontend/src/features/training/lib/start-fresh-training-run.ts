@@ -9,7 +9,10 @@ import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { buildTrainingStartPayload } from "../api/mappers";
-import { startTraining } from "../api/train-api";
+import {
+  isTrainingStartOutcomeUnknownError,
+  startTraining,
+} from "../api/train-api";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
@@ -127,6 +130,10 @@ class FreshTrainingStartAttempt {
 
   get hfToken(): string {
     return this.expectedHfToken;
+  }
+
+  get startRequestId(): string {
+    return this.lease.startRequestId;
   }
 
   acceptPreparedHfToken(token: string | null): boolean {
@@ -262,7 +269,10 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     }
     return await submitFreshTrainingRun(attempt, tokenResult.token);
   } catch (error) {
-    if (await attempt.recoverTransportFailure()) {
+    if (
+      isTrainingStartOutcomeUnknownError(error) &&
+      (await attempt.recoverTransportFailure())
+    ) {
       return true;
     }
     if (attempt.abortIfInputsChanged()) {
@@ -438,7 +448,7 @@ async function submitFreshTrainingRun(
       false,
       payload.project_name ?? "",
     );
-  const response = await startTraining(payload);
+  const response = await startTraining(payload, attempt.startRequestId);
   if (response.status === "error") {
     throw new Error(response.error || response.message);
   }

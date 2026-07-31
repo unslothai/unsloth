@@ -98,7 +98,7 @@ def test_training_start_prepares_token_once_before_transport():
 
     start_transport = api.split("export async function startTraining", 1)[1]
     start_transport = start_transport.split("export async function stopTraining", 1)[0]
-    assert "body: JSON.stringify(payload)" in start_transport
+    assert "body: JSON.stringify({ ...payload, start_request_id: startRequestId })" in start_transport
     assert "hf_token: preparedToken.token" not in start_transport
 
     resume_entrypoint = resume_start.split("export async function resumeTrainingRun", 1)[1].split(
@@ -112,9 +112,9 @@ def test_training_start_prepares_token_once_before_transport():
     )[0]
     assert "await prepareHfTokenForUse(payload.hf_token)" in resume_token
     resume_transport = resume_start.split("async function submitResumeTrainingRun", 1)[1]
-    assert "await startTraining(payload)" in resume_transport
+    assert "await startTraining(payload, attempt.startRequestId)" in resume_transport
     assert resume_transport.index("attempt.enterTransport()") < (
-        resume_transport.index("await startTraining(payload)")
+        resume_transport.index("await startTraining(payload, attempt.startRequestId)")
     )
 
     prepare_attempt = fresh_start.split("async function prepareAttemptHfToken", 1)[1].split(
@@ -127,7 +127,7 @@ def test_training_start_prepares_token_once_before_transport():
     assert "buildTrainingStartPayload(attempt.config, hfToken)" in submit_attempt
     assert "payload.hf_token = hfToken" not in submit_attempt
     assert submit_attempt.index("attempt.enterTransport()") < submit_attempt.index(
-        "await startTraining(payload)"
+        "await startTraining(payload, attempt.startRequestId)"
     )
 
 
@@ -371,7 +371,7 @@ def test_resume_training_preserves_consent_and_error_contracts():
     assert "payload.trust_remote_code = trustRemoteCode" in consent
     assert "payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint" in consent
 
-    failure = source.split("fail(error: unknown): false", 1)[1].split(
+    failure = source.split("async fail(error: unknown): Promise<boolean>", 1)[1].split(
         "async function loadResumePayload", 1
     )[0]
     assert 'this.phase === "preflight" && !this.isPreflightActive()' in failure
@@ -420,7 +420,7 @@ def test_resume_token_identity_is_guarded_through_preflight():
 
     transport = source.split("async function submitResumeTrainingRun", 1)[1]
     assert transport.index("attempt.enterTransport()") < transport.index(
-        "await startTraining(payload)"
+        "await startTraining(payload, attempt.startRequestId)"
     )
 
 

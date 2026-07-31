@@ -4,6 +4,7 @@
 import { validateHubResourceId } from "@/components/resource-picker/hub-resource-id";
 import type { TranslationKey } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
+import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
 
 export type StartValidationResult =
@@ -57,6 +58,19 @@ export function validateTrainingConfig(
     return {
       ok: false,
       errorKey: "studio.training.validation.modelRequired",
+    };
+  }
+  if (
+    !isLocalTrainingModelSelection({
+      model: config.selectedModel,
+      knownCached: config.modelKnownCached,
+      localPath: config.modelLocalPath,
+    }) &&
+    !validateHubResourceId(config.selectedModel).ok
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.modelPicker.reasonInvalidHubId",
     };
   }
   if (isUntrainableModelFormat(config.modelFormat)) {

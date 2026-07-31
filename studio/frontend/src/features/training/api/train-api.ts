@@ -21,6 +21,21 @@ function isAbortError(error: unknown): boolean {
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
+class TrainingStartOutcomeUnknownError extends Error {
+  constructor(error: unknown) {
+    super(
+      error instanceof Error
+        ? error.message
+        : "Training start outcome is unknown.",
+    );
+    this.name = "TrainingStartOutcomeUnknownError";
+  }
+}
+
+export function isTrainingStartOutcomeUnknownError(error: unknown): boolean {
+  return error instanceof TrainingStartOutcomeUnknownError;
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(await readError(response));
@@ -30,13 +45,26 @@ async function parseJson<T>(response: Response): Promise<T> {
 
 export async function startTraining(
   payload: TrainingStartRequest,
+  startRequestId: string,
 ): Promise<TrainingStartResponse> {
-  const response = await authFetch("/api/train/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return parseJson<TrainingStartResponse>(response);
+  let response: Response;
+  try {
+    response = await authFetch("/api/train/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, start_request_id: startRequestId }),
+    });
+  } catch (error) {
+    throw new TrainingStartOutcomeUnknownError(error);
+  }
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  try {
+    return (await response.json()) as TrainingStartResponse;
+  } catch (error) {
+    throw new TrainingStartOutcomeUnknownError(error);
+  }
 }
 
 interface TrainingJobScope {

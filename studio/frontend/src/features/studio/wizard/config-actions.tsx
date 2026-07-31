@@ -13,7 +13,12 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
-import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { isTauri } from "@/lib/api-base";
+import {
+  downloadFile,
+  isDownloadCancelled,
+  pickNativeTrainingConfig,
+} from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive04Icon,
@@ -29,34 +34,52 @@ export function ConfigActions() {
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const applyYamlConfig = (content: string, filename: string) => {
+    try {
+      const config = parseYamlConfig(content);
+      useTrainingConfigStore.getState().applyConfigPatch(config);
+      toast.success(t("studio.training.configLoaded"), {
+        description: filename,
+      });
+    } catch (error) {
+      toast.error(t("studio.training.failedToLoadConfig"), {
+        description:
+          error instanceof Error
+            ? error.message
+            : t("studio.training.invalidYamlFile"),
+      });
+    }
+  };
+
   const handleFileUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) {
       return;
     }
-    event.target.value = "";
+    file
+      .text()
+      .then((content) => applyYamlConfig(content, file.name))
+      .catch(() => {
+        toast.error(t("studio.training.failedToReadFile"));
+      });
+  };
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const config = parseYamlConfig(String(reader.result ?? ""));
-        useTrainingConfigStore.getState().applyConfigPatch(config);
-        toast.success(t("studio.training.configLoaded"), {
-          description: file.name,
-        });
-      } catch (error) {
-        toast.error(t("studio.training.failedToLoadConfig"), {
-          description:
-            error instanceof Error
-              ? error.message
-              : t("studio.training.invalidYamlFile"),
-        });
+  const handleLoadConfig = async () => {
+    if (!isTauri) {
+      fileInputRef.current?.click();
+      return;
+    }
+    try {
+      const selected = await pickNativeTrainingConfig();
+      if (selected) {
+        applyYamlConfig(selected.content, selected.name);
       }
-    };
-    reader.onerror = () => {
-      toast.error(t("studio.training.failedToReadFile"));
-    };
-    reader.readAsText(file);
+    } catch (error) {
+      toast.error(t("studio.training.failedToReadFile"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const reportSaveError = (error: unknown) => {
@@ -107,7 +130,7 @@ export function ConfigActions() {
             variant="outline"
             size="sm"
             className="h-9 cursor-pointer rounded-lg"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => void handleLoadConfig()}
           >
             <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
             {t("studio.wizard.loadYaml")}

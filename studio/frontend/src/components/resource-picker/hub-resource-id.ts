@@ -30,6 +30,10 @@ export function validateHubResourceId(
   return { ok: true, id };
 }
 
+export function isValidHubResourceId(value: string): boolean {
+  return validateHubResourceId(value).ok;
+}
+
 export function hubResourceIdsEqual(
   first: string | null | undefined,
   second: string | null | undefined,
