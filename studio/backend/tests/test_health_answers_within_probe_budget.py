@@ -94,7 +94,12 @@ def test_the_budget_stays_under_the_desktop_probe_timeout():
 _SNIPPET = r"""
 import asyncio, json, os, sys, threading, time
 
-os.environ["UNSLOTH_STUDIO_DISABLE_TORCH_WARM"] = "1"
+# UNSLOTH_STUDIO_DISABLE_TORCH_WARM is deliberately NOT set here. It used to be,
+# to keep a real warm out of the way, but nothing below runs the lifespan -- the
+# app is built by hand with one route -- so no warm ever starts anyway. Setting
+# it now would suppress the very kick these tests measure: health does not start
+# detection when the switch is on, which is what makes the switch mean anything.
+os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
 from fastapi import FastAPI

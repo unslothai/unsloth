@@ -1236,8 +1236,19 @@ async def _await_hardware_detection(budget: float) -> bool:
     thread: asyncio.wait_for cannot cancel a to_thread, so a timed-out call
     leaves the executor slot held for the rest of the import, and a polled
     endpoint would drain the pool. Detection itself runs on the warm thread, or
-    on the one start_background_detection() puts up when the warm is disabled.
+    on the one start_background_detection() puts up.
+
+    Returns False without kicking anything when the warm is switched off. That
+    switch exists for hosts where importing torch in the background is broken or
+    expensive, and health is probed automatically -- by the desktop preflight and
+    by the frontend's first fetch -- so kicking detection from here would import
+    torch anyway, on every such host, and the switch would buy nothing. Health
+    then publishes its provisional answer and the first hardware-dependent
+    operation detects, which is exactly what the switch promises: deferred
+    imports happen on first use.
     """
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return _hw_module.DETECTION_COMPLETE.is_set() and _hw_module.DEVICE is not None
     # DETECTION_COMPLETE, not DEVICE: the detection branches assign DEVICE and
     # then keep probing, so a non-None DEVICE can still be revised. Waiting on
     # the assignment let health publish a candidate the fallback was about to

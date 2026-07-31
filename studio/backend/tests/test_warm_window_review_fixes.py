@@ -37,6 +37,13 @@ if str(_BACKEND) not in sys.path:
 import utils.hardware.hardware as hw  # noqa: E402
 
 
+class _NeverStarts:
+    """Stand-in for threading.Thread that records the call and runs nothing."""
+
+    def start(self) -> None:
+        return None
+
+
 # ---------------------------------------------------------------- generation
 
 
@@ -199,28 +206,64 @@ def test_the_ranking_fetch_is_started_by_the_first_reader():
     assert "_start_top_models_fetch" in called
 
 
-def test_the_ranking_fetch_honours_hf_hub_offline():
-    """It is a raw httpx.get, so HF_HUB_OFFLINE does not reach it by itself."""
-    src = (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
-    tree = ast.parse(src)
-    fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_start_top_models_fetch"
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"HF_HUB_OFFLINE": "1"},
+        {"HF_HUB_OFFLINE": "true"},
+        {"HF_HUB_OFFLINE": "on"},
+        {"TRANSFORMERS_OFFLINE": "1"},
+    ],
+)
+def test_the_ranking_fetch_starts_no_thread_when_offline(monkeypatch, env):
+    """It is a raw httpx.get, so the offline variables do not reach it by themselves.
+
+    Driven through the real method rather than the source: every spelling the
+    rest of the backend accepts as offline has to leave the first model list
+    network-silent, not just the one the guard happens to compare against.
+    """
+    from core.inference import orchestrator as orch
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    started = []
+    monkeypatch.setattr(
+        orch.threading,
+        "Thread",
+        lambda *a, **kw: started.append(kw.get("name")) or _NeverStarts(),
+        raising = True,
     )
-    # The name appears in the docstring explaining why the check is needed, so
-    # match the executable form: a string constant "HF_HUB_OFFLINE" passed to a
-    # call. A docstring is a bare Constant, never a Call argument.
-    reads = [
-        sub
-        for sub in ast.walk(fn)
-        if isinstance(sub, ast.Call)
-        and any(isinstance(a, ast.Constant) and a.value == "HF_HUB_OFFLINE" for a in sub.args)
-    ]
-    assert reads, (
-        "the lazy start does not read HF_HUB_OFFLINE, so an offline host still "
-        "reaches huggingface.co on its first model list"
+
+    instance = object.__new__(orch.InferenceOrchestrator)
+    instance._top_models_started = False
+    orch.InferenceOrchestrator._start_top_models_fetch(instance)
+
+    assert not started, f"{env} still put up the top-models fetch thread"
+
+
+def test_the_ranking_fetch_still_runs_when_online(monkeypatch):
+    """Negative control: nothing above may have disabled the fetch outright."""
+    from core.inference import orchestrator as orch
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
+    started = []
+    monkeypatch.setattr(
+        orch.threading,
+        "Thread",
+        lambda *a, **kw: started.append(kw.get("name")) or _NeverStarts(),
+        raising = True,
     )
+
+    instance = object.__new__(orch.InferenceOrchestrator)
+    instance._top_models_started = False
+    orch.InferenceOrchestrator._start_top_models_fetch(instance)
+
+    assert started == ["top-models"], "an online host no longer fetches the ranking"
 
 
 # ------------------------------------------------- offloads at the call site
@@ -724,3 +767,177 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
     assert guarded, "the offloaded guard is no longer inside a try/except"
     raises = [sub for sub in ast.walk(guarded[0]) if isinstance(sub, ast.Raise)]
     assert raises, "an unreadable load state no longer raises; delete would proceed"
+
+
+# ------------------------------------------------- the kill switch and health
+def test_health_does_not_kick_detection_when_the_warm_is_off(monkeypatch):
+    """The torch-warm switch has to survive the automatic health probe.
+
+    The desktop preflight and the frontend's first fetch both hit /api/health
+    without being asked to, so a kick from there imports torch on exactly the
+    hosts whose owner set the switch because that import is broken or expensive.
+    """
+    import asyncio as _asyncio
+
+    import main as main_mod
+
+    kicks = []
+    monkeypatch.setattr(
+        main_mod, "start_background_detection", lambda: kicks.append(1), raising = True
+    )
+    monkeypatch.setenv(main_mod.DISABLE_ENV_VAR, "1")
+
+    hw_mod = main_mod._hw_module
+    monkeypatch.setattr(hw_mod, "DEVICE", None, raising = False)
+    was_complete = hw_mod.DETECTION_COMPLETE.is_set()
+    hw_mod.DETECTION_COMPLETE.clear()
+    try:
+        detected = _asyncio.run(main_mod._await_hardware_detection(0.2))
+    finally:
+        if was_complete:
+            hw_mod.DETECTION_COMPLETE.set()
+
+    assert not kicks, "the health path started a torch import the kill switch forbids"
+    assert detected is False, "health claimed a verdict nothing had measured"
+
+
+def test_health_still_kicks_detection_when_the_warm_is_on(monkeypatch):
+    """Negative control: the switch is what stops the kick, not the fix itself."""
+    import asyncio as _asyncio
+
+    import main as main_mod
+
+    kicks = []
+    monkeypatch.setattr(
+        main_mod, "start_background_detection", lambda: kicks.append(1), raising = True
+    )
+    monkeypatch.delenv(main_mod.DISABLE_ENV_VAR, raising = False)
+
+    hw_mod = main_mod._hw_module
+    monkeypatch.setattr(hw_mod, "DEVICE", None, raising = False)
+    was_complete = hw_mod.DETECTION_COMPLETE.is_set()
+    hw_mod.DETECTION_COMPLETE.clear()
+    try:
+        _asyncio.run(main_mod._await_hardware_detection(0.05))
+    finally:
+        if was_complete:
+            hw_mod.DETECTION_COMPLETE.set()
+
+    assert kicks, "nothing filled DEVICE in; health would report detecting forever"
+
+
+def test_the_switch_still_reports_a_verdict_it_already_has(monkeypatch):
+    """Not kicking is not the same as not answering.
+
+    Once something else has detected -- the first training or export call -- the
+    switch must not keep health on its provisional answer.
+    """
+    import asyncio as _asyncio
+
+    import main as main_mod
+
+    monkeypatch.setenv(main_mod.DISABLE_ENV_VAR, "1")
+    hw_mod = main_mod._hw_module
+    monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.CPU, raising = False)
+    was_complete = hw_mod.DETECTION_COMPLETE.is_set()
+    hw_mod.DETECTION_COMPLETE.set()
+    try:
+        assert _asyncio.run(main_mod._await_hardware_detection(0.05)) is True
+    finally:
+        if not was_complete:
+            hw_mod.DETECTION_COMPLETE.clear()
+
+
+# ------------------------------------------------------- the vision probe hop
+def test_the_standalone_vision_probe_runs_off_the_event_loop():
+    """GET /api/models/check-vision must not build the registry sets inline.
+
+    The sets behind is_vision_model() are built lazily now, so the first call
+    either imports transformers or waits on _DETECTION_SETS_LOCK while the warm
+    thread holds it -- both of which park uvicorn for the rest of that import.
+    """
+    path = _BACKEND / "routes" / "models.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "check_vision_model"
+    )
+
+    direct = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "is_vision_model"
+    ]
+    assert not direct, (
+        "is_vision_model() is called inline from the handler again; the lazy "
+        "registry build then blocks the event loop"
+    )
+
+    offloaded = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "to_thread"
+        and any(isinstance(a, ast.Name) and a.id == "is_vision_model" for a in sub.args)
+    ]
+    assert offloaded, "the vision probe is no longer handed to a worker thread"
+
+
+# ------------------------------------------------------ offline is not just 1
+def test_the_ranking_fetch_uses_the_shared_offline_check():
+    """HF_HUB_OFFLINE=true and TRANSFORMERS_OFFLINE are offline here too.
+
+    Every other offline read in this backend goes through hf_env_offline(); a
+    literal "1" comparison leaves a boot that set any of the other accepted
+    spellings making a raw outbound httpx.get to Hugging Face.
+    """
+    path = _BACKEND / "core" / "inference" / "orchestrator.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_start_top_models_fetch"
+    )
+
+    calls = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "hf_env_offline"
+    ]
+    assert calls, "the ranking guard no longer asks the shared offline helper"
+
+    literal = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Constant) and sub.value == "HF_HUB_OFFLINE"
+    ]
+    assert not literal, (
+        "the guard reads HF_HUB_OFFLINE directly again; true/yes/on and "
+        "TRANSFORMERS_OFFLINE would go back to being treated as online"
+    )
+
+
+def test_the_shared_offline_check_accepts_the_other_spellings(monkeypatch):
+    """The helper the guard now uses has to be the broader one, not a rename."""
+    from utils.utils import hf_env_offline
+
+    for var, value in (
+        ("HF_HUB_OFFLINE", "true"),
+        ("HF_HUB_OFFLINE", "yes"),
+        ("HF_HUB_OFFLINE", "on"),
+        ("TRANSFORMERS_OFFLINE", "1"),
+    ):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        monkeypatch.setenv(var, value)
+        assert hf_env_offline(), f"{var}={value} was treated as online"
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    assert not hf_env_offline(), "a host with neither variable set was called offline"

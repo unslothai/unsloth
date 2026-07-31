@@ -2602,7 +2602,12 @@ async def check_vision_model(
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
+        # Off the loop, like the /config capability block: the registry sets behind
+        # this are built lazily, so the first call can import transformers or block
+        # on _DETECTION_SETS_LOCK while the warm thread holds it. Either one would
+        # park uvicorn -- and liveness, login and health with it -- for the rest of
+        # the import.
+        is_vision = await asyncio.to_thread(is_vision_model, model_name, hf_token = hf_token)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(

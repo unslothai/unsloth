@@ -107,8 +107,12 @@ def start_background_detection() -> None:
     For callers that must answer inside a deadline and so cannot await
     ensure_hardware_detected() -- /api/health, which the desktop launcher probes
     with a 2s client timeout. They poll DEVICE against their own budget; this
-    guarantees something is filling it in even when the warm thread is disabled
-    (UNSLOTH_DISABLE_TORCH_WARM=1) or has already moved past its hardware stage.
+    guarantees something is filling it in even when the warm thread has already
+    moved past its hardware stage, or a shutdown cleared the verdict it produced.
+
+    Callers skip it when UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1: that switch means
+    no background torch import at all, so they answer provisionally instead and
+    detection waits for the first hardware-dependent operation.
 
     At most one thread at a time, and none once DEVICE is set, so a route that
     keeps returning "still detecting" cannot pile them up. Not the asyncio
@@ -170,8 +174,19 @@ def _has_torch() -> bool:
         # hits and gets a torch missing pieces. purge_partial_import() clears
         # that, and declines once a compiled submodule is loaded -- re-importing
         # one aborts the process. See the note there.
-        from utils.torch_warmup import purge_partial_import
-        purge_partial_import("torch")
+        try:
+            from utils.torch_warmup import purge_partial_import
+        except Exception:
+            # This module is also read and exec'd on its own, with no package
+            # around it -- tests/python/test_e2e_no_torch_sandbox.py copies
+            # hardware.py into a torch-less venv and runs detect_hardware() out
+            # of a namespace dict. A sibling import is unresolvable there, and a
+            # hard dependency on one turned "no torch, take the CPU path" into a
+            # ModuleNotFoundError. Nothing to purge in that case anyway: the
+            # import failed with no torch on the machine at all.
+            pass
+        else:
+            purge_partial_import("torch")
         return False
 
 

@@ -28,6 +28,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
 from utils.hardware import get_device, prepare_gpu_selection
+from utils.utils import hf_env_offline
 
 # Re-exported from the shared helper so GGUF, training, and inference share one
 # type; kept importable here for backwards compatibility. Resolved through PEP
@@ -203,6 +204,11 @@ class InferenceOrchestrator:
         first-readers cannot each put up a thread. Skipped entirely when the host
         has asked for no outbound calls: the fetch is a raw httpx.get, so
         HF_HUB_OFFLINE does not reach it on its own.
+
+        Offline is read through hf_env_offline(), the same helper the rest of the
+        backend uses, not a literal "1" test. HF_HUB_OFFLINE=true/yes/on and
+        TRANSFORMERS_OFFLINE are offline everywhere else here, and a boot that
+        honours those still has to be network-silent.
         """
         if self._top_models_started:
             return
@@ -210,8 +216,8 @@ class InferenceOrchestrator:
             if self._top_models_started:
                 return
             self._top_models_started = True
-        if os.environ.get("HF_HUB_OFFLINE") == "1":
-            logger.info("HF_HUB_OFFLINE=1; skipping the remote top-models ranking")
+        if hf_env_offline():
+            logger.info("offline mode requested; skipping the remote top-models ranking")
             return
         threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
 
