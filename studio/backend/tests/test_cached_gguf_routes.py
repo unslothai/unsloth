@@ -602,7 +602,9 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     # Controls: unpinned, and pinned to the snapshot the blob does belong to.
     for target in (None, str(newer)):
         other = asyncio.run(
-            GV.get_gguf_variants_response("Org/Quant", **({} if target is None else {"local_path": target}))
+            GV.get_gguf_variants_response(
+                "Org/Quant", **({} if target is None else {"local_path": target})
+            )
         )
         assert all(v.partial for v in other.variants)
 
