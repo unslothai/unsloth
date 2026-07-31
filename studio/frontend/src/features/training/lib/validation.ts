@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { translate } from "@/i18n";
+import { validateHubResourceId } from "@/components/resource-picker/hub-resource-id";
+import type { TranslationKey } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
 import { isUntrainableModelFormat } from "./model-support";
 
-export interface StartValidationResult {
-  ok: boolean;
-  message: string | null;
-}
+export type StartValidationResult =
+  | { ok: true; errorKey: null }
+  | { ok: false; errorKey: TranslationKey };
 
 export function hasIncompatibleTrainingModalities(
   config: TrainingConfigState,
@@ -30,51 +30,73 @@ export function validateS3Source(
   ) {
     return {
       ok: false,
-      message:
-        "S3 datasets are not supported for vision or audio training yet.",
+      errorKey: "studio.training.validation.s3MultimodalUnsupported",
     };
   }
   const s3 = config.s3Config;
   if (!s3 || !s3.bucket.trim()) {
-    return { ok: false, message: "Enter an S3 bucket name first." };
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.s3BucketRequired",
+    };
   }
   const hasKeys = Boolean(s3.accessKeyId && s3.secretAccessKey);
   if (!s3.useIamRole && !hasKeys) {
-    return { ok: false, message: "Provide S3 access keys or enable IAM role." };
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.s3CredentialsRequired",
+    };
   }
-  return { ok: true, message: null };
+  return { ok: true, errorKey: null };
 }
 
 export function validateTrainingConfig(
   config: TrainingConfigState,
 ): StartValidationResult {
   if (!config.selectedModel) {
-    return { ok: false, message: "Select a base model first." };
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.modelRequired",
+    };
   }
   if (isUntrainableModelFormat(config.modelFormat)) {
     return {
       ok: false,
-      message: translate(
+      errorKey:
         config.modelFormat === "gguf"
           ? "studio.modelPicker.reasonGguf"
           : "studio.modelPicker.reasonAdapter",
-      ),
     };
   }
 
   if (config.datasetSource === "huggingface") {
     if (!config.dataset) {
-      return { ok: false, message: "Select a Hugging Face dataset first." };
+      return {
+        ok: false,
+        errorKey: "studio.training.validation.hfDatasetRequired",
+      };
+    }
+    if (!validateHubResourceId(config.dataset).ok) {
+      return {
+        ok: false,
+        errorKey: "studio.datasetPicker.reasonInvalidHubId",
+      };
     }
   } else if (config.datasetSource === "upload") {
     if (!config.uploadedFile) {
-      return { ok: false, message: "Select a local dataset first." };
+      return {
+        ok: false,
+        errorKey: "studio.training.validation.localDatasetRequired",
+      };
     }
   } else if (config.datasetSource === "s3") {
     return validateS3Source(config);
   } else {
-    return { ok: false, message: "Unsupported dataset source." };
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.unsupportedDatasetSource",
+    };
   }
 
-  return { ok: true, message: null };
+  return { ok: true, errorKey: null };
 }

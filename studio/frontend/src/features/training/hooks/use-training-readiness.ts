@@ -80,7 +80,7 @@ function readinessEqual(
     current.datasetUnverified === next.datasetUnverified &&
     current.modelError === next.modelError &&
     current.configValidation.ok === next.configValidation.ok &&
-    current.configValidation.message === next.configValidation.message
+    current.configValidation.errorKey === next.configValidation.errorKey
   );
 }
 

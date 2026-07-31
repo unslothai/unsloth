@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { findCanonicalHubResourceId } from "@/components/resource-picker/hub-resource-id";
+import {
+  findCanonicalHubResourceId,
+  validateHubResourceId,
+} from "@/components/resource-picker/hub-resource-id";
+import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
 import {
   type PickerExactQueryCommitResult,
   PickerShell,
@@ -18,6 +22,7 @@ import {
   type CachedInventoryRow,
   type HfModelResult,
   type LocalInventoryRow,
+  type LocalSource,
   type ModelInventoryFormat,
   classifyUnslothSupport,
   hfApiToken,
@@ -42,7 +47,7 @@ import {
   validateTrainingModelCandidate,
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
-import { useT } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -75,13 +80,29 @@ import {
   toCachedTrainModelDeviceItem,
   toLocalTrainModelDeviceItem,
 } from "./train-model-picker-view-model";
-import { TRAIN_PICKER_TRIGGER_CLASS } from "./train-picker-trigger";
 
 const MODEL_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.modelPickerTab";
 
 function explicitLocalPath(path: string): string {
   const trimmed = path.trim();
   return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;
+}
+
+function localModelSourceLabelKey(source: LocalSource): TranslationKey {
+  switch (source) {
+    case "models_dir":
+      return "studio.modelPicker.sourceModelsFolder";
+    case "hf_cache":
+      return "studio.modelPicker.sourceHfCache";
+    case "lmstudio":
+      return "studio.modelPicker.sourceLmStudio";
+    case "ollama":
+      return "studio.modelPicker.sourceOllama";
+    case "custom":
+      return "studio.modelPicker.sourceCustomFolder";
+    default:
+      return "studio.modelPicker.sourceLocalModel";
+  }
 }
 
 export function TrainModelSelector() {
@@ -217,7 +238,12 @@ export function TrainModelSelector() {
           ),
         ...localRows
           .filter(isTrainableLocalRow)
-          .map(toLocalTrainModelDeviceItem),
+          .map((row) =>
+            toLocalTrainModelDeviceItem(
+              row,
+              t(localModelSourceLabelKey(row.source)),
+            ),
+          ),
       ].sort(compareTrainModelDeviceItems),
     [cachedRows, localRows, isTrainableCachedRow, isTrainableLocalRow, t],
   );
@@ -375,13 +401,20 @@ export function TrainModelSelector() {
   }
 
   function pickHubModel(id: string) {
-    const key = normalizeModelIdentity(id);
+    const hubId = validateHubResourceId(id);
+    if (!hubId.ok) {
+      toast.error(t("studio.modelPicker.cantUseModel"), {
+        description: t("studio.modelPicker.reasonInvalidHubId"),
+      });
+      return;
+    }
+    const key = normalizeModelIdentity(hubId.id);
     const result = hfResultById.get(key);
     const cached = cachedModelByLookup.get(key);
     const local = localModelByLookup.get(key);
     const cachedLocal = local?.source === "hf_cache" ? local : undefined;
     const canonicalId =
-      result?.id || cached?.repoId || cachedLocal?.repoId?.trim() || id.trim();
+      result?.id || cached?.repoId || cachedLocal?.repoId?.trim() || hubId.id;
     const validation = validateTrainingModelCandidate(
       hubTrainingModelCandidate(canonicalId, result, cached, cachedLocal),
       { deviceType },
@@ -549,7 +582,7 @@ export function TrainModelSelector() {
           type="button"
           data-tour="studio-model-picker"
           className={cn(
-            TRAIN_PICKER_TRIGGER_CLASS,
+            PICKER_TRIGGER_CLASS,
             "w-full min-w-[180px] justify-between",
           )}
         >

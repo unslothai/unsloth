@@ -199,6 +199,32 @@ def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
         )
 
 
+@pytest.mark.parametrize(
+    "bad_hf_dataset",
+    ["my dataset!", "datasets/foo/bar", ".repo", "repo.git", "foo--bar"],
+)
+def test_hf_dataset_rejects_invalid_hub_ids(bad_hf_dataset):
+    with pytest.raises(ValidationError):
+        TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            hf_dataset = bad_hf_dataset,
+        )
+
+
+def test_hf_dataset_accepts_max_length_namespaced_id():
+    dataset_id = f"{'a' * 96}/{'b' * 96}"
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = dataset_id,
+    )
+
+    assert request.hf_dataset == dataset_id
+
+
 def test_project_name_rejects_values_over_ui_limit():
     with pytest.raises(ValidationError):
         TrainingStartRequest(

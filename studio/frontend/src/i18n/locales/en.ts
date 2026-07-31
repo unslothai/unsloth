@@ -1043,7 +1043,7 @@ export const en = {
       modelLabel: "Model",
       methodLabel: "Method",
       hfTokenLabel: "Hugging Face token",
-      hfDatasetLabel: "Dataset",
+      datasetLabel: "Dataset",
       uploadLocalLabel: "Or upload a local file",
       sourceBrowse: "Browse",
       releaseToUpload: "Release to upload",
@@ -1118,6 +1118,12 @@ export const en = {
       tokenRejectedTitle: "Hugging Face token rejected",
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
       hubUnreachable: "Couldn't reach Hugging Face",
+      cantUseDataset: "Can't use dataset",
+      reasonInvalidHubId:
+        "Enter a valid Hugging Face dataset ID: repo or owner/repo, using only letters, numbers, ., _, or - (maximum 96 characters per part).",
+      sourceRecipe: "Recipe",
+      sourceUpload: "Upload",
+      sourceLocal: "Local",
     },
     modelPicker: {
       noun: "models",
@@ -1144,6 +1150,16 @@ export const en = {
       reasonNotTrainable: "This on-device model is not trainable.",
       reasonUnsupportedFormat:
         "This model format is not supported for training.",
+      reasonInvalidHubId:
+        "Enter a valid Hugging Face model ID: repo or owner/repo, using only letters, numbers, ., _, or - (maximum 96 characters per part).",
+      sourceModelsFolder: "Models folder",
+      sourceHfCache: "HF cache",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "Custom folder",
+      sourceLocalModel: "Local model",
+      vramOomBadge: "OOM",
+      vramTightBadge: "Tight",
       vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GB)",
       vramTight: "~{est}GB VRAM (tight on {total}GB)",
       vramApprox: "~{est}GB VRAM",
@@ -1260,6 +1276,8 @@ export const en = {
             "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
           enabledAdjusted:
             "Streaming enabled. Disabled incompatible options: {options}.",
+          disabledForDetectedModality:
+            "Streaming was turned off because image and audio datasets require a full download. Review the setting, then start again.",
         },
       },
       auto: "Auto",
@@ -1424,6 +1442,24 @@ export const en = {
       chooseModel: "Choose a model",
       chooseDataset: "Choose a dataset",
       chooseModelAndDataset: "Choose model and dataset",
+      validation: {
+        s3MultimodalUnsupported:
+          "S3 datasets are not supported for vision or audio training yet.",
+        s3BucketRequired: "Enter an S3 bucket name first.",
+        s3CredentialsRequired: "Provide S3 access keys or enable IAM role.",
+        modelRequired: "Select a base model first.",
+        hfDatasetRequired: "Select a Hugging Face dataset first.",
+        localDatasetRequired: "Select a local dataset first.",
+        unsupportedDatasetSource: "Unsupported dataset source.",
+      },
+      startFailed: "Failed to start training",
+      stopFailed: "Failed to stop training",
+      trainingStillActiveTitle: "Training still active",
+      stopBeforeConfig: "Stop training first, then return to configuration.",
+      resumeFailed: "Failed to resume training",
+      resumeFailedTitle: "Could not resume training",
+      resumeUnavailable:
+        "Only stopped or errored runs with a saved checkpoint can be resumed.",
       modelUnverified:
         "Couldn't verify this model's settings. Check your connection or Hugging Face token, then retry.",
       legacyDatasetScriptUnsupported:

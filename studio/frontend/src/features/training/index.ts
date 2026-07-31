@@ -34,10 +34,9 @@ export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-st
 export {
   aiAssistMapping,
   checkDatasetFormat,
-  listLocalDatasets,
   uploadTrainingDataset,
 } from "./api/datasets-api";
-export type { CheckFormatResponse, LocalDatasetInfo } from "./types/datasets";
+export type { CheckFormatResponse } from "./types/datasets";
 export { getModelConfig, listLocalModels } from "./api/models-api";
 export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
 export type {
@@ -68,7 +67,10 @@ export {
   emitTrainingRunsChanged,
 } from "./events";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
-export { validateTrainingConfig } from "./lib/validation";
+export {
+  type StartValidationResult,
+  validateTrainingConfig,
+} from "./lib/validation";
 export { useTrainingReadiness } from "./hooks/use-training-readiness";
 export { useTrainingResourceNotices } from "./hooks/use-training-resource-notices";
 export {

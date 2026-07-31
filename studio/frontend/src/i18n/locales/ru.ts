@@ -590,7 +590,7 @@ export const ru = {
       modelLabel: "Модель",
       methodLabel: "Метод",
       hfTokenLabel: "Токен Hugging Face",
-      hfDatasetLabel: "Датасет",
+      datasetLabel: "Датасет",
       uploadLocalLabel: "Или загрузите локальный файл",
       sourceBrowse: "Обзор",
       releaseToUpload: "Отпустите для загрузки",
@@ -654,6 +654,9 @@ export const ru = {
       useAsHubDataset: "Использовать как датасет Hugging Face",
       useAsLocalPath: "Использовать как локальный путь",
       hfCacheLabel: "Кэш HF",
+      sourceRecipe: "Рецепт",
+      sourceUpload: "Загрузка",
+      sourceLocal: "Локальный",
       scanningLocal: "Сканирование датасетов на этом устройстве…",
       couldntScan: "Не удалось просканировать локальные датасеты",
       someLocationsUnscanned:
@@ -667,6 +670,9 @@ export const ru = {
       tokenRejectedBody:
         "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
       hubUnreachable: "Не удалось подключиться к Hugging Face",
+      cantUseDataset: "Датасет нельзя использовать",
+      reasonInvalidHubId:
+        "Введите допустимый ID датасета Hugging Face: repo или owner/repo. Используйте только латинские буквы, цифры, ., _ или - (не более 96 символов в каждой части).",
     },
     modelPicker: {
       noun: "модели",
@@ -677,6 +683,12 @@ export const ru = {
       useAsHubModel: "Использовать как модель Hugging Face",
       useAsLocalPath: "Использовать как локальный путь",
       hfCacheLabel: "Кэш HF",
+      sourceModelsFolder: "Папка моделей",
+      sourceHfCache: "Кэш HF",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "Пользовательская папка",
+      sourceLocalModel: "Локальная модель",
       scanningLocal: "Сканирование локальных моделей…",
       couldntScan: "Не удалось просканировать локальные модели",
       someLocationsUnscanned:
@@ -691,6 +703,8 @@ export const ru = {
         "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
       hubUnreachable: "Не удалось подключиться к Hugging Face",
       cantUseModel: "Модель нельзя использовать для обучения",
+      reasonInvalidHubId:
+        "Введите допустимый ID модели Hugging Face: repo или owner/repo. Используйте только латинские буквы, цифры, ., _ или - (не более 96 символов в каждой части).",
       reasonEmptyId: "Введите ID модели или путь к локальной модели.",
       reasonGguf: "Модели GGUF нельзя использовать для обучения.",
       reasonAdapter:
@@ -701,6 +715,8 @@ export const ru = {
       vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГБ)",
       vramTight: "~{est} ГБ VRAM (впритык для {total} ГБ)",
       vramApprox: "~{est} ГБ VRAM",
+      vramOomBadge: "OOM",
+      vramTightBadge: "Впритык",
     },
     methods: {
       qlora: {
@@ -812,6 +828,8 @@ export const ru = {
           evaluation: "оценка (нужна отдельная выборка)",
         },
         notifications: {
+          disabledForDetectedModality:
+            "Потоковая передача отключена: датасеты с изображениями или аудио необходимо скачивать полностью. Проверьте настройку и снова запустите обучение.",
           turnedOffMaxSteps:
             "Потоковая передача отключена: для неё требуется фиксированное значение «Макс. шагов» > 0.",
           adjusted:
@@ -979,6 +997,15 @@ export const ru = {
       starting: "Запуск...",
       loadingModel: "Загрузка модели...",
       checkingDataset: "Проверка датасета...",
+      startFailed: "Не удалось запустить обучение",
+      stopFailed: "Не удалось остановить обучение",
+      trainingStillActiveTitle: "Обучение ещё выполняется",
+      stopBeforeConfig:
+        "Сначала остановите обучение, затем вернитесь к настройке.",
+      resumeFailed: "Не удалось возобновить обучение",
+      resumeFailedTitle: "Не удалось возобновить обучение",
+      resumeUnavailable:
+        "Возобновить можно только остановленные или завершившиеся с ошибкой запуски с сохранённым чекпоинтом.",
       chooseModel: "Выберите модель",
       chooseDataset: "Выберите датасет",
       chooseModelAndDataset: "Выберите модель и датасет",
@@ -990,6 +1017,17 @@ export const ru = {
         "Не удалось проверить совместимость датасета с этой моделью. Проверьте подключение или токен Hugging Face — проверка повторится при запуске обучения.",
       setupChanged:
         "Настройки обучения изменились во время проверки. Проверьте их и снова запустите обучение.",
+      validation: {
+        s3MultimodalUnsupported:
+          "Датасеты S3 пока не поддерживаются для обучения моделей зрения или аудио.",
+        s3BucketRequired: "Сначала введите имя бакета S3.",
+        s3CredentialsRequired:
+          "Укажите ключи доступа S3 или включите роль IAM.",
+        modelRequired: "Сначала выберите базовую модель.",
+        hfDatasetRequired: "Сначала выберите датасет Hugging Face.",
+        localDatasetRequired: "Сначала выберите локальный датасет.",
+        unsupportedDatasetSource: "Источник датасета не поддерживается.",
+      },
       uploadConfigTooltip: "Загрузить сохранённую конфигурацию YAML",
       saveConfigTooltip: "Скачать текущую конфигурацию как YAML",
       resetConfigTooltip: "Сбросить к значениям модели по умолчанию",

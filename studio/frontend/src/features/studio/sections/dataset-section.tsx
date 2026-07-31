@@ -5,10 +5,11 @@ import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { usePlatformStore } from "@/config/env";
-import { DatasetSelector } from "@/features/dataset-picker";
+import { DatasetSelector, datasetDisplayName } from "@/features/dataset-picker";
 import {
   bumpInventoryVersion,
   hfApiToken,
+  useDeviceInventorySources,
   useHfTokenStore,
 } from "@/features/hub";
 import {
@@ -20,14 +21,12 @@ import {
 } from "@/features/settings";
 import {
   HfDatasetSubsetSplitSelectors,
-  type LocalDatasetInfo,
   cacheLocalPathMatchesSelection,
-  listLocalDatasets,
   uploadTrainingDataset,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
 } from "@/features/training";
-import { translate, useT } from "@/i18n";
+import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -54,12 +53,10 @@ import {
   DatasetSourceToggle,
 } from "./dataset-panel-controls";
 import {
-  deriveLocalDatasetName,
   formatUpdatedDate,
   getDatasetStreamingBlockers,
   getFileExtension,
   isLikelyLocalDatasetRef,
-  shouldClearMissingLocalSelection,
 } from "./dataset-panel-helpers";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { S3ConfigForm } from "./s3-config-form";
@@ -167,6 +164,14 @@ export function DatasetPanel() {
   );
 
   const hfToken = useHfTokenStore((s) => s.token);
+  const {
+    localDatasets: localDatasetInventory,
+    refresh: refreshLocalDatasets,
+  } = useDeviceInventorySources(["localDatasets"], {
+    enabled: datasetSource === "upload",
+  });
+  const wasUploadSource = useRef(false);
+  const localDatasets = localDatasetInventory.rows;
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const streamingBlockers = getDatasetStreamingBlockers({
     datasetEvalSplit,
@@ -188,48 +193,44 @@ export function DatasetPanel() {
   useEffect(() => {
     if (datasetStreaming && !isStreamingSupported) {
       setDatasetStreaming(false);
+      if (isDatasetImage || isDatasetAudio) {
+        toast.info(
+          t(
+            "studio.dataset.streaming.notifications.disabledForDetectedModality",
+          ),
+        );
+      }
     }
-  }, [datasetStreaming, isStreamingSupported, setDatasetStreaming]);
+  }, [
+    datasetStreaming,
+    isDatasetAudio,
+    isDatasetImage,
+    isStreamingSupported,
+    setDatasetStreaming,
+    t,
+  ]);
 
-  const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
-  const [hasLoadedLocalDatasets, setHasLoadedLocalDatasets] = useState(false);
-  const [localLoading, setLocalLoading] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
   const openPreview = useDatasetPreviewDialogStore((s) => s.openPreview);
 
-  const refreshLocalDatasets = useCallback(async () => {
-    setLocalLoading(true);
-    setLocalError(null);
-    try {
-      const response = await listLocalDatasets();
-      setLocalDatasets(response.datasets ?? []);
-    } catch (error) {
-      setLocalError(
-        error instanceof Error
-          ? error.message
-          : translate("studio.dataset.failedToLoadLocalDatasets"),
-      );
-    } finally {
-      setHasLoadedLocalDatasets(true);
-      setLocalLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    if (datasetSource !== "upload") return;
-    const timer = window.setTimeout(() => {
+    const isUploadSource = datasetSource === "upload";
+    if (
+      isUploadSource &&
+      !wasUploadSource.current &&
+      localDatasetInventory.ready
+    ) {
       void refreshLocalDatasets();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [datasetSource, refreshLocalDatasets]);
+    }
+    wasUploadSource.current = isUploadSource;
+  }, [datasetSource, localDatasetInventory.ready, refreshLocalDatasets]);
 
   useEffect(() => {
     const handleRefresh = () => {
-      if (document.hidden) return;
-      if (datasetSource !== "upload") return;
+      if (document.hidden || datasetSource !== "upload") {
+        return;
+      }
       void refreshLocalDatasets();
     };
-
     window.addEventListener("focus", handleRefresh);
     document.addEventListener("visibilitychange", handleRefresh);
     return () => {
@@ -255,29 +256,6 @@ export function DatasetPanel() {
   }, [localDatasets, uploadedFile]);
 
   useEffect(() => {
-    if (
-      shouldClearMissingLocalSelection({
-        datasetSource,
-        hasLoadedLocalDatasets,
-        hasSelectedLocalDataset: selectedLocalDataset !== null,
-        localError,
-        localLoading,
-        uploadedFile,
-      })
-    ) {
-      selectLocalDataset(null);
-    }
-  }, [
-    datasetSource,
-    hasLoadedLocalDatasets,
-    localError,
-    localLoading,
-    uploadedFile,
-    selectedLocalDataset,
-    selectLocalDataset,
-  ]);
-
-  useEffect(() => {
     if (datasetSource === "s3" && isMultimodalModel) {
       restoreBrowseDatasetSource();
     }
@@ -291,13 +269,15 @@ export function DatasetPanel() {
 
   const selectedDatasetName =
     datasetSource === "upload" ? uploadedFile : dataset;
-  const selectedLocalMetadata = selectedLocalDataset?.metadata ?? null;
+  const selectedLocalRecipe =
+    selectedLocalDataset?.source === "recipe" ? selectedLocalDataset : null;
+  const selectedLocalMetadata = selectedLocalRecipe?.metadata ?? null;
   const selectedLocalColumns = selectedLocalMetadata?.columns ?? [];
   const selectedLocalRows =
-    selectedLocalDataset?.rows ??
+    selectedLocalRecipe?.rows ??
     selectedLocalMetadata?.actual_num_records ??
     null;
-  const selectedLocalUpdatedAt = selectedLocalDataset?.updated_at ?? null;
+  const selectedLocalUpdatedAt = selectedLocalRecipe?.updated_at ?? null;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const evalFileInputRef = useRef<HTMLInputElement>(null);
@@ -489,7 +469,7 @@ export function DatasetPanel() {
       {datasetSource !== "s3" && (
         <div className="grid grid-cols-1 items-start gap-4 @xl/train-section:grid-cols-2 @xl/train-section:gap-5">
           <div className="flex flex-col gap-2">
-            <FieldLabel>{t("studio.wizard.hfDatasetLabel")}</FieldLabel>
+            <FieldLabel>{t("studio.wizard.datasetLabel")}</FieldLabel>
             <DatasetSelector />
           </div>
           <div className="flex flex-col gap-2">
@@ -551,7 +531,7 @@ export function DatasetPanel() {
             setDatasetEvalSplit={setDatasetEvalSplit}
           />
         ) : selectedDatasetName ? (
-          datasetSource === "upload" && selectedLocalDataset ? (
+          datasetSource === "upload" && selectedLocalRecipe ? (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
@@ -629,7 +609,7 @@ export function DatasetPanel() {
                   className="size-3.5 shrink-0 text-muted-foreground"
                 />
                 <span className="truncate text-xs">
-                  {deriveLocalDatasetName(uploadedEvalFile)}
+                  {datasetDisplayName(uploadedEvalFile)}
                 </span>
               </div>
               <Button
@@ -683,7 +663,7 @@ export function DatasetPanel() {
               <p className="truncate font-mono text-sm font-medium">
                 {datasetSource === "upload"
                   ? (selectedLocalDataset?.label ??
-                    deriveLocalDatasetName(selectedDatasetName))
+                    datasetDisplayName(selectedDatasetName))
                   : selectedDatasetName}
               </p>
               <p className="text-ui-10 text-muted-foreground">

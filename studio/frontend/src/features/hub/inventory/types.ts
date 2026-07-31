@@ -67,6 +67,7 @@ export interface LocalInventoryRow {
   title: string;
   source: LocalSource;
   sourceLabel: string;
+  datasetSource?: "recipe" | "upload";
   modelId?: string | null;
   displayName?: string;
   path: string;

@@ -6,7 +6,6 @@ import { hubTokenHeader } from "@/features/hub";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   CheckFormatResponse,
-  LocalDatasetsResponse,
   UploadDatasetResponse,
 } from "../types/datasets";
 
@@ -118,13 +117,5 @@ export async function aiAssistMapping({
     throw new Error(await readFastApiError(res, "AI assist failed"));
   }
 
-  return res.json();
-}
-
-export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
-  const res = await authFetch("/api/datasets/local");
-  if (!res.ok) {
-    throw new Error(await readFastApiError(res));
-  }
   return res.json();
 }

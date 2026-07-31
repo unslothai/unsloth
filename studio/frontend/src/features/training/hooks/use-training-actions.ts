@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useCallback } from "react";
 import { resetTraining, stopTraining } from "../api/train-api";
@@ -13,6 +14,7 @@ import {
 } from "../stores/training-runtime-store";
 
 export function useTrainingActions() {
+  const t = useT();
   const startPending = useTrainingRuntimeStore(isTrainingStartPending);
   const startError = useTrainingRuntimeStore((state) => state.startError);
 
@@ -21,36 +23,41 @@ export function useTrainingActions() {
     [],
   );
 
-  const stopTrainingRun = useCallback(async (save = true): Promise<boolean> => {
-    const runtimeStore = useTrainingRuntimeStore.getState();
-    const expectedJobId = runtimeStore.jobId;
-    const expectedResetGeneration = runtimeStore.resetGeneration;
-    runtimeStore.setStartError(null);
+  const stopTrainingRun = useCallback(
+    async (save = true): Promise<boolean> => {
+      const runtimeStore = useTrainingRuntimeStore.getState();
+      const expectedJobId = runtimeStore.jobId;
+      const expectedResetGeneration = runtimeStore.resetGeneration;
+      runtimeStore.setStartError(null);
 
-    try {
-      await stopTraining(save, expectedJobId ? { expectedJobId } : undefined);
-    } catch (error) {
-      const currentRuntime = useTrainingRuntimeStore.getState();
-      if (
-        currentRuntime.jobId !== expectedJobId ||
-        currentRuntime.resetGeneration !== expectedResetGeneration
-      ) {
-        await syncTrainingRuntimeFromBackend().catch(() => undefined);
+      try {
+        await stopTraining(save, expectedJobId ? { expectedJobId } : undefined);
+      } catch (error) {
+        const currentRuntime = useTrainingRuntimeStore.getState();
+        if (
+          currentRuntime.jobId !== expectedJobId ||
+          currentRuntime.resetGeneration !== expectedResetGeneration
+        ) {
+          await syncTrainingRuntimeFromBackend().catch(() => undefined);
+          return false;
+        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : t("studio.training.stopFailed");
+        currentRuntime.setStopRequested(false);
+        currentRuntime.setRuntimeError(message);
         return false;
       }
-      const message =
-        error instanceof Error ? error.message : "Failed to stop training";
-      currentRuntime.setStopRequested(false);
-      currentRuntime.setRuntimeError(message);
-      return false;
-    }
-    await syncTrainingRuntimeFromBackend().catch(() => undefined);
-    const currentRuntime = useTrainingRuntimeStore.getState();
-    return (
-      currentRuntime.jobId === expectedJobId &&
-      currentRuntime.resetGeneration === expectedResetGeneration
-    );
-  }, []);
+      await syncTrainingRuntimeFromBackend().catch(() => undefined);
+      const currentRuntime = useTrainingRuntimeStore.getState();
+      return (
+        currentRuntime.jobId === expectedJobId &&
+        currentRuntime.resetGeneration === expectedResetGeneration
+      );
+    },
+    [t],
+  );
 
   const resumeTrainingRunFromHistory = useCallback(
     async (runId: string): Promise<boolean> => resumeTrainingRun(runId),
@@ -79,13 +86,13 @@ export function useTrainingActions() {
       const message =
         error instanceof Error
           ? error.message
-          : "Stop training first, then return to configuration.";
-      toast.error("Training still active", {
+          : t("studio.training.stopBeforeConfig");
+      toast.error(t("studio.training.trainingStillActiveTitle"), {
         description: message,
       });
       await syncTrainingRuntimeFromBackend().catch(() => undefined);
     }
-  }, []);
+  }, [t]);
 
   return {
     startPending,

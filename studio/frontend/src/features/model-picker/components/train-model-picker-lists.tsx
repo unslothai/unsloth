@@ -235,12 +235,12 @@ export function TrainModelHubList({
                 <span className="ml-auto flex shrink-0 items-center gap-1.5">
                   {exceeds && (
                     <span className="rounded bg-red-50 px-1.5 py-0.5 text-ui-9 font-semibold text-red-700 dark:bg-red-950 dark:text-red-400">
-                      OOM
+                      {t("studio.modelPicker.vramOomBadge")}
                     </span>
                   )}
                   {tight && (
                     <span className="text-ui-9 font-semibold text-amber-500">
-                      TIGHT
+                      {t("studio.modelPicker.vramTightBadge")}
                     </span>
                   )}
                   {fit?.detail && (

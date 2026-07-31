@@ -589,7 +589,7 @@ export const ko = {
       modelLabel: "모델",
       methodLabel: "방법",
       hfTokenLabel: "Hugging Face 토큰",
-      hfDatasetLabel: "데이터셋",
+      datasetLabel: "데이터셋",
       uploadLocalLabel: "또는 로컬 파일 업로드",
       sourceBrowse: "찾아보기",
       releaseToUpload: "놓으면 업로드됩니다",
@@ -653,6 +653,9 @@ export const ko = {
       useAsHubDataset: "Hugging Face 데이터셋으로 사용",
       useAsLocalPath: "로컬 경로로 사용",
       hfCacheLabel: "HF 캐시",
+      sourceRecipe: "레시피",
+      sourceUpload: "업로드",
+      sourceLocal: "로컬",
       scanningLocal: "이 기기의 데이터셋을 스캔하는 중…",
       couldntScan: "로컬 데이터셋을 스캔하지 못했습니다",
       someLocationsUnscanned:
@@ -666,6 +669,9 @@ export const ko = {
       tokenRejectedBody:
         "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
       hubUnreachable: "Hugging Face에 연결하지 못했습니다",
+      cantUseDataset: "데이터셋을 사용할 수 없습니다",
+      reasonInvalidHubId:
+        "유효한 Hugging Face 데이터셋 ID를 입력하세요. 형식은 repo 또는 owner/repo이며 영문자, 숫자, ., _, -만 사용할 수 있습니다(각 부분 최대 96자).",
     },
     modelPicker: {
       noun: "모델",
@@ -675,6 +681,12 @@ export const ko = {
       useAsHubModel: "Hugging Face 모델로 사용",
       useAsLocalPath: "로컬 경로로 사용",
       hfCacheLabel: "HF 캐시",
+      sourceModelsFolder: "모델 폴더",
+      sourceHfCache: "HF 캐시",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "사용자 지정 폴더",
+      sourceLocalModel: "로컬 모델",
       scanningLocal: "로컬 모델을 스캔하는 중…",
       couldntScan: "로컬 모델을 스캔하지 못했습니다",
       someLocationsUnscanned: "일부 로컬 위치를 스캔하지 못했습니다.",
@@ -688,6 +700,8 @@ export const ko = {
         "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
       hubUnreachable: "Hugging Face에 연결하지 못했습니다",
       cantUseModel: "이 모델은 학습에 사용할 수 없습니다",
+      reasonInvalidHubId:
+        "유효한 Hugging Face 모델 ID를 입력하세요. 형식은 repo 또는 owner/repo이며 영문자, 숫자, ., _, -만 사용할 수 있습니다(각 부분 최대 96자).",
       reasonEmptyId: "모델 ID 또는 로컬 모델 경로를 입력하세요.",
       reasonGguf: "GGUF 모델은 학습에 사용할 수 없습니다.",
       reasonAdapter:
@@ -698,6 +712,8 @@ export const ko = {
       vramNeeds: "약 {est}GB VRAM 필요 (GPU: {total}GB)",
       vramTight: "약 {est}GB VRAM ({total}GB에서 빠듯함)",
       vramApprox: "약 {est}GB VRAM",
+      vramOomBadge: "OOM",
+      vramTightBadge: "빠듯함",
     },
     methods: {
       qlora: {
@@ -806,6 +822,8 @@ export const ko = {
           evaluation: "평가(별도의 평가 분할 필요)",
         },
         notifications: {
+          disabledForDetectedModality:
+            "이미지 또는 오디오 데이터셋은 전체 다운로드가 필요하여 스트리밍을 껐습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
           turnedOffMaxSteps:
             "스트리밍을 껐습니다. 스트리밍에는 0보다 큰 고정 최대 스텝이 필요합니다.",
           adjusted:
@@ -974,6 +992,14 @@ export const ko = {
       starting: "시작 중...",
       loadingModel: "모델을 로딩하는 중...",
       checkingDataset: "데이터셋을 확인하는 중...",
+      startFailed: "학습을 시작하지 못했습니다",
+      stopFailed: "학습을 중지하지 못했습니다",
+      trainingStillActiveTitle: "학습이 아직 진행 중입니다",
+      stopBeforeConfig: "먼저 학습을 중지한 후 구성 화면으로 돌아가세요.",
+      resumeFailed: "학습을 재개하지 못했습니다",
+      resumeFailedTitle: "학습을 재개할 수 없습니다",
+      resumeUnavailable:
+        "중지되었거나 오류로 종료된 실행 중 저장된 체크포인트가 있는 실행만 재개할 수 있습니다.",
       chooseModel: "모델 선택",
       chooseDataset: "데이터셋 선택",
       chooseModelAndDataset: "모델과 데이터셋 선택",
@@ -985,6 +1011,17 @@ export const ko = {
         "데이터셋이 이 모델과 호환되는지 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인하세요. 학습을 시작하면 다시 확인합니다.",
       setupChanged:
         "확인하는 동안 학습 설정이 변경되었습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
+      validation: {
+        s3MultimodalUnsupported:
+          "비전 또는 오디오 학습에는 아직 S3 데이터셋을 사용할 수 없습니다.",
+        s3BucketRequired: "S3 버킷 이름을 먼저 입력하세요.",
+        s3CredentialsRequired:
+          "S3 액세스 키를 입력하거나 IAM 역할을 활성화하세요.",
+        modelRequired: "기본 모델을 먼저 선택하세요.",
+        hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
+        localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
+        unsupportedDatasetSource: "지원되지 않는 데이터셋 소스입니다.",
+      },
       uploadConfigTooltip: "저장된 YAML 구성 불러오기",
       saveConfigTooltip: "현재 구성을 YAML로 다운로드",
       resetConfigTooltip: "모델 기본값으로 재설정",

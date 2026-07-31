@@ -4,6 +4,7 @@
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { translate, type TranslationKey } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { getTrainingRun } from "../api/history-api";
@@ -21,7 +22,7 @@ import {
 } from "./training-start-runtime";
 
 const RESUME_UNAVAILABLE_ERROR =
-  "Only stopped or errored runs with a saved checkpoint can be resumed.";
+  "studio.training.resumeUnavailable" satisfies TranslationKey;
 
 export async function resumeTrainingRun(runId: string): Promise<boolean> {
   const attempt = ResumeTrainingStartAttempt.begin();
@@ -143,10 +144,12 @@ class ResumeTrainingStartAttempt {
       return false;
     }
     const rawMessage =
-      error instanceof Error ? error.message : "Failed to resume training";
+      error instanceof Error
+        ? error.message
+        : translate("studio.training.resumeFailed");
     const safeMessage = normalizeTrainingStartError(rawMessage);
     this.cancel(safeMessage);
-    toast.error("Could not resume training", {
+    toast.error(translate("studio.training.resumeFailedTitle"), {
       description: safeMessage,
     });
     return false;
@@ -164,7 +167,7 @@ async function loadResumePayload(
 
   const outputDir = detail.run.output_dir;
   if (!(detail.run.can_resume && outputDir)) {
-    throw new Error(RESUME_UNAVAILABLE_ERROR);
+    throw new Error(translate(RESUME_UNAVAILABLE_ERROR));
   }
   primeNativeNotificationPermission().catch(() => undefined);
 

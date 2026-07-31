@@ -139,7 +139,7 @@ export function DatasetHubList({
   onRetry,
   sentinelRef,
 }: {
-  items: ReadonlyArray<{ id: string; downloads?: number | null }>;
+  items: ReadonlyArray<{ id: string }>;
   isLoading: boolean;
   isLoadingMore: boolean;
   value: string | null;

@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { looksLikeLocalPath } from "@/features/hub";
 import { hasSeparateStreamingEvalSplit } from "@/features/training";
 import type { DatasetSource } from "@/types/training";
 
 const LOCAL_DATASET_FILE_PATTERN = /\.(jsonl|json|csv|parquet)$/i;
-const LOCAL_DATASET_REFERENCE_PATTERN = /\.(jsonl|json|csv|parquet|arrow)$/i;
-const LOCAL_DATASET_UUID_PREFIX_PATTERN = /^[a-f0-9]{32}_(.+)$/;
 const POSITIVE_INTEGER_PATTERN = /^\d+$/;
 
 export type DatasetStreamingBlocker =
@@ -37,21 +34,6 @@ export function isLikelyLocalDatasetRef(value: string): boolean {
     value.includes("\\") ||
     LOCAL_DATASET_FILE_PATTERN.test(value)
   );
-}
-
-export function deriveLocalDatasetName(path: string): string {
-  const normalized = path.replaceAll("\\", "/");
-  const parts = normalized.split("/").filter(Boolean);
-  const parquetIndex = parts.lastIndexOf("parquet-files");
-  if (parquetIndex > 0) {
-    return parts[parquetIndex - 1];
-  }
-  const basename = parts[parts.length - 1] ?? path;
-  const uuidPrefixMatch = basename.match(LOCAL_DATASET_UUID_PREFIX_PATTERN);
-  if (uuidPrefixMatch) {
-    return uuidPrefixMatch[1];
-  }
-  return basename;
 }
 
 export function formatUpdatedDate(timestamp: number | null): string {
@@ -131,35 +113,4 @@ export function getDatasetStreamingBlockers({
     blockers.push("appleSilicon");
   }
   return blockers;
-}
-
-export function shouldClearMissingLocalSelection({
-  datasetSource,
-  hasLoadedLocalDatasets,
-  hasSelectedLocalDataset,
-  localError,
-  localLoading,
-  uploadedFile,
-}: {
-  datasetSource: DatasetSource;
-  hasLoadedLocalDatasets: boolean;
-  hasSelectedLocalDataset: boolean;
-  localError: string | null;
-  localLoading: boolean;
-  uploadedFile: string | null;
-}): boolean {
-  if (
-    !hasLoadedLocalDatasets ||
-    localLoading ||
-    localError ||
-    datasetSource !== "upload" ||
-    !uploadedFile ||
-    hasSelectedLocalDataset
-  ) {
-    return false;
-  }
-  return !(
-    looksLikeLocalPath(uploadedFile) ||
-    LOCAL_DATASET_REFERENCE_PATTERN.test(uploadedFile)
-  );
 }

@@ -608,7 +608,7 @@ export const es = {
       modelLabel: "Modelo",
       methodLabel: "Método",
       hfTokenLabel: "Token de Hugging Face",
-      hfDatasetLabel: "Conjunto de datos",
+      datasetLabel: "Conjunto de datos",
       uploadLocalLabel: "O sube un archivo local",
       sourceBrowse: "Explorar",
       releaseToUpload: "Suelta para subir",
@@ -686,6 +686,12 @@ export const es = {
       tokenRejectedBody:
         "Actualiza el token en Configuración → General y vuelve a intentarlo.",
       hubUnreachable: "No se pudo acceder a Hugging Face",
+      cantUseDataset: "No se puede usar el conjunto de datos",
+      reasonInvalidHubId:
+        "Introduce un ID válido de conjunto de datos de Hugging Face: repositorio o propietario/repositorio, usando solo letras, números, ., _ o - (máximo 96 caracteres por parte).",
+      sourceRecipe: "Receta",
+      sourceUpload: "Subida",
+      sourceLocal: "Local",
     },
     modelPicker: {
       noun: "modelos",
@@ -710,6 +716,8 @@ export const es = {
       hubUnreachable: "No se pudo acceder a Hugging Face",
       cantUseModel: "No se puede usar el modelo para entrenar",
       reasonEmptyId: "Introduce un ID de modelo o una ruta de modelo local.",
+      reasonInvalidHubId:
+        "Introduce un ID válido de modelo de Hugging Face: repositorio o propietario/repositorio, usando solo letras, números, ., _ o - (máximo 96 caracteres por parte).",
       reasonGguf: "Los modelos GGUF no se pueden usar para entrenar.",
       reasonAdapter:
         "Las salidas de adaptadores no se pueden usar como modelos base de entrenamiento.",
@@ -720,6 +728,14 @@ export const es = {
       vramNeeds: "Necesita ~{est} GB de VRAM (GPU: {total} GB)",
       vramTight: "~{est} GB de VRAM (ajustado para {total} GB)",
       vramApprox: "~{est} GB de VRAM",
+      sourceModelsFolder: "Carpeta de modelos",
+      sourceHfCache: "Caché de HF",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "Carpeta personalizada",
+      sourceLocalModel: "Modelo local",
+      vramOomBadge: "OOM",
+      vramTightBadge: "Ajustado",
     },
     methods: {
       qlora: {
@@ -840,6 +856,8 @@ export const es = {
             "El streaming necesita un valor fijo de Pasos máximos (los conjuntos de datos en streaming no tienen una longitud conocida). Establece primero Pasos máximos > 0.",
           enabledAdjusted:
             "Streaming activado. Opciones incompatibles desactivadas: {options}.",
+          disabledForDetectedModality:
+            "El streaming se desactivó porque los conjuntos de datos de imagen y audio deben descargarse por completo. Revisa la opción y vuelve a iniciar el entrenamiento.",
         },
       },
       auto: "Automático",
@@ -1017,6 +1035,27 @@ export const es = {
         "No se pudo verificar si el conjunto de datos es compatible con este modelo. Comprueba la conexión o el token de Hugging Face; al iniciar el entrenamiento se volverá a intentar la comprobación.",
       setupChanged:
         "La configuración del entrenamiento cambió mientras se comprobaba. Revísala y vuelve a iniciar el entrenamiento.",
+      validation: {
+        s3MultimodalUnsupported:
+          "Los conjuntos de datos de S3 todavía no son compatibles con el entrenamiento de visión o audio.",
+        s3BucketRequired: "Introduce primero el nombre de un bucket de S3.",
+        s3CredentialsRequired:
+          "Proporciona las claves de acceso de S3 o activa el rol de IAM.",
+        modelRequired: "Selecciona primero un modelo base.",
+        hfDatasetRequired:
+          "Selecciona primero un conjunto de datos de Hugging Face.",
+        localDatasetRequired: "Selecciona primero un conjunto de datos local.",
+        unsupportedDatasetSource: "Origen de conjunto de datos no compatible.",
+      },
+      startFailed: "No se pudo iniciar el entrenamiento",
+      stopFailed: "No se pudo detener el entrenamiento",
+      trainingStillActiveTitle: "El entrenamiento sigue activo",
+      stopBeforeConfig:
+        "Detén primero el entrenamiento y vuelve después a la configuración.",
+      resumeFailed: "No se pudo reanudar el entrenamiento",
+      resumeFailedTitle: "Error al reanudar el entrenamiento",
+      resumeUnavailable:
+        "Solo se pueden reanudar las ejecuciones detenidas o con errores que tengan un checkpoint guardado.",
       uploadConfigTooltip: "Carga una configuración YAML guardada",
       saveConfigTooltip: "Descarga la configuración actual como YAML",
       resetConfigTooltip: "Restablece a los valores predeterminados del modelo",

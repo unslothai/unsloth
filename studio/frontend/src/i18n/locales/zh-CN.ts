@@ -674,7 +674,7 @@ export const zhCN = {
       modelLabel: "模型",
       methodLabel: "方法",
       hfTokenLabel: "Hugging Face token",
-      hfDatasetLabel: "数据集",
+      datasetLabel: "数据集",
       uploadLocalLabel: "或上传本地文件",
       sourceBrowse: "浏览",
       releaseToUpload: "松开以上传",
@@ -737,6 +737,9 @@ export const zhCN = {
       useAsHubDataset: "作为 Hugging Face 数据集使用",
       useAsLocalPath: "作为本地路径使用",
       hfCacheLabel: "HF 缓存",
+      sourceRecipe: "配方",
+      sourceUpload: "上传",
+      sourceLocal: "本地",
       scanningLocal: "正在扫描此设备上的数据集…",
       couldntScan: "无法扫描本地数据集",
       someLocationsUnscanned: "无法扫描部分数据集位置。",
@@ -748,6 +751,9 @@ export const zhCN = {
       tokenRejectedTitle: "Hugging Face token 被拒绝",
       tokenRejectedBody: "请在“设置”→“常规”中更新 token，然后重试。",
       hubUnreachable: "无法连接 Hugging Face",
+      cantUseDataset: "无法使用此数据集",
+      reasonInvalidHubId:
+        "请输入有效的 Hugging Face 数据集 ID：repo 或 owner/repo。仅可使用字母、数字、.、_ 或 -（每部分最多 96 个字符）。",
     },
     modelPicker: {
       noun: "模型",
@@ -757,6 +763,12 @@ export const zhCN = {
       useAsHubModel: "作为 Hugging Face 模型使用",
       useAsLocalPath: "作为本地路径使用",
       hfCacheLabel: "HF 缓存",
+      sourceModelsFolder: "模型文件夹",
+      sourceHfCache: "HF 缓存",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "自定义文件夹",
+      sourceLocalModel: "本地模型",
       scanningLocal: "正在扫描本地模型…",
       couldntScan: "无法扫描本地模型",
       someLocationsUnscanned: "无法扫描部分本地位置。",
@@ -768,6 +780,8 @@ export const zhCN = {
       tokenRejectedBody: "请在“设置”→“常规”中更新 token，然后重试。",
       hubUnreachable: "无法连接 Hugging Face",
       cantUseModel: "无法使用此模型进行训练",
+      reasonInvalidHubId:
+        "请输入有效的 Hugging Face 模型 ID：repo 或 owner/repo。仅可使用字母、数字、.、_ 或 -（每部分最多 96 个字符）。",
       reasonEmptyId: "请输入模型 ID 或本地模型路径。",
       reasonGguf: "GGUF 模型不能用于训练。",
       reasonAdapter: "适配器输出不能作为基础训练模型。",
@@ -776,6 +790,8 @@ export const zhCN = {
       vramNeeds: "约需 {est}GB VRAM（GPU：{total}GB）",
       vramTight: "约 {est}GB VRAM（在 {total}GB 上偏紧）",
       vramApprox: "约 {est}GB VRAM",
+      vramOomBadge: "OOM",
+      vramTightBadge: "显存吃紧",
     },
     methods: {
       qlora: {
@@ -878,6 +894,8 @@ export const zhCN = {
           evaluation: "评估（需要单独的评估切分）",
         },
         notifications: {
+          disabledForDetectedModality:
+            "由于图像或音频数据集需要完整下载，流式传输已关闭。请检查设置，然后重新开始训练。",
           turnedOffMaxSteps:
             "已关闭流式传输：流式传输要求将最大步数固定为大于 0。",
           adjusted:
@@ -1033,6 +1051,14 @@ export const zhCN = {
       starting: "启动中...",
       loadingModel: "正在加载模型...",
       checkingDataset: "正在检查数据集...",
+      startFailed: "启动训练失败",
+      stopFailed: "停止训练失败",
+      trainingStillActiveTitle: "训练仍在进行",
+      stopBeforeConfig: "请先停止训练，然后返回配置页面。",
+      resumeFailed: "恢复训练失败",
+      resumeFailedTitle: "无法恢复训练",
+      resumeUnavailable:
+        "只有已停止或出错且已保存检查点的训练运行才能恢复。",
       chooseModel: "选择模型",
       chooseDataset: "选择数据集",
       chooseModelAndDataset: "选择模型和数据集",
@@ -1043,6 +1069,15 @@ export const zhCN = {
       datasetUnverified:
         "无法验证数据集与此模型是否兼容。请检查网络连接或 Hugging Face token；开始训练时会重试检查。",
       setupChanged: "检查期间，训练设置发生了变化。请确认设置后重新开始训练。",
+      validation: {
+        s3MultimodalUnsupported: "S3 数据集暂不支持视觉或音频训练。",
+        s3BucketRequired: "请先输入 S3 存储桶名称。",
+        s3CredentialsRequired: "请提供 S3 访问密钥或启用 IAM 角色。",
+        modelRequired: "请先选择基础模型。",
+        hfDatasetRequired: "请先选择 Hugging Face 数据集。",
+        localDatasetRequired: "请先选择本地数据集。",
+        unsupportedDatasetSource: "不支持此数据集来源。",
+      },
       uploadConfigTooltip: "加载已保存的 YAML 配置",
       saveConfigTooltip: "将当前配置下载为 YAML",
       resetConfigTooltip: "重置为模型默认值",

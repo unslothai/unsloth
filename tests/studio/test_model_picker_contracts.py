@@ -1257,7 +1257,8 @@ def test_cached_training_rows_select_canonical_repo_identity():
 
     selector = _read("features/model-picker/components/train-model-selector.tsx")
     assert "toCachedTrainModelDeviceItem(" in selector
-    assert ".map(toLocalTrainModelDeviceItem)" in selector
+    assert "toLocalTrainModelDeviceItem(" in selector
+    assert "localModelSourceLabelKey(row.source)" in selector
 
 
 def test_cached_training_rows_remain_display_candidates_after_inventory_dedupe():
@@ -1279,21 +1280,23 @@ def test_training_picker_controls_keep_visible_keyboard_focus():
     assert "focus-visible:ring-offset-background" in focus
     assert "focus-visible:ring-inset" in focus
 
-    trigger = _read("features/model-picker/components/train-picker-trigger.ts")
+    model = _read("features/model-picker/components/train-model-selector.tsx")
     dataset = _read("features/dataset-picker/components/dataset-selector.tsx")
     options = _read("components/resource-picker/selectable-picker-item.tsx")
     token = _read("features/hub/components/hf-token-indicator.tsx")
     dataset_controls = _read("features/studio/sections/dataset-panel-controls.tsx")
     dataset_section = _read("features/studio/sections/dataset-section.tsx")
-    assert "PICKER_FOCUS_VISIBLE_CLASS" in trigger
-    assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset
+    assert "export const PICKER_TRIGGER_CLASS" in focus
+    assert "PICKER_FOCUS_VISIBLE_CLASS" in focus
+    assert "PICKER_TRIGGER_CLASS" in model
+    assert "PICKER_TRIGGER_CLASS" in dataset
     assert "PICKER_OPTION_FOCUS_VISIBLE_CLASS" in options
     assert "PICKER_FOCUS_VISIBLE_CLASS" in token
     assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset_controls
     assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset_section
     assert dataset_controls.count("aria-label={t(") >= 4
     assert 't("studio.dataset.streamingInfoAriaLabel")' in dataset_controls
-    assert "focus-visible:ring-0" not in trigger
+    assert "focus-visible:ring-0" not in model
     assert "focus-visible:ring-0" not in dataset
     assert "focus-visible:ring-0" not in token
 
@@ -1332,6 +1335,11 @@ def test_local_dataset_picker_uses_cross_platform_path_identity():
     section = _read("features/studio/sections/dataset-section.tsx")
     assert "cacheLocalPathMatchesSelection(item.path, uploadedFile)" in section
     assert "item.path === uploadedFile" not in section
+    assert 'useDeviceInventorySources(["localDatasets"]' in section
+    assert "listLocalDatasets" not in section
+    assert "localDatasetInventory.ready" in section
+    assert "!wasUploadSource.current" in section
+    assert "void refreshLocalDatasets()" in section
 
 
 def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
@@ -1485,7 +1493,7 @@ def test_training_model_lookups_preserve_platform_path_identity():
     hub_pick = hub_pick.split("function pickFreeformModel", 1)[0]
     device_pick = selector.split("function pickFreeformModel", 1)[1]
     device_pick = device_pick.split("function pickDeviceModel", 1)[0]
-    assert "const key = normalizeModelIdentity(id);" in hub_pick
+    assert "const key = normalizeModelIdentity(hubId.id);" in hub_pick
     assert "const key = normalizeModelIdentity(localPath);" in device_pick
 
     identity = _read("features/hub/lib/model-identity.ts")
@@ -1586,15 +1594,15 @@ def test_inferred_picker_tab_is_locked_for_the_open_session():
 
 def test_dataset_display_name_handles_cross_platform_trailing_separators():
     source = _read("features/dataset-picker/lib/display.ts")
-    path_display = _read("components/resource-picker/path-display-name.ts")
-    assert "import { pathDisplayName }" in source
-    assert "pathDisplayName(value)" in source
+    display_name = _read("components/resource-picker/dataset-display-name.ts")
+    assert "import { datasetDisplayName }" in source
     assert "datasetSelectionDisplayName({" in source
     assert "cacheLocalPathMatchesSelection(candidate.path, uploadedFile)" in source
-    assert "const TRAILING_PATH_SEPARATOR_RE = /[\\\\/]+$/;" in path_display
-    assert "value.replace(" in path_display
-    assert "const candidate = withoutTrailingSeparators || value;" in path_display
-    assert "candidate.split(PATH_SEPARATOR_RE).pop() || candidate" in path_display
+    assert 'value.replaceAll("\\\\", "/")' in display_name
+    assert ".split(\"/\")" in display_name
+    assert ".filter(Boolean)" in display_name
+    assert "UPLOADED_DATASET_HASH_PREFIX_RE" in display_name
+    assert 'parts.lastIndexOf("parquet-files")' in display_name
 
 
 def test_local_model_trigger_uses_cross_platform_device_display_name():
@@ -1634,6 +1642,7 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "createHfBrowseDatasetSelection(" in hf_selection
     assert "datasetKnownCached: browseDatasetSelection.knownCached" in hf_selection
     assert "datasetLocalPath: browseDatasetSelection.localPath" in hf_selection
+    assert 'runDatasetCheck(datasetId, "train")' in hf_selection
 
     upload_selection = store.split("const selectLocalDatasetInternal", 1)[1]
     upload_selection = upload_selection.split("const selectS3SourceInternal", 1)[0]
@@ -1670,6 +1679,56 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "restoreBrowseDatasetSource();" in toggle
     assert "selectLocalDataset(uploadedFile)" not in toggle
     assert "selectHfDataset(dataset)" not in toggle
+
+
+def test_training_picker_localizes_semantic_inventory_sources():
+    inventory_types = _read("features/hub/inventory/types.ts")
+    inventory = _read("features/hub/inventory/use-hub-inventory.ts")
+    dataset_selector = _read(
+        "features/dataset-picker/components/dataset-selector.tsx"
+    )
+    model_selector = _read(
+        "features/model-picker/components/train-model-selector.tsx"
+    )
+    model_view = _read(
+        "features/model-picker/components/train-model-picker-view-model.ts"
+    )
+
+    assert 'datasetSource?: "recipe" | "upload";' in inventory_types
+    assert "datasetSource:" in inventory
+    assert 'ds.source === "recipe" || ds.source === "upload"' in inventory
+    assert "d.sourceLabel" not in dataset_selector
+    for key in ("sourceRecipe", "sourceUpload", "sourceLocal"):
+        assert f"studio.datasetPicker.{key}" in dataset_selector
+
+    assert "function localModelSourceLabelKey(" in model_selector
+    assert "localModelSourceLabelKey(row.source)" in model_selector
+    assert "sourceLabel: row.sourceLabel" not in model_view
+    assert "sourceLabel: string" in model_view
+
+
+def test_training_validation_returns_translation_keys_and_rechecks_hub_ids():
+    validation = _read("features/training/lib/validation.ts")
+    start = _read("features/training/lib/start-fresh-training-run.ts")
+    readiness = _read("features/training/hooks/use-training-readiness.ts")
+    cta = _read("features/studio/wizard/start-training-cta.tsx")
+
+    assert "errorKey: TranslationKey" in validation
+    assert "message: string" not in validation
+    assert "validateHubResourceId(config.dataset)" in validation
+    assert "translate(validation.errorKey)" in start
+    assert "configValidation.errorKey" in readiness
+    assert "t(configValidation.errorKey)" in cta
+
+
+def test_legacy_dataset_setter_still_schedules_modality_check():
+    store = _read("features/training/stores/training-config-store.ts")
+    legacy_setter = store.split("setDataset: (dataset) =>", 1)[1].split(
+        "setDatasetSubset:", 1
+    )[0]
+
+    assert "const datasetId = dataset?.trim() || null;" in legacy_setter
+    assert 'runDatasetCheck(datasetId, "train")' in legacy_setter
 
 
 def test_s3_training_payload_excludes_remembered_browse_sources():
@@ -1896,7 +1955,7 @@ def test_train_hub_selections_preserve_canonical_identity():
     assert "findCanonicalHubResourceId(query, hubResultIds)" in model_selector
     assert "hubTrainingModelCandidate(canonicalId," in model_selector
     assert "pick(\n      canonicalId," in model_selector
-    assert "const canonicalId = cached?.repoId ?? id.trim();" in dataset_selector
+    assert "const canonicalId = cached?.repoId ?? validation.id;" in dataset_selector
     assert "hubResourceIdsEqual(candidate.id, query)" in dataset_selector
 
 
@@ -1960,11 +2019,16 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
     assert "isHfSelection && preferLocalCache" in background_check
     assert "recheckSelectedDatasetForStreamingMode(false)" in streaming_setter
     assert "recheckSelectedDatasetForStreamingMode(true)" in streaming_setter
-    assert "setDatasetStreaming(false)" in modality
-    assert "attempt.cancel(TRAINING_SETUP_CHANGED_ERROR)" in modality
-    cache_setter = store.split("setSelectedDatasetCacheReference: (dataset, localPath) =>", 1)[
-        1
-    ].split("ensureModelDefaultsLoaded:", 1)[0]
+    assert "attempt.updateConfig({" in modality
+    assert "datasetStreaming: false" in modality
+    assert "isDatasetImage: isImage" in modality
+    assert "isDatasetAudio: isAudio" in modality
+    assert "disabledForDetectedModality" in modality
+    assert "return attempt.cancel();" in modality
+    assert "TRAINING_SETUP_CHANGED_ERROR" not in modality
+    cache_setter = store.split(
+        "setSelectedDatasetCacheReference: (dataset, localPath) =>", 1
+    )[1].split("ensureModelDefaultsLoaded:", 1)[0]
     assert "const cacheReferenceChanged =" in cache_setter
     assert "cacheReferenceChanged && !state.datasetStreaming" in cache_setter
     assert "recheckSelectedDatasetForStreamingMode(false)" in cache_setter

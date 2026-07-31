@@ -590,7 +590,7 @@ export const ar = {
       modelLabel: "النموذج",
       methodLabel: "الطريقة",
       hfTokenLabel: "توكن Hugging Face",
-      hfDatasetLabel: "مجموعة البيانات",
+      datasetLabel: "مجموعة البيانات",
       uploadLocalLabel: "أو حمّل ملفًا محليًا",
       sourceBrowse: "استعراض",
       releaseToUpload: "أفلت للتحميل",
@@ -668,6 +668,12 @@ export const ar = {
       tokenRejectedBody:
         "حدّث التوكن في الإعدادات ← عام، ثم أعد المحاولة.",
       hubUnreachable: "تعذّر الوصول إلى Hugging Face",
+      cantUseDataset: "تعذّر استخدام مجموعة البيانات",
+      reasonInvalidHubId:
+        "أدخل معرّفًا صالحًا لمجموعة بيانات Hugging Face بصيغة مستودع أو مالك/مستودع، باستخدام الأحرف والأرقام و. و_ و- فقط (بحد أقصى 96 حرفًا لكل جزء).",
+      sourceRecipe: "وصفة",
+      sourceUpload: "رفع",
+      sourceLocal: "محلي",
     },
     modelPicker: {
       noun: "النماذج",
@@ -691,6 +697,8 @@ export const ar = {
       hubUnreachable: "تعذّر الوصول إلى Hugging Face",
       cantUseModel: "لا يمكن استخدام النموذج للتدريب",
       reasonEmptyId: "أدخل معرّف نموذج أو مسار نموذج محلي.",
+      reasonInvalidHubId:
+        "أدخل معرّفًا صالحًا لنموذج Hugging Face بصيغة مستودع أو مالك/مستودع، باستخدام الأحرف والأرقام و. و_ و- فقط (بحد أقصى 96 حرفًا لكل جزء).",
       reasonGguf: "لا يمكن استخدام نماذج GGUF للتدريب.",
       reasonAdapter:
         "لا يمكن استخدام مخرجات المهايئ كنماذج أساسية للتدريب.",
@@ -699,6 +707,14 @@ export const ar = {
       vramNeeds: "يحتاج إلى نحو {est}GB من VRAM (GPU: {total}GB)",
       vramTight: "نحو {est}GB من VRAM (المساحة ضيقة على {total}GB)",
       vramApprox: "نحو {est}GB من VRAM",
+      sourceModelsFolder: "مجلد النماذج",
+      sourceHfCache: "ذاكرة HF المؤقتة",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "مجلد مخصّص",
+      sourceLocalModel: "نموذج محلي",
+      vramOomBadge: "OOM",
+      vramTightBadge: "محدود",
     },
     methods: {
       qlora: {
@@ -814,6 +830,8 @@ export const ar = {
             "يتطلب البث حدًا أقصى ثابتًا للخطوات (لا تملك مجموعات البيانات المتدفقة طولًا معروفًا). اضبط الحد الأقصى للخطوات على قيمة أكبر من 0 أولًا.",
           enabledAdjusted:
             "تم تفعيل البث. عُطّلت الخيارات غير المتوافقة: {options}.",
+          disabledForDetectedModality:
+            "تم إيقاف البث لأن مجموعات بيانات الصور والصوت تتطلب تنزيلًا كاملًا. راجع الإعداد، ثم ابدأ التدريب مجددًا.",
         },
       },
       auto: "تلقائي",
@@ -984,6 +1002,24 @@ export const ar = {
         "تعذّر التحقق من توافق مجموعة البيانات مع هذا النموذج. تحقق من اتصالك أو توكن Hugging Face — ستُعاد محاولة التحقق عند بدء التدريب.",
       setupChanged:
         "تغيّر إعداد التدريب أثناء التحقق منه. راجعه ثم ابدأ التدريب مجددًا.",
+      validation: {
+        s3MultimodalUnsupported:
+          "مجموعات بيانات S3 غير مدعومة بعد لتدريب الرؤية أو الصوت.",
+        s3BucketRequired: "أدخل اسم حاوية S3 أولًا.",
+        s3CredentialsRequired: "أدخل مفاتيح الوصول إلى S3 أو فعّل دور IAM.",
+        modelRequired: "اختر نموذجًا أساسيًا أولًا.",
+        hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
+        localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",
+        unsupportedDatasetSource: "مصدر مجموعة البيانات غير مدعوم.",
+      },
+      startFailed: "فشل بدء التدريب",
+      stopFailed: "فشل إيقاف التدريب",
+      trainingStillActiveTitle: "لا يزال التدريب نشطًا",
+      stopBeforeConfig: "أوقف التدريب أولًا، ثم عُد إلى التكوين.",
+      resumeFailed: "فشل استئناف التدريب",
+      resumeFailedTitle: "تعذّر استئناف التدريب",
+      resumeUnavailable:
+        "لا يمكن استئناف سوى عمليات التدريب المتوقفة أو التي انتهت بخطأ ولديها نقطة تحقق محفوظة.",
       uploadConfigTooltip: "تحميل تكوين YAML محفوظ",
       saveConfigTooltip: "تنزيل التكوين الحالي بصيغة YAML",
       resetConfigTooltip: "إعادة التعيين إلى إعدادات النموذج الافتراضية",

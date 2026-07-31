@@ -4,7 +4,9 @@
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { startTraining } from "../api/train-api";
@@ -227,7 +229,7 @@ export async function startFreshTrainingRun(): Promise<boolean> {
 
   const validation = validateTrainingConfig(attempt.config);
   if (!validation.ok) {
-    return attempt.cancel(validation.message);
+    return attempt.cancel(translate(validation.errorKey));
   }
 
   try {
@@ -252,7 +254,9 @@ export async function startFreshTrainingRun(): Promise<boolean> {
       return false;
     }
     const rawMessage =
-      error instanceof Error ? error.message : "Failed to start training";
+      error instanceof Error
+        ? error.message
+        : translate("studio.training.startFailed");
     return attempt.cancel(normalizeTrainingStartError(rawMessage));
   }
 }
@@ -319,8 +323,21 @@ function applyDetectedDatasetModality(
   isAudio: boolean,
 ): boolean {
   if (attempt.config.datasetStreaming && (isImage || isAudio)) {
-    useTrainingConfigStore.getState().setDatasetStreaming(false);
-    return attempt.cancel(TRAINING_SETUP_CHANGED_ERROR);
+    if (
+      !attempt.updateConfig({
+        datasetStreaming: false,
+        isDatasetImage: isImage,
+        isDatasetAudio: isAudio,
+      })
+    ) {
+      return false;
+    }
+    toast.info(
+      translate(
+        "studio.dataset.streaming.notifications.disabledForDetectedModality",
+      ),
+    );
+    return attempt.cancel();
   }
   if (
     isImage === attempt.config.isDatasetImage &&
@@ -387,7 +404,7 @@ async function submitFreshTrainingRun(
 ): Promise<boolean> {
   const validation = validateTrainingConfig(attempt.config);
   if (!validation.ok) {
-    return attempt.cancel(validation.message);
+    return attempt.cancel(translate(validation.errorKey));
   }
 
   const payload = buildTrainingStartPayload(attempt.config, hfToken);
@@ -424,8 +441,7 @@ async function checkSelectedDataset(
     config.datasetSource === "huggingface" &&
     config.datasetKnownCached &&
     !config.datasetStreaming;
-  const datasetLocalPath =
-    preferLocalCache ? config.datasetLocalPath : null;
+  const datasetLocalPath = preferLocalCache ? config.datasetLocalPath : null;
 
   try {
     const check = await checkDatasetFormat({

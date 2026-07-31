@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SegmentedTabsList } from "@/components/segmented-tabs";
+import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
 import {
   Select,
   SelectContent,
@@ -15,10 +16,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { HfTokenIndicator } from "@/features/hub";
-import {
-  TRAIN_PICKER_TRIGGER_CLASS,
-  TrainModelSelector,
-} from "@/features/model-picker";
+import { TrainModelSelector } from "@/features/model-picker";
 import { useSettingsDialogStore } from "@/features/settings";
 import {
   TRAINING_METHOD_META,
@@ -198,7 +196,7 @@ function TrainingMethodSelect() {
     >
       <SelectTrigger
         className={cn(
-          TRAIN_PICKER_TRIGGER_CLASS,
+          PICKER_TRIGGER_CLASS,
           "w-full min-w-[148px] justify-between",
         )}
         data-tour="studio-method"

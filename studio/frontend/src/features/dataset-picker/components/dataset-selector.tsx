@@ -2,8 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { resolveDevicePickerItem } from "@/components/resource-picker/device-item-match";
-import { hubResourceIdsEqual } from "@/components/resource-picker/hub-resource-id";
-import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-focus";
+import {
+  hubResourceIdsEqual,
+  validateHubResourceId,
+} from "@/components/resource-picker/hub-resource-id";
+import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
 import {
   type PickerExactQueryCommitResult,
   PickerShell,
@@ -28,6 +31,7 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -46,11 +50,6 @@ function explicitLocalDatasetPath(path: string): string {
   const trimmed = path.trim();
   return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;
 }
-
-const TRIGGER_BASE = cn(
-  "hub-menu-trigger field-soft inline-flex h-9 w-full cursor-pointer select-none items-center gap-1.5 rounded-[12px] px-3 text-ui-12p5 text-muted-foreground transition-colors",
-  PICKER_FOCUS_VISIBLE_CLASS,
-);
 
 function resolveExactDatasetDeviceItem(
   query: string,
@@ -134,14 +133,22 @@ export function DatasetSelector() {
 
   const selectHubDataset = useCallback(
     (id: string) => {
-      const cached = cachedDatasetById.get(id.trim().toLowerCase());
-      const canonicalId = cached?.repoId ?? id.trim();
+      const validation = validateHubResourceId(id);
+      if (!validation.ok) {
+        toast.error(t("studio.datasetPicker.cantUseDataset"), {
+          description: t("studio.datasetPicker.reasonInvalidHubId"),
+        });
+        return false;
+      }
+      const cached = cachedDatasetById.get(validation.id.toLowerCase());
+      const canonicalId = cached?.repoId ?? validation.id;
       selectHfDataset(canonicalId, {
         knownCached: cached !== undefined,
         localPath: cached?.cachePath ?? null,
       });
+      return true;
     },
-    [selectHfDataset, cachedDatasetById],
+    [selectHfDataset, cachedDatasetById, t],
   );
 
   const deviceItems = useMemo<DatasetDeviceItem[]>(() => {
@@ -161,7 +168,12 @@ export function DatasetSelector() {
         kind: "local",
         key: `local:${d.path}`,
         title: d.title || d.id,
-        detail: d.sourceLabel,
+        detail:
+          d.datasetSource === "recipe"
+            ? t("studio.datasetPicker.sourceRecipe")
+            : d.datasetSource === "upload"
+              ? t("studio.datasetPicker.sourceUpload")
+              : t("studio.datasetPicker.sourceLocal"),
         path: d.path,
       }));
     return [...cachedItems, ...localItems].sort((a, b) =>
@@ -251,7 +263,9 @@ export function DatasetSelector() {
       return;
     }
     if (tab === "hub") {
-      selectHubDataset(next);
+      if (!selectHubDataset(next)) {
+        return;
+      }
     } else {
       selectLocalDataset(explicitLocalDatasetPath(next));
     }
@@ -267,8 +281,9 @@ export function DatasetSelector() {
         if (!item) {
           return { kind: "unhandled" };
         }
-        selectHubDataset(item.id);
-        closePicker();
+        if (selectHubDataset(item.id)) {
+          closePicker();
+        }
         return { kind: "handled" };
       }
       const resolution = resolveExactDatasetDeviceItem(query, deviceItems);
@@ -340,7 +355,8 @@ export function DatasetSelector() {
       trigger={
         <button
           type="button"
-          className={cn(TRIGGER_BASE, "justify-between")}
+          data-tour="studio-dataset-picker"
+          className={cn(PICKER_TRIGGER_CLASS, "w-full justify-between")}
         >
           <span className="flex min-w-0 items-center gap-1.5">
             <HugeiconsIcon
@@ -397,8 +413,9 @@ export function DatasetSelector() {
           hasQuery={activeQuery.length > 0}
           error={hfError}
           onPick={(id) => {
-            selectHubDataset(id);
-            closePicker();
+            if (selectHubDataset(id)) {
+              closePicker();
+            }
           }}
           onRetry={retryHf}
           sentinelRef={sentinelRef}

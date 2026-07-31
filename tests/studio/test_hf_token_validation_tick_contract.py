@@ -377,7 +377,7 @@ def test_resume_training_preserves_consent_and_error_contracts():
     assert 'this.phase === "preflight" && !this.isPreflightActive()' in failure
     assert "normalizeTrainingStartError(rawMessage)" in failure
     assert "this.cancel(safeMessage)" in failure
-    assert 'toast.error("Could not resume training"' in failure
+    assert 'toast.error(translate("studio.training.resumeFailedTitle")' in failure
     assert "description: safeMessage" in failure
 
 

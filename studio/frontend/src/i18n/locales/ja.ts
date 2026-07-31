@@ -642,7 +642,7 @@ export const ja = {
       modelLabel: "モデル",
       methodLabel: "手法",
       hfTokenLabel: "Hugging Face トークン",
-      hfDatasetLabel: "データセット",
+      datasetLabel: "データセット",
       uploadLocalLabel: "またはローカルファイルをアップロード",
       sourceBrowse: "参照",
       releaseToUpload: "ドロップしてアップロード",
@@ -706,6 +706,9 @@ export const ja = {
       useAsHubDataset: "Hugging Face データセットとして使用",
       useAsLocalPath: "ローカルパスとして使用",
       hfCacheLabel: "HF キャッシュ",
+      sourceRecipe: "レシピ",
+      sourceUpload: "アップロード",
+      sourceLocal: "ローカル",
       scanningLocal: "このデバイス上のデータセットをスキャン中…",
       couldntScan: "ローカルデータセットをスキャンできませんでした",
       someLocationsUnscanned:
@@ -719,6 +722,9 @@ export const ja = {
       tokenRejectedBody:
         "「設定」→「一般」でトークンを更新してから、再試行してください。",
       hubUnreachable: "Hugging Face に接続できませんでした",
+      cantUseDataset: "データセットを使用できません",
+      reasonInvalidHubId:
+        "有効な Hugging Face データセット ID を入力してください。形式は repo または owner/repo で、使用できる文字は英字、数字、.、_、- のみです（各部分は最大 96 文字）。",
     },
     modelPicker: {
       noun: "モデル",
@@ -728,6 +734,12 @@ export const ja = {
       useAsHubModel: "Hugging Face モデルとして使用",
       useAsLocalPath: "ローカルパスとして使用",
       hfCacheLabel: "HF キャッシュ",
+      sourceModelsFolder: "モデルフォルダ",
+      sourceHfCache: "HF キャッシュ",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "カスタムフォルダ",
+      sourceLocalModel: "ローカルモデル",
       scanningLocal: "ローカルモデルをスキャン中…",
       couldntScan: "ローカルモデルをスキャンできませんでした",
       someLocationsUnscanned:
@@ -742,6 +754,8 @@ export const ja = {
         "「設定」→「一般」でトークンを更新してから、再試行してください。",
       hubUnreachable: "Hugging Face に接続できませんでした",
       cantUseModel: "このモデルはトレーニングに使用できません",
+      reasonInvalidHubId:
+        "有効な Hugging Face モデル ID を入力してください。形式は repo または owner/repo で、使用できる文字は英字、数字、.、_、- のみです（各部分は最大 96 文字）。",
       reasonEmptyId: "モデル ID またはローカルモデルのパスを入力してください。",
       reasonGguf: "GGUF モデルはトレーニングに使用できません。",
       reasonAdapter:
@@ -753,6 +767,8 @@ export const ja = {
       vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GB)",
       vramTight: "約 {est}GB VRAM (GPU {total}GB ではギリギリです)",
       vramApprox: "約 {est}GB VRAM",
+      vramOomBadge: "OOM",
+      vramTightBadge: "ギリギリ",
     },
     methods: {
       qlora: {
@@ -860,6 +876,8 @@ export const ja = {
           evaluation: "評価（個別の評価用分割が必要）",
         },
         notifications: {
+          disabledForDetectedModality:
+            "画像または音声データセットは全体をダウンロードする必要があるため、ストリーミングをオフにしました。設定を確認してから、もう一度トレーニングを開始してください。",
           turnedOffMaxSteps:
             "ストリーミングをオフにしました。ストリーミングには 0 より大きい固定の最大ステップ数が必要です。",
           adjusted:
@@ -1007,6 +1025,15 @@ export const ja = {
       starting: "開始中...",
       loadingModel: "モデルを読み込み中...",
       checkingDataset: "データセットを確認中...",
+      startFailed: "トレーニングの開始に失敗しました",
+      stopFailed: "トレーニングの停止に失敗しました",
+      trainingStillActiveTitle: "トレーニングはまだ実行中です",
+      stopBeforeConfig:
+        "先にトレーニングを停止してから、設定画面に戻ってください。",
+      resumeFailed: "トレーニングの再開に失敗しました",
+      resumeFailedTitle: "トレーニングを再開できませんでした",
+      resumeUnavailable:
+        "保存済みのチェックポイントがある、停止済みまたはエラー終了した実行のみ再開できます。",
       chooseModel: "モデルを選択",
       chooseDataset: "データセットを選択",
       chooseModelAndDataset: "モデルとデータセットを選択",
@@ -1018,6 +1045,19 @@ export const ja = {
         "データセットがこのモデルと互換性があるか確認できませんでした。接続または Hugging Face トークンを確認してください。トレーニング開始時にもう一度確認します。",
       setupChanged:
         "確認中にトレーニング設定が変更されました。設定を確認してから、トレーニングをもう一度開始してください。",
+      validation: {
+        s3MultimodalUnsupported:
+          "S3 データセットは、ビジョンまたはオーディオのトレーニングではまだサポートされていません。",
+        s3BucketRequired: "先に S3 バケット名を入力してください。",
+        s3CredentialsRequired:
+          "S3 アクセスキーを指定するか、IAM ロールを有効にしてください。",
+        modelRequired: "先にベースモデルを選択してください。",
+        hfDatasetRequired:
+          "先に Hugging Face データセットを選択してください。",
+        localDatasetRequired: "先にローカルデータセットを選択してください。",
+        unsupportedDatasetSource:
+          "サポートされていないデータセットソースです。",
+      },
       uploadConfigTooltip: "保存された YAML 構成を読み込みます",
       saveConfigTooltip: "現在の構成を YAML としてダウンロードします",
       resetConfigTooltip: "モデルのデフォルト値にリセットします",

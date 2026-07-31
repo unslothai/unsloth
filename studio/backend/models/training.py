@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from typing import Any, Optional, List, Dict, Literal
 
 from hub.schemas.inventory import ModelFormat
+from hub.utils.paths import is_valid_repo_id
 from utils.training_runs import normalize_project_name
 
 
@@ -217,19 +218,13 @@ class TrainingStartRequest(BaseModel):
     @field_validator("hf_dataset")
     @classmethod
     def _check_hf_dataset(cls, v: Optional[str]) -> Optional[str]:
-        # Constrain the HF dataset id to a safe charset + length to shrink the
-        # path-traversal / SSRF surface of `load_dataset(<id>, ...)`.
         if v is None:
             return v
         v = v.strip()
         if not v:
             return None
-        if len(v) > 256:
-            raise ValueError("hf_dataset is too long (max 256 chars)")
-        if ".." in v:
-            raise ValueError("hf_dataset must not contain '..'")
-        if not re.fullmatch(r"[A-Za-z0-9._\-/]+", v):
-            raise ValueError("hf_dataset may only contain letters, digits, '_', '-', '.', '/'")
+        if not is_valid_repo_id(v):
+            raise ValueError("hf_dataset must be a valid Hugging Face repo id")
         return v
 
     @field_validator("subset")

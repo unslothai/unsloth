@@ -418,8 +418,7 @@ export function useHubInventory(
       [
         ...(isDatasetMode ? liveDownloadRows : []),
         ...cachedDatasets.map((row) => buildCachedInventoryRow(row, "unknown")),
-      ]
-        .sort(compareCachedRows),
+      ].sort(compareCachedRows),
     [cachedDatasets, isDatasetMode, liveDownloadRows],
   );
 
@@ -441,6 +440,10 @@ export function useHubInventory(
           title: ds.label || ds.id,
           source: "custom" as const,
           sourceLabel: localDatasetSourceLabel(ds.source),
+          datasetSource:
+            ds.source === "recipe" || ds.source === "upload"
+              ? ds.source
+              : undefined,
           path: ds.path,
           isGguf: false,
           loadId: ds.id,

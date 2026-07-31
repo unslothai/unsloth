@@ -591,7 +591,7 @@ export const hi = {
       modelLabel: "मॉडल",
       methodLabel: "विधि",
       hfTokenLabel: "Hugging Face टोकन",
-      hfDatasetLabel: "डेटासेट",
+      datasetLabel: "डेटासेट",
       uploadLocalLabel: "या कोई स्थानीय फ़ाइल अपलोड करें",
       sourceBrowse: "ब्राउज़ करें",
       releaseToUpload: "अपलोड करने के लिए छोड़ें",
@@ -668,6 +668,12 @@ export const hi = {
       tokenRejectedBody:
         "सेटिंग्स → सामान्य में अपना टोकन अपडेट करें, फिर पुनः प्रयास करें।",
       hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
+      cantUseDataset: "डेटासेट का उपयोग नहीं किया जा सकता",
+      reasonInvalidHubId:
+        "एक मान्य Hugging Face डेटासेट ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें केवल अक्षर, अंक, ., _ या - हों (हर भाग में अधिकतम 96 वर्ण)।",
+      sourceRecipe: "रेसिपी",
+      sourceUpload: "अपलोड",
+      sourceLocal: "स्थानीय",
     },
     modelPicker: {
       noun: "मॉडल",
@@ -691,6 +697,8 @@ export const hi = {
       hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
       cantUseModel: "मॉडल को ट्रेनिंग के लिए उपयोग नहीं कर सकते",
       reasonEmptyId: "मॉडल ID या स्थानीय मॉडल पथ दर्ज करें।",
+      reasonInvalidHubId:
+        "एक मान्य Hugging Face मॉडल ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें केवल अक्षर, अंक, ., _ या - हों (हर भाग में अधिकतम 96 वर्ण)।",
       reasonGguf: "GGUF मॉडल ट्रेनिंग के लिए उपयोग नहीं किए जा सकते।",
       reasonAdapter:
         "एडेप्टर आउटपुट को बेस ट्रेनिंग मॉडल के रूप में उपयोग नहीं किया जा सकता।",
@@ -701,6 +709,14 @@ export const hi = {
       vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GB)",
       vramTight: "लगभग {est}GB VRAM ({total}GB पर बमुश्किल फिट)",
       vramApprox: "लगभग {est}GB VRAM",
+      sourceModelsFolder: "मॉडल फ़ोल्डर",
+      sourceHfCache: "HF कैश",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "कस्टम फ़ोल्डर",
+      sourceLocalModel: "स्थानीय मॉडल",
+      vramOomBadge: "OOM",
+      vramTightBadge: "कम जगह",
     },
     methods: {
       qlora: {
@@ -816,6 +832,8 @@ export const hi = {
             "स्ट्रीमिंग के लिए अधिकतम स्टेप्स की निश्चित संख्या चाहिए (स्ट्रीमिंग डेटासेट की लंबाई ज्ञात नहीं होती)। पहले अधिकतम स्टेप्स > 0 सेट करें।",
           enabledAdjusted:
             "स्ट्रीमिंग चालू की गई। असंगत विकल्प बंद किए गए: {options}।",
+          disabledForDetectedModality:
+            "स्ट्रीमिंग बंद कर दी गई क्योंकि इमेज और ऑडियो डेटासेट को पूरा डाउनलोड करना आवश्यक है। सेटिंग की समीक्षा करें, फिर ट्रेनिंग दोबारा शुरू करें।",
         },
       },
       auto: "स्वतः",
@@ -986,6 +1004,24 @@ export const hi = {
         "यह सत्यापित नहीं किया जा सका कि डेटासेट इस मॉडल के साथ संगत है। अपना कनेक्शन या Hugging Face टोकन जांचें — ट्रेनिंग शुरू करने पर जांच फिर से की जाएगी।",
       setupChanged:
         "जांच के दौरान ट्रेनिंग सेटअप बदल गया। इसकी समीक्षा करें और फिर से ट्रेनिंग शुरू करें।",
+      validation: {
+        s3MultimodalUnsupported:
+          "S3 डेटासेट अभी विज़न या ऑडियो ट्रेनिंग के लिए समर्थित नहीं हैं।",
+        s3BucketRequired: "पहले S3 बकेट का नाम दर्ज करें।",
+        s3CredentialsRequired: "S3 एक्सेस कुंजियाँ दें या IAM रोल सक्षम करें।",
+        modelRequired: "पहले बेस मॉडल चुनें।",
+        hfDatasetRequired: "पहले Hugging Face डेटासेट चुनें।",
+        localDatasetRequired: "पहले स्थानीय डेटासेट चुनें।",
+        unsupportedDatasetSource: "असमर्थित डेटासेट स्रोत।",
+      },
+      startFailed: "ट्रेनिंग शुरू करने में विफल",
+      stopFailed: "ट्रेनिंग रोकने में विफल",
+      trainingStillActiveTitle: "ट्रेनिंग अभी भी सक्रिय है",
+      stopBeforeConfig: "पहले ट्रेनिंग रोकें, फिर कॉन्फ़िगरेशन पर लौटें।",
+      resumeFailed: "ट्रेनिंग फिर से शुरू करने में विफल",
+      resumeFailedTitle: "ट्रेनिंग फिर से शुरू नहीं की जा सकी",
+      resumeUnavailable:
+        "केवल उन ट्रेनिंग रन को फिर से शुरू किया जा सकता है जिन्हें रोका गया हो या जो त्रुटि के साथ समाप्त हुई हों और जिनका चेकपॉइंट सहेजा गया हो।",
       uploadConfigTooltip: "एक सहेजा गया YAML कॉन्फ़िग लोड करें",
       saveConfigTooltip: "वर्तमान कॉन्फ़िग को YAML के रूप में डाउनलोड करें",
       resetConfigTooltip: "मॉडल डिफ़ॉल्ट पर रीसेट करें",

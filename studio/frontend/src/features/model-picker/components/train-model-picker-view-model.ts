@@ -93,12 +93,13 @@ export function toCachedTrainModelDeviceItem(
 
 export function toLocalTrainModelDeviceItem(
   row: LocalInventoryRow,
+  sourceLabel: string,
 ): TrainModelDeviceItem {
   return {
     ...toTrainModelDisplayCandidate(row),
     key: row.id,
     path: row.path,
-    sourceLabel: row.sourceLabel,
+    sourceLabel,
     knownCached: row.source === "hf_cache",
     modelTypeFlags: trainingModelTypeFlagsFromMetadata({
       tags: row.tags,

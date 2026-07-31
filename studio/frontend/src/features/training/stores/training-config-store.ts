@@ -658,9 +658,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           isVlm: state.isVisionModel,
           preferLocalCache,
           localPath:
-            isHfSelection && preferLocalCache
-              ? state.datasetLocalPath
-              : null,
+            isHfSelection && preferLocalCache ? state.datasetLocalPath : null,
         })
           .then((res) => {
             if (controller.signal.aborted) return;
@@ -720,15 +718,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetStreaming: boolean,
       ) => {
         const state = get();
-        if (
-          state.datasetSource !== "huggingface" ||
-          !state.dataset
-        ) {
+        if (state.datasetSource !== "huggingface" || !state.dataset) {
           return;
         }
         runDatasetCheck(state.dataset, state.datasetSplit || "train", {
-          preferLocalCache:
-            !datasetStreaming && state.datasetKnownCached,
+          preferLocalCache: !datasetStreaming && state.datasetKnownCached,
         });
       };
 
@@ -755,22 +749,26 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         dataset: string | null,
         options?: DatasetCacheReferenceOptions,
       ) => {
+        const datasetId = dataset?.trim() || null;
         _datasetCheckController?.abort();
         _datasetCheckController = null;
         _trainOnCompletionsManuallySet = false;
         const browseDatasetSelection = createHfBrowseDatasetSelection(
-          dataset,
+          datasetId,
           options,
         );
         set({
           datasetSource: "huggingface",
           browseDatasetSelection,
-          dataset,
+          dataset: datasetId,
           uploadedFile: null,
           ...resetDatasetState(),
           datasetKnownCached: browseDatasetSelection.knownCached,
           datasetLocalPath: browseDatasetSelection.localPath,
         });
+        if (datasetId) {
+          runDatasetCheck(datasetId, "train");
+        }
       };
 
       const selectLocalDatasetInternal = (uploadedFile: string | null) => {
@@ -1015,8 +1013,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             return;
           }
           const cacheReferenceChanged =
-            !state.datasetKnownCached ||
-            state.datasetLocalPath !== localPath;
+            !state.datasetKnownCached || state.datasetLocalPath !== localPath;
           set({
             datasetKnownCached: true,
             datasetLocalPath: localPath,
@@ -1102,16 +1099,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
           }),
         setDataset: (dataset) => {
+          const datasetId = dataset?.trim() || null;
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
           set((state) => ({
-            dataset,
+            dataset: datasetId,
             datasetKnownCached: false,
             datasetLocalPath: null,
             browseDatasetSelection:
               state.datasetSource === "huggingface"
-                ? createHfBrowseDatasetSelection(dataset)
+                ? createHfBrowseDatasetSelection(datasetId)
                 : state.browseDatasetSelection,
             datasetSubset: null,
             datasetSplit: null,
@@ -1124,6 +1122,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isCheckingDataset: false,
             datasetCheckFailed: false,
           }));
+          if (datasetId) {
+            runDatasetCheck(datasetId, "train");
+          }
         },
         setDatasetSubset: (datasetSubset) => {
           _datasetCheckController?.abort();

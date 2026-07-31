@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import {
+  type StartValidationResult,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingReadiness,
@@ -25,7 +26,7 @@ function resolveStartTrainingError(input: {
   hasModel: boolean;
   hasDataset: boolean;
   datasetSource: DatasetSource;
-  configValidation: { ok: boolean; message?: string | null };
+  configValidation: StartValidationResult;
 }): string | null {
   const {
     t,
@@ -49,17 +50,13 @@ function resolveStartTrainingError(input: {
     return null;
   }
   if (!hasDataset) {
-    if (
-      datasetSource === "s3" &&
-      !configValidation.ok &&
-      configValidation.message
-    ) {
-      return configValidation.message;
+    if (datasetSource === "s3" && !configValidation.ok) {
+      return t(configValidation.errorKey);
     }
     return null;
   }
-  if (!configValidation.ok && configValidation.message) {
-    return configValidation.message;
+  if (!configValidation.ok) {
+    return t(configValidation.errorKey);
   }
   if (startError) {
     return startError;
