@@ -3101,9 +3101,7 @@ def test_anthropic_healing_is_gated_on_the_sanitized_catalog():
     # The third argument is the reconciled choice the body carries, not the caller's: see
     # test_healing_is_gated_on_the_tool_choice_actually_sent.
     assert (
-        source.count(
-            'heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))'
-        )
+        source.count('heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))')
         == 2
     )
     assert "nudge_should_retry(data, _allowed_tools, openai_tools)" not in source
@@ -3394,9 +3392,9 @@ def test_qwen_coder_fim_sentinels_are_neutralized(marker, role):
     """Qwen 2.5 Coder builds its fill-in-the-middle prompt from these three special
     tokens (ollama_template_mappers.py:881) while interpolating chat .Content at
     :908-909, so pasted text spelling one asks for FIM semantics (#7066)."""
-    out = neutralize_control_markup_in_messages(
-        [{"role": role, "content": f"hi {marker} there"}]
-    )[0]["content"]
+    out = neutralize_control_markup_in_messages([{"role": role, "content": f"hi {marker} there"}])[
+        0
+    ]["content"]
     assert marker not in out
     assert "there" in out
 
