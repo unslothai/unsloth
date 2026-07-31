@@ -60,7 +60,39 @@ test("labels a missing role as a generic message", () => {
   );
 });
 
-test("fences tool calls so raw html in the args cannot leak into the document", () => {
+test("renders a multi-line arg as code instead of an escaped json string", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "tool-call",
+        name: "render_html",
+        args: {
+          code: "<!DOCTYPE html>\n<html>\n  <body>hi</body>\n</html>",
+          title: "Canvas",
+        },
+        result: "Rendered HTML canvas: Canvas.",
+      },
+    ]),
+    [
+      "**tool call:** `render_html`",
+      "",
+      "**code:**",
+      "",
+      "```",
+      "<!DOCTYPE html>",
+      "<html>",
+      "  <body>hi</body>",
+      "</html>",
+      "```",
+      "",
+      "**title:** Canvas",
+      "",
+      "**result:** Rendered HTML canvas: Canvas.",
+    ].join("\n"),
+  );
+});
+
+test("keeps single line markup inert without fencing prose", () => {
   assert.equal(
     renderConversationBlocks([
       {
@@ -71,25 +103,27 @@ test("fences tool calls so raw html in the args cannot leak into the document", 
       },
     ]),
     [
-      "```json",
-      "{",
-      `  "tool_call": "render_html",`,
-      `  "args": {`,
-      `    "code": "<script>alert(1)</script>"`,
-      "  },",
-      `  "result": "ok"`,
-      "}",
-      "```",
+      "**tool call:** `render_html`",
+      "",
+      "**code:** `<script>alert(1)</script>`",
+      "",
+      "**result:** ok",
     ].join("\n"),
   );
 });
 
-test("widens the fence when the payload contains backticks", () => {
-  const rendered = renderConversationBlocks([
-    { kind: "tool-call", name: "run", args: { cmd: "echo ```x```" } },
+test("widens code spans and fences past backticks in the payload", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "tool-call", name: "run", args: { cmd: "echo ```x```" } },
+    ]),
+    ["**tool call:** `run`", "", "**cmd:** ```` echo ```x``` ````"].join("\n"),
+  );
+
+  const multiline = renderConversationBlocks([
+    { kind: "tool-call", name: "run", args: { script: "```\nx\n```" } },
   ]);
-  assert.ok(rendered.startsWith("````json\n"));
-  assert.ok(rendered.endsWith("\n````"));
+  assert.ok(multiline.includes("````\n```\nx\n```\n````"));
 });
 
 test("collapses thinking and leaves prose untouched", () => {

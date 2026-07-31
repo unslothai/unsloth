@@ -49,6 +49,36 @@ function fence(body: string, language = ""): string {
   return `${ticks}${language}\n${body}\n${ticks}`;
 }
 
+function inlineCode(value: string): string {
+  const longestRun = [...value.matchAll(/`+/g)].reduce(
+    (max, [run]) => Math.max(max, run.length),
+    0,
+  );
+  const ticks = "`".repeat(longestRun + 1);
+  // Padding keeps a leading or trailing backtick from closing the span.
+  const pad = value.startsWith("`") || value.endsWith("`") ? " " : "";
+  return `${ticks}${pad}${value}${pad}${ticks}`;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// A multi-line string is almost always source: html, a patch, a script. Fence
+// it as-is so it reads as code instead of a JSON string full of \n. No language
+// tag, since guessing one wrong is worse than none.
+function renderValue(label: string, value: unknown): string[] {
+  if (typeof value === "string") {
+    if (value.includes("\n")) return [`**${label}:**`, fence(value)];
+    // Prose stays prose; anything that could be read as markup or a fence
+    // becomes an inline code span so it renders as itself.
+    const inert = /[<`]/.test(value) ? inlineCode(value) : value;
+    return [`**${label}:** ${inert}`];
+  }
+  if (value === undefined) return [];
+  return [`**${label}:**`, fence(JSON.stringify(value, null, 2), "json")];
+}
+
 function renderBlock(block: ConversationMarkdownBlock): string {
   if (block.kind === "text") {
     return block.text.trim();
@@ -61,10 +91,18 @@ function renderBlock(block: ConversationMarkdownBlock): string {
   if (block.kind === "attachment") {
     return block.label;
   }
-  const payload: Record<string, unknown> = { tool_call: block.name };
-  if (block.args !== undefined) payload.args = block.args;
-  if (block.result !== undefined) payload.result = block.result;
-  return fence(JSON.stringify(payload, null, 2), "json");
+  const parts: string[] = [`**tool call:** \`${block.name}\``];
+  if (isPlainObject(block.args)) {
+    for (const [key, value] of Object.entries(block.args)) {
+      parts.push(...renderValue(key, value));
+    }
+  } else if (block.args !== undefined) {
+    parts.push(...renderValue("args", block.args));
+  }
+  if (block.result !== undefined) {
+    parts.push(...renderValue("result", block.result));
+  }
+  return parts.join("\n\n");
 }
 
 export function renderConversationBlocks(
