@@ -216,19 +216,32 @@ class RawTextDataLoader:
 
     def _read_file_by_format(self, file_path, file_format):
         """Read file content based on detected format."""
-        with open(file_path, "r", encoding = "utf-8") as f:
+        # utf-8-sig: Windows tooling (PowerShell's Out-File, Excel's "CSV UTF-8") prepends
+        # a BOM that plain utf-8 keeps as a leading character. Without a BOM it decodes
+        # exactly like utf-8.
+        with open(file_path, "r", encoding = "utf-8-sig") as f:
             if file_format == "plain_text" or file_format == "markdown":
                 return f.read()
             elif file_format == "json_lines":
-                lines = []
-                for line in f:
+                if Path(file_path).suffix.lower() == ".json":
+                    # A .json file is a single JSON document (commonly a list
+                    # of records), so parsing it per line drops the whole file.
                     try:
-                        data = json.loads(line.strip())
-                        text = self._extract_text_from_json(data)
-                        if text:
-                            lines.append(text)
+                        parsed = json.load(f)
+                        records = parsed if isinstance(parsed, list) else [parsed]
                     except json.JSONDecodeError:
-                        continue
+                        # Some files carry JSON Lines under a .json name.
+                        f.seek(0)
+                        records = self._iter_json_lines(f)
+                else:
+                    # A .jsonl file is one JSON value per line: stay streaming so
+                    # a large file is never held in memory all at once.
+                    records = self._iter_json_lines(f)
+                lines = []
+                for data in records:
+                    text = self._extract_text_from_json(data)
+                    if text:
+                        lines.append(text)
                 return "\n\n".join(lines)
             elif file_format == "csv_text_column":
                 reader = csv.DictReader(f)
@@ -243,6 +256,17 @@ class RawTextDataLoader:
     # Cache text fields/columns for better performance
     _TEXT_FIELDS = ("text", "content", "message", "body", "description", "prompt")
     _TEXT_COLUMNS = _TEXT_FIELDS
+
+    def _iter_json_lines(self, handle):
+        """Yield one parsed JSON value per line, skipping blank and malformed lines."""
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""

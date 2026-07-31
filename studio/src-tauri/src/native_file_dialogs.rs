@@ -47,11 +47,28 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("csv") => ("CSV", vec!["csv"]),
         Some("md") | Some("markdown") => ("Markdown", vec!["md", "markdown"]),
         Some("html") | Some("htm") => ("HTML", vec!["html", "htm"]),
+        Some("py") => ("Python", vec!["py"]),
+        Some("sh") => ("Shell script", vec!["sh"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
+        // Saved chat attachments, not just exports: a name outside the active
+        // filter can be rejected or silently re-extensioned by the OS dialog.
+        Some("txt") | Some("log") => ("Text", vec!["txt", "log"]),
+        Some("png") => ("PNG image", vec!["png"]),
+        Some("jpg") | Some("jpeg") => ("JPEG image", vec!["jpg", "jpeg"]),
+        Some("webp") => ("WebP image", vec!["webp"]),
+        Some("gif") => ("GIF image", vec!["gif"]),
+        Some("wav") => ("WAV audio", vec!["wav"]),
+        Some("mp3") => ("MP3 audio", vec!["mp3"]),
+        Some("m4a") | Some("mp4") => ("MPEG-4 audio", vec!["m4a", "mp4"]),
+        Some("ogg") | Some("oga") => ("Ogg audio", vec!["ogg", "oga"]),
+        Some("flac") => ("FLAC audio", vec!["flac"]),
+        Some("webm") => ("WebM audio", vec!["webm"]),
         _ => (
             "Export files",
             vec![
-                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "zip",
+                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "py", "sh",
+                "zip", "txt", "log", "png", "jpg", "jpeg", "webp", "gif", "wav", "mp3", "m4a",
+                "mp4", "ogg", "oga", "flac", "webm",
             ],
         ),
     }
@@ -262,6 +279,41 @@ mod tests {
     }
 
     #[test]
+    fn python_scripts_use_a_python_save_filter() {
+        assert_eq!(save_filter("script.py"), ("Python", vec!["py"]));
+        assert_eq!(save_filter("script.PY"), ("Python", vec!["py"]));
+    }
+
+    #[test]
+    fn shell_commands_use_a_shell_save_filter() {
+        // The terminal card downloads command.sh through the same cell.
+        assert_eq!(save_filter("command.sh"), ("Shell script", vec!["sh"]));
+        assert_eq!(save_filter("command.SH"), ("Shell script", vec!["sh"]));
+    }
+
+    #[test]
+    fn saved_chat_attachments_keep_their_own_extension() {
+        // Settings > Data saves attachments here; a name outside the filter can
+        // be rejected or re-extensioned by the OS dialog.
+        assert_eq!(save_filter("report.txt"), ("Text", vec!["txt", "log"]));
+        assert_eq!(save_filter("photo.PNG"), ("PNG image", vec!["png"]));
+        assert_eq!(save_filter("shot.jpeg"), ("JPEG image", vec!["jpg", "jpeg"]));
+        assert_eq!(save_filter("clip.wav"), ("WAV audio", vec!["wav"]));
+        assert_eq!(save_filter("voice.webm"), ("WebM audio", vec!["webm"]));
+    }
+
+    #[test]
+    fn generic_fallback_covers_every_tool_download_name() {
+        let (name, extensions) = save_filter("no-extension");
+        assert_eq!(name, "Export files");
+        for wanted in [
+            "py", "sh", "json", "jsonl", "csv", "md", "html", "zip", "txt", "png", "jpg", "wav",
+        ] {
+            assert!(extensions.contains(&wanted), "fallback lost {wanted}");
+        }
+    }
+
+    #[test]
     fn reads_supported_import_and_rejects_other_extensions() {
         let jsonl_path = temp_path("allowed").with_extension("JSONL");
         fs::write(&jsonl_path, "{\"messages\":[]}").unwrap();
@@ -310,7 +362,13 @@ mod tests {
         let path = std::env::temp_dir().join(OsString::from_vec(vec![
             b'u', b'n', b's', b'l', b'o', b't', b'h', 0xff, b'.', b'c', b's', b'v',
         ]));
-        fs::write(&path, "role,content\nuser,hello\n").unwrap();
+        // Linux happily stores arbitrary bytes in a filename, but macOS enforces
+        // UTF-8 on APFS/HFS+ and rejects this name outright. The name-recovery
+        // path being asserted here is only reachable where such a file can
+        // exist, so skip rather than fail on filesystems that forbid it.
+        if fs::write(&path, "role,content\nuser,hello\n").is_err() {
+            return;
+        }
         let imported = read_selected_import(Some(path.clone())).unwrap().unwrap();
         assert_eq!(imported.name, "chat-import.csv");
         let _ = fs::remove_file(path);

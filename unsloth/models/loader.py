@@ -472,13 +472,42 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         break
 
-        # Check if 4bit is allowed specifically for AMD
-        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
-                print(
-                    "Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now."
+        # bitsandbytes unusable (absent, or unstable as on some AMD stacks). This is
+        # a capability check, so it is not gated on use_exact_model_name: that only
+        # suppresses repo-name remapping and cannot make bitsandbytes available.
+        if not ALLOW_BITSANDBYTES:
+            # A user-supplied config sets load_in_4bit/8bit above and is forwarded
+            # in kwargs, so clearing the flags alone still rebuilds the bnb
+            # quantizer downstream. Only drop it when it asks for bnb: a GPTQ /
+            # AWQ / fp8 / torchao config must pass through untouched.
+            _quant_cfg = kwargs.get("quantization_config", None)
+            if isinstance(_quant_cfg, dict):
+                _wants_bnb = bool(
+                    _quant_cfg.get("load_in_4bit", False) or _quant_cfg.get("load_in_8bit", False)
                 )
+            elif _quant_cfg is not None:
+                _wants_bnb = bool(
+                    getattr(_quant_cfg, "load_in_4bit", False)
+                    or getattr(_quant_cfg, "load_in_8bit", False)
+                )
+            else:
+                _wants_bnb = False
+            if (
+                load_in_4bit
+                or load_in_8bit
+                or _wants_bnb
+                or model_name.lower().endswith("-bnb-4bit")
+            ):
+                print(
+                    "Unsloth: `bitsandbytes` is unavailable here - disabling 4bit/8bit. "
+                    "16bit LoRA and full finetuning still work."
+                )
+            # 8bit is bitsandbytes too: leaving either set sends the request on to
+            # Transformers, which builds the bnb quantizer and fails there.
             load_in_4bit = False
+            load_in_8bit = False
+            if _wants_bnb:
+                kwargs.pop("quantization_config", None)
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
@@ -1102,7 +1131,13 @@ class FastModel(FastBaseModel):
         assert load_in_fp8 in (True, False, "block")
 
         patch_compiled_autograd()
-        patch_compiling_bitsandbytes()
+        # Same best-effort wrapper as the FastLanguageModel path: unsloth_zoo's
+        # patch imports bitsandbytes unconditionally, so on a host without it this
+        # raised before the capability fallback below could take the 16bit path.
+        try:
+            patch_compiling_bitsandbytes()
+        except Exception as e:
+            print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
@@ -1112,6 +1147,43 @@ class FastModel(FastBaseModel):
             load_in_8bit = False
             load_in_fp8 = False
             load_in_16bit = False
+
+        # bitsandbytes unusable (absent, or unstable as on some AMD stacks). This is
+        # a capability check, so it is not gated on use_exact_model_name: that only
+        # suppresses repo-name remapping and cannot make bitsandbytes available.
+        if not ALLOW_BITSANDBYTES:
+            # A user-supplied config sets load_in_4bit/8bit above and is forwarded
+            # in kwargs, so clearing the flags alone still rebuilds the bnb
+            # quantizer downstream. Only drop it when it asks for bnb: a GPTQ /
+            # AWQ / fp8 / torchao config must pass through untouched.
+            _quant_cfg = kwargs.get("quantization_config", None)
+            if isinstance(_quant_cfg, dict):
+                _wants_bnb = bool(
+                    _quant_cfg.get("load_in_4bit", False) or _quant_cfg.get("load_in_8bit", False)
+                )
+            elif _quant_cfg is not None:
+                _wants_bnb = bool(
+                    getattr(_quant_cfg, "load_in_4bit", False)
+                    or getattr(_quant_cfg, "load_in_8bit", False)
+                )
+            else:
+                _wants_bnb = False
+            if (
+                load_in_4bit
+                or load_in_8bit
+                or _wants_bnb
+                or model_name.lower().endswith("-bnb-4bit")
+            ):
+                print(
+                    "Unsloth: `bitsandbytes` is unavailable here - disabling 4bit/8bit. "
+                    "16bit LoRA and full finetuning still work."
+                )
+            # 8bit is bitsandbytes too: leaving either set sends the request on to
+            # Transformers, which builds the bnb quantizer and fails there.
+            load_in_4bit = False
+            load_in_8bit = False
+            if _wants_bnb:
+                kwargs.pop("quantization_config", None)
 
         if (
             int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False)
@@ -1141,14 +1213,6 @@ class FastModel(FastBaseModel):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
                 device_map = distributed_device_map
-
-        # Check if 4bit is allowed specifically for AMD
-        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
-                print(
-                    "Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now."
-                )
-            load_in_4bit = False
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
@@ -1585,7 +1649,7 @@ class FastModel(FastBaseModel):
         if do_logging:
             redirector = contextlib.nullcontext()
         else:
-            redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
+            redirector = contextlib.redirect_stdout(open(os.devnull, "w", encoding = "utf-8"))
 
         model_types = ["siglip"] + model_types
         # Set forced float32 env flag

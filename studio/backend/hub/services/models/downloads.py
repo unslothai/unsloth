@@ -153,6 +153,7 @@ def _spawn_download_worker(
     protected_blob_hashes: Optional[frozenset[str]] = None,
     cache_env: Optional[dict[str, str]] = None,
     files: Optional[Sequence[str]] = None,
+    allow_ambient_token: bool = True,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
@@ -166,11 +167,21 @@ def _spawn_download_worker(
         use_xet = use_xet,
         protected_blob_hashes = protected_blob_hashes,
         cache_env = cache_env,
+        allow_ambient_token = allow_ambient_token,
     )
 
 
-async def download_model_response(body: DownloadModelRequest, hf_token: Optional[str] = None):
-    """Start a background download for a HuggingFace model."""
+async def download_model_response(
+    body: DownloadModelRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_ambient_token: bool = True,
+):
+    """Start a background download for a HuggingFace model.
+
+    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
+    no token, for repos named over the API rather than chosen here.
+    """
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -315,6 +326,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             protected_blob_hashes = protected_blob_hashes,
             cache_env = cache_env,
             files = scoped_files if scope_variant is not None else None,
+            allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
         label = label,

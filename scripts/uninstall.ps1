@@ -1,17 +1,48 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Unsloth Studio uninstaller for Windows PowerShell.
-# Stops running servers and removes install dir, launcher data, CLI shim,
-# desktop and Start Menu shortcuts, the user PATH entry, and the PathBackup
-# registry key. Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME
-# at install time (read back from share\studio.conf).
+# Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
+# Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
 #
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
+
+    function _Usage {
+        Write-Host @'
+Unsloth Studio uninstaller (Windows PowerShell).
+
+Usage:
+  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
+
+Stops running Unsloth Studio servers, then removes the install dir, launcher
+data, CLI shim, desktop and Start Menu shortcuts, the user PATH entry and the
+PathBackup registry key. The Hugging Face cache is left in place.
+
+Options:
+  -Help, -h, --help, -?, /?  Print this message and exit without removing anything.
+
+Run with no arguments to uninstall. Unrecognized arguments never trigger
+removal.
+
+Environment:
+  UNSLOTH_STUDIO_HOME  Also remove this custom install root. Set it to the value
+                       used at install time.
+  STUDIO_HOME          Alias for the above, ignored when both are set.
+'@
+    }
+
+    # Reject unknown arguments before destructive work. Use throw so embedded
+    # invocations report failure without exiting the caller's PowerShell session.
+    foreach ($arg in $args) {
+        if ($arg -in @('-h', '-help', '--help', '-?', '/?')) { _Usage; return }
+        Write-Host "uninstall.ps1: unrecognized argument: $arg" -ForegroundColor Red
+        Write-Host "Nothing was removed. Re-run with no arguments to uninstall, or -Help."
+        throw "uninstall.ps1: unrecognized argument: $arg"
+    }
 
     function _Step { param([string]$Msg) Write-Host $Msg }
     function _Substep { param([string]$Msg, [string]$Color = "Gray") Write-Host "  $Msg" -ForegroundColor $Color }

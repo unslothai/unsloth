@@ -160,7 +160,7 @@ export function ApiKeysTab() {
             {t("settings.apiKeys.noAccess")}
           </p>
         ) : (
-          <div className="flex min-w-0 flex-col">
+          <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
             {keys.map((k) => (
               <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
             ))}
@@ -168,11 +168,11 @@ export function ApiKeysTab() {
         )}
       </section>
 
+      <ModelAutoSwitchSection />
+
       <ApiMonitorConsole />
 
       <UsageExamples apiKey={revealed} />
-
-      <ModelAutoSwitchSection />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">
