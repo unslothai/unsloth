@@ -48,11 +48,20 @@ interface RemoteCodeScanResponse {
 export async function getRemoteCodeScan(
   modelName: string,
   hfToken?: string | null,
+  options?: {
+    preferLocalCache?: boolean;
+    modelLocalPath?: string | null;
+  },
 ): Promise<RemoteCodeScan> {
   const response = await authFetch(`/api/models/remote-code-scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model_name: modelName, hf_token: hfToken ?? null }),
+    body: JSON.stringify({
+      model_name: modelName,
+      hf_token: hfToken ?? null,
+      prefer_local_cache: options?.preferLocalCache ?? false,
+      model_local_path: options?.modelLocalPath ?? null,
+    }),
   });
   if (!response.ok) {
     throw new Error(await readFastApiError(response));

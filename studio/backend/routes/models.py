@@ -2016,8 +2016,6 @@ async def get_model_config(
             ),
         )
 
-    except HTTPException:
-        raise
     except Exception as e:
         raise log_and_http_error(
             e,
@@ -2049,6 +2047,8 @@ def _consent_provider(
 async def scan_model_remote_code(
     model_name: str = Body(..., embed = True),
     hf_token: Optional[str] = Body(None, embed = True),
+    prefer_local_cache: bool = Body(False, embed = True),
+    model_local_path: Optional[str] = Body(None, embed = True),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan a model's ``auto_map`` custom code so the UI can show findings before
@@ -2064,6 +2064,11 @@ async def scan_model_remote_code(
 
         if not is_local_path(model_name):
             model_name = resolve_cached_repo_id_case(model_name)
+        scan_target = model_name
+        if prefer_local_cache is True and not is_local_path(model_name):
+            from core.training.training import _resolve_model_snapshot
+
+            scan_target = _resolve_model_snapshot(model_name, model_local_path) or model_name
         # Scan the adapter AND the base together (a LoRA runs both repos' code; a pickle
         # can live in either), pinned by one combined fingerprint. Snapshot the primary's
         # cache state BEFORE resolving the base: for a remote adapter that resolve
@@ -2073,7 +2078,7 @@ async def scan_model_remote_code(
             _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
         except Exception:
             _primary_preexisting = True
-        security_targets = [model_name]
+        security_targets = [scan_target]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -2121,6 +2126,7 @@ async def scan_model_remote_code(
             security_targets, hf_token = hf_token, subject = current_subject
         )
         payload = decision.response_payload()
+        payload["model_name"] = model_name
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval for the unchanged repo lets the dialog be skipped; the scan still
         # ran, so this is a real fingerprint match under the current ruleset.
@@ -2156,6 +2162,8 @@ async def scan_model_remote_code(
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
         return payload
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,

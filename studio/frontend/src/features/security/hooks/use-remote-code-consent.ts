@@ -12,6 +12,8 @@ interface ConfirmArgs {
   modelName: string;
   // Resolves the same findings + fingerprint for gated/private repos.
   hfToken?: string | null;
+  preferLocalCache?: boolean;
+  modelLocalPath?: string | null;
   // Coarse fallback when the scan endpoint is unreachable.
   requiresTrustRemoteCode?: boolean;
   // Called on approval with the pinning fingerprint.
@@ -23,12 +25,17 @@ interface ConfirmArgs {
 export async function confirmRemoteCodeIfNeeded({
   modelName,
   hfToken,
+  preferLocalCache,
+  modelLocalPath,
   requiresTrustRemoteCode,
   onApprove,
 }: ConfirmArgs): Promise<boolean> {
   let scan: RemoteCodeScan;
   try {
-    scan = await getRemoteCodeScan(modelName, hfToken);
+    scan = await getRemoteCodeScan(modelName, hfToken, {
+      preferLocalCache,
+      modelLocalPath,
+    });
   } catch {
     scan = {
       requiresTrustRemoteCode: Boolean(requiresTrustRemoteCode),

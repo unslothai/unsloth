@@ -575,6 +575,81 @@ class TestStructuredFindingsForDialog:
         assert payload["scan_created_repos"] == [base]
         assert payload["created_by_scan"] is False
 
+    def test_scan_route_uses_selected_cached_snapshot(self, monkeypatch, tmp_path):
+        import asyncio
+
+        import core.training.training as training_core
+        import routes.models as models_route
+        import utils.models.model_config as model_config
+        import utils.security as security
+        import utils.security.remote_code_scan as remote_code_scan
+
+        model_name = "someone/cached-model"
+        local_path = str(tmp_path / "models--someone--cached-model")
+        snapshot = str(tmp_path / "models--someone--cached-model" / "snapshots" / "old")
+        resolved = []
+        preflight_targets = []
+        file_targets = []
+
+        def resolve_snapshot(name, path):
+            resolved.append((name, path))
+            return snapshot
+
+        def preflight(targets, **_kwargs):
+            preflight_targets.extend(targets)
+            return SimpleNamespace(
+                has_remote_code = True,
+                blocked = False,
+                reason = "approval required",
+                response_payload = lambda: {
+                    "model_name": snapshot,
+                    "has_remote_code": True,
+                    "approvable": True,
+                },
+            )
+
+        def file_security(target, **_kwargs):
+            file_targets.append(target)
+            return SimpleNamespace(blocked = False, unsafe_files = [])
+
+        monkeypatch.setattr(
+            models_route,
+            "is_local_path",
+            lambda value: value == snapshot,
+        )
+        monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda value: value)
+        monkeypatch.setattr(training_core, "_resolve_model_snapshot", resolve_snapshot)
+        monkeypatch.setattr(
+            model_config,
+            "get_base_model_from_lora_identifier",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
+        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            security,
+            "preflight_remote_code_consent_for_targets",
+            preflight,
+        )
+        monkeypatch.setattr(security, "security_load_subdirs", lambda *_args: ())
+        monkeypatch.setattr(security, "evaluate_file_security", file_security)
+
+        payload = asyncio.run(
+            models_route.scan_model_remote_code(
+                model_name = model_name,
+                hf_token = None,
+                prefer_local_cache = True,
+                model_local_path = local_path,
+                current_subject = "tester",
+            )
+        )
+
+        assert resolved == [(model_name, local_path)]
+        assert preflight_targets == [snapshot]
+        assert file_targets == [snapshot]
+        assert payload["model_name"] == model_name
+        assert payload["scan_created_repos"] == []
+
     def test_scan_route_purges_remote_adapter_downloaded_by_base_resolution(self, monkeypatch):
         """A remote adapter is reported scan-created even though resolving its base first
         caches the adapter's own adapter_config.json. Otherwise the adapter (and the

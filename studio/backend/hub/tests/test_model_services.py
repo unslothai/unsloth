@@ -379,7 +379,7 @@ def test_download_state_preserves_readable_keys_when_safe(monkeypatch, tmp_path)
     assert path.name == "models--owner--repo--variant--q4_k_m.json"
 
 
-@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64])
+@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64, "q" * 65])
 def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path, variant):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
     repo_id = f"{'a' * 96}/{'b' * 96}"
@@ -421,6 +421,9 @@ def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path
     assert list(download_manifest.iter_variant_manifests("model", repo_id)) == [
         (variant, manifest_path)
     ]
+    assert download_manifest.purge_all_state_for_repo("model", repo_id) == 1
+    assert not download_manifest.has_cancel_marker("model", repo_id, variant)
+    assert download_manifest.read_manifest("model", repo_id, variant) is None
 
 
 def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path):
