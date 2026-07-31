@@ -16,6 +16,7 @@ import dataclasses
 import json
 import os
 import stat
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -3936,3 +3937,32 @@ def test_a_repo_whose_only_format_is_torn_still_reads_as_torn(tmp_path, monkeypa
     assert rows[0]["model_format"] == "safetensors"
     assert rows[0]["partial"] is True
     assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_shard_total_from_a_filename_is_not_materialised(tmp_path):
+    """The total comes out of a repo-controlled filename, so it can name a set far larger than
+    anything on disk. Recovery runs this check over repos scan_cache_dir used to drop, so listing
+    cached models must not allocate a set per declared shard: -of-999999999 costs gigabytes."""
+    snapshot = tmp_path / "snapshots" / SNAPSHOT
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M-00001-of-1000000.gguf").write_bytes(b"GGUF" + b"\0" * 252)
+
+    tracemalloc.start()
+    try:
+        complete = inventory_scan._completed_gguf_variants(snapshot)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert complete == set()
+    assert peak < 8 * 1024 * 1024, f"allocated {peak} bytes for a declared set of 1000000 shards"
+
+
+def test_a_whole_split_quant_is_still_complete(tmp_path):
+    """Control for the test above: a set whose shards are all present still reads complete."""
+    snapshot = tmp_path / "snapshots" / SNAPSHOT
+    snapshot.mkdir(parents = True)
+    for index in (1, 2):
+        (snapshot / f"Model-Q4_K_M-0000{index}-of-00002.gguf").write_bytes(b"GGUF" + b"\0" * 252)
+
+    assert inventory_scan._completed_gguf_variants(snapshot) == {"Q4_K_M"}

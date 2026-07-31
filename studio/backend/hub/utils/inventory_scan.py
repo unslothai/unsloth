@@ -761,8 +761,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         if family is None:
             complete.add(quant)
         elif isinstance(family, tuple):
-            total = family[2]
-            if split_groups.get(quant, {}).get(family) == set(range(1, total + 1)):
+            if _shard_family_is_whole(family, split_groups.get(quant, {}).get(family) or set()):
                 complete.add(quant)
     return complete
 
