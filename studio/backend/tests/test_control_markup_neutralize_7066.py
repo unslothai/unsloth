@@ -3098,7 +3098,14 @@ def test_anthropic_healing_is_gated_on_the_sanitized_catalog():
         encoding = "utf-8"
     )
     assert "heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)" not in source
-    assert source.count("heal_gate(auto_heal_tool_calls, _healing_tools, tool_choice)") == 2
+    # The third argument is the reconciled choice the body carries, not the caller's: see
+    # test_healing_is_gated_on_the_tool_choice_actually_sent.
+    assert (
+        source.count(
+            'heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))'
+        )
+        == 2
+    )
     assert "nudge_should_retry(data, _allowed_tools, openai_tools)" not in source
 
 
@@ -3379,3 +3386,141 @@ def test_a_tool_result_still_sweeps_its_media_payload(part_type):
         "content"
     ][0]
     assert "<|im_end|>" not in out[part_type]["url"]
+
+
+@pytest.mark.parametrize("marker", ["<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>"])
+@pytest.mark.parametrize("role", ["user", "system", "assistant"])
+def test_qwen_coder_fim_sentinels_are_neutralized(marker, role):
+    """Qwen 2.5 Coder builds its fill-in-the-middle prompt from these three special
+    tokens (ollama_template_mappers.py:881) while interpolating chat .Content at
+    :908-909, so pasted text spelling one asks for FIM semantics (#7066)."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": role, "content": f"hi {marker} there"}]
+    )[0]["content"]
+    assert marker not in out
+    assert "there" in out
+
+
+def test_control_markup_in_a_format_drops_the_tool():
+    """Under format assertion this is a constraint the MCP server checks, so a rewrite
+    leaves the model targeting a different contract than the server enforces (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string", "format": "</think>"}},
+                },
+            },
+        }
+    ]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+def test_a_clean_format_keeps_its_tool():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string", "format": "date-time"}},
+                },
+            },
+        }
+    ]
+    assert len(neutralize_tool_descriptions(tools)) == 1
+
+
+def test_an_instance_example_is_neutralized_not_treated_as_a_subschema():
+    """Values under "examples" are instance samples, so a sample holding a key like
+    "required" is annotation text, not the JSON Schema keyword. Dropping the tool over
+    it would disable an otherwise usable tool (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}},
+                    "examples": [{"required": ["</think>"]}],
+                },
+            },
+        }
+    ]
+    safe = neutralize_tool_descriptions(tools)
+    assert len(safe) == 1, "the tool stays usable"
+    example = safe[0]["function"]["parameters"]["examples"][0]["required"][0]
+    assert "</think>" not in example, "but the text is still swept"
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"type": "object", "properties": {"</think>": {"type": "string"}}},
+        {"type": "object", "properties": {"a": {"type": "object", "required": ["</think>"]}}},
+    ],
+)
+def test_a_real_subschema_identifier_still_drops_the_tool(parameters):
+    """The examples carve-out must not reach a genuine keyword position (#7066)."""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": parameters}}]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+def test_healing_is_gated_on_the_tool_choice_actually_sent():
+    """When the forced tool is dropped the body carries "auto", so gating on the stale
+    forced name would intersect the safe names with a removed one and disable healing
+    outright (#7066)."""
+    from core.inference.chat_template_helpers import reconciled_tool_choice
+    from core.inference.passthrough_healing import heal_gate
+
+    safe_tool = {
+        "type": "function",
+        "function": {"name": "get_weather", "parameters": {"type": "object"}},
+    }
+    dropped = {
+        "type": "function",
+        "function": {
+            "name": "evil",
+            "parameters": {"type": "object", "properties": {"</think>": {"type": "string"}}},
+        },
+    }
+    tools = [safe_tool, dropped]
+    safe_tools = neutralize_tool_descriptions(tools)
+    assert [t["function"]["name"] for t in safe_tools] == ["get_weather"]
+
+    forced = {"type": "function", "function": {"name": "evil"}}
+    sent = reconciled_tool_choice(forced, tools, safe_tools)
+    assert sent == "auto", "the body downgraded the dropped forced choice"
+    assert heal_gate(True, safe_tools, forced) is None, "the stale choice kills healing"
+    assert heal_gate(True, safe_tools, sent) == {"get_weather"}
+
+
+def test_tool_choice_none_still_forbids_healing_after_reconciliation():
+    from core.inference.chat_template_helpers import reconciled_tool_choice
+    from core.inference.passthrough_healing import heal_gate
+
+    tools = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
+    ]
+    safe_tools = neutralize_tool_descriptions(tools)
+    assert reconciled_tool_choice("none", tools, safe_tools) == "none"
+    assert heal_gate(True, safe_tools, "none") is None
+
+
+def test_a_surviving_forced_choice_still_narrows_healing():
+    from core.inference.chat_template_helpers import reconciled_tool_choice
+    from core.inference.passthrough_healing import heal_gate
+
+    tools = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "other", "parameters": {"type": "object"}}},
+    ]
+    safe_tools = neutralize_tool_descriptions(tools)
+    forced = {"type": "function", "function": {"name": "get_weather"}}
+    sent = reconciled_tool_choice(forced, tools, safe_tools)
+    assert heal_gate(True, safe_tools, sent) == {"get_weather"}

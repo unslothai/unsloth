@@ -82,6 +82,10 @@ _CONTROL_MARKUP = re.compile(
     # ValueError out of MllamaProcessor / Gemma4Processor on the very vision and audio
     # renders neutralized above (#7066). The optional close covers <|image> / <|audio> too.
     r"|image|audio|video|python_tag"
+    # Qwen 2.5 Coder builds its fill-in-the-middle prompt from these three special
+    # tokens (ollama_template_mappers.py:881) while interpolating chat .Content at
+    # :908-909, the pipe-token equivalent of Codestral's [PREFIX]/[MIDDLE]/[SUFFIX].
+    r"|fim_prefix|fim_suffix|fim_middle"
     r"|return|system|start|think|turn|user|call|\")\|?>"
     # The parser also recognises the space and backslash-escaped spellings of these openers
     # (tool_call_parser.py:47-53, 62-66), so the class admits both. The name must still start
@@ -155,6 +159,10 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # one is media the processor was handed none of, failing the Gemma / mllama count check.
     # Never legitimate in a replay, unlike think / channel / tool markup.
     r"|image|audio|video|python_tag"
+    # Qwen 2.5 Coder builds its fill-in-the-middle prompt from these three special
+    # tokens (ollama_template_mappers.py:881) while interpolating chat .Content at
+    # :908-909, the pipe-token equivalent of Codestral's [PREFIX]/[MIDDLE]/[SUFFIX].
+    r"|fim_prefix|fim_suffix|fim_middle"
     # A tool RESULT is the tool role's structure and a tool CATALOG is the system's, so a
     # replay carrying either fabricates trusted context. The tool CALL spellings stay out:
     # those the assistant does emit. "tool" alone is Phi-4 Mini's catalog wrapper around
@@ -798,6 +806,10 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "required",
         "pattern",
         "default",
+        # Under format assertion (or a custom validator) this is a constraint the MCP
+        # server checks, so a rewrite leaves the model targeting a different contract
+        # from the one the server enforces, exactly as for "pattern".
+        "format",
         # A reference is resolved, not read: rewriting "$id", "$anchor" or a "$ref" pointing
         # at them leaves the model and llama-server's grammar on a different schema than the
         # MCP server registered. "$ref" can also name an external URI, which no "$defs" drop
@@ -858,6 +870,13 @@ def _schema_roots(target):
     return [target[key] for key in _SCHEMA_ROOT_KEYS if isinstance(target.get(key), (dict, list))]
 
 
+# "examples" carries instance samples, never subschemas, so a sample that happens to hold a
+# key like "required" is ordinary annotation text. Descending into it would read that key as
+# the JSON Schema keyword and drop a usable tool, so the scan stops here and the rewrite
+# neutralizes the sample as descriptive metadata instead.
+_SCHEMA_INSTANCE_KEYS = frozenset({"examples"})
+
+
 def _unsafe_schema_identifier(value):
     """Return the first schema identifier the rewrite would change, or None."""
     stack = [value]
@@ -884,6 +903,8 @@ def _unsafe_schema_identifier(value):
                     unsafe = _first_unsafe_leaf(item)
                     if unsafe is not None:
                         return unsafe
+                if key in _SCHEMA_INSTANCE_KEYS:
+                    continue
                 if isinstance(item, (dict, list)) and id(item) not in seen:
                     seen.add(id(item))
                     stack.append(item)

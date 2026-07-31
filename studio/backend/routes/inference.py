@@ -15949,7 +15949,11 @@ async def _anthropic_passthrough_stream(
         from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
         _healing_tools = neutralize_tool_descriptions(openai_tools)
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, tool_choice)
+        # The reconciled choice the body actually carries, not the caller's: when a forced
+        # tool was dropped, _build_passthrough_payload sent "auto", and gating on the stale
+        # forced name would intersect the safe names with a removed one and disable healing
+        # outright. "none" survives reconciliation, so it still forbids promotion (#7066).
+        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
@@ -16202,7 +16206,11 @@ async def _anthropic_passthrough_non_streaming(
         from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
         _healing_tools = neutralize_tool_descriptions(openai_tools)
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, tool_choice)
+        # The reconciled choice the body actually carries, not the caller's: when a forced
+        # tool was dropped, _build_passthrough_payload sent "auto", and gating on the stale
+        # forced name would intersect the safe names with a removed one and disable healing
+        # outright. "none" survives reconciliation, so it still forbids promotion (#7066).
+        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
