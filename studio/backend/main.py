@@ -569,9 +569,9 @@ def _post_warm_retired(generation: Optional[int]) -> bool:
     if generation is None or _post_warm_current_generation() == generation:
         return False
     import structlog as _structlog
+
     _structlog.get_logger(__name__).info(
-        "post-warm work %s stood down: its lifespan ended while the ML stack "
-        "was still loading",
+        "post-warm work %s stood down: its lifespan ended while the ML stack was still loading",
         generation,
     )
     return True

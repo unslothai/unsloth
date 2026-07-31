@@ -1080,9 +1080,9 @@ def test_the_retirement_check_reads_the_live_generation(monkeypatch):
     monkeypatch.setattr(main_mod, "_post_warm_current_generation", lambda: 7, raising = True)
     assert main_mod._post_warm_retired(7) is False
     assert main_mod._post_warm_retired(6) is True
-    assert main_mod._post_warm_retired(None) is False, (
-        "a direct call with no generation must still run; that is the test path"
-    )
+    assert (
+        main_mod._post_warm_retired(None) is False
+    ), "a direct call with no generation must still run; that is the test path"
 
 
 # --------------------------------------- the saved GPU override goes off-loop
@@ -1097,8 +1097,7 @@ def test_the_saved_gpu_override_check_runs_off_the_event_loop():
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_override_gpu_ids_still_resolve"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_override_gpu_ids_still_resolve"
     )
     nested = {
         sub
