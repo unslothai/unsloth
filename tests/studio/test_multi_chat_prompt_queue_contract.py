@@ -297,6 +297,14 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert CHAT_ADAPTER.index("const notifyQueuedRunFailed = () =>") < CHAT_ADAPTER.index(
         "if (\n        runtime.deepResearchEnabled"
     )
+    image_gate = _between(
+        CHAT_ADAPTER,
+        "if (imageGateReason) {",
+        "// Clear pending audio from store after extracting",
+    )
+    assert image_gate.index("notifyQueuedRunFailed();") < image_gate.index(
+        "throw new Error(imageGateReason);"
+    )
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
     assert "getLocalPromptQueueThreadIds" in CONFIRM_MODEL_SWAP
@@ -315,10 +323,22 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "beginModelLoading()" in SHARED_COMPOSER
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
+    gpu_discovery = _between(
+        SHARED_COMPOSER,
+        "// Warm the device cache before the snapshot below",
+        "// The GPU/offload knobs both compare loads must use",
+    )
+    assert "await ensureGpuDeviceCache();" in gpu_discovery
+    assert "catch (error) {\n        releaseCompareModelLifecycle();" in gpu_discovery
+    side_one = _between(
+        SHARED_COMPOSER,
+        "// Side 1: load → generate → wait",
+        "// Side 2: load → generate → wait",
+    )
     assert (
-        SHARED_COMPOSER.index("const status1 = await ensureModelLoaded(model1)")
-        < SHARED_COMPOSER.index("releaseCompareModelLifecycle();")
-        < SHARED_COMPOSER.index("handle1.startRun()")
+        side_one.index("const status1 = await ensureModelLoaded(model1)")
+        < side_one.index("releaseCompareModelLifecycle();")
+        < side_one.index("handle1.startRun()")
     )
     side_two = _between(
         SHARED_COMPOSER,

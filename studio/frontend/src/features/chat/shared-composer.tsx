@@ -1061,8 +1061,13 @@ export function SharedComposer({
 
       // Warm the device cache before the snapshot below reconciles the GPU
       // pick: on a cold cache the reconcile passes a stale pick through.
-      if (store.selectedGpuIds != null) {
-        await ensureGpuDeviceCache();
+      try {
+        if (store.selectedGpuIds != null) {
+          await ensureGpuDeviceCache();
+        }
+      } catch (error) {
+        releaseCompareModelLifecycle();
+        throw error;
       }
       // The GPU/offload knobs both compare loads must use, snapshotted at Send.
       // ensureModelLoaded runs sequentially and the first load's response echo

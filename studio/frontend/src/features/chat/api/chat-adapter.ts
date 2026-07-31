@@ -3155,6 +3155,7 @@ export function createOpenAIStreamAdapter(
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
+          notifyQueuedRunFailed();
           // Flip the per-thread running flag on→off so compare-mode
           // waitForRunEnd resolves instead of hanging: this gate fires
           // before the streaming path's setThreadRunning(true).
