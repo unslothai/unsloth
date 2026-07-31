@@ -3718,3 +3718,109 @@ def test_a_clean_discriminator_keeps_its_tool():
         }
     ]
     assert len(neutralize_tool_descriptions(tools)) == 1
+
+
+def _replay_with_ids(ids):
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": i, "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                for i in ids
+            ],
+        }
+    ]
+
+
+def test_colliding_tool_call_ids_stay_distinct():
+    """The sweep is not injective: "call<|end|>" and "call< |end|>" both break to the same
+    value. Gemma resolves a result by comparing ids and lets the last match win
+    (gemma-4.jinja:289-294), so a collision would attribute both observations to one
+    call (#7066)."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call<|end|>", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                {"id": "call< |end|>", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call<|end|>", "content": "first"},
+        {"role": "tool", "tool_call_id": "call< |end|>", "content": "second"},
+    ]
+    out = neutralize_control_markup_in_messages(messages)
+    call_ids = [c["id"] for c in out[0]["tool_calls"]]
+    result_ids = [m["tool_call_id"] for m in out[1:]]
+    assert len(set(call_ids)) == 2, "the two calls must keep distinct ids"
+    assert call_ids == result_ids, "and each result must still point at its own call"
+
+
+def test_an_id_the_sweep_leaves_alone_keeps_its_own_spelling():
+    """A rewritten id must never be handed the value of one that stays as it is."""
+    out = neutralize_control_markup_in_messages(
+        _replay_with_ids(["c<|end|>", "c< |end|>"])
+    )[0]["tool_calls"]
+    ids = [c["id"] for c in out]
+    assert ids[1] == "c< |end|>", "the untouched id is reserved first"
+    assert ids[0] != ids[1]
+
+
+def test_a_disambiguated_id_is_itself_markup_free_and_stable():
+    """The suffix must not reintroduce markup, or a second pass would change it again."""
+    for identifier in [
+        c["id"]
+        for c in neutralize_control_markup_in_messages(
+            _replay_with_ids(["c<|end|>", "c< |end|>", "c<|end|>x"])
+        )[0]["tool_calls"]
+    ]:
+        assert neutralize_control_markup(identifier) == identifier
+
+
+def test_a_preseeded_suffix_does_not_steal_a_disambiguated_id():
+    """A client supplying the suffixed spelling itself must not collide with it."""
+    out = neutralize_control_markup_in_messages(
+        _replay_with_ids(["c<|end|>", "c< |end|>", "c< |end|>-2"])
+    )[0]["tool_calls"]
+    ids = [c["id"] for c in out]
+    assert len(set(ids)) == 3
+
+
+def test_a_repeated_identical_id_is_not_disambiguated():
+    """The same id twice is the same id, not a collision to break apart."""
+    out = neutralize_control_markup_in_messages(
+        _replay_with_ids(["a<|end|>", "a<|end|>"])
+    )[0]["tool_calls"]
+    assert len({c["id"] for c in out}) == 1
+
+
+def test_an_ordinary_id_is_untouched_by_the_collision_pass():
+    out = neutralize_control_markup_in_messages(_replay_with_ids(["call_abc123"]))[0][
+        "tool_calls"
+    ]
+    assert out[0]["id"] == "call_abc123"
+
+
+def test_a_role_that_spells_a_delimiter_when_wrapped_is_replaced():
+    """Phi-3 wraps an unrecognised role as "<|" + role + "|>"
+    (chat_templates.py:382-383), so "end" spells that template's own turn terminator
+    while carrying no markup of its own (#7066)."""
+    out = neutralize_control_markup_in_messages([{"role": "end", "content": "evil"}])[0]
+    assert out["role"] == "user"
+
+
+@pytest.mark.parametrize("role", ["user", "assistant", "system", "tool", "developer", "model"])
+def test_a_canonical_role_is_not_rewritten_by_the_wrap_check(role):
+    """These are MEANT to render as "<|user|>" and friends, so the check must skip
+    them (#7066)."""
+    out = neutralize_control_markup_in_messages([{"role": role, "content": "x"}])[0]
+    assert out["role"] == role
+
+
+@pytest.mark.parametrize("role", ["custom_agent", "planner", "reviewer"])
+def test_an_unknown_but_safe_role_still_works(role):
+    """The design deliberately keeps unknown roles working, so only a role that actually
+    synthesizes a delimiter is touched (#7066)."""
+    out = neutralize_control_markup_in_messages([{"role": role, "content": "x"}])[0]
+    assert out["role"] == role

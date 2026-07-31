@@ -526,7 +526,62 @@ def _neutralized_arguments(arguments):
     return new_arguments if new_arguments != arguments else None
 
 
-def _neutralize_replayed_tool_call(tool_calls: list) -> list:
+def _replayed_ids(msg: dict):
+    """Every tool-call id a message carries, on the call side and the result side."""
+    result_id = msg.get("tool_call_id")
+    if isinstance(result_id, str) and result_id:
+        yield result_id
+    tool_calls = msg.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if isinstance(call, dict):
+                call_id = call.get("id")
+                if isinstance(call_id, str) and call_id:
+                    yield call_id
+
+
+def _injective_id_map(messages: list) -> dict:
+    """Map each replayed tool-call id to a swept id that is still unique.
+
+    The sweep is not injective: "call<|end|>" and "call< |end|>" both break to
+    "call< |end|>". Gemma resolves a result by comparing ids and lets the last match win
+    (gemma-4.jinja:289-294), so two calls sharing one id would attribute both observations
+    to the same call. A collision is therefore given a numeric suffix, which is checked
+    against the ids that stay as they are so it cannot land on one of those either."""
+    originals: list = []
+    seen: set = set()
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        for value in _replayed_ids(msg):
+            if value not in seen:
+                seen.add(value)
+                originals.append(value)
+    swept = {original: neutralize_control_markup(original) for original in originals}
+    # Reserved first: an id the sweep leaves alone keeps its own spelling, so a rewritten
+    # one must never be handed that value.
+    taken = {original for original in originals if swept[original] == original}
+    mapping: dict = {}
+    for original in originals:
+        candidate = swept[original]
+        if candidate == original:
+            continue
+        if candidate in taken:
+            base, suffix = candidate, 2
+            while candidate in taken:
+                candidate = f"{base}-{suffix}"
+                suffix += 1
+            logger.warning(
+                "Two replayed tool-call ids break to the same value; disambiguating one "
+                "as %r so each call keeps its own result.",
+                candidate,
+            )
+        taken.add(candidate)
+        mapping[original] = candidate
+    return mapping
+
+
+def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None) -> list:
     """Neutralize a replayed tool call's name, arguments and id.
 
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
@@ -576,7 +631,7 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
         # replayed pair still matches on both sides.
         call_id = call.get("id")
         if isinstance(call_id, str) and call_id:
-            new_call_id = neutralize_control_markup(call_id)
+            new_call_id = (id_map or {}).get(call_id, call_id)
             if new_call_id != call_id:
                 id_updates["id"] = new_call_id
         if not updates and not id_updates:
@@ -600,6 +655,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         return messages
     changed = False
     out: list = []
+    id_map = _injective_id_map(messages)
     for msg in messages:
         if not isinstance(msg, dict):
             out.append(msg)
@@ -630,6 +686,21 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             # canonicalized and the two agree again (#7066).
             if role in _SCHEMA_ROLES and new_role != role:
                 new_role = role
+            # Phi-3 wraps an unrecognised role as "<|" + role + "|>"
+            # (chat_templates.py:382-383), so a role of "end" spells that template's own
+            # turn terminator while carrying no markup of its own and passing the sweep
+            # untouched. A canonical role is MEANT to render that way, so only an unknown
+            # one is checked, and it falls back to the least trusted role rather than being
+            # padded: a template that trims the role would undo a space (#7066).
+            elif role not in _SCHEMA_ROLES:
+                wrapped = f"<|{new_role}|>"
+                if neutralize_control_markup(wrapped) != wrapped:
+                    logger.warning(
+                        "Rewriting role %r to 'user': a template that wraps a role in its "
+                        "own delimiters would render it as a turn boundary.",
+                        new_role,
+                    )
+                    new_role = "user"
             if new_role != raw_role:
                 updates["role"] = new_role
         # Gemma-4 falls back to a tool result's "name" when "tool_call_id" matches no
@@ -637,7 +708,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         # Same rewrite as the call's "id" above, so a replayed pair still matches.
         result_id = msg.get("tool_call_id")
         if isinstance(result_id, str) and result_id:
-            new_result_id = neutralize_control_markup(result_id)
+            new_result_id = id_map.get(result_id, result_id)
             if new_result_id != result_id:
                 updates["tool_call_id"] = new_result_id
         name = msg.get("name")
@@ -714,7 +785,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             )
             dropped_keys.add("tool_calls")
         elif isinstance(tool_calls, list) and tool_calls:
-            new_tool_calls = _neutralize_replayed_tool_call(tool_calls)
+            new_tool_calls = _neutralize_replayed_tool_call(tool_calls, id_map)
             if _differs(new_tool_calls, tool_calls):
                 updates["tool_calls"] = new_tool_calls
         if updates or dropped_keys:
