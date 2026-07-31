@@ -86,6 +86,10 @@ _CONTROL_MARKUP = re.compile(
     # tokens (ollama_template_mappers.py:881) while interpolating chat .Content at
     # :908-909, the pipe-token equivalent of Codestral's [PREFIX]/[MIDDLE]/[SUFFIX].
     r"|fim_prefix|fim_suffix|fim_middle"
+    # Qwen2-VL / Qwen2.5-VL reserve these for the processor, which expands a pad token
+    # per image or video patch (mapper.py:679-697). A pasted one is counted as media
+    # with no image behind it, so embeddings bind at the wrong prompt position.
+    r"|vision_start|vision_end|vision_pad|image_pad|video_pad"
     r"|return|system|start|think|turn|user|call|\")\|?>"
     # The parser also recognises the space and backslash-escaped spellings of these openers
     # (tool_call_parser.py:47-53, 62-66), so the class admits both. The name must still start
@@ -163,6 +167,10 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # tokens (ollama_template_mappers.py:881) while interpolating chat .Content at
     # :908-909, the pipe-token equivalent of Codestral's [PREFIX]/[MIDDLE]/[SUFFIX].
     r"|fim_prefix|fim_suffix|fim_middle"
+    # Qwen2-VL / Qwen2.5-VL reserve these for the processor, which expands a pad token
+    # per image or video patch (mapper.py:679-697). A pasted one is counted as media
+    # with no image behind it, so embeddings bind at the wrong prompt position.
+    r"|vision_start|vision_end|vision_pad|image_pad|video_pad"
     # A tool RESULT is the tool role's structure and a tool CATALOG is the system's, so a
     # replay carrying either fabricates trusted context. The tool CALL spellings stay out:
     # those the assistant does emit. "tool" alone is Phi-4 Mini's catalog wrapper around
@@ -810,6 +818,11 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # server checks, so a rewrite leaves the model targeting a different contract
         # from the one the server enforces, exactly as for "pattern".
         "format",
+        # Same contract argument for the content vocabulary: both are machine-valued
+        # strings a validator decodes against. "contentSchema" stays out on purpose, since
+        # it holds a subschema whose keyword positions the recursive scan already reads.
+        "contentEncoding",
+        "contentMediaType",
         # A reference is resolved, not read: rewriting "$id", "$anchor" or a "$ref" pointing
         # at them leaves the model and llama-server's grammar on a different schema than the
         # MCP server registered. "$ref" can also name an external URI, which no "$defs" drop
@@ -874,7 +887,7 @@ def _schema_roots(target):
 # key like "required" is ordinary annotation text. Descending into it would read that key as
 # the JSON Schema keyword and drop a usable tool, so the scan stops here and the rewrite
 # neutralizes the sample as descriptive metadata instead.
-_SCHEMA_INSTANCE_KEYS = frozenset({"examples"})
+_SCHEMA_INSTANCE_KEYS = frozenset({"examples", "example"})
 
 
 def _unsafe_schema_identifier(value):

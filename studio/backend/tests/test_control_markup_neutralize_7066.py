@@ -3522,3 +3522,111 @@ def test_a_surviving_forced_choice_still_narrows_healing():
     forced = {"type": "function", "function": {"name": "get_weather"}}
     sent = reconciled_tool_choice(forced, tools, safe_tools)
     assert heal_gate(True, safe_tools, sent) == {"get_weather"}
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ["<|vision_start|>", "<|vision_end|>", "<|vision_pad|>", "<|image_pad|>", "<|video_pad|>"],
+)
+@pytest.mark.parametrize("role", ["user", "system", "assistant"])
+def test_qwen_vision_placeholders_are_neutralized(marker, role):
+    """Qwen2-VL / Qwen2.5-VL reserve these for the processor, which expands a pad token per
+    image or video patch (mapper.py:679-697). A pasted one is counted as media with no
+    image behind it, binding embeddings at the wrong prompt position (#7066)."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": role, "content": f"hi {marker} there"}]
+    )[0]["content"]
+    assert marker not in out
+    assert "there" in out
+
+
+@pytest.mark.parametrize("marker", ["<|image|>", "<|audio|>", "<|video|>"])
+def test_the_generic_media_sentinels_still_break(marker):
+    """The vision arm is an addition, not a replacement: adding longer spellings to the
+    alternation must not stop the bare ones matching (#7066)."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": "user", "content": f"x{marker}"}]
+    )[0]["content"]
+    assert marker not in out
+
+
+@pytest.mark.parametrize("field", ["contentEncoding", "contentMediaType"])
+def test_control_markup_in_a_content_vocabulary_field_drops_the_tool(field):
+    """Machine-valued strings a validator decodes against, so a rewrite leaves the model
+    producing values the server rejects, exactly as for "format" (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string", field: "</think>"}},
+                },
+            },
+        }
+    ]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+@pytest.mark.parametrize(
+    "field,value", [("contentEncoding", "base64"), ("contentMediaType", "application/json")]
+)
+def test_a_clean_content_vocabulary_field_keeps_its_tool(field, value):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string", field: value}},
+                },
+            },
+        }
+    ]
+    assert len(neutralize_tool_descriptions(tools)) == 1
+
+
+def test_content_schema_is_scanned_as_a_subschema_not_a_value():
+    """"contentSchema" holds a subschema, so it stays out of the valued set: its keyword
+    positions still drop, while its prose is neutralized like any description (#7066)."""
+
+    def build(inner):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"a": {"contentSchema": inner}},
+                    },
+                },
+            }
+        ]
+
+    assert neutralize_tool_descriptions(build({"required": ["</think>"]})) == []
+    kept = neutralize_tool_descriptions(build({"description": "a </think> note"}))
+    assert len(kept) == 1, "prose must not drop the tool"
+
+
+def test_the_singular_openapi_example_is_instance_data_too():
+    """OpenAPI-compatible schemas use the singular "example", which is instance data just
+    like "examples", so a sample key must not read as a schema keyword (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}},
+                    "example": {"required": ["</think>"]},
+                },
+            },
+        }
+    ]
+    safe = neutralize_tool_descriptions(tools)
+    assert len(safe) == 1, "the tool stays usable"
+    assert "</think>" not in safe[0]["function"]["parameters"]["example"]["required"][0]
