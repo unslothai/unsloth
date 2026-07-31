@@ -1238,6 +1238,32 @@ def test_resolved_launch_command_handles_current_npm_node_shim(monkeypatch, tmp_
     ]
 
 
+def test_resolved_launch_command_ignores_node_js_pathext_shadow(monkeypatch, tmp_path):
+    _simulate_windows(monkeypatch)
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    resolved_names = []
+
+    def which(name):
+        resolved_names.append(name)
+        return {
+            "node": r"C:\shadow\node.js",
+            "node.exe": r"C:\Program Files\nodejs\node.exe",
+        }.get(name)
+
+    monkeypatch.setattr(start.shutil, "which", which)
+
+    assert start._resolved_launch_command(str(cmd), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+    assert resolved_names == ["node.exe"]
+
+
 def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, tmp_path):
     _simulate_windows(monkeypatch)
     cmd = tmp_path / "fake-agent.cmd"

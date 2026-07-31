@@ -2699,7 +2699,7 @@ def _resolved_launch_command(
                     continue
                 node_args, environment_updates = metadata
                 bundled_node = shim.parent / "node.exe"
-                node = str(bundled_node) if bundled_node.is_file() else shutil.which("node")
+                node = str(bundled_node) if bundled_node.is_file() else shutil.which("node.exe")
                 if node:
                     if environment is not None:
                         _apply_windows_environment(environment, environment_updates)
