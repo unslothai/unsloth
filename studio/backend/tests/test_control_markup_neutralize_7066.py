@@ -3869,9 +3869,7 @@ def test_every_split_of_a_marker_survives_a_trimming_renderer(texts):
     """The break must never land at a part boundary, where trimming would strip it and
     let the marker re-form (#7066)."""
     parts = [{"type": "text", "text": t} for t in texts]
-    out = neutralize_control_markup_in_messages([{"role": "tool", "content": parts}])[0][
-        "content"
-    ]
+    out = neutralize_control_markup_in_messages([{"role": "tool", "content": parts}])[0]["content"]
     rendered = [p["text"] for p in out]
     assert neutralize_control_markup("".join(rendered)) == "".join(rendered)
     trimmed = "".join(t.strip() for t in rendered)
