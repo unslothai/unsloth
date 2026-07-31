@@ -1964,6 +1964,11 @@ export function ChatPage({
     selectModel,
     ejectModel,
     cancelLoading,
+    cancelLoadingForReplacement,
+    invalidatePendingModelSelection,
+    discardExternalReplacement,
+    restoreConfigForExternalReplacement,
+    isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,
     loadToastDismissed,
@@ -2366,7 +2371,9 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantBackgroundDownload) {
+          return;
+        }
+        if (wantBackgroundDownload) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -2389,12 +2396,10 @@ export function ChatPage({
                 "Another download for this model is still running. Reselect it once that finishes to load it.",
             });
           }
-        } else {
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
+          return;
         }
-        return;
+        // selectModel owns superseding cancellation so it can preserve the
+        // working checkpoint as the rollback target for the replacement.
       }
       const wantManagerStage =
         wantManagerDownload ||
@@ -2432,7 +2437,12 @@ export function ChatPage({
         previousConfig,
       });
     },
-    [selectModel, loadingModel, rememberedConfigFor, chatContextKey],
+    [
+      selectModel,
+      loadingModel,
+      rememberedConfigFor,
+      chatContextKey,
+    ],
   );
   useRepoDownload({
     kind: DOWNLOAD_KIND.MODEL,
@@ -2573,11 +2583,11 @@ export function ChatPage({
   });
 
   const handleCheckpointChange = useCallback(
-    (
+    async (
       value: string,
       meta?: ModelSelectorChangeMeta,
     ) => {
-      const store = useChatRuntimeStore.getState();
+      let store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
@@ -2585,10 +2595,28 @@ export function ChatPage({
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
-      if (isSameLoadedModel && !meta?.forceReload) {
-        return;
-      }
+      const hadPublishedLocalLoad = Boolean(
+        store.modelLoading || store.loadingModelPick,
+      );
       if (meta?.source === "external" || isExternalModelId(value)) {
+        const selectionIntentId = invalidatePendingModelSelection();
+        const hadLocalLoad = hadPublishedLocalLoad;
+        if (hadLocalLoad) {
+          const stopped = await cancelLoadingForReplacement(selectionIntentId);
+          if (!isModelSelectionIntentCurrent(selectionIntentId)) {
+            discardExternalReplacement(selectionIntentId);
+            return;
+          }
+          if (!stopped) {
+            toast.error("Could not stop the current model load", {
+              description:
+                "The hosted model was not selected because the local backend state is uncertain.",
+            });
+            return;
+          }
+          store = useChatRuntimeStore.getState();
+        }
+        if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -2637,6 +2665,7 @@ export function ChatPage({
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
+        restoreConfigForExternalReplacement(selectionIntentId);
         store.setCheckpoint(value, null);
         const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
           selectedProvider?.providerType,
@@ -2689,6 +2718,7 @@ export function ChatPage({
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          activeNativePathTokenIdHash: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider render gate shows
           // stale stats. The per-thread copies go too, so a switch back cannot re-apply.
@@ -2769,7 +2799,9 @@ export function ChatPage({
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
-          forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
+          forceReload:
+            meta?.forceReload ??
+            (isSameLoadedModel && hadPublishedLocalLoad ? true : undefined),
         };
         await stageOrLoad(selection);
       })();
@@ -2778,6 +2810,11 @@ export function ChatPage({
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
+      cancelLoadingForReplacement,
+      discardExternalReplacement,
+      restoreConfigForExternalReplacement,
+      invalidatePendingModelSelection,
+      isModelSelectionIntentCurrent,
       stageOrLoad,
       view,
     ],

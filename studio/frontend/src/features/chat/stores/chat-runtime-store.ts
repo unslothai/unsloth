@@ -1106,6 +1106,7 @@ type ChatRuntimeStore = {
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
   activeNativePathToken: string | null;
+  activeNativePathTokenIdHash: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host
   // prunes file leases after a TTL, so a reload checks this to prompt
   // re-selection instead of reusing a dead token.
@@ -1594,6 +1595,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelLoading: false,
   loadingModelPick: null,
   activeNativePathToken: null,
+  activeNativePathTokenIdHash: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
@@ -1911,6 +1913,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeGgufVariant: null,
       activeModelIsLocal: false,
       activeNativePathToken: null,
+      activeNativePathTokenIdHash: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,

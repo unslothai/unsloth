@@ -1317,6 +1317,7 @@ export function SharedComposer({
           // so they carry no native lease. Clear any prior picked file's
           // token/expiry so the reload path never sends a stale lease.
           activeNativePathToken: null,
+          activeNativePathTokenIdHash: null,
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });

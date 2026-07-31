@@ -448,6 +448,10 @@ class LoadResponse(BaseModel):
     is_local_model: bool = Field(
         False, description = "Whether the loaded model came from a local filesystem path"
     )
+    native_path_token_id_hash: Optional[str] = Field(
+        None,
+        description = "Opaque identity for matching a native file selection without exposing its path",
+    )
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
@@ -623,9 +627,17 @@ class InferenceStatusResponse(BaseModel):
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
     )
+    idle_unloaded: bool = Field(
+        False,
+        description = "Whether the last GGUF model was idle-unloaded and can be transparently reloaded",
+    )
     model_identifier: Optional[str] = Field(
         None,
         description = "Loadable identifier for the active model.",
+    )
+    native_path_token_id_hash: Optional[str] = Field(
+        None,
+        description = "Opaque identity for the active native file selection",
     )
     is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")

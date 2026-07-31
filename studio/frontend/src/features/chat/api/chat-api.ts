@@ -65,7 +65,6 @@ export class GenerationLengthError extends Error {
     this.name = "GenerationLengthError";
   }
 }
-
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
@@ -184,11 +183,21 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: {
+    dialogOwner?: unknown;
+    signal?: AbortSignal;
+    retainRequestOnAbort?: boolean;
+    onRequestDispatched?: () => void;
+  },
 ): Promise<LoadModelResponse> {
-  const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
-  const response = await authFetch("/api/inference/load", {
+  const responsePromise = authFetch("/api/inference/load", {
     method: "POST",
+    // Once a load POST is dispatched, its caller may use /unload to cancel it.
+    // Retaining this request lets that caller wait until the backend has
+    // acknowledged either completion or cancellation.
+    signal: options?.retainRequestOnAbort ? undefined : options?.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...payload,
@@ -197,16 +206,20 @@ export async function loadModel(
       nativePathLease: undefined,
     }),
   });
+  options?.onRequestDispatched?.();
+  const response = await responsePromise;
   return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function validateModel(
   payload: LoadModelRequest,
+  options?: { dialogOwner?: unknown; signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
-  const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
+    signal: options?.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,
@@ -239,12 +252,15 @@ export async function validateModel(
  * backend reads the granted local path. Used by the deferred-load staging flow
  * to size the context, GPU-layers and MoE sliders before the single load.
  */
-export async function fetchGgufStagedMetadata(payload: {
-  model_path: string;
-  gguf_variant?: string | null;
-  hf_token?: string | null;
-  nativePathToken?: string | null;
-}): Promise<{
+export async function fetchGgufStagedMetadata(
+  payload: {
+    model_path: string;
+    gguf_variant?: string | null;
+    hf_token?: string | null;
+    nativePathToken?: string | null;
+  },
+  options?: { signal?: AbortSignal },
+): Promise<{
   contextLength: number | null;
   layerCount: number | null;
   moeLayerCount: number | null;
@@ -276,6 +292,7 @@ export async function fetchGgufStagedMetadata(payload: {
       native_path_lease: nativePathLease,
       include_context_length: true,
     }),
+    signal: options?.signal,
   });
   const res = await parseJsonOrThrow<ValidateModelResponse>(response);
   return {
@@ -399,7 +416,7 @@ export interface LoadProgressResponse {
  * for large MoE models can be several minutes of otherwise-opaque spinning.
  */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
-  const response = await authFetch(`/api/inference/load-progress`);
+  const response = await authFetch("/api/inference/load-progress");
   return parseJsonOrThrow(response);
 }
 

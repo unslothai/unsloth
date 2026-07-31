@@ -166,6 +166,7 @@ export interface LoadModelResponse {
   is_lora: boolean;
   is_gguf?: boolean;
   is_local_model?: boolean;
+  native_path_token_id_hash?: string | null;
   is_diffusion?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -226,7 +227,9 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   active_model: string | null;
+  idle_unloaded?: boolean;
   model_identifier?: string | null;
+  native_path_token_id_hash?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
   is_local_model?: boolean;

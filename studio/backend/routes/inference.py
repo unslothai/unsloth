@@ -3686,9 +3686,9 @@ def _request_matches_loaded_settings(
 
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest, *, operation: str
-) -> tuple[str, str, bool]:
+) -> tuple[str, str, bool, str | None]:
     if not request.native_path_lease:
-        return request.model_path, request.model_path, False
+        return request.model_path, request.model_path, False, None
     try:
         grant = verify_native_path_lease(
             request.native_path_lease,
@@ -3706,7 +3706,7 @@ def _resolve_model_identifier_for_request(
             detail = redact_native_paths(str(exc)),
         ) from exc
     display_label = grant.display_label or Path(request.model_path).name or "Native model"
-    return str(grant.canonical_path), display_label, True
+    return str(grant.canonical_path), display_label, True, grant.token_id_hash
 
 
 # GGUF inference backend (llama-server)
@@ -5453,6 +5453,25 @@ async def get_active_generations(
     }
 
 
+_model_loads_in_progress_lock = threading.Lock()
+_model_loads_in_progress: dict[str, int] = {}
+
+
+def _note_model_load_in_progress(model: str, delta: int) -> None:
+    label = _lifecycle_model_label(model)
+    with _model_loads_in_progress_lock:
+        count = _model_loads_in_progress.get(label, 0) + delta
+        if count > 0:
+            _model_loads_in_progress[label] = count
+        else:
+            _model_loads_in_progress.pop(label, None)
+
+
+def _model_loads_in_progress_snapshot() -> list[str]:
+    with _model_loads_in_progress_lock:
+        return list(_model_loads_in_progress)
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -5527,8 +5546,10 @@ async def _load_model_impl(
         model = _lifecycle_model_label(request.model_path, request.gguf_variant),
         running = True,
     )
+    _note_model_load_in_progress(request.model_path, 1)
 
     native_grant_backed = False
+    native_path_token_id_hash = None
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
     try:
@@ -5583,8 +5604,12 @@ async def _load_model_impl(
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
 
-        model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "load-model")
+        _resolved_model = _resolve_model_identifier_for_request(
+            request, operation = "load-model"
+        )
+        model_identifier, model_log_label, native_grant_backed = _resolved_model[:3]
+        native_path_token_id_hash = (
+            _resolved_model[3] if len(_resolved_model) > 3 else None
         )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
@@ -5649,6 +5674,8 @@ async def _load_model_impl(
 
                 _gguf_audio = getattr(llama_backend, "_audio_type", None)
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
+                if native_grant_backed:
+                    llama_backend._native_token_id_hash = native_path_token_id_hash
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label
@@ -5663,6 +5690,7 @@ async def _load_model_impl(
                     is_local_model = _loaded_is_local_model(
                         llama_backend, native_grant_backed, llama_backend.model_identifier
                     ),
+                    native_path_token_id_hash = native_path_token_id_hash,
                     is_diffusion = llama_backend.is_diffusion,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
@@ -6104,6 +6132,7 @@ async def _load_model_impl(
             _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = model_log_label if native_grant_backed else None
             llama_backend._native_grant_backed = bool(native_grant_backed)
+            llama_backend._native_token_id_hash = native_path_token_id_hash
             # Provenance is a load-time fact. Re-deriving it per status poll
             # would flip a local model to remote if its directory is deleted
             # or unmounted underneath a still-running server.
@@ -6121,6 +6150,7 @@ async def _load_model_impl(
                 is_lora = False,
                 is_gguf = True,
                 is_local_model = config.is_local,
+                native_path_token_id_hash = native_path_token_id_hash,
                 is_diffusion = llama_backend.is_diffusion,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
@@ -6358,6 +6388,7 @@ async def _load_model_impl(
         msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
+        _note_model_load_in_progress(request.model_path, -1)
         gguf_load_stack.close()
         # Catch-all: an error or cancelled load would otherwise leave the row "loading".
         api_monitor.fail_open(_load_event, "Load did not complete")
@@ -6450,9 +6481,10 @@ async def validate_model(
     native_grant_backed = False
     model_log_label = request.model_path
     try:
-        model_identifier, model_log_label, native_grant_backed = (
-            _resolve_model_identifier_for_request(request, operation = "validate-model")
+        _resolved_model = _resolve_model_identifier_for_request(
+            request, operation = "validate-model"
         )
+        model_identifier, model_log_label, native_grant_backed = _resolved_model[:3]
         config = ModelConfig.from_identifier(
             model_id = model_identifier,
             hf_token = request.hf_token,
@@ -7388,6 +7420,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = None if _native_grant_backed else _model_id,
+                native_path_token_id_hash = getattr(
+                    llama_backend, "_native_token_id_hash", None
+                ),
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 is_local_model = _loaded_is_local_model(
@@ -7459,32 +7494,114 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         inference_config = (
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
+        from core.inference.llama_keepwarm import get_last_unloaded_state
+        loading_models = list(
+            dict.fromkeys(
+                [
+                    *getattr(backend, "loading_models", set()),
+                    *_model_loads_in_progress_snapshot(),
+                ]
+            )
+        )
+        last_unloaded_model, idle_capabilities = (
+            get_last_unloaded_state()
+            if backend.active_model_name is None and not loading_models
+            else (None, {})
+        )
+        idle_unloaded = last_unloaded_model is not None
+        idle_model_identifier = None
+        idle_gguf_variant = None
+        if last_unloaded_model is not None:
+            idle_internal_identifier, idle_gguf_variant = last_unloaded_model[:2]
+            idle_model_identifier = idle_capabilities.get("model_identifier")
+            inference_config = load_inference_config(idle_internal_identifier)
+            idle_chat_template_override = idle_capabilities.get(
+                "chat_template_override"
+            )
+            idle_auto_chat_template_override = resolve_effective_chat_template_override(
+                model_identifier = idle_internal_identifier,
+                user_override = None,
+            )
+            if idle_chat_template_override == idle_auto_chat_template_override:
+                idle_capabilities["chat_template_override"] = None
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
-            model_identifier = backend.active_model_name,
-            is_vision = is_vision,
-            is_gguf = False,
-            is_local_model = bool(
-                backend.active_model_name and is_local_path(backend.active_model_name)
+            idle_unloaded = idle_unloaded,
+            # Keep active_model null while the server is unloaded, but expose the
+            # concrete reload identity so a fresh/stale client can hydrate the
+            # same checkpoint instead of preserving arbitrary local state.
+            model_identifier = backend.active_model_name or idle_model_identifier,
+            native_path_token_id_hash = idle_capabilities.get(
+                "native_path_token_id_hash"
             ),
-            is_audio = is_audio,
-            audio_type = audio_type,
-            has_audio_input = has_audio_input,
-            loading = list(getattr(backend, "loading_models", set())),
+            gguf_variant = idle_gguf_variant,
+            is_vision = idle_capabilities.get("is_vision", is_vision),
+            is_gguf = idle_unloaded,
+            is_local_model = idle_capabilities.get(
+                "is_local_model",
+                bool(backend.active_model_name and is_local_path(backend.active_model_name)),
+            ),
+            is_diffusion = idle_capabilities.get("is_diffusion", False),
+            is_audio = idle_capabilities.get("is_audio", is_audio),
+            audio_type = idle_capabilities.get("audio_type", audio_type),
+            has_audio_input = idle_capabilities.get(
+                "has_audio_input", has_audio_input
+            ),
+            loading = loading_models,
             loaded = list(backend.models.keys()),
             inference = inference_config,
             requires_trust_remote_code = _resolve_loaded_trust_remote_code(
                 backend.active_model_name, model_info, inference_config
             ),
-            supports_reasoning = _sf_flags["supports_reasoning"],
-            reasoning_style = _sf_flags["reasoning_style"],
-            reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
-            reasoning_always_on = _sf_flags["reasoning_always_on"],
-            supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
-            supports_tools = _sf_flags["supports_tools"],
-            context_length = _positive_int_or_none(model_info.get("context_length")),
-            chat_template = chat_template,
+            supports_reasoning = idle_capabilities.get(
+                "supports_reasoning", _sf_flags["supports_reasoning"]
+            ),
+            reasoning_style = idle_capabilities.get(
+                "reasoning_style", _sf_flags["reasoning_style"]
+            ),
+            reasoning_effort_levels = idle_capabilities.get(
+                "reasoning_effort_levels",
+                _sf_flags.get("reasoning_effort_levels", []),
+            ),
+            reasoning_always_on = idle_capabilities.get(
+                "reasoning_always_on", _sf_flags["reasoning_always_on"]
+            ),
+            supports_preserve_thinking = idle_capabilities.get(
+                "supports_preserve_thinking",
+                _sf_flags["supports_preserve_thinking"],
+            ),
+            supports_tools = idle_capabilities.get(
+                "supports_tools", _sf_flags["supports_tools"]
+            ),
+            chat_template = idle_capabilities.get("chat_template", chat_template),
+            context_length = idle_capabilities.get(
+                "context_length",
+                _positive_int_or_none(model_info.get("context_length")),
+            ),
+            max_context_length = idle_capabilities.get("max_context_length"),
+            native_context_length = idle_capabilities.get("native_context_length"),
+            cache_type_kv = idle_capabilities.get("cache_type_kv"),
+            chat_template_override = idle_capabilities.get("chat_template_override"),
+            speculative_type = idle_capabilities.get("speculative_type"),
+            spec_draft_n_max = idle_capabilities.get("spec_draft_n_max"),
+            tensor_parallel = idle_capabilities.get("tensor_parallel", False),
+            gpu_memory_mode = idle_capabilities.get("gpu_memory_mode", "auto"),
+            gpu_layers = idle_capabilities.get("gpu_layers", -1),
+            n_cpu_moe = idle_capabilities.get("n_cpu_moe", 0),
+            tensor_split = idle_capabilities.get("tensor_split"),
+            requested_context_length = idle_capabilities.get(
+                "requested_context_length"
+            ),
+            n_layers = idle_capabilities.get("n_layers"),
+            n_moe_layers = idle_capabilities.get("n_moe_layers", 0),
+            gpu_ids = idle_capabilities.get("gpu_ids"),
+            requested_gpu_ids = idle_capabilities.get("requested_gpu_ids"),
+            requested_parallel_slots = idle_capabilities.get(
+                "requested_parallel_slots"
+            ),
+            parallel_slots = idle_capabilities.get("parallel_slots"),
+            spec_fallback_reason = idle_capabilities.get("spec_fallback_reason"),
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
             llama_cpp_installed_tag = _installed_tag,

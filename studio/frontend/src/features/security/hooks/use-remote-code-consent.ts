@@ -16,8 +16,9 @@ interface ConfirmArgs {
   requiresTrustRemoteCode?: boolean;
   // Called on approval with the pinning fingerprint.
   onApprove: (fingerprint: string | null) => void;
+  dialogOwner?: unknown;
+  signal?: AbortSignal;
 }
-
 /** Gate a load that may need trust_remote_code: scan, show the consent dialog, and on
  *  approval call onApprove with the pinning fingerprint. Returns false if declined. */
 export async function confirmRemoteCodeIfNeeded({
@@ -25,9 +26,14 @@ export async function confirmRemoteCodeIfNeeded({
   hfToken,
   requiresTrustRemoteCode,
   onApprove,
+  dialogOwner,
+  signal,
 }: ConfirmArgs): Promise<boolean> {
   let scan: RemoteCodeScan;
   try {
+    // Let the backend scan finish even if the caller cancels: the response
+    // carries the complete list of repositories created by the scan, which is
+    // required to purge every unapproved download below.
     scan = await getRemoteCodeScan(modelName, hfToken);
   } catch {
     scan = {
@@ -47,6 +53,24 @@ export async function confirmRemoteCodeIfNeeded({
     };
   }
 
+  const discardScanDownloads = async (): Promise<void> => {
+    const toPurge =
+      scan.scanCreatedRepos.length > 0
+        ? scan.scanCreatedRepos
+        : scan.createdByScan
+          ? [scan.modelName]
+          : [];
+    await Promise.all(toPurge.map((repo) => discardRemoteCodeDownload(repo)));
+  };
+
+  // Cancellation can race the scan request. Do not create a new owned dialog
+  // after the cancelling run already tried to dismiss its pending decisions,
+  // but still purge any unapproved repositories the scan downloaded.
+  if (signal?.aborted) {
+    await discardScanDownloads();
+    return false;
+  }
+
   // No custom code and nothing unsafe: proceed without trust_remote_code. Models needing
   // it ship auto_map and hit the dialog below, so the flag is only enabled via approval.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
@@ -61,17 +85,11 @@ export async function confirmRemoteCodeIfNeeded({
 
   const confirmed = await useRemoteCodeConsentDialogStore
     .getState()
-    .requestConsent(scan);
+    .requestConsent(scan, dialogOwner);
   if (!confirmed) {
     // Declined: purge every repo our scan first downloaded (a LoRA scan pulls adapter +
     // base) so untrusted code is not left on disk. Fall back to the primary flag for an older backend.
-    const toPurge =
-      scan.scanCreatedRepos.length > 0
-        ? scan.scanCreatedRepos
-        : scan.createdByScan
-          ? [scan.modelName]
-          : [];
-    for (const repo of toPurge) void discardRemoteCodeDownload(repo);
+    await discardScanDownloads();
     return false;
   }
   onApprove(scan.fingerprint);

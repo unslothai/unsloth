@@ -104,7 +104,7 @@ export function reasoningCapsFromLoad(resp: {
 export function resolveInferenceCheckpointId(
   status: InferenceStatusResponse,
 ): string | null {
-  if (!status.active_model) return null;
+  if (!status.active_model && !status.idle_unloaded) return null;
   return status.model_identifier ?? status.active_model;
 }
 
@@ -300,6 +300,11 @@ export function applyActiveModelStatusToStore(
         selectedGpuIndexKind: prevState.selectedGpuIndexKind,
       }),
   };
+  const nativeLeaseMatchesStatus =
+    status.is_gguf === true &&
+    Boolean(status.native_path_token_id_hash) &&
+    prevState.activeNativePathTokenIdHash ===
+      status.native_path_token_id_hash;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -319,9 +324,13 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
-    ...(status.is_gguf
+    ...(nativeLeaseMatchesStatus
       ? {}
-      : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
+      : {
+          activeNativePathToken: null,
+          activeNativePathTokenIdHash: null,
+          activeNativePathExpiresAtMs: null,
+        }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
@@ -458,7 +467,7 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     // Status endpoint unavailable: fall back to the normal auto-load path.
     return false;
   }
-  if (!status.active_model) {
+  if (!status.active_model && !status.idle_unloaded) {
     return false;
   }
 

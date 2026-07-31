@@ -31,6 +31,9 @@ _last_active = time.monotonic()
 # otherwise 503 against an empty backend can reload it (set on unload, cleared on
 # reload). Storing the quant means the reload restores the exact freed variant.
 _last_unloaded_model = None
+# Capability flags are cleared by llama_backend.unload_model(), so retain the
+# UI-relevant snapshot alongside the reload identity.
+_last_unloaded_capabilities = None
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
 # Guards inflight bumps against the idle-check-then-unload race, and blocks new
@@ -190,11 +193,24 @@ def get_last_unloaded_model():
         return _last_unloaded_model
 
 
-def _set_last_unloaded(value) -> None:
-    global _last_unloaded_model, _kv_resume
+def get_last_unloaded_state():
+    with _lock:
+        capabilities = (
+            dict(_last_unloaded_capabilities)
+            if _last_unloaded_capabilities is not None
+            else {}
+        )
+        return _last_unloaded_model, capabilities
+
+
+def _set_last_unloaded(value, capabilities = None) -> None:
+    global _last_unloaded_model, _last_unloaded_capabilities, _kv_resume
     stale = None
     with _lock:
         _last_unloaded_model = value
+        _last_unloaded_capabilities = (
+            dict(capabilities) if value is not None and capabilities else None
+        )
         if value is None and _kv_resume is not None:
             stale, _kv_resume = _kv_resume, None
     if stale:
@@ -367,6 +383,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
         get_auto_unload_idle_seconds,
         get_auto_unload_keep_kv,
     )
+    from core.inference.model_ids import public_model_id
 
     seen_model = None
     while True:
@@ -391,6 +408,66 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
+                    internal_identifier = backend.model_identifier
+                    native_display_label = getattr(
+                        backend, "_native_display_label", None
+                    )
+                    advertised_identifier = getattr(
+                        backend, "_openai_advertised_id", None
+                    )
+                    is_direct_local_model = bool(
+                        getattr(backend, "_is_local_model", False)
+                    )
+                    capabilities = {
+                        "model_identifier": (
+                            native_display_label
+                            or advertised_identifier
+                            or (
+                                internal_identifier
+                                if is_direct_local_model
+                                else public_model_id(internal_identifier)
+                            )
+                        ),
+                        "native_path_token_id_hash": getattr(
+                            backend, "_native_token_id_hash", None
+                        ),
+                        "is_vision": backend.is_vision,
+                        "is_diffusion": backend.is_diffusion,
+                        "is_audio": getattr(backend, "_is_audio", False),
+                        "audio_type": getattr(backend, "_audio_type", None),
+                        "has_audio_input": getattr(backend, "_has_audio_input", False),
+                        "supports_reasoning": backend.supports_reasoning,
+                        "reasoning_always_on": backend.reasoning_always_on,
+                        "reasoning_style": backend.reasoning_style,
+                        "reasoning_effort_levels": backend.reasoning_effort_levels,
+                        "supports_preserve_thinking": backend.supports_preserve_thinking,
+                        "supports_tools": backend.supports_tools,
+                        "chat_template": backend.chat_template,
+                        "chat_template_override": backend.chat_template_override,
+                        "context_length": backend.context_length,
+                        "max_context_length": backend.max_context_length,
+                        "native_context_length": backend.native_context_length,
+                        "cache_type_kv": backend.cache_type_kv,
+                        "speculative_type": backend.requested_spec_mode,
+                        "spec_draft_n_max": backend.spec_draft_n_max,
+                        "tensor_parallel": backend.tensor_parallel,
+                        "gpu_memory_mode": backend.gpu_memory_mode,
+                        "gpu_layers": backend.gpu_layers,
+                        "n_cpu_moe": backend.n_cpu_moe,
+                        "tensor_split": backend.tensor_split,
+                        "requested_context_length": backend.requested_n_ctx,
+                        "n_layers": backend.n_layers,
+                        "n_moe_layers": backend.n_moe_layers,
+                        "gpu_ids": backend.gpu_ids,
+                        "requested_gpu_ids": backend.requested_gpu_ids,
+                        "requested_parallel_slots": backend.requested_parallel_slots,
+                        "parallel_slots": backend.effective_parallel_slots,
+                        "spec_fallback_reason": backend.spec_fallback_reason,
+                        "is_local_model": bool(
+                            getattr(backend, "_native_grant_backed", False)
+                            or getattr(backend, "_is_local_model", False)
+                        ),
+                    }
                     manifest = None
                     if get_auto_unload_keep_kv():
                         try:
@@ -409,14 +486,21 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if manifest and not get_auto_unload_keep_kv():
                         _delete_resume_files(manifest)
                         manifest = None
+                    # Publish the reload state before unload_model clears the
+                    # active process. /status can then observe either the active
+                    # model or this stash, never a transient empty backend.
+                    _set_last_unloaded(freed, capabilities)
                     try:
                         await asyncio.to_thread(backend.unload_model)
                     except Exception:
-                        # Failed unload means nothing will stash the manifest.
+                        # Roll back the transitional stash only when the backend
+                        # is still resident. A partial teardown must remain
+                        # recoverable through the already-published identity.
+                        if backend.is_loaded:
+                            _set_last_unloaded(None)
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")

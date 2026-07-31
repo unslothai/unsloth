@@ -21,6 +21,7 @@ export interface HfTokenValidationResult {
 
 export async function validateHfToken(
   token: string | null | undefined,
+  signal?: AbortSignal,
 ): Promise<HfTokenValidationResult> {
   const normalized = token?.trim() ?? "";
   if (!normalized) {
@@ -28,6 +29,7 @@ export async function validateHfToken(
   }
   const response = await authFetch("/api/hub/token/validate", {
     method: "POST",
+    signal,
     headers: hubTokenHeader(normalized),
   });
   if (!response.ok) {

@@ -3,7 +3,11 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
-import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  confirmRemoteCodeIfNeeded,
+  useRemoteCodeConsentDialogStore,
+} from "@/features/security";
+import { useHfTokenWarningStore } from "@/features/hf-auth";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -58,6 +62,10 @@ import {
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import {
+  ownsModelLoadRun,
+  releaseOwnedModelLoadRun,
+} from "../utils/model-load-run";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   isMultimodalResponse,
@@ -100,6 +108,61 @@ export type SelectedModelInput = {
   config?: PerModelConfig;
   previousConfig?: PerModelConfig;
 };
+
+type LoadingModelState = {
+  id: string;
+  displayName: string;
+  isDownloaded?: boolean;
+  isCachedLora?: boolean;
+  ggufVariant?: string | null;
+  nativePathToken?: string | null;
+};
+
+type ChatRuntimeStateSnapshot = ReturnType<
+  typeof useChatRuntimeStore.getState
+>;
+
+type ActiveModelLoadRun = {
+  attemptId: number;
+  intentId: number;
+  info: LoadingModelState;
+  abortController: AbortController;
+  completionPromise: Promise<void>;
+  resolveCompletion: () => void;
+  cancelPromise: Promise<boolean> | null;
+  backendLoadStarted: boolean;
+  backendLoadModelId: string | null;
+  rollbackCheckpoint: string | null;
+  rollbackConfig?: PerModelConfig;
+  rollbackState: ChatRuntimeStateSnapshot;
+  previousCheckpointWasUnloaded: boolean;
+};
+
+type SharedModelLoadHandle = {
+  run: ActiveModelLoadRun;
+  cancel: (preserveCheckpoint?: boolean) => Promise<boolean>;
+};
+
+// Multiple surfaces can mount this hook (for example Hub and Chat) while a
+// single backend load is shared application-wide. Keep the owning hook's
+// cancellation entry point available so another surface can stop that run
+// without trying to mutate refs it does not own.
+let sharedModelLoadHandle: SharedModelLoadHandle | null = null;
+let modelSelectionIntentEpoch = 0;
+let latestExternalSelectionIntentId: number | null = null;
+let pendingExternalReplacement:
+  | { intentId: number; config?: PerModelConfig }
+  | null = null;
+
+type PendingReplacementRollback = {
+  checkpoint: string | null;
+  config?: PerModelConfig;
+  state: ChatRuntimeStateSnapshot;
+};
+
+// Cancellation can finish after a newer selection intent has already started.
+// Retain the inherited rollback target until the winning intent reserves a run.
+let pendingReplacementRollback: PendingReplacementRollback | null = null;
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
 // the pinned approval the worker requires instead of being blocked.
@@ -321,14 +384,26 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // specFallbackReason survives here, so clearing activeModelIsLocal
-      // alone would flip a local model's warning to "download failed". Every
-      // load path and clearCheckpoint set it, so leave it consistent.
-      useChatRuntimeStore.setState({
-        modelRequiresTrustRemoteCode: false,
-        loadedIsMultimodal: false,
-        loadedIsDiffusion: false,
-      });
+      // An idle-reload stash is authoritative even across browser reloads or
+      // stale tabs: hydrate the concrete identity the backend will restore.
+      if (statusRes.idle_unloaded && statusRes.model_identifier) {
+        const previousGgufVariant =
+          useChatRuntimeStore.getState().activeGgufVariant;
+        setCheckpoint(statusRes.model_identifier, statusRes.gguf_variant);
+        applyActiveModelStatusToStore(statusRes, {
+          previousCheckpoint: selectedCheckpoint,
+          previousGgufVariant,
+        });
+        syncModelCapabilities(statusRes.model_identifier, statusRes);
+      } else if (
+        // Another client may own a normal no-active interval while its model
+        // loads, so do not erase this tab's selection until the backend is idle.
+        statusRes.loading.length === 0 &&
+        !useChatRuntimeStore.getState().modelLoading &&
+        !useChatRuntimeStore.getState().loadingModelPick
+      ) {
+        useChatRuntimeStore.getState().clearCheckpoint();
+      }
     }
   } catch (error) {
     if (signal?.aborted) return;
@@ -383,14 +458,9 @@ export function useChatModelRuntime() {
   );
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
 
-  const [loadingModel, setLoadingModel] = useState<{
-    id: string;
-    displayName: string;
-    isDownloaded?: boolean;
-    isCachedLora?: boolean;
-    ggufVariant?: string | null;
-    nativePathToken?: string | null;
-  } | null>(null);
+  const [loadingModel, setLoadingModel] = useState<LoadingModelState | null>(
+    null,
+  );
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
   const [loadProgress, setLoadProgress] = useState<{
     percent: number | null;
@@ -401,28 +471,34 @@ export function useChatModelRuntime() {
   const loadingModelRef = useRef<typeof loadingModel>(null);
   const loadToastIdRef = useRef<string | number | null>(null);
   const loadAttemptRef = useRef(0);
+  const activeLoadRunRef = useRef<ActiveModelLoadRun | null>(null);
   const loadToastDismissedRef = useRef(false);
-  const cancelUnloadPendingRef = useRef(false);
 
   const setLoadToastDismissedState = useCallback((dismissed: boolean) => {
     loadToastDismissedRef.current = dismissed;
     setLoadToastDismissed(dismissed);
   }, []);
 
-  const resetLoadingUi = useCallback(() => {
-    const inFlight = loadingModelRef.current;
+  const resetLoadingUi = useCallback((run: ActiveModelLoadRun) => {
+    if (!ownsModelLoadRun(activeLoadRunRef.current, run)) return;
+    // Cancellation owns the slot until /unload settles. The aborted load's
+    // finally block may arrive first, but must not release that slot.
+    if (run.cancelPromise) return;
+    activeLoadRunRef.current = releaseOwnedModelLoadRun(
+      activeLoadRunRef.current,
+      run,
+    );
+    if (sharedModelLoadHandle?.run === run) {
+      sharedModelLoadHandle = null;
+    }
     setLoadingModel(null);
     setLoadProgress(null);
     loadingModelRef.current = null;
     loadAbortRef.current = null;
     loadToastIdRef.current = null;
     setLoadToastDismissedState(false);
-    if (inFlight) {
-      useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(inFlight));
-    }
-    if (!cancelUnloadPendingRef.current) {
-      useChatRuntimeStore.getState().setModelLoading(false);
-    }
+    useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(run.info));
+    useChatRuntimeStore.getState().setModelLoading(false);
   }, [setLoadToastDismissedState]);
 
   const renderLoadDescription = useCallback(
@@ -447,46 +523,202 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const cancelLoading = useCallback(() => {
-    const model = loadingModelRef.current;
-    if (!model) return;
-    loadAbortRef.current?.abort();
-    loadAbortRef.current = null;
-    loadingModelRef.current = null;
-    useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(model));
-    const tid = loadToastIdRef.current;
-    loadToastIdRef.current = null;
-    setLoadingModel(null);
-    setLoadProgress(null);
-    setLoadToastDismissedState(false);
-    clearCheckpoint();
-    if (tid != null) toast.dismiss(tid);
-    const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
-    toast.info("Stopped loading model", {
-      description: isCachedOrLocal
-        ? undefined
-        : "The current download may still finish in the background.",
-    });
-    cancelUnloadPendingRef.current = true;
-    useChatRuntimeStore.getState().setModelLoading(true);
-    void (async () => {
-      try {
-        // Unforced on purpose: a chat may stream on the PREVIOUS model and must not be killed by
-        // cancelling this load. Nothing to report, since the route runs its stop-loading fast
-        // path ahead of the active-chat refusal.
-        await unloadModel({ model_path: model.id }).catch(() => {});
-        // clearCheckpoint above assumed nothing was left loaded, but a forced switch keeps the
-        // previous model resident until /load's teardown, and the stop-loading fast path leaves
-        // it there. Take the answer from the backend, which reports none once it was evicted.
-        await syncInferenceStatusToStore().catch(() => {});
-      } finally {
-        cancelUnloadPendingRef.current = false;
-        if (!loadingModelRef.current) {
-          useChatRuntimeStore.getState().setModelLoading(false);
-        }
+  const cancelLoadRun = useCallback(
+    async (
+      expectedRun?: ActiveModelLoadRun,
+      preserveCheckpoint = false,
+    ): Promise<boolean> => {
+      const run = activeLoadRunRef.current;
+      if (!run || (expectedRun && !ownsModelLoadRun(run, expectedRun))) {
+        return false;
       }
-    })();
-  }, [clearCheckpoint, setLoadToastDismissedState]);
+      if (run.cancelPromise) return run.cancelPromise;
+
+      const model = run.info;
+      const backendLoadModelId = run.backendLoadModelId ?? model.id;
+      run.abortController.abort();
+      useHfTokenWarningStore.getState().resolve("cancel", run);
+      useRemoteCodeConsentDialogStore.getState().resolve(false, run);
+      useTransformersUpgradeDialogStore.getState().cancelPending(run);
+      loadAbortRef.current = null;
+      loadingModelRef.current = null;
+      const tid = loadToastIdRef.current;
+      loadToastIdRef.current = null;
+      setLoadingModel(null);
+      setLoadProgress(null);
+      setLoadToastDismissedState(false);
+      if (tid != null) toast.dismiss(tid);
+      const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
+      toast.info("Stopping model load", {
+        description: isCachedOrLocal
+          ? undefined
+          : "The current download may still finish in the background.",
+      });
+      useChatRuntimeStore.getState().setModelLoading(true);
+      const cancelPromise = (async (): Promise<boolean> => {
+        try {
+          // AbortController cannot interrupt every preflight await (for
+          // example, a consent dialog), and it is not passed to the backend
+          // /load request. Once that request has started, /unload is the
+          // operation that promptly interrupts it. During preflight there is
+          // nothing backend-side to cancel, and unloading a same-model target
+          // would eject the still-resident working model.
+          if (run.backendLoadStarted) {
+            try {
+              await unloadModel({ model_path: backendLoadModelId });
+            } catch {
+              // A same-model reload can still be waiting to apply its approved
+              // chat cancellation. The mandatory post-completion unload below
+              // is the authoritative cancellation attempt.
+            }
+          }
+          if (run.rollbackCheckpoint && run.backendLoadStarted) {
+            run.previousCheckpointWasUnloaded = true;
+          }
+          // Every owned confirmation above is now declined. If a transformers
+          // install is already running, cancelPending deliberately resolves
+          // only after it settles, because that install may unload the active
+          // backend model. Do not let a replacement start before the cancelled
+          // frontend task has observed that outcome.
+          await run.completionPromise;
+          // /unload can win the race before /load registers its target. Once
+          // the retained request settles, unload again so a late activation
+          // cannot escape cancellation.
+          if (run.backendLoadStarted) {
+            await unloadModel({
+              model_path: run.backendLoadModelId ?? backendLoadModelId,
+            });
+          }
+          // A standalone cancellation can race before the target reaches the
+          // backend. In that case /unload leaves the resident model untouched,
+          // so derive the UI checkpoint from the backend instead of clearing it
+          // optimistically.
+          if (!preserveCheckpoint) {
+            clearCheckpoint();
+            await refresh();
+          }
+          return true;
+        } catch (error) {
+          // Even when /unload fails, the cancelled frontend task may still own
+          // a running transformers install. Keep the shared slot until all of
+          // that run's owned work has settled.
+          await run.completionPromise;
+          const detail =
+            error instanceof Error ? error.message : "Unknown unload error";
+          const message = `Failed to stop ${model.displayName}`;
+          setModelsError(`${message}: ${detail}`);
+          toast.error(message, { description: detail });
+          // The request failed, so reconcile against the backend before
+          // releasing the UI slot. The caller still receives false and will
+          // not start a replacement load from an uncertain backend state.
+          if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
+            useChatRuntimeStore
+              .getState()
+              .clearLoadingModelPick(pickOf(model));
+            useChatRuntimeStore.getState().setModelLoading(false);
+          }
+          try {
+            await refresh();
+            // refresh() begins by clearing catalog errors. Keep the primary
+            // unload failure visible after reconciliation completes.
+            setModelsError(`${message}: ${detail}`);
+          } catch (refreshError) {
+            const refreshDetail =
+              refreshError instanceof Error
+                ? refreshError.message
+                : "Unknown status refresh error";
+            setModelsError(
+              `${message}: ${detail}. Failed to refresh model status: ${refreshDetail}`,
+            );
+          }
+          return false;
+        } finally {
+          if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
+            activeLoadRunRef.current = releaseOwnedModelLoadRun(
+              activeLoadRunRef.current,
+              run,
+            );
+            useChatRuntimeStore
+              .getState()
+              .clearLoadingModelPick(pickOf(model));
+            useChatRuntimeStore.getState().setModelLoading(false);
+          }
+          if (sharedModelLoadHandle?.run === run) {
+            sharedModelLoadHandle = null;
+          }
+        }
+      })();
+      run.cancelPromise = cancelPromise;
+      return cancelPromise;
+    },
+    [clearCheckpoint, refresh, setLoadToastDismissedState, setModelsError],
+  );
+
+  const cancelLoadingWithCheckpointPolicy = useCallback(
+    (preserveCheckpoint = false): Promise<boolean> => {
+      const localRun = activeLoadRunRef.current;
+      if (localRun) return cancelLoadRun(localRun, preserveCheckpoint);
+      const shared = sharedModelLoadHandle;
+      return shared ? shared.cancel(preserveCheckpoint) : Promise.resolve(false);
+    },
+    [cancelLoadRun],
+  );
+  const cancelLoading = useCallback(
+    (): Promise<boolean> => cancelLoadingWithCheckpointPolicy(false),
+    [cancelLoadingWithCheckpointPolicy],
+  );
+  const cancelLoadingForReplacement = useCallback(
+    async (intentId: number): Promise<boolean> => {
+      const run = activeLoadRunRef.current ?? sharedModelLoadHandle?.run;
+      pendingExternalReplacement = { intentId, config: run?.rollbackConfig };
+      const stopped = await cancelLoadingWithCheckpointPolicy(true);
+      // The load can finish after the caller observes its store flags but
+      // before cancellation captures the run. With no owner left there is
+      // nothing uncertain to stop, so the hosted replacement may proceed.
+      const runStillActive =
+        activeLoadRunRef.current ?? sharedModelLoadHandle?.run;
+      if (!stopped && !runStillActive) {
+        return true;
+      }
+      if (!stopped && pendingExternalReplacement?.intentId === intentId) {
+        pendingExternalReplacement = null;
+      }
+      return stopped;
+    },
+    [cancelLoadingWithCheckpointPolicy],
+  );
+
+  const invalidatePendingModelSelection = useCallback((): number => {
+    modelSelectionIntentEpoch += 1;
+    latestExternalSelectionIntentId = modelSelectionIntentEpoch;
+    return modelSelectionIntentEpoch;
+  }, []);
+
+  const discardExternalReplacement = useCallback((intentId: number): void => {
+    if (pendingExternalReplacement?.intentId === intentId) {
+      pendingExternalReplacement = null;
+    }
+  }, []);
+
+  const restoreConfigForExternalReplacement = useCallback((intentId: number): void => {
+    const config =
+      (pendingExternalReplacement?.intentId === intentId
+        ? pendingExternalReplacement.config
+        : undefined) ??
+      sharedModelLoadHandle?.run.rollbackConfig ??
+      pendingReplacementRollback?.config;
+    if (config) {
+      applyPerModelConfigToRuntime(config, {
+        isDiffusion: useChatRuntimeStore.getState().loadedIsDiffusion,
+      });
+    }
+    discardExternalReplacement(intentId);
+    pendingReplacementRollback = null;
+  }, [discardExternalReplacement]);
+
+  const isModelSelectionIntentCurrent = useCallback((intentId: number) => {
+    return modelSelectionIntentEpoch === intentId;
+  }, []);
 
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
@@ -505,9 +737,11 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? undefined : selection.isGguf;
       let isDiffusion =
         typeof selection === "string" ? undefined : selection.isDiffusion;
+      let previousConfig =
+        typeof selection === "string" ? undefined : selection.previousConfig;
       const restorePreviousConfig = () => {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig, {
+        if (previousConfig) {
+          applyPerModelConfigToRuntime(previousConfig, {
             isDiffusion:
               useChatRuntimeStore.getState().loadedIsDiffusion,
           });
@@ -518,39 +752,131 @@ export function useChatModelRuntime() {
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
+      const initialActiveRun = activeLoadRunRef.current;
+      const initialSharedRun = sharedModelLoadHandle?.run;
+      const initialInFlightLoad =
+        initialActiveRun?.info ??
+        useChatRuntimeStore.getState().loadingModelPick;
+      const initiallyLoadingSamePick =
+        initialInFlightLoad?.id === modelId &&
+        (initialInFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
+        (initialInFlightLoad.nativePathToken ?? null) ===
+          (nativePathToken ?? null);
+      if (
+        !forceReload &&
+        (!modelId ||
+          (params.checkpoint === modelId &&
+            (ggufVariant ?? null) === (currentVariant ?? null) &&
+            !initialInFlightLoad &&
+            !pendingReplacementRollback))
+      ) {
+        // A resident-model re-selection is still a user intent. Invalidate a
+        // local pick that may be awaiting status/confirmation before it owns a
+        // run or publishes loadingModelPick.
+        if (modelId) modelSelectionIntentEpoch += 1;
         restorePreviousConfig();
         return;
       }
-      // A load is already in flight. If it's this exact pick (id + variant + token),
-      // ignore the duplicate click. If it's a DIFFERENT model (including a different
-      // GGUF variant of the same repo, which the old id+token guard wrongly treated
-      // as a duplicate), don't start a second concurrent load and don't swallow the
-      // request: surface it so the user waits or cancels. Centralized here so every
-      // entry point is covered, not just the staged Load button.
-      const bailIfLoadInFlight = (): boolean => {
-        const inFlightLoad =
-          loadingModelRef.current ??
-          useChatRuntimeStore.getState().loadingModelPick;
-        if (!inFlightLoad) return false;
-        // The helper form, not an inline apply: it also carries the loaded
-        // diffusion flag, which the restored config needs to stay correct.
+      if (
+        initiallyLoadingSamePick &&
+        !initialActiveRun?.cancelPromise &&
+        !initialSharedRun?.cancelPromise
+      ) {
         restorePreviousConfig();
+        return;
+      }
+      // Register the user's intent before awaiting cancellation. This prevents
+      // the superseded run's error cleanup from restoring its previous config
+      // over settings already applied by the new caller.
+      const loadIntentId = ++modelSelectionIntentEpoch;
+      let replacementNeedsRollback = pendingReplacementRollback != null;
+      let inheritedRollbackState = pendingReplacementRollback?.state;
+      if (pendingReplacementRollback?.config) {
+        previousConfig = pendingReplacementRollback.config;
+      }
+      const inheritCancelledRunRollback = (cancelledRun: ActiveModelLoadRun) => {
+        inheritedRollbackState = cancelledRun.rollbackState;
+        if (cancelledRun.rollbackConfig) {
+          previousConfig = cancelledRun.rollbackConfig;
+        }
+        if (cancelledRun.previousCheckpointWasUnloaded) {
+          replacementNeedsRollback = true;
+          pendingReplacementRollback = {
+            checkpoint: cancelledRun.rollbackCheckpoint,
+            config: previousConfig,
+            state: cancelledRun.rollbackState,
+          };
+        }
+      };
+      // A different pick supersedes the local load in flight. Await its
+      // cancellation and backend unload before claiming the slot. Re-check in a
+      // loop because multiple selections may be waiting on the same cancellation;
+      // after the first resumes and starts a replacement, the last selection wins
+      // by cancelling that newer run rather than starting concurrently.
+      while (true) {
+        const activeRun = activeLoadRunRef.current;
+        const sharedRun = activeRun ? null : sharedModelLoadHandle?.run;
+        const inFlightLoad =
+          activeRun?.info ??
+          useChatRuntimeStore.getState().loadingModelPick;
+        if (!inFlightLoad) break;
         const loadingSamePick =
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (loadingSamePick) return true;
-        const message =
-          "Another model is already loading. Wait for it to finish or cancel it first.";
-        setModelsError(message);
-        if (throwOnError) throw new Error(message);
-        toast.info("Another model is already loading", {
-          description: "Wait for it to finish or cancel it first.",
-        });
-        return true;
-      };
-      if (bailIfLoadInFlight()) return;
+        if (
+          loadingSamePick &&
+          !activeRun?.cancelPromise &&
+          !sharedRun?.cancelPromise
+        ) {
+          restorePreviousConfig();
+          return;
+        }
+
+        // A load owned by another runtime surface cannot be safely cancelled
+        // through this hook's local refs. Delegate to the owning hook through
+        // the shared handle instead.
+        if (!activeRun) {
+          const shared = sharedModelLoadHandle;
+          if (shared) {
+            inheritCancelledRunRollback(shared.run);
+            const stopped = await shared.cancel(true);
+            inheritCancelledRunRollback(shared.run);
+            if (modelSelectionIntentEpoch !== loadIntentId) {
+              if (throwOnError) {
+                throw new Error("Model selection was superseded by a newer choice.");
+              }
+              return;
+            }
+            if (stopped) continue;
+          }
+          restorePreviousConfig();
+          const message =
+            "The current model could not be stopped, so the new model was not loaded.";
+          setModelsError(message);
+          if (throwOnError) throw new Error(message);
+          return;
+        }
+
+        // Keep the working checkpoint as the rollback target for the
+        // replacement. A standalone Stop still clears the selection.
+        inheritCancelledRunRollback(activeRun);
+        const stopped = await cancelLoadRun(activeRun, true);
+        inheritCancelledRunRollback(activeRun);
+        if (modelSelectionIntentEpoch !== loadIntentId) {
+          if (throwOnError) {
+            throw new Error("Model selection was superseded by a newer choice.");
+          }
+          return;
+        }
+        if (!stopped) {
+          restorePreviousConfig();
+          const message =
+            "The current model could not be stopped, so the new model was not loaded.";
+          if (throwOnError) throw new Error(message);
+          return;
+        }
+      }
 
       // Picking an external provider leaves the local model resident and stops the status poll
       // mirroring it, so params.checkpoint cannot tell whether this pick is that same model.
@@ -561,14 +887,20 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().params.checkpoint;
       if (!forceReload && isExternalModelId(selectedCheckpoint)) {
         const residentStatus = await getInferenceStatus().catch(() => null);
+        if (modelSelectionIntentEpoch !== loadIntentId) {
+          if (latestExternalSelectionIntentId === modelSelectionIntentEpoch) {
+            restorePreviousConfig();
+          }
+          if (throwOnError) {
+            throw new Error("Model selection was superseded by a newer choice.");
+          }
+          return;
+        }
         if (
           residentStatus &&
           resolveInferenceCheckpointId(residentStatus) === modelId &&
           (residentStatus.gguf_variant ?? null) === (ggufVariant ?? null)
         ) {
-          // Same window as the confirm below: a rival load may have started during that GET,
-          // and it owns the resident model now.
-          if (bailIfLoadInFlight()) return;
           // Roll back the config pre-applied for the load that is not happening BEFORE hydrating,
           // so the resident model's status wins over the staged snapshot.
           if (typeof selection !== "string" && selection.previousConfig) {
@@ -595,15 +927,36 @@ export function useChatModelRuntime() {
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         forceReload ? "Applying these settings" : "Loading a different model",
       );
-      if (!stopDecision.proceed) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
+      if (modelSelectionIntentEpoch !== loadIntentId) {
+        // A hosted pick does not stage its own local load config, so restore
+        // the preflight snapshot for it. A newer local pick has already staged
+        // its own settings and must not be overwritten by this stale call.
+        if (latestExternalSelectionIntentId === modelSelectionIntentEpoch) {
+          restorePreviousConfig();
+        }
+        if (throwOnError) {
+          throw new Error("Model selection was superseded by a newer choice.");
         }
         return;
       }
-      // Re-check: the confirm above awaits a GET, so a pick in that window would start a rival
-      // load over the same refs. Nothing awaits before the reservation below.
-      if (bailIfLoadInFlight()) return;
+      if (!stopDecision.proceed) {
+        restorePreviousConfig();
+        return;
+      }
+      // A load from another mounted runtime surface may have claimed the
+      // application-wide slot while the confirmation request was in flight.
+      // That later intent wins; do not cancel it from this older selection.
+      if (
+        activeLoadRunRef.current ||
+        sharedModelLoadHandle ||
+        useChatRuntimeStore.getState().loadingModelPick
+      ) {
+        restorePreviousConfig();
+        if (throwOnError) {
+          throw new Error("Model selection was superseded by a newer choice.");
+        }
+        return;
+      }
       const forceCancelActive = stopDecision.forceCancelActive;
 
       const explicitIsLora =
@@ -632,11 +985,23 @@ export function useChatModelRuntime() {
       primeNativeNotificationPermission().catch(() => undefined);
       const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
       const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
-      const currentCheckpoint =
-        useChatRuntimeStore.getState().params.checkpoint;
-      const previousCheckpoint = currentCheckpoint;
+      const currentRollbackState = useChatRuntimeStore.getState();
+      const currentCheckpoint = currentRollbackState.params.checkpoint;
+      const inheritedPendingRollback = pendingReplacementRollback;
+      inheritedRollbackState =
+        inheritedPendingRollback?.state ?? inheritedRollbackState;
+      if (inheritedPendingRollback?.config) {
+        previousConfig = inheritedPendingRollback.config;
+      }
+      replacementNeedsRollback =
+        replacementNeedsRollback || inheritedPendingRollback != null;
+      const rollbackStateForRun =
+        inheritedRollbackState ?? currentRollbackState;
+      const previousCheckpoint = inheritedPendingRollback
+        ? inheritedPendingRollback.checkpoint
+        : currentCheckpoint;
       const previousVariant =
-        useChatRuntimeStore.getState().activeGgufVariant ?? null;
+        rollbackStateForRun.activeGgufVariant ?? null;
       const reloadingSameModel =
         previousCheckpoint === modelId &&
         (ggufVariant ?? null) === (previousVariant ?? null);
@@ -680,10 +1045,37 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      let resolveCompletion!: () => void;
+      const completionPromise = new Promise<void>((resolve) => {
+        resolveCompletion = resolve;
+      });
+      const run: ActiveModelLoadRun = {
+        attemptId: loadAttemptId,
+        intentId: loadIntentId,
+        info: loadInfo,
+        abortController: abortCtrl,
+        completionPromise,
+        resolveCompletion,
+        cancelPromise: null,
+        backendLoadStarted: false,
+        backendLoadModelId: null,
+        rollbackCheckpoint: previousCheckpoint,
+        rollbackConfig: previousConfig,
+        rollbackState: rollbackStateForRun,
+        previousCheckpointWasUnloaded: replacementNeedsRollback,
+      };
+      activeLoadRunRef.current = run;
+      pendingReplacementRollback = null;
+      sharedModelLoadHandle = {
+        run,
+        cancel: (preserveCheckpoint = false) =>
+          cancelLoadRun(run, preserveCheckpoint),
+      };
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
-          let previousWasUnloaded = false;
+          let previousWasUnloaded = run.previousCheckpointWasUnloaded;
+          const rollbackState = run.rollbackState;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
           // The outgoing model's slot INTENT (blank = follow the server
@@ -693,9 +1085,9 @@ export function useChatModelRuntime() {
           // Read before the staged-metadata await below so an in-flight change
           // cannot perturb the outgoing snapshot.
           const previousNParallel =
-            typeof selection !== "string" && selection.previousConfig
-              ? (selection.previousConfig.nParallel ?? null)
-              : useChatRuntimeStore.getState().nParallel;
+            previousConfig
+              ? (previousConfig.nParallel ?? null)
+              : rollbackState.nParallel;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -704,6 +1096,7 @@ export function useChatModelRuntime() {
             // anonymously / replace token" recovery flow could run.
             const preparedToken = await prepareHfTokenForUse(
               useChatRuntimeStore.getState().hfToken || null,
+              { dialogOwner: run, signal: abortCtrl.signal },
             );
             if (!preparedToken.proceed) {
               throw new Error("Model load cancelled.");
@@ -714,7 +1107,7 @@ export function useChatModelRuntime() {
                 gguf_variant: ggufVariant ?? null,
                 hf_token: preparedToken.token,
                 nativePathToken: nativePathToken ?? null,
-              })
+              }, { signal: abortCtrl.signal })
             ).isDiffusion;
           }
           const targetIsDiffusion = isDiffusion === true;
@@ -732,7 +1125,7 @@ export function useChatModelRuntime() {
             normalizeMaxSeqLength(pendingLoadConfig?.maxSeqLength) ??
             stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
-            stateBeforeUnload.activeNativePathToken;
+            rollbackState.activeNativePathToken;
           const previousIsGguf =
             previousModel?.isGguf === true
             || previousVariant != null
@@ -743,26 +1136,27 @@ export function useChatModelRuntime() {
           // params.maxSeqLength may already be the next model's; use it only when
           // no snapshot exists.
           const previousMaxSeqLength =
-            (typeof selection !== "string"
-              ? selection.previousConfig?.maxSeqLength
-              : null) ?? maxSeqLength;
+            previousConfig?.maxSeqLength ??
+            rollbackState.params.maxSeqLength;
           // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
           // with an unpinned context must reload with 0 (so --fit re-auto-sizes),
           // not the positive context it picked (which the backend treats as a pin).
           const rollbackMaxSeqLength = resolveFitMaxSeqLength(
             previousIsGguf,
-            stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-            stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-            stateBeforeUnload.loadedCustomContextLength,
+            rollbackState.loadedGpuMemoryMode ?? "auto",
+            rollbackState.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+            rollbackState.loadedCustomContextLength,
             previousIsGguf
-              ? (stateBeforeUnload.ggufContextLength ?? 0)
+              ? (rollbackState.ggufContextLength ?? 0)
               : previousMaxSeqLength,
           );
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
-            stateBeforeUnload.modelRequiresTrustRemoteCode;
+            rollbackState.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
-            stateBeforeUnload.activeNativePathExpiresAtMs;
+            rollbackState.activeNativePathExpiresAtMs;
+          const previousActiveNativePathTokenIdHash =
+            rollbackState.activeNativePathTokenIdHash;
           // Snapshot the load settings at click time, before the awaits below
           // (validation, the trust dialog, unload). When the picker staged a
           // config payload, prefer it over the store: React may not have
@@ -803,6 +1197,7 @@ export function useChatModelRuntime() {
             stateBeforeUnload.selectedGpuIds != null
           ) {
             await ensureGpuDeviceCache();
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           }
           let loadSelectedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
@@ -830,6 +1225,7 @@ export function useChatModelRuntime() {
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             // Validate with the same effective context /load uses: a GGUF native
             // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
             // pass, unload, then have /load refuse it. Uses the click-time
@@ -893,7 +1289,11 @@ export function useChatModelRuntime() {
                     n_parallel: validateNParallel,
                   }
                 : {}),
+            }, {
+              dialogOwner: run,
+              signal: abortCtrl.signal,
             });
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
               const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -901,6 +1301,7 @@ export function useChatModelRuntime() {
                 upgrade: validation.transformers_upgrade,
                 // No installable release: custom-code models may fall back to the trust_remote_code gate below.
                 trustRemoteCodeFallback: validation.requires_trust_remote_code,
+                dialogOwner: run,
                 // The install refuses while chats generate and takes no force flag of its own, so
                 // without this the "Stop and reload" the user just confirmed dies here: Retry hits
                 // the same 409, and this path leaves chats running.
@@ -916,6 +1317,7 @@ export function useChatModelRuntime() {
                 && currentCheckpoint
               ) {
                 previousWasUnloaded = true;
+                run.previousCheckpointWasUnloaded = true;
               }
               if (!upgraded) {
                 throw new Error(getTransformersUpgradeRequiredMessage(displayName));
@@ -937,6 +1339,8 @@ export function useChatModelRuntime() {
                   trustRemoteCode = true;
                   approvedRemoteCodeFingerprint = fp;
                 },
+                dialogOwner: run,
+                signal: abortCtrl.signal,
               });
               if (!approved) {
                 throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
@@ -946,8 +1350,9 @@ export function useChatModelRuntime() {
             const loadNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            if (currentCheckpoint) {
+            if (currentCheckpoint && !previousWasUnloaded) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads
               // (/load evicts past those checks itself). Idle, unload first and free VRAM early.
@@ -957,6 +1362,7 @@ export function useChatModelRuntime() {
               // Set either way: /load can still leave no model resident, and an unneeded rollback
               // hits already_loaded before the gate.
               previousWasUnloaded = true;
+              run.previousCheckpointWasUnloaded = true;
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
@@ -1075,11 +1481,24 @@ export function useChatModelRuntime() {
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
+            }, {
+              dialogOwner: run,
+              signal: abortCtrl.signal,
+              retainRequestOnAbort: true,
+              onRequestDispatched: () => {
+                run.backendLoadStarted = true;
+                run.backendLoadModelId = modelId;
+              },
             });
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
-            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+            if (
+              abortCtrl.signal.aborted ||
+              modelSelectionIntentEpoch !== run.intentId
+            ) {
+              throw new Error("Cancelled");
+            }
 
             // The load applied this spec mode, so persist the user's standing
             // preference now (the requested intent, not the resolved echo;
@@ -1229,6 +1648,8 @@ export function useChatModelRuntime() {
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
               activeNativePathToken: nativePathToken ?? null,
+              activeNativePathTokenIdHash:
+                loadResponse.native_path_token_id_hash ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
                 : null,
@@ -1268,6 +1689,7 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             if (
               !isLora &&
               !(loadResponse.is_lora ?? false) &&
@@ -1302,6 +1724,9 @@ export function useChatModelRuntime() {
                   );
                 }
               }
+              if (abortCtrl.signal.aborted) {
+                throw new Error("Cancelled");
+              }
               try {
                 const rollbackResponse = await loadModel({
                   model_path: previousCheckpoint,
@@ -1317,31 +1742,51 @@ export function useChatModelRuntime() {
                   approved_remote_code_fingerprint:
                     approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   chat_template_override:
-                    stateBeforeUnload.loadedChatTemplateOverride,
-                  cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
+                    rollbackState.loadedChatTemplateOverride,
+                  cache_type_kv: rollbackState.loadedKvCacheDtype,
                   speculative_type:
-                    stateBeforeUnload.loadedSpeculativeType,
+                    rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
-                    stateBeforeUnload.loadedSpecDraftNMax,
-                  n_parallel: stateBeforeUnload.loadedNParallel,
+                    rollbackState.loadedSpecDraftNMax,
+                  n_parallel: rollbackState.loadedNParallel,
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
-                  tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  tensor_parallel: rollbackState.loadedTensorParallel ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
-                  gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-                  gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-                  n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
-                  tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
-                  gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                  gpu_memory_mode: rollbackState.loadedGpuMemoryMode ?? "auto",
+                  gpu_layers: rollbackState.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                  n_cpu_moe: rollbackState.loadedNCpuMoe ?? 0,
+                  tensor_split: rollbackState.loadedSplitRatio ?? undefined,
+                  gpu_ids: rollbackState.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
                   force_cancel_active: true,
+                }, {
+                  dialogOwner: run,
+                  signal: abortCtrl.signal,
+                  retainRequestOnAbort: true,
+                  onRequestDispatched: () => {
+                    run.backendLoadStarted = true;
+                    run.backendLoadModelId = previousCheckpoint;
+                  },
                 });
+                if (abortCtrl.signal.aborted) {
+                  throw new Error("Cancelled");
+                }
+                // The rollback restored the previous checkpoint, so a
+                // replacement must unload it before starting its own load.
+                previousWasUnloaded = false;
+                run.previousCheckpointWasUnloaded = false;
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,
                 );
                 useChatRuntimeStore.setState({
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
+                  activeNativePathTokenIdHash: previousActiveNativePathToken
+                    ? (rollbackResponse.native_path_token_id_hash ??
+                      previousActiveNativePathTokenIdHash ??
+                      null)
+                    : null,
                   // Restore the previous token's lease together with the token so a
                   // rollback never pairs restored token A with failed load B's expiry.
                   activeNativePathExpiresAtMs: previousActiveNativePathToken
@@ -1349,25 +1794,25 @@ export function useChatModelRuntime() {
                     : null,
                   // Restore the editable speculative knobs to the rolled-back
                   // model's; the loaded baselines below come from its reload echo.
-                  speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
-                  specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
+                  speculativeType: rollbackState.loadedSpeculativeType ?? null,
+                  specDraftNMax: rollbackState.loadedSpecDraftNMax ?? null,
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
-                  loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  loadedNParallel: rollbackState.loadedNParallel ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   loadedChatTemplateOverride:
-                    stateBeforeUnload.loadedChatTemplateOverride,
+                    rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
                   customContextLength:
-                    stateBeforeUnload.loadedCustomContextLength,
+                    rollbackState.loadedCustomContextLength,
                   loadedCustomContextLength:
-                    stateBeforeUnload.loadedCustomContextLength,
+                    rollbackState.loadedCustomContextLength,
                 });
                 await refresh();
               } catch {
@@ -1386,11 +1831,16 @@ export function useChatModelRuntime() {
           closeButton: true,
           cancel: {
             label: "Cancel",
-            onClick: cancelLoading,
+            onClick: () => {
+              void cancelLoadRun(run);
+            },
           },
           classNames: MODEL_LOAD_TOAST_CLASSNAMES,
           onDismiss: (dismissedToast: { id: string | number }) => {
-            if (loadToastIdRef.current !== dismissedToast.id) {
+            if (
+              !ownsModelLoadRun(activeLoadRunRef.current, run) ||
+              loadToastIdRef.current !== dismissedToast.id
+            ) {
               return;
             }
             setLoadToastDismissedState(true);
@@ -1479,7 +1929,10 @@ export function useChatModelRuntime() {
         let downloadComplete = isDownloaded || isCachedLora;
 
         const pollDownload = async () => {
-          if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+          if (
+            abortCtrl.signal.aborted ||
+            !ownsModelLoadRun(activeLoadRunRef.current, run)
+          ) {
             if (progressInterval) clearInterval(progressInterval);
             return;
           }
@@ -1488,7 +1941,12 @@ export function useChatModelRuntime() {
               ggufVariant && expectedBytes > 0
                 ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
                 : await getDownloadProgress(modelId);
-            if (!loadingModelRef.current) return;
+            if (
+              abortCtrl.signal.aborted ||
+              !ownsModelLoadRun(activeLoadRunRef.current, run)
+            ) {
+              return;
+            }
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
@@ -1579,13 +2037,21 @@ export function useChatModelRuntime() {
         };
 
         const pollLoad = async () => {
-          if (abortCtrl.signal.aborted || !loadingModelRef.current) {
+          if (
+            abortCtrl.signal.aborted ||
+            !ownsModelLoadRun(activeLoadRunRef.current, run)
+          ) {
             if (progressInterval) clearInterval(progressInterval);
             return;
           }
           try {
             const prog = await getLoadProgress();
-            if (!loadingModelRef.current) return;
+            if (
+              abortCtrl.signal.aborted ||
+              !ownsModelLoadRun(activeLoadRunRef.current, run)
+            ) {
+              return;
+            }
             if (!prog || prog.phase == null) return;
             if (prog.phase === "ready") {
               // Loaded. The chat flow will flip loadingModelRef shortly;
@@ -1673,7 +2139,10 @@ export function useChatModelRuntime() {
             requestPermission: false,
           }).catch(() => undefined);
         } catch (err) {
-          if (!abortCtrl.signal.aborted) {
+          if (
+            !abortCtrl.signal.aborted &&
+            ownsModelLoadRun(activeLoadRunRef.current, run)
+          ) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
             if (loadToastDismissedRef.current) {
@@ -1699,12 +2168,16 @@ export function useChatModelRuntime() {
           throw err;
         } finally {
           if (progressInterval) clearInterval(progressInterval);
-          resetLoadingUi();
+          resetLoadingUi(run);
         }
       } catch (error) {
-        restorePreviousConfig();
-        if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
-        resetLoadingUi();
+        const isLatestRun =
+          loadAttemptRef.current === run.attemptId &&
+          modelSelectionIntentEpoch === run.intentId;
+        if (isLatestRun) restorePreviousConfig();
+        if (abortCtrl.signal.aborted) return false; // User cancelled, nothing to report
+        if (!isLatestRun) return false;
+        resetLoadingUi(run);
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
@@ -1712,10 +2185,14 @@ export function useChatModelRuntime() {
         if (throwOnError) {
           throw error instanceof Error ? error : new Error(message);
         }
+        return false;
+      } finally {
+        run.resolveCompletion();
       }
+      return true;
     },
     [
-      cancelLoading,
+      cancelLoadRun,
       loras,
       models,
       params.checkpoint,
@@ -1791,6 +2268,11 @@ export function useChatModelRuntime() {
     selectModel,
     ejectModel,
     cancelLoading,
+    cancelLoadingForReplacement,
+    invalidatePendingModelSelection,
+    discardExternalReplacement,
+    restoreConfigForExternalReplacement,
+    isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,
     loadToastDismissed,
