@@ -14,9 +14,7 @@ MAX_REASONING_BUDGET_MESSAGE_BYTES = 8_192
 def validate_reasoning_budget_message(value: str) -> str:
     """Return ``value`` unchanged when it is safe to pass as one argv token."""
     if "\0" in value:
-        raise ValueError(
-            "llama-server --reasoning-budget-message cannot contain NUL characters."
-        )
+        raise ValueError("llama-server --reasoning-budget-message cannot contain NUL characters.")
     try:
         size = len(value.encode("utf-8"))
     except UnicodeEncodeError as exc:
