@@ -874,7 +874,9 @@ async def get_gguf_variants_response(
                 logger.warning(
                     f"Manifest-based partial check failed for " f"{repo_id}/{variant.quant}: {e}"
                 )
-        if incomplete_hashes:
+        # Same attribution as the main check above: a pinned older snapshot is not judged by the
+        # blobs a newer attempt left behind.
+        if incomplete_hashes and repo_signal_applies:
             for variant in variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None:

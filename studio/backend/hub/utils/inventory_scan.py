@@ -1339,8 +1339,8 @@ def is_variant_partial(
     in the same repo. *snapshot_dir* is an optional hint to avoid re-walking the cache when checking
     many variants of one repo (see is_gguf_repo_partial). ``repo_signal_applies`` is
     ``_repo_signal_applies_to_snapshot``'s verdict: a caller pinning an older revision passes False
-    rather than judge that quant by another revision's marker or manifest. Defaults True so the
-    per-variant endpoint still reports a cancelled quant as broken."""
+    rather than judge that quant by another revision's marker, manifest or blobs. Defaults True so
+    the per-variant endpoint still reports a cancelled quant as broken."""
     from hub.utils import download_manifest
     return _compose_partial(
         lambda: repo_signal_applies
@@ -1350,7 +1350,10 @@ def is_variant_partial(
             variant,
             hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
         ),
-        lambda: bool(
+        # blobs/ is repo-wide and each attempt rewrites it, so a retry's .incomplete belongs to the
+        # newest snapshot the same way a marker does.
+        lambda: repo_signal_applies
+        and bool(
             incomplete_blob_hashes
             and variant_blob_hashes
             and incomplete_blob_hashes.intersection(variant_blob_hashes)

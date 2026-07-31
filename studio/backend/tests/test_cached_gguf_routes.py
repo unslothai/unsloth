@@ -537,6 +537,76 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     assert all(v.partial for v in unpinned.variants)
 
 
+def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkeypatch, tmp_path):
+    """blobs/ is repo-wide and each attempt rewrites it, so a retry's .incomplete belongs to the
+    newest snapshot exactly as a cancel marker does. Judging the pinned quant by it hid the one
+    copy that loads."""
+    import os
+
+    from hub.utils import download_registry
+    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.gguf import GgufVariantInfo
+    from hub.utils.gguf_plan import plan_from_expected_files
+
+    sha = "f" * 64
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Quant"
+    pinned, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
+    for path in (pinned, newer):
+        path.mkdir(parents = True)
+    (pinned / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    (newer / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
+    os.utime(pinned, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+    (repo_dir / "blobs").mkdir(parents = True)
+    (repo_dir / "blobs" / f"{sha}.incomplete").write_bytes(b"\0" * 8)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(
+            hub_cache = active, hf_home = tmp_path, source = "studio", cache_home = tmp_path
+        ),
+    )
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_root",
+        lambda create = False, root = None: (root if root is not None else active),
+    )
+    variant = GgufVariantInfo(
+        filename = "Model-Q4_K_M.gguf",
+        quant = "Q4_K_M",
+        display_label = "Q4_K_M",
+        size_bytes = 256,
+    )
+    monkeypatch.setattr(
+        GV, "list_gguf_variants", lambda repo_id, hf_token = None: ([variant], False, [])
+    )
+    monkeypatch.setattr(
+        GV,
+        "_gguf_all_variant_requirements",
+        lambda repo_id, hf_token, siblings = None: {
+            "q4_k_m": plan_from_expected_files(
+                "Q4_K_M", [ExpectedFile(path = "Model-Q4_K_M.gguf", size = 256, sha256 = sha)]
+            )
+        },
+    )
+    monkeypatch.setattr(GV, "_variant_requirement_cache_get", lambda key: None)
+    monkeypatch.setattr(download_registry, "incomplete_blob_hashes", lambda *a, **kw: {sha})
+
+    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path = str(pinned)))
+    assert {v.quant for v in response.variants if v.downloaded} == {"Q4_K_M"}
+    assert not any(v.partial for v in response.variants)
+
+    # Controls: unpinned, and pinned to the snapshot the blob does belong to.
+    for target in (None, str(newer)):
+        other = asyncio.run(
+            GV.get_gguf_variants_response("Org/Quant", **({} if target is None else {"local_path": target}))
+        )
+        assert all(v.partial for v in other.variants)
+
+
 def test_a_copy_that_loads_beats_a_bigger_one_that_does_not(monkeypatch, tmp_path):
     """Two caches holding one repo are two directories, and only one of them loads. Keeping the
     larger download put an unusable copy on the row while a whole one sat in the other cache."""
