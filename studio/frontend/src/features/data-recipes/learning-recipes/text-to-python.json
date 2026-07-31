@@ -1,0 +1,241 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "openai-compatible",
+        "endpoint": "",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "coding-model",
+        "model": "",
+        "provider": "openai-compatible",
+        "inference_parameters": {
+          "temperature": 0.7
+        }
+      }
+    ],
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "sampler",
+        "name": "domain",
+        "drop": false,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "Data Processing",
+            "Web API",
+            "Automation"
+          ]
+        }
+      },
+      {
+        "column_type": "sampler",
+        "name": "task_type",
+        "drop": false,
+        "sampler_type": "subcategory",
+        "params": {
+          "category": "domain",
+          "values": {
+            "Data Processing": [
+              "CSV cleaning",
+              "JSON transform",
+              "deduplicate rows"
+            ],
+            "Web API": [
+              "GET endpoint",
+              "POST validation",
+              "pagination helper"
+            ],
+            "Automation": [
+              "file organizer",
+              "log parser",
+              "daily report script"
+            ]
+          }
+        }
+      },
+      {
+        "column_type": "llm-text",
+        "name": "instruction",
+        "drop": false,
+        "model_alias": "coding-model",
+        "prompt": "Write one clear Python coding instruction.\nDomain: {{ domain }}\nTask type: {{ task_type }}\n\nKeep it practical and specific.\nReturn only the instruction without any code.",
+        "with_trace": "none",
+        "extract_reasoning_content": false
+      },
+      {
+        "column_type": "llm-code",
+        "name": "code_implementation",
+        "drop": false,
+        "model_alias": "coding-model",
+        "prompt": "Write Python code for:\n{{ instruction }}\n\nRequirements:\n- runnable script or function\n- include needed imports\n- short comments only where useful\n- no markdown fences",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
+        "code_lang": "python"
+      },
+      {
+        "column_type": "llm-judge",
+        "name": "code_judge_result",
+        "drop": false,
+        "model_alias": "coding-model",
+        "prompt": "Evaluate generated Python code against the instruction.\n\nInstruction:\n{{ instruction }}\n\nCode:\n{{ code_implementation }}",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
+        "scores": [
+          {
+            "name": "Correctness",
+            "description": "Follows instruction and is executable",
+            "options": {
+              "0": "bad",
+              "1": "partial",
+              "2": "good",
+              "3": "excellent"
+            }
+          }
+        ]
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": 1526,
+        "y": 1790.75,
+        "width": 568,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "The **LLM Code** block is where Python code is generated from your instruction/prompt.\n\n##### How it works in this recipe:\n\n- You provide a clear prompt (often using Jinja references from earlier columns)\n- The model returns a response\n- The block extracts code content directly for the output column\n\n##### Current status:\n\n- We are **not** running Python lint/syntax validation in this recipe yet (Soon)\n- Validation support is planned and will be added\n\n##### What this means:\n\n- You may get mostly correct code, but some rows can still have syntax/style issues\n- Keep prompts specific and constrained to reduce bad outputs\n\n##### Tip:\n\n- Ask for one self-contained function/script\n- Ask for required imports\n- Ask for no markdown fences if you want cleaner extraction\n",
+        "note_color": "#FEF3C7",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": 2597.376821192053,
+        "y": 1233.2039735099338,
+        "width": 471,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "The **LLM Judge** block evaluates generated outputs with rubric-style scores.\n\n##### Important:\n\n- A judge can have **one or many scores**\n- Each score has:\n  - a name (for example: `Correctness`)\n  - a description\n  - options (value + meaning)\n\n##### Example multi-score setup:\n\n- Correctness\n- Readability\n- Efficiency\n\n##### Why use multiple scores:\n\n- You get richer quality signals than a single pass/fail\n- Easier filtering and weighting later in training data prep\n\n##### Practical pattern:\n\n1. Generate code with LLM Code\n2. Judge with 2-4 focused scores\n3. Keep high-quality rows based on score thresholds\n",
+        "note_color": "#FEF3C7",
+        "note_opacity": "35"
+      },
+      {
+        "id": "openai-compatible",
+        "x": 1627.1046357615896,
+        "y": 921.0301324503313,
+        "width": 400
+      },
+      {
+        "id": "coding-model",
+        "x": 1627.1046357615894,
+        "y": 1138.910927152318,
+        "width": 400
+      },
+      {
+        "id": "domain",
+        "x": 84,
+        "y": 1600.5,
+        "width": 400
+      },
+      {
+        "id": "task_type",
+        "x": 648,
+        "y": 1600.5,
+        "width": 400
+      },
+      {
+        "id": "instruction",
+        "x": 1128,
+        "y": 1567,
+        "width": 400
+      },
+      {
+        "id": "code_implementation",
+        "x": 1627.1046357615894,
+        "y": 1531.4728476821192,
+        "width": 400
+      },
+      {
+        "id": "code_judge_result",
+        "x": 2124.617218543046,
+        "y": 1567.076490066225,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "domain",
+        "to": "task_type",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "task_type",
+        "to": "instruction",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "openai-compatible",
+        "to": "coding-model",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
+      },
+      {
+        "from": "instruction",
+        "to": "code_implementation",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "coding-model",
+        "to": "instruction",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "coding-model",
+        "to": "code_implementation",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "code_implementation",
+        "to": "code_judge_result",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "coding-model",
+        "to": "code_judge_result",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      }
+    ],
+    "layout_direction": "LR"
+  }
+}

@@ -24,21 +24,45 @@ __all__ = [
     "device_context",
     "clean_gpu_cache",
     "get_current_device",
+    "is_mlx_available",
 ]
 
-import torch
 import functools
 import inspect
+import os
 from unsloth_zoo.utils import Version
+from .bnb_availability import native_kernels_ready
+
+
+def is_mlx_available():
+    try:
+        from unsloth_zoo.mlx import is_mlx_available as _is_mlx_available
+    except ImportError:
+        return False
+    return _is_mlx_available()
+
+
+_IS_MLX = is_mlx_available()
+
+if not _IS_MLX:
+    import torch
 
 
 @functools.cache
 def is_hip():
+    if _IS_MLX:
+        return False
     return bool(getattr(getattr(torch, "version", None), "hip", None))
 
 
 @functools.cache
 def get_device_type():
+    # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda"
+    # branch behaves identically. Read once per process (function is cached).
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        return "cuda"
+    if _IS_MLX:
+        return "mlx"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
             return "hip"
@@ -48,9 +72,7 @@ def get_device_type():
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
-            raise NotImplementedError(
-                "Unsloth cannot find any torch accelerator? You need a GPU."
-            )
+            raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
         if accelerator in ("cuda", "xpu", "hip"):
             raise RuntimeError(
@@ -58,9 +80,7 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
-    )
+    raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
 
 
 DEVICE_TYPE: str = get_device_type()
@@ -68,6 +88,8 @@ DEVICE_TYPE: str = get_device_type()
 DEVICE_TYPE_TORCH = DEVICE_TYPE
 if DEVICE_TYPE_TORCH == "hip":
     DEVICE_TYPE_TORCH = "cuda"
+elif DEVICE_TYPE_TORCH == "mlx":
+    DEVICE_TYPE_TORCH = "mps"
 
 
 @functools.cache
@@ -100,6 +122,37 @@ DEVICE_COUNT: int = get_device_count()
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
+# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader reads
+# before it picks a 4bit checkpoint. A guarded import, not find_spec, since importable
+# is not usable - from 0.46 a dead native library still resolves every ctypes handle to
+# a closure that raises only when called, so 4bit would die mid-run, not fall back here.
+try:
+    import bitsandbytes as _bnb_probe
+except Exception:
+    ALLOW_PREQUANTIZED_MODELS = False
+    ALLOW_BITSANDBYTES = False
+else:
+    if not native_kernels_ready(_bnb_probe, DEVICE_TYPE):
+        ALLOW_PREQUANTIZED_MODELS = False
+        ALLOW_BITSANDBYTES = False
+    del _bnb_probe
+# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this
+# legacy GCN arch (ROCm dropped it after 6.3) - compiled graphs crash or miscompile
+# while the eager path trains fine. Default compile off; setdefault so a user
+# override wins.
+if DEVICE_TYPE == "hip":
+    try:
+        _gcn_arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0].strip().lower()
+    except Exception:
+        _gcn_arch = ""
+    if _gcn_arch == "gfx906":
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+        os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+        print(
+            "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
+            "(community-maintained legacy GCN path)."
+        )
 if DEVICE_TYPE == "hip":
     try:
         import bitsandbytes
@@ -117,7 +170,6 @@ if DEVICE_TYPE == "hip":
             try:
                 # Pre-quantized bitsandbytes models use blocksize 64, so we need to check the GPU
                 from bitsandbytes.cextension import ROCM_WARP_SIZE_64
-
                 ALLOW_PREQUANTIZED_MODELS = not ROCM_WARP_SIZE_64
             except Exception as e:
                 print(
@@ -129,10 +181,7 @@ if DEVICE_TYPE == "hip":
                 ALLOW_BITSANDBYTES = False
         elif ALLOW_BITSANDBYTES:
             from bitsandbytes.nn.modules import Params4bit
-
-            if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(
-                Params4bit
-            ):
+            if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
                 ALLOW_PREQUANTIZED_MODELS = False
 
 

@@ -1,0 +1,40 @@
+# Single-env pins for unsloth + studio + data-designer
+# Keep compatible with unsloth transformers bounds.
+transformers==4.57.6
+trl==0.23.1
+huggingface-hub==0.36.2
+
+# Unsloth stack
+datasets==4.3.0
+pyarrow==23.0.1
+
+# FastMCP compat
+fastmcp>=3.0.2
+mcp>=1.24,<2
+websockets>=15.0.1
+
+# Cap anyio <4.14: 4.14's new asyncio per-task cancel scope (TaskHandle/_run_coro)
+# gets exited in the wrong task on Python 3.13 under starlette's collapsing task
+# group, raising "RuntimeError: ... exit a cancel scope that isn't the current
+# task's" on streaming responses (#6483); 4.13 has no such code. Global cap so
+# later with-deps steps can't re-resolve it up.
+anyio<4.14.0
+
+pandas==2.3.3
+
+# av (PyAV) 16+ builds its macOS arm64 wheels against macosx_14_0, so on macOS 13 none
+# are installable and the resolver falls back to a source build, which needs FFmpeg
+# headers the Xcode CLT do not supply and so fails however that Mac is equipped.
+# 15.1.0 is the newest release with a macosx_13_0 arm64 wheel; 17+ moves to cp311-abi3
+# at macosx_14_0 too.
+#
+# The remaining sdist-only macOS defaults are pure Python, hence allowlisted in
+# .github/scripts/clean-machine-assert.sh instead; cryptography below is the one
+# other package that would compile.
+av<16
+
+# cryptography 49.0.0 dropped the macosx_10_9_universal2 wheel for arm64-only, so
+# x86_64 macOS has no wheel and builds the sdist, needing Rust plus a working
+# linker. 48.0.1 is the newest release with a universal2 wheel. Lift when
+# cryptography ships an x86_64-capable macOS wheel again.
+cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"

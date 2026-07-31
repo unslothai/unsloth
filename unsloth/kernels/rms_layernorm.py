@@ -161,7 +161,13 @@ def _gemma_rms_layernorm_forward(
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool = False):
+    def forward(
+        ctx,
+        X: torch.Tensor,
+        W: torch.Tensor,
+        eps: float,
+        gemma: bool = False,
+    ):
         shape = X.shape
         dim: int = shape[-1]
         X = X.reshape(-1, dim)
@@ -236,12 +242,14 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 
 # [TODO] Unsure why RMS Layernorm is not torch.compiling properly
 @torch.compiler.disable
-def fast_rms_layernorm(layernorm, X: torch.Tensor, gemma: bool = False):
+def fast_rms_layernorm(
+    layernorm,
+    X: torch.Tensor,
+    gemma: bool = False,
+):
     W: torch.Tensor = layernorm.weight
     eps: float = (
-        layernorm.variance_epsilon
-        if hasattr(layernorm, "variance_epsilon")
-        else layernorm.eps
+        layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     )
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out
@@ -257,13 +265,12 @@ class Unsloth_LlamaRMSNorm(LlamaRMSNorm):
 
 try:
     from transformers.models.mllama.modeling_mllama import MllamaTextRMSNorm
-
     class Unsloth_MllamaTextRMSNorm(MllamaTextRMSNorm):
         def forward(self, X):
             return fast_rms_layernorm(self, X, gemma = False)
 
 
-except:
+except (ImportError, AttributeError):
     pass
 
 
@@ -273,11 +280,8 @@ def patch_rms_layernorm():
     transformers.models.llama.modeling_llama.LlamaRMSNorm = Unsloth_LlamaRMSNorm
     try:
         import transformers.models.mllama.modeling_mllama
-
-        transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = (
-            Unsloth_MllamaTextRMSNorm
-        )
-    except:
+        transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = Unsloth_MllamaTextRMSNorm
+    except (ImportError, AttributeError, NameError):
         pass
     return
 
@@ -288,9 +292,8 @@ def unpatch_rms_layernorm():
     transformers.models.llama.modeling_llama.LlamaRMSNorm = LlamaRMSNorm
     try:
         import transformers.models.mllama.modeling_mllama
-
         transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = MllamaTextRMSNorm
-    except:
+    except (ImportError, AttributeError, NameError):
         pass
     return
 

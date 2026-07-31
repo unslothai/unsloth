@@ -1,9 +1,4 @@
-"""
-OCR Model Evaluation Module
-
-This module provides functionality to evaluate OCR models on datasets with
-word error rate (WER) and character error rate (CER) metrics.
-"""
+"""Evaluate OCR models on datasets with WER and CER metrics."""
 
 import os
 import torch
@@ -17,10 +12,7 @@ import traceback
 
 
 class OCRModelEvaluator:
-    """
-    A comprehensive OCR model evaluator that supports multiple models and provides
-    detailed analysis with WER and CER metrics.
-    """
+    """OCR model evaluator over multiple models with WER/CER analysis."""
 
     def __init__(self):
         """Initialize the OCR evaluator."""
@@ -37,41 +29,31 @@ class OCRModelEvaluator:
         min_p: float = 0.1,
         verbose: bool = True,
     ) -> Tuple[Optional[float], Optional[float]]:
-        """
-        Evaluate a model on an OCR dataset.
-        """
-        # Create output directory if it doesn't exist
+        """Evaluate a model on an OCR dataset."""
         os.makedirs(output_dir, exist_ok = True)
 
-        # Initialize results storage
         results = []
 
-        # Process each sample in the dataset
         for i, sample in enumerate(
             tqdm(dataset, desc = "Evaluating OCR performance", disable = not verbose)
         ):
             try:
-                # Extract components from sample
                 messages = sample["messages"]
 
-                # Get ground truth, image, and question
-                ground_truth, image, question, input_messages = (
-                    self._extract_sample_components(messages, i, verbose)
+                ground_truth, image, question, input_messages = self._extract_sample_components(
+                    messages, i, verbose
                 )
 
                 if ground_truth is None or image is None or question is None:
                     continue
 
-                # Generate model response
                 generated_response = self._generate_response(
                     model, processor, input_messages, max_new_tokens, temperature, min_p
                 )
 
-                # Calculate metrics
                 word_error = wer(ground_truth, generated_response)
                 char_error = cer(ground_truth, generated_response)
 
-                # Save individual result
                 self._save_individual_result(
                     output_dir,
                     i,
@@ -82,7 +64,6 @@ class OCRModelEvaluator:
                     char_error,
                 )
 
-                # Store results for summary
                 results.append(
                     {
                         "sample_id": i,
@@ -99,7 +80,6 @@ class OCRModelEvaluator:
                     print(f"Error processing sample {i}: {str(e)}")
                     traceback.print_exc()
 
-        # Generate summary report
         return self._generate_summary_report(results, output_dir, verbose)
 
     def _extract_sample_components(
@@ -107,30 +87,20 @@ class OCRModelEvaluator:
     ) -> Tuple[Optional[str], Optional[Any], Optional[str], List[Dict]]:
         """Extract ground truth, image, question, and input messages from sample."""
 
-        # Extract system message (if present)
-        system_message = next(
-            (msg for msg in messages if msg["role"] == "system"), None
-        )
+        system_message = next((msg for msg in messages if msg["role"] == "system"), None)
 
-        # Extract user message with the image and question
         user_message = next((msg for msg in messages if msg["role"] == "user"), None)
         if not user_message:
             if verbose:
                 print(f"Skipping sample {sample_idx}: No user message found")
             return None, None, None, []
 
-        # Extract assistant message with ground truth
-        assistant_message = next(
-            (msg for msg in messages if msg["role"] == "assistant"), None
-        )
+        assistant_message = next((msg for msg in messages if msg["role"] == "assistant"), None)
         if not assistant_message:
             if verbose:
-                print(
-                    f"Skipping sample {sample_idx}: No assistant message (ground truth) found"
-                )
+                print(f"Skipping sample {sample_idx}: No assistant message (ground truth) found")
             return None, None, None, []
 
-        # Extract ground truth text
         ground_truth = None
         for content_item in assistant_message["content"]:
             if content_item["type"] == "text":
@@ -139,15 +109,12 @@ class OCRModelEvaluator:
 
         if not ground_truth:
             if verbose:
-                print(
-                    f"Skipping sample {sample_idx}: No text found in assistant message"
-                )
+                print(f"Skipping sample {sample_idx}: No text found in assistant message")
             return None, None, None, []
 
         # Extract image and question from user message
         image = None
         question = None
-
         for content_item in user_message["content"]:
             if content_item["type"] == "image":
                 image = content_item["image"]
@@ -161,12 +128,10 @@ class OCRModelEvaluator:
 
         if not question:
             if verbose:
-                print(
-                    f"Skipping sample {sample_idx}: No question found in user message"
-                )
+                print(f"Skipping sample {sample_idx}: No question found in user message")
             return None, None, None, []
 
-        # Construct messages for the model input (excluding assistant message)
+        # Model input excludes the assistant message
         input_messages = []
         if system_message:
             input_messages.append(system_message)
@@ -185,15 +150,12 @@ class OCRModelEvaluator:
     ) -> str:
         """Generate response from the model."""
 
-        # Preparation for inference using Qwen's specific processing
         text = processor.apply_chat_template(
             input_messages, tokenize = False, add_generation_prompt = True
         )
 
-        # Process vision info (images/videos) from messages
         image_inputs, video_inputs = process_vision_info(input_messages)
 
-        # Create model inputs
         inputs = processor(
             text = [text],
             images = image_inputs,
@@ -203,7 +165,6 @@ class OCRModelEvaluator:
         )
         inputs = inputs.to(model.device)
 
-        # Generate response
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
@@ -213,13 +174,11 @@ class OCRModelEvaluator:
                 use_cache = True,
             )
 
-        # Extract only the generated part (not the input)
+        # Keep only the generated tokens, not the input
         generated_ids_trimmed = [
-            out_ids[len(in_ids) :]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
 
-        # Decode the generated text
         generated_response = processor.batch_decode(
             generated_ids_trimmed,
             skip_special_tokens = True,
@@ -258,16 +217,13 @@ class OCRModelEvaluator:
 
         df = pd.DataFrame(results)
 
-        # Calculate overall averages
         avg_wer = df["wer"].mean()
         avg_cer = df["cer"].mean()
 
-        # Save average metrics
         with open(os.path.join(output_dir, "avg_metrics.txt"), "w") as f:
             f.write(f"Average WER: {avg_wer:.4f}\n")
             f.write(f"Average CER: {avg_cer:.4f}\n")
 
-        # Save detailed results
         df.to_csv(os.path.join(output_dir, "detailed_results.csv"), index = False)
 
         if verbose:
@@ -283,7 +239,9 @@ class OCRModelEvaluator:
         self.model_comparison_results[model_name] = {"wer": wer, "cer": cer}
 
     def print_model_comparison(
-        self, save_csv: bool = True, save_plot: bool = True
+        self,
+        save_csv: bool = True,
+        save_plot: bool = True,
     ) -> Optional[pd.DataFrame]:
         """Print a comparison of all models evaluated so far."""
         if not self.model_comparison_results:
@@ -292,33 +250,25 @@ class OCRModelEvaluator:
 
         print("\n==== MODEL COMPARISON REPORT ====")
 
-        # Create a comparison dataframe
         comparison_df = pd.DataFrame(
             {
                 "Model": list(self.model_comparison_results.keys()),
-                "WER": [
-                    results["wer"] for results in self.model_comparison_results.values()
-                ],
-                "CER": [
-                    results["cer"] for results in self.model_comparison_results.values()
-                ],
+                "WER": [results["wer"] for results in self.model_comparison_results.values()],
+                "CER": [results["cer"] for results in self.model_comparison_results.values()],
             }
         )
 
-        # Sort by WER (best performance first)
+        # Sort by WER (best first)
         comparison_df = comparison_df.sort_values("WER")
 
-        # Display the comparison table
         print("\nComparison Table (sorted by WER):")
         print(comparison_df.to_string(index = False))
 
-        # Save the comparison table
         if save_csv:
             comparison_file = "model_comparison_results.csv"
             comparison_df.to_csv(comparison_file, index = False)
             print(f"\nComparison table saved to {comparison_file}")
 
-        # Generate a bar chart visualization
         if save_plot:
             self._create_comparison_plot(comparison_df)
 
@@ -360,11 +310,13 @@ class OCRModelEvaluator:
 
 
 def evaluate_ocr_model(
-    model, processor, dataset, output_dir = "ocr_evaluation_results", **kwargs
+    model,
+    processor,
+    dataset,
+    output_dir = "ocr_evaluation_results",
+    **kwargs,
 ):
-    """
-    Convenience function that maintains backward compatibility with the original function.
-    """
+    """Convenience wrapper kept for backward compatibility."""
     evaluator = OCRModelEvaluator()
     return evaluator.evaluate_model(model, processor, dataset, output_dir, **kwargs)
 

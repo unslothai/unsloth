@@ -9,18 +9,14 @@ class LlamaModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{version}-{size}B"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class LlamaVisionModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{version}-{size}B-Vision"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 # Llama 3.1
@@ -88,9 +84,7 @@ def register_llama_3_2_models(include_original_model: bool = False):
     if _IS_LLAMA_3_2_REGISTERED:
         return
     _register_models(LlamaMeta_3_2_Base, include_original_model = include_original_model)
-    _register_models(
-        LlamaMeta_3_2_Instruct, include_original_model = include_original_model
-    )
+    _register_models(LlamaMeta_3_2_Instruct, include_original_model = include_original_model)
     _IS_LLAMA_3_2_REGISTERED = True
 
 
@@ -98,9 +92,7 @@ def register_llama_3_2_vision_models(include_original_model: bool = False):
     global _IS_LLAMA_3_2_VISION_REGISTERED
     if _IS_LLAMA_3_2_VISION_REGISTERED:
         return
-    _register_models(
-        LlamaMeta_3_2_Vision, include_original_model = include_original_model
-    )
+    _register_models(LlamaMeta_3_2_Vision, include_original_model = include_original_model)
     _IS_LLAMA_3_2_VISION_REGISTERED = True
 
 

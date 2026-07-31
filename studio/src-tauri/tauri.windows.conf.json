@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "windows": {
+      "signCommand": {
+        "cmd": "powershell",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "windows/sign-with-trusted-signing.ps1",
+          "%1"
+        ]
+      }
+    }
+  }
+}

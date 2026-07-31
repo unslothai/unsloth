@@ -19,18 +19,14 @@ from tests.utils.cleanup_utils import safe_remove_directory
 from tests.utils.ocr_eval import OCRModelEvaluator
 
 
-## Dataset Preparation
 from datasets import load_dataset
 
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
-# To select the first 2000 examples
 train_dataset = dataset.select(range(2000))
 
-# To select the next 200 examples for evaluation
 eval_dataset = dataset.select(range(2000, 2200))
 
 
-# Convert dataset to OAI messages
 def format_data(sample):
     return {
         "messages": [
@@ -60,12 +56,10 @@ def format_data(sample):
 
 
 system_message = "You are an expert french ocr system."
-# Convert dataset to OAI messages
-# need to use list comprehension to keep Pil.Image type, .mape convert image to bytes
+# List comprehension (not .map) keeps PIL.Image type; .map would convert images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 
-## Setup OCR main evaluation function and helpers
 import os
 import torch
 from tqdm import tqdm
@@ -73,12 +67,8 @@ import pandas as pd
 from jiwer import wer, cer
 from qwen_vl_utils import process_vision_info
 
-#
 ocr_evaluator = OCRModelEvaluator()
 model_comparison_results = {}
-
-## Finetuning Setup and Run
-# Load Base Model
 
 model, tokenizer = FastVisionModel.from_pretrained(
     model_name = "unsloth/Qwen2-VL-7B-Instruct",
@@ -88,7 +78,7 @@ model, tokenizer = FastVisionModel.from_pretrained(
     full_finetuning = False,  # [NEW!] We have full finetuning now!
 )
 
-# benchmark base model performance
+# Benchmark base model.
 model_name = "Unsloth Base model"
 FastVisionModel.for_inference(model)
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
@@ -96,13 +86,12 @@ avg_wer, avg_cer = ocr_evaluator.evaluate_model(
 )
 ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
-## Lora Finetuning
 model = FastVisionModel.get_peft_model(
     model,
     finetune_vision_layers = True,  # Turn off for just text!
     finetune_language_layers = True,  # Should leave on!
     finetune_attention_modules = True,  # Attention good for GRPO
-    finetune_mlp_modules = True,  # SHould leave on always!
+    finetune_mlp_modules = True,  # Should leave on always!
     r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
     # target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
     # "gate_proj", "up_proj", "down_proj",],
@@ -134,10 +123,8 @@ trainer = SFTTrainer(
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         gradient_checkpointing = True,
-        gradient_checkpointing_kwargs = {
-            "use_reentrant": False
-        },  # use reentrant checkpointing
-        max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
+        gradient_checkpointing_kwargs = {"use_reentrant": False},
+        max_grad_norm = 0.3,  # QLoRA paper
         warmup_ratio = 0.03,
         # num_train_epochs = 2, # Set this instead of max_steps for full training runs
         max_steps = 60,
@@ -161,23 +148,18 @@ trainer = SFTTrainer(
     ),
 )
 
-# run training
 trainer_stats = trainer.train()
 
 model.save_pretrained("unsloth-qwen2-7vl-french-ocr-adapter", tokenizer)
 tokenizer.save_pretrained("unsloth-qwen2-7vl-french-ocr-adapter")
 
-## Measure Adapter Performance
-
-# benchmark lora model performance
+# Benchmark lora adapter model.
 model_name = "Unsloth lora adapter model"
 FastVisionModel.for_inference(model)
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
     model, tokenizer, eval_dataset, output_dir = "unsloth_lora_model_results"
 )
 ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
-
-## Merge Model
 
 
 def find_lora_base_model(model_to_inspect):
@@ -193,21 +175,17 @@ base = find_lora_base_model(model)
 
 print((base.__class__.__name__))
 
-# merge default 16 bits
+# Merge at 16 bits.
 model.save_pretrained_merged(
     save_directory = "qwen2-ocr-merged-finetune-merge-16bit", tokenizer = tokenizer
 )
 
 
-## Benchmark merged model performance
-
-### 16 bits merged model
-
+# Benchmark 16-bit merged model loaded at various precisions.
 model, tokenizer = FastVisionModel.from_pretrained(
     "./qwen2-ocr-merged-finetune-merge-16bit", load_in_4bit = False, load_in_8bit = False
 )
 
-# benchmark 4bit loaded, 16bits merged model performance
 model_name = "Unsloth 16bits-merged model load-16bits"
 model.config.use_cache = True
 
@@ -219,12 +197,11 @@ avg_wer, avg_cer = ocr_evaluator.evaluate_model(
 )
 ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
-# load 16bits-merged model in 4 bits
+# Load 16bits-merged model in 4 bits.
 model, tokenizer = FastVisionModel.from_pretrained(
     "./qwen2-ocr-merged-finetune-merge-16bit", load_in_4bit = True, load_in_8bit = False
 )
 
-# benchmark 4bit loaded, 16bits merged model performance
 model_name = "Unsloth 16bits-merged model load-4bits"
 model.config.use_cache = True
 
@@ -236,12 +213,11 @@ avg_wer, avg_cer = ocr_evaluator.evaluate_model(
 )
 ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
-# load model in 8 bits
+# Load 16bits-merged model in 8 bits.
 model, tokenizer = FastVisionModel.from_pretrained(
     "./qwen2-ocr-merged-finetune-merge-16bit", load_in_4bit = False, load_in_8bit = True
 )
 
-# benchmark 4bit loaded, 16bits merged model performance
 model_name = "Unsloth 16bits-merged model load-8bits"
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
     model,
@@ -271,12 +247,9 @@ ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 # avg_wer, avg_cer = ocr_evaluator.evaluate_model(model, tokenizer, eval_dataset, output_dir="unsloth_4bits_merged_model_load_8bits_results")
 # ocr_evaluator.add_to_comparison(model_name, avg_wer, avg_cer)
 
-# Model comparison report
-# print model comparison
 ocr_evaluator.print_model_comparison()
 
 
-# Final cleanup
 print("\n🧹 Cleaning up temporary files...")
 safe_remove_directory("./unsloth-qwen2-7vl-french-ocr-adapter")
 safe_remove_directory("./unsloth-qwen2-7vl-french-ocr-checkpoints")

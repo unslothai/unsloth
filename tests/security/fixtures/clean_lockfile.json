@@ -1,0 +1,21 @@
+{
+  "name": "fixture-clean",
+  "version": "0.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "fixture-clean",
+      "version": "0.0.0"
+    },
+    "node_modules/workspace-symlink-pkg": {
+      "version": "1.0.0",
+      "link": true
+    },
+    "node_modules/nested-bundle-fold-in/node_modules/sub-dep": {
+      "version": "0.1.0",
+      "resolved": "https://registry.npmjs.org/sub-dep/-/sub-dep-0.1.0.tgz",
+      "integrity": "sha512-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=="
+    }
+  }
+}

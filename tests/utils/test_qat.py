@@ -5,24 +5,24 @@ from typing import Dict
 import pytest
 import torch
 
-try:
-    from torchao.quantization.qat import FakeQuantizedLinear
-    from torchao.quantization.qat.fake_quantizer import (
-        FakeQuantizerBase,
-        Float8FakeQuantizer,
-        Int4WeightFakeQuantizer,
-        IntxFakeQuantizer,
-    )
-except ImportError:
-    print(
-        "Missing torchao import, please install or upgrade torchao with: pip install 'torchao>=0.15.0'"
-    )
+# torchao is an optional extra. Skip the module instead of printing and then failing
+# every test on NameError once the import did not land.
+pytest.importorskip(
+    "torchao.quantization.qat",
+    reason = "install or upgrade with: pip install 'torchao>=0.15.0'",
+)
+
+from torchao.quantization.qat import FakeQuantizedLinear
+from torchao.quantization.qat.fake_quantizer import (
+    FakeQuantizerBase,
+    Float8FakeQuantizer,
+    Int4WeightFakeQuantizer,
+    IntxFakeQuantizer,
+)
 
 
 class _CountingFakeQuantizer(torch.nn.Module):
-    """
-    Dummy fake quantizer that counts the number of times it has been called.
-    """
+    """Fake quantizer that counts how many times it was called."""
 
     def __init__(self):
         super().__init__()
@@ -34,10 +34,7 @@ class _CountingFakeQuantizer(torch.nn.Module):
 
 
 def _get_model(qat_scheme: str, full_finetuning: bool):
-    """
-    Return a 2-tuple of (model, tokenizer), where the model has been configured
-    to use QAT. If `full_finetuning` is False, return the PEFT (LoRA) model.
-    """
+    """Return (model, tokenizer) configured for QAT; LoRA model when full_finetuning is False."""
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "unsloth/Qwen3-1.7B",
         load_in_4bit = False,
@@ -53,9 +50,7 @@ def _get_model(qat_scheme: str, full_finetuning: bool):
 
 
 def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
-    """
-    Verify that the given linear contains fake quantizers according to the `qat_scheme`.
-    """
+    """Verify the linear contains fake quantizers matching `qat_scheme`."""
     weight_only = False
     if qat_scheme == "fp8-int4":
         act_fq_class = Float8FakeQuantizer
@@ -70,10 +65,15 @@ def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
         weight_fq_class = IntxFakeQuantizer
         min_in_features = 128
         weight_only = True
+    elif qat_scheme == "cactus":
+        act_fq_class = None
+        weight_fq_class = IntxFakeQuantizer
+        min_in_features = 32
+        weight_only = True
     else:
         raise ValueError(f"Unknown qat_scheme: {qat_scheme}")
 
-    # Check base layer activations and weights
+    # Check base layer activations and weights.
     base_layer = getattr(linear, "base_layer", linear)
     if base_layer.in_features >= min_in_features:
         assert isinstance(base_layer, FakeQuantizedLinear)
@@ -81,7 +81,7 @@ def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
             assert isinstance(base_layer.activation_fake_quantizer, act_fq_class)
         assert isinstance(base_layer.weight_fake_quantizer, weight_fq_class)
 
-    # Check lora A and B (only for full_finetuning=False)
+    # Check lora A and B (full_finetuning=False only).
     if hasattr(linear, "lora_A") and hasattr(linear, "lora_B"):
         lora_A = linear.lora_A.default
         lora_B = linear.lora_B.default
@@ -98,15 +98,10 @@ def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
 
 
 def _test_fake_quantizers_are_called(
-    model: torch.nn.Module,
-    example_inputs: Dict,
-    full_finetuning: bool,
-    qat_scheme: str,
+    model: torch.nn.Module, example_inputs: Dict, full_finetuning: bool, qat_scheme: str
 ):
-    """
-    Verify that the fake quantizers are actually called when the model is called.
-    """
-    weight_only = qat_scheme == "int8"
+    """Verify the fake quantizers are actually called during a forward pass."""
+    weight_only = qat_scheme in ["int8", "cactus"]
 
     def _swap_fake_quantizers(model: torch.nn.Module):
         for name, child in model.named_children():
@@ -121,9 +116,8 @@ def _test_fake_quantizers_are_called(
                         assert child.activation_fake_quantizer.count == 1
                     assert child.weight_fake_quantizer.count == 1
             else:
-                # For LoRA, we only fake quantize the input activations once per block:
-                # For self_attn, we only fake quantize the q_proj's input activations
-                # For mlp, we only fake quantize the gate_proj's input activations
+                # LoRA fake-quantizes input activations once per block:
+                # self_attn via q_proj, mlp via gate_proj.
                 if name == "self_attn":
                     base_layer = child.q_proj.base_layer
                     if not weight_only:
@@ -135,20 +129,24 @@ def _test_fake_quantizers_are_called(
                         assert hasattr(base_layer, "activation_fake_quantizer")
                         assert base_layer.activation_fake_quantizer.count == 1
                 elif isinstance(child, FakeQuantizedLinear):
-                    # Weight fake quantizers should always be called
+                    # Weight fake quantizers must always be called.
                     assert child.weight_fake_quantizer.count == 1
 
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        pytest.skip("No GPU available")
     for k, v in example_inputs.items():
-        example_inputs[k] = v.cuda()
+        example_inputs[k] = v.to(device)
     model.apply(_swap_fake_quantizers)
     model(**example_inputs)
     model.apply(_assert_fake_quantizers_are_called)
 
 
 def _test_model_fake_quantize(qat_scheme: str, full_finetuning: bool):
-    """
-    Test that all linear layers in the model are fake quantized according to the `qat_scheme`.
-    """
+    """All linear layers in the model are fake quantized per `qat_scheme`."""
     model, tokenizer = _get_model(qat_scheme, full_finetuning)
     if full_finetuning:
         model = model.model
@@ -167,11 +165,11 @@ def _test_model_fake_quantize(qat_scheme: str, full_finetuning: bool):
 
 # TODO: there are bad interactions across tests right now, need to figure out
 # how to disable model caching before re-enabling this test
-@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8"])
+@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def _test_full_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = True)
 
 
-@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8"])
+@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def test_lora_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = False)
