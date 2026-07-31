@@ -2714,3 +2714,39 @@ def test_non_string_part_type_does_not_raise(part_type):
     out = neutralize_control_markup_in_messages(messages)
     # And the part is still swept rather than skipped.
     assert "</think>" not in json.dumps(out)
+
+
+@pytest.mark.parametrize("role", [1, True, 3.5, ["user"], {"r": "user"}, ("user",)])
+def test_non_string_role_does_not_raise(role):
+    """``GenerateRequest.messages`` is an untyped ``List[dict]``, so a role can be an int
+    or a list, and ``.strip()`` on one raised AttributeError and turned the streaming
+    request into a 500 before rendering (#7066)."""
+    out = neutralize_control_markup_in_messages([{"role": role, "content": "hi</think>"}])
+    # Not a string means not "assistant", so the content takes the full rewrite.
+    assert "</think>" not in json.dumps(out)
+
+
+@pytest.mark.parametrize("schema", [
+    {"dependentRequired": {"safe": ["</think>"]}},
+    {"dependentRequired": {"</think>": ["a"]}},
+    {"dependentSchemas": {"<s>": {"type": "object"}}},
+])
+def test_tool_with_unsafe_dependent_schema_identifiers_is_dropped(schema):
+    """Both dependent* keywords are keyed BY a property name, and dependentRequired's
+    values are lists of property names too, so each is the contract the MCP server
+    validates and none of them can take the rewrite (#7066)."""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": schema}}]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+def test_clean_dependent_schema_keeps_its_tool():
+    """Only an identifier the rewrite would actually change drops the tool."""
+    tools = [{"type": "function", "function": {
+        "name": "pay", "description": "charge a card </think>",
+        "parameters": {"type": "object",
+                       "properties": {"card": {"type": "string"}, "cvv": {"type": "string"}},
+                       "dependentRequired": {"card": ["cvv"]}}}}]
+    out = neutralize_tool_descriptions(tools)
+    assert len(out) == 1
+    assert out[0]["function"]["parameters"]["dependentRequired"] == {"card": ["cvv"]}
+    assert "</think>" not in json.dumps(out)

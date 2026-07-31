@@ -520,7 +520,12 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         if not isinstance(msg, dict):
             out.append(msg)
             continue
-        role = (msg.get("role") or "").strip().lower()
+        # isinstance, not truthiness: GenerateRequest.messages is an untyped List[dict], so
+        # a role can be an int or a list and ".strip()" on one raised AttributeError,
+        # turning the streaming request into a 500 before rendering. Anything that is not a
+        # string is simply not "assistant", so it takes the full rewrite.
+        raw_role_value = msg.get("role")
+        role = raw_role_value.strip().lower() if isinstance(raw_role_value, str) else ""
         rewrite = (
             neutralize_turn_boundary_markup if role == "assistant" else neutralize_control_markup
         )
@@ -655,7 +660,13 @@ def neutralize_tool_descriptions(tools):
 # execute_tool. Rewriting one guides the model to emit the rewritten spelling while the
 # MCP server still expects the original, so the tool breaks. function.name is already
 # dropped for exactly this reason, and these get the same treatment (#7066).
-_SCHEMA_KEYED_IDENTIFIERS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+_SCHEMA_KEYED_IDENTIFIERS = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions",
+     # Both dependent* keywords are keyed BY a property name, and dependentRequired's
+     # values are lists of property names as well, so it is checked on both sides below.
+     "dependentSchemas", "dependentRequired"}
+)
+_SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired"})
 # "pattern" and "default" belong here for the same reason: a grammar built from the
 # schema forces the model to satisfy the rewritten regex or echo the rewritten default,
 # and the MCP server then validates the original and rejects the call. This is the case
@@ -672,9 +683,16 @@ def _unsafe_schema_identifier(value):
         if isinstance(node, dict):
             for key, item in node.items():
                 if key in _SCHEMA_KEYED_IDENTIFIERS and isinstance(item, dict):
-                    for name in item:
+                    for name, dependents in item.items():
                         if isinstance(name, str) and neutralize_control_markup(name) != name:
                             return name
+                        if key in _SCHEMA_KEYED_LIST_IDENTIFIERS and isinstance(dependents, list):
+                            for dependent in dependents:
+                                if (
+                                    isinstance(dependent, str)
+                                    and neutralize_control_markup(dependent) != dependent
+                                ):
+                                    return dependent
                 elif key in _SCHEMA_VALUED_IDENTIFIERS:
                     for literal in item if isinstance(item, list) else [item]:
                         if (
