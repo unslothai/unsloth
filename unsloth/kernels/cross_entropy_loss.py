@@ -444,8 +444,12 @@ def fast_cross_entropy_loss(
     )
     if n_items is None:
         n_items = torch.count_nonzero(labels != -100)
-    if torch.is_tensor(n_items):
-        n_items = n_items.to(device)
+    if not torch.is_tensor(n_items):
+        n_items = torch.tensor(n_items, dtype = torch.float32, device = device)
+    else:
+        n_items = n_items.to(dtype = torch.float32, device = device)
+    # Prevent division by zero when all labels are padding (-100)
+    n_items = n_items.clamp(min = 1.0)
     return loss.sum() / n_items
 
 
