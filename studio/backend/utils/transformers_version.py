@@ -57,17 +57,87 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if an HF offline env var is truthy (canonical strip+lower parse); gates the urllib fetches below."""
+    """True if an HF offline env var is truthy; gates the urllib fetches below.
+
+    An open force_hf_offline window counts too: during a spawn the guard briefly restores
+    the user's values into os.environ, and an env-only check would then send the very
+    request the guard is holding back.
+    """
+    try:
+        from utils.utils import force_hf_offline_active
+        if force_hf_offline_active():
+            return True
+    except Exception:
+        pass
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
     )
 
 
-def hf_endpoint_unreachable(timeout: int = 3) -> bool:
+def _hf_raw_url(model_name: str, filename: str) -> str:
+    """Raw model metadata URL for the configured Hub endpoint.
+
+    /resolve, not /raw: that is what hf_hub_url builds, and a mirror implements the
+    download route while /raw is a huggingface.co web route it need not serve. Both return
+    the same bytes on huggingface.co, so this only widens where the reads work. Small JSON,
+    never LFS, so no pointer-vs-content difference.
+    """
+    from utils.utils import hf_endpoint_url
+    return f"{hf_endpoint_url().rstrip('/')}/{model_name}/resolve/main/{filename}"
+
+
+def _hf_proxy_opener(url: str):
+    """Opener pinned to the Hub client's proxy choice for *url*, or None for the default.
+
+    The default opener ignores ALL_PROXY (``getproxies`` reports an ``all`` key but
+    ``ProxyHandler`` only dispatches ``<scheme>_open``) and applies urllib's NO_PROXY rules,
+    which miss the CIDR / host:port entries requests honours, so the probe and the reads
+    below would disagree about egress. None for a socks proxy: urllib cannot speak it.
+    """
+    import urllib.parse
+    import urllib.request
+
+    try:
+        from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+
+        proxy = hf_proxy_for_endpoint(url)
+        scheme = urllib.parse.urlparse(url).scheme or "https"
+        if proxy:
+            if not hf_proxy_usable_by_urllib(proxy):
+                return None
+            return urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
+        if any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
+            # The Hub client bypasses the proxy for this host; force a direct opener so
+            # urllib's coarser NO_PROXY parsing cannot send the request through it anyway.
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    except Exception:
+        pass
+    return None
+
+
+def _hf_urlopen(req, timeout: int):
+    """``urlopen`` through the same proxy huggingface_hub would use for this request."""
+    import urllib.request
+
+    opener = _hf_proxy_opener(req.full_url)
+    if opener is not None:
+        return opener.open(req, timeout = timeout)
+    return urllib.request.urlopen(req, timeout = timeout)
+
+
+def hf_endpoint_unreachable(
+    timeout: int = 3,
+    *,
+    gateway_errors_offline: bool = True,
+    proxy_timeouts_offline: bool = True,
+) -> bool:
     """Bounded reachability probe to the HF endpoint. A HEAD request runs in a daemon thread
     joined with a deadline, so a resolver blackhole cannot block past ~timeout+1s. True if
-    unreachable. urllib natively honors *_PROXY / NO_PROXY, so this verifies real egress
+    unreachable. A clean socket timeout is resolved with a TCP connect, so a slow-but-live
+    endpoint is not mistaken for no egress (a hang past the deadline still counts as
+    unreachable, since the real hub calls would hang too).
+    Egress goes through the same proxy the Hub client would use, so this verifies real egress
     (the proxy can reach HF), not just that the proxy is up. No ML imports, so it is safe to
     call before transformers version activation. Mirrors the probe in export._hf_offline."""
     import ssl
@@ -75,33 +145,104 @@ def hf_endpoint_unreachable(timeout: int = 3) -> bool:
     import urllib.error
     import urllib.request
 
-    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
-    if "://" not in endpoint:
-        endpoint = "https://" + endpoint
+    # Shared normaliser, so an empty or whitespace HF_ENDPOINT falls back to the default
+    # hub here exactly as it does in the DNS shortcut, instead of probing "https://".
+    try:
+        from utils.utils import hf_endpoint_url
+        endpoint = hf_endpoint_url()
+    except Exception:
+        endpoint = (os.environ.get("HF_ENDPOINT") or "").strip() or "https://huggingface.co"
+        if "://" not in endpoint:
+            endpoint = "https://" + endpoint
 
-    result = {"online": False}
+    # Pin the Hub client's proxy choice. The default urllib opener ignores all_proxy and
+    # can also override a requests-compatible NO_PROXY decision.
+    try:
+        from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+        proxy = hf_proxy_for_endpoint(endpoint)
+        # urllib cannot speak socks5, so its instant failure is not proof of no egress.
+        if proxy and not hf_proxy_usable_by_urllib(proxy):
+            return False
+    except Exception:
+        pass
+    opener = _hf_proxy_opener(endpoint)
+    _open = opener.open if opener is not None else urllib.request.urlopen
+
+    result = {"online": False, "timed_out": False}
 
     def _probe():
         try:
             req = urllib.request.Request(endpoint, method = "HEAD")
-            with urllib.request.urlopen(req, timeout = timeout):
+            with _open(req, timeout = timeout):
                 result["online"] = True
         except urllib.error.HTTPError as exc:
-            # The server/proxy answered: reachable unless it is a gateway error.
-            result["online"] = exc.code not in (502, 503, 504)
+            # The server/proxy answered, so we have egress. A gateway error usually means
+            # the hub itself is down, which callers scoping offline to one operation want
+            # to treat as offline; callers setting a lifetime flag pass
+            # gateway_errors_offline=False so a momentary 503 can't strand the process.
+            result["online"] = (
+                True if not gateway_errors_offline else exc.code not in (502, 503, 504)
+            )
         except urllib.error.URLError as exc:
             # A TLS/cert failure means we DID reach the server; treat as reachable so the real
             # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
-            result["online"] = isinstance(exc.reason, ssl.SSLError)
+            # ConnectionError is the whole "the wire answered" family (refused, reset,
+            # aborted). A blackhole raises gaierror / ENETUNREACH instead, which are not.
+            if isinstance(exc.reason, (ssl.SSLError, ConnectionError)):
+                result["online"] = True
+            elif isinstance(exc.reason, TimeoutError):
+                # Resolved below, off-thread, so the extra probe cannot outrun the join.
+                result["timed_out"] = True
+            elif isinstance(exc.reason, OSError):
+                result["online"] = False  # gaierror / network unreachable: a real answer
+            else:
+                # A string reason ("no host given") is client-side, not an egress answer.
+                result["online"] = True
         except ssl.SSLError:
             result["online"] = True
-        except Exception:
+        except TimeoutError:
+            result["timed_out"] = True
+        except ConnectionError:
+            # urllib only wraps OSErrors raised while sending; one from getresponse()
+            # arrives raw. Accept-then-close surfaces as RemoteDisconnected, a
+            # ConnectionResetError subclass, and a momentary reset must not read as no
+            # egress and strand a whole job offline, same reasoning as the 502/503 case.
+            result["online"] = True
+        except OSError:
             result["online"] = False
+        except Exception:
+            # Bad endpoint/proxy, or a bug here. Not a network answer, so fail open.
+            result["online"] = True
 
     t = threading.Thread(target = _probe, daemon = True)
     t.start()
     t.join(timeout + 1)
-    return t.is_alive() or not result["online"]
+    if t.is_alive():
+        # Hung past the deadline. Behind a proxy that is the same ambiguous answer as a
+        # clean timeout, since connect, TLS and the response can each stay under `timeout`
+        # while the total runs past the join, so lifetime callers fail open here too.
+        # Direct, a hang means the real hub calls would hang the same way, so cache-only
+        # stays the useful answer.
+        try:
+            from utils.utils import hf_proxy_configured
+            if hf_proxy_configured():
+                return proxy_timeouts_offline
+        except Exception:
+            pass
+        return True
+    if result["timed_out"]:
+        # A slow server still completes the TCP handshake; a blackholed route does not.
+        # Bounded separately so the whole probe stays within a predictable deadline.
+        try:
+            from utils.utils import hf_proxy_configured, hf_tcp_reachable
+            if hf_proxy_configured():
+                # Through a proxy the handshake only proves the proxy is up, not that it
+                # can reach the hub. Lifetime callers fail open on this ambiguous result.
+                return proxy_timeouts_offline
+            return not hf_tcp_reachable(min(timeout, 2.0), endpoint)
+        except Exception:
+            return True
+    return not result["online"]
 
 
 def _safe_is_file(p: Path) -> bool:
@@ -408,6 +549,42 @@ def _is_same_path(value: str, local_path: Path) -> bool:
         return False
 
 
+def recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for what a local checkpoint records on disk.
+
+    Mirrors every offline branch below, so a caller can tell whether a load is
+    filesystem-only before paying a network probe: an adapter's
+    ``base_model_name_or_path``, else a full checkpoint's ``model_name``/``_name_or_path``
+    (a self-reference is not a base), else the ``unsloth_<model>_<timestamp>`` dir-name
+    convention for an adapter carrying weights but no JSON. ``needs_hub`` is True when
+    only the ``get_base_model_from_lora`` branch could answer, or the read failed.
+    """
+    root = Path(model_name)
+    try:
+        adapter_cfg = _safe_is_file(root / "adapter_config.json")
+        if adapter_cfg:
+            with open(root / "adapter_config.json", encoding = "utf-8-sig") as f:
+                base = json.load(f).get("base_model_name_or_path")
+            if base:
+                return base, False
+        if _safe_is_file(root / "config.json"):
+            with open(root / "config.json", encoding = "utf-8-sig") as f:
+                cfg = json.load(f)
+            for _key in ("model_name", "_name_or_path"):
+                base = cfg.get(_key)
+                if isinstance(base, str) and base and not _is_same_path(base, root):
+                    return base, False
+        # Only reachable without a Hub call when there is no adapter_config.json; with one,
+        # the resolver tries get_base_model_from_lora first, which needs_hub already covers.
+        if not adapter_cfg and root.name.startswith("unsloth_") and _has_adapter_weights(root):
+            parts = root.name.split("_")
+            if len(parts) >= 2:
+                return "unsloth/" + "_".join(parts[1:-1]), False
+        return None, adapter_cfg
+    except Exception:
+        return None, True
+
+
 def _resolve_base_model(model_name: str) -> str:
     """If *model_name* points to a LoRA adapter, return its base model.
 
@@ -576,14 +753,13 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     import urllib.error
     import urllib.request
 
-    endpoint = (os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
-    url = f"{endpoint}/{model_name}/raw/main/adapter_config.json"
+    url = _hf_raw_url(model_name, "adapter_config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hf_urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
         base = cfg.get("base_model_name_or_path")
         if base:
@@ -645,13 +821,13 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    url = _hf_raw_url(model_name, "tokenizer_config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hf_urlopen(req, timeout = 10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -757,13 +933,13 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     import urllib.error
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    url = _hf_raw_url(model_name, "config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hf_urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
         _config_json_cache[cache_key] = cfg
         return cfg

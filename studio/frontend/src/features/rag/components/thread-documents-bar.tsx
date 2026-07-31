@@ -7,6 +7,10 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  useNativeAttachmentTargetKey,
+  useNativeIntentStore,
+} from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
@@ -55,6 +59,8 @@ export function ThreadDocumentsBar({
 }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
+  const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -116,6 +122,60 @@ export function ThreadDocumentsBar({
     initPromiseRef.current = pending;
     return pending;
   }, [aui, effectiveThreadId]);
+
+  // Desktop drops land in the native-intent store because the drop listener lives on
+  // the chat page; only the chat that received the OS drop may drain its batch.
+  const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const hasPendingAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  useEffect(() => {
+    if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
+      return;
+    }
+    // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
+    // index into something this bar never shows.
+    if (ragEnabled && ragSource.type === "kb") {
+      useNativeIntentStore.getState().takeAttachments(nativeAttachmentTargetKey);
+      toast.error("This chat retrieves from a knowledge base", {
+        description: "Add these files to the knowledge base instead.",
+      });
+      return;
+    }
+    const intents = useNativeIntentStore
+      .getState()
+      .takeAttachments(nativeAttachmentTargetKey);
+    if (intents.length === 0) return;
+    // A stale KB preference is inactive while RAG is off; use thread retrieval.
+    if (!ragEnabled) {
+      setRagSource({ type: "thread" });
+      setRagEnabled(true);
+    }
+    void upload(
+      intents.map((intent) => ({
+        kind: "native" as const,
+        token: intent.path.token,
+        name: intent.displayLabel,
+        sizeBytes: intent.path.sizeBytes,
+        modifiedMs: intent.path.modifiedMs,
+      })),
+      ensureThreadId().then((id) =>
+        id ? ({ type: "thread", threadId: id } as const) : null,
+      ),
+    );
+  }, [
+    hasPendingAttachments,
+    nativeAttachmentTargetKey,
+    upload,
+    ensureThreadId,
+    ragEnabled,
+    ragSource,
+    setRagSource,
+    setRagEnabled,
+  ]);
 
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);
