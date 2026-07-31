@@ -1034,9 +1034,7 @@ def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, 
         "Org/Plain",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 256)], snapshot_path = here)
-        ],
+        revisions = [SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 256)], snapshot_path = here)],
     )
     monkeypatch.setattr(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
