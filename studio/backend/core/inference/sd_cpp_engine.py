@@ -150,6 +150,17 @@ def managed_install_root() -> Path:
     return Path.home() / ".unsloth" / "stable-diffusion.cpp"
 
 
+def in_tree_install_root() -> Optional[Path]:
+    """``<repo_root>/stable-diffusion.cpp``, the developer build the finder falls back to, or None
+    when the layout above this file is not what we expect. Named rather than inlined so tests can
+    point it somewhere empty: a developer with a real in-tree build must not change what the
+    discovery tests assert."""
+    try:
+        return Path(__file__).resolve().parents[4] / "stable-diffusion.cpp"
+    except (OSError, IndexError):
+        return None
+
+
 def is_managed_binary(binary: Optional[str]) -> bool:
     """True when ``binary`` lives under the installer-owned root (see managed_install_root)."""
     if not binary:
@@ -189,13 +200,11 @@ def _find_binary(
         return hit
 
     # 4. In-tree developer build: <repo_root>/stable-diffusion.cpp.
-    try:
-        project_root = Path(__file__).resolve().parents[4]
-        hit = _first_file(_layout_candidates(project_root / "stable-diffusion.cpp", layout_stem))
+    in_tree = in_tree_install_root()
+    if in_tree is not None:
+        hit = _first_file(_layout_candidates(in_tree, layout_stem))
         if hit:
             return hit
-    except (OSError, IndexError):
-        pass
 
     # 5. PATH.
     for stem in path_stems:

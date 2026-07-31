@@ -35,6 +35,28 @@ from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, SdCppUps
 # ── binary discovery ────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse = True)
+def _isolate_binary_discovery(tmp_path_factory, monkeypatch):
+    """Point every hop of the finder at an empty tree, so a real install on the machine running the
+    tests cannot satisfy it.
+
+    Clearing ``SD_CLI_PATH`` / ``UNSLOTH_SD_CPP_PATH`` and patching ``Path.home`` is not enough:
+    hop 3 goes through ``managed_install_root()``, which honors ``UNSLOTH_STUDIO_HOME`` /
+    ``STUDIO_HOME`` and resolves to ``<studio home>/../stable-diffusion.cpp``. Anyone running the
+    suite with a Studio home set -- which is the documented way to run side-by-side Studios -- gets
+    a real binary back and every "nothing is installed" assertion here fails. Hop 4 (the in-tree
+    developer build) has the same problem for anyone who built sd.cpp in the checkout.
+
+    Autouse rather than a helper because the failure does not need a fixture to reach it:
+    ``SdCppEngine(binary = None)`` calls the finder from its constructor.
+    """
+    root = tmp_path_factory.mktemp("no_sd_cpp")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root / "studio"))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.setattr(eng, "in_tree_install_root", lambda: root / "in_tree")
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: root / "nohome"))
+
+
 def _clear_env(monkeypatch):
     monkeypatch.delenv("SD_CLI_PATH", raising = False)
     monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
