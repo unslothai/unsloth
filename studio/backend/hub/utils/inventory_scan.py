@@ -1119,13 +1119,10 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             if selected in payload.empty_whole[kind]:
                 # The loader opens this name first and finds it empty. Same exemption as below.
                 return kind == wanted or wanted not in payload.ungrouped
-            if any(root.endswith(suffix) for root in payload.whole[kind]):
+            if selected in payload.whole[kind]:
                 # Only the row's own kind proves it loads, and it vetoes nothing once that kind's
                 # payload is here but names no family.
                 return kind != wanted and wanted not in payload.ungrouped
-            if any(root.endswith(suffix) for root in payload.empty_whole[kind]):
-                # The name exists, so the loader stops here and opens nothing. Same exemption as above.
-                return kind == wanted or wanted not in payload.ungrouped
             # from_pretrained reads the snapshot root, so only families named there are judged; a
             # subdirectory layout is carried by ungrouped instead.
             families = {
@@ -1140,6 +1137,13 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                     if suffix in payload.unusable_root_indexes:
                         return kind == wanted or wanted not in payload.ungrouped
                     return kind != wanted and wanted not in payload.ungrouped
+                if any(
+                    root.endswith(suffix)
+                    for root in payload.whole[kind] | payload.empty_whole[kind]
+                ):
+                    # A whole root weight under a name the loader never opens, e.g.
+                    # consolidated.safetensors beside no model.safetensors.
+                    unreachable = True
                 continue
             if all(family in payload.invisible_families for family in families):
                 # Nothing names these shards, so they neither serve nor veto.

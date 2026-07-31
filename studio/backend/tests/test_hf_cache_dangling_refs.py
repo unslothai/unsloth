@@ -2159,6 +2159,53 @@ def test_a_whole_canonical_weight_beside_another_root_file_still_serves(tmp_path
     assert rows[0]["capabilities"]["can_chat"] is True
 
 
+def test_a_root_weight_under_a_name_the_loader_never_opens_does_not_serve(tmp_path, monkeypatch):
+    """The local-directory chain probes model.safetensors, its index, pytorch_model.bin and its
+    index, and peft resolves only the singular adapter_model.*; every other root name is one
+    nothing opens, however whole it is."""
+    for config, weight in (
+        ('{"model_type":"llama"}', "consolidated.safetensors"),
+        ('{"model_type":"llama"}', "consolidated.bin"),
+        ('{"model_type":"llama"}', "model.fp16.safetensors"),
+        ('{"peft_type":"LORA"}', "adapter_model_v2.safetensors"),
+    ):
+        root = tmp_path / weight.replace(".", "_")
+        config_name = "adapter_config.json" if "peft_type" in config else "config.json"
+        _repo_with(
+            root,
+            snapshots = {OLDER: {config_name: config.encode(), weight: b"\0" * 256}},
+            refs = {"main": UPSTREAM_HEAD},
+        )
+
+        rows = _autoload_rows(root, monkeypatch)
+
+        assert rows[0]["partial"] is True
+        assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_root_weight_the_loader_never_opens_does_not_veto_the_name_it_does(tmp_path, monkeypatch):
+    """Control for the test above: an unopened name is not evidence either way, so the next name in
+    the chain still decides."""
+    for extra in ({"pytorch_model.bin": b"\0" * 256}, {"model.safetensors": b"\0" * 256}):
+        root = tmp_path / next(iter(extra)).replace(".", "_")
+        _repo_with(
+            root,
+            snapshots = {
+                OLDER: {
+                    "config.json": b'{"model_type":"llama"}',
+                    "consolidated.safetensors": b"\0" * 256,
+                    **extra,
+                }
+            },
+            refs = {"main": UPSTREAM_HEAD},
+        )
+
+        rows = _autoload_rows(root, monkeypatch)
+
+        assert rows[0]["partial"] is False
+        assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_an_ungroupable_payload_under_a_subdirectory_does_not_serve_the_root(tmp_path, monkeypatch):
     """A .ckpt or diffusion weight names no family this walk groups, which exempts it from the
     family checks. That exemption only holds at the snapshot root: the loader cannot discover one
