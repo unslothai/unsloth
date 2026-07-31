@@ -4108,3 +4108,38 @@ def test_sweeping_a_tool_result_payload_leaves_real_urls_alone(url):
         "content"
     ][0]
     assert out["image_url"]["url"] == url
+
+
+@pytest.mark.parametrize("marker", ["[gMASK]", "<sop>", "[gMASK]<sop>"])
+@pytest.mark.parametrize("role", ["user", "system", "assistant"])
+def test_glm_prompt_start_sentinels_are_neutralized(marker, role):
+    """GLM's prompt prefix appears once at text start
+    (utils/datasets/model_mappings.py:598-603) and GLM-4.7 models map to that template
+    (:414-418), so a pasted pair introduces prompt-start semantics mid-turn (#7066)."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": role, "content": f"hi {marker} there"}]
+    )[0]["content"]
+    assert marker not in out
+    assert "there" in out
+
+
+@pytest.mark.parametrize(
+    "text", ["[gMASKED]", "the [gmask] tag", "a<sopranos>", "soup <sop", "## sop >"]
+)
+def test_glm_sentinel_lookalikes_are_untouched(text):
+    """Both arms match a closed, exactly-spelled token, so prose keeps its shape (#7066)."""
+    assert (
+        neutralize_control_markup_in_messages([{"role": "user", "content": text}])[0][
+            "content"
+        ]
+        == text
+    )
+
+
+@pytest.mark.parametrize("marker", ["[INST]", "</s>", "<eos>", "<think>", "[SUFFIX]"])
+def test_the_existing_bracket_and_bare_arms_still_fire(marker):
+    """Widening either alternation must not shadow the spellings already covered."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": "user", "content": f"x{marker}"}]
+    )[0]["content"]
+    assert marker not in out

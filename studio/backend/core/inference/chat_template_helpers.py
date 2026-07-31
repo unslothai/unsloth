@@ -111,7 +111,7 @@ _CONTROL_MARKUP = re.compile(
     # tokenizer_config.json), same trie argument. This is the one addition that collides with
     # a real HTML tag, the strikethrough "<s>", accepted for the reason "<think>" and
     # "<tools>" are: a live document boundary beats a space in a rare tag.
-    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s"
+    r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s|sop"
     r"|start_of_image|image_soft_token|audio_soft_token"
     r"|arg_key|arg_value|function|parameter|param)>"
     # The opening halves carry an "=value", so they need their own anchor. The parser accepts
@@ -133,7 +133,7 @@ _CONTROL_MARKUP = re.compile(
     # (ollama_template_mappers.py:266-286), so pasted text spelling one asks for FIM
     # semantics instead of staying ordinary content (#7066).
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS|TOOL_CALLS"
-    r"|PREFIX|MIDDLE|SUFFIX)\])"
+    r"|PREFIX|MIDDLE|SUFFIX|gMASK)\])"
     # Llama-2 opens its system block with "<<SYS>>" INSIDE the first [INST], so the doubled
     # angle is the opener, not a single "<". Both meta-llama/Llama-2-*-chat-hf's template and
     # the "llama" entry MODEL_TO_TEMPLATE_MAPPER installs at generate time emit it, and a
@@ -184,7 +184,7 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # "/?" as in the control pattern: Gemma's delimiters are bare tags, so a replayed
     # "</start_of_turn>" is as much a boundary as "<start_of_turn>".
     # "tools" is the Qwen catalog block around the system turn (chat_templates.py:556-568).
-    r"|/?(?:(?:start|end)_of_turn|eos|bos|s|tool_response|tools"
+    r"|/?(?:(?:start|end)_of_turn|eos|bos|s|sop|tool_response|tools"
     r"|start_of_image|image_soft_token|audio_soft_token)>"
     r"|(?:turn|tool_response)\|>"
     r")"
@@ -195,7 +195,7 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # The FIM tokens are stop tokens, so a real generation halts instead of emitting one:
     # a replay carrying one did not come from the model (ollama_template_mappers.py:284-286).
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS"
-    r"|PREFIX|MIDDLE|SUFFIX)\])"
+    r"|PREFIX|MIDDLE|SUFFIX|gMASK)\])"
     # Llama-2's system section is a boundary for the same reason [SYSTEM_PROMPT] is: the
     # template only emits it in the first user turn, never an assistant one.
     r"|(?<=<)<(?=/?SYS>>)"
