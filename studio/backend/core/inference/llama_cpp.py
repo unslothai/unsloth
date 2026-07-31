@@ -11880,8 +11880,17 @@ class LlamaCppBackend:
                 return False
             return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
 
+        # Sanitized HERE, at construction, rather than at each gate: the controller is
+        # what authorizes execution, and llama-server's structured delta.tool_calls path
+        # reaches prepare_call without passing _enabled_tool_names at all. A tool dropped
+        # for unsafe markup is absent from the prompt, so it has to be absent from the
+        # controller too or it stays executable by name (#7066).
+        from core.inference.chat_template_helpers import (
+            neutralize_tool_descriptions as _neutralize_tool_descriptions,
+        )
+
         tool_controller = ToolLoopController(
-            tools = tools,
+            tools = _neutralize_tool_descriptions(tools),
             auto_heal_tool_calls = auto_heal_tool_calls,
         )
 

@@ -2965,3 +2965,46 @@ def test_gguf_execution_gate_is_built_from_the_sanitized_catalog():
     assert sweep < gate, "the catalog must be sanitized before the execution gate is built"
     window = source[gate : gate + 220]
     assert "for tool in safe_tools" in window
+
+
+@pytest.mark.parametrize("root", ["parameters", "input_schema", "inputSchema",
+                                  "outputSchema"])
+@pytest.mark.parametrize("nest_under_function", [True, False])
+def test_semantic_scan_covers_every_schema_root(root, nest_under_function):
+    """An OpenAI declaration nests the schema under "function", an MCP-shaped one carries
+    "input_schema" on the entry itself, so both levels are scanned (#7066)."""
+    schema = {"properties": {"<s>": {"type": "string"}}}
+    function = {"name": "f"}
+    tool = {"type": "function", "function": function}
+    (function if nest_under_function else tool)[root] = schema
+    assert neutralize_tool_descriptions([tool]) == []
+
+
+def test_vendor_extension_fields_are_swept_not_dropped():
+    """A declaration also carries vendor extension fields, and a "default" or "properties"
+    key inside one of those is ordinary descriptive text. Scanning the whole entry treated
+    it as machine-valued and dropped a perfectly good tool instead of neutralizing it."""
+    tools = [{"type": "function",
+              "metadata": {"default": "example </think> text",
+                           "properties": {"vendor": "acme </think>"}},
+              "function": {"name": "get_weather", "description": "weather",
+                           "parameters": {"type": "object",
+                                          "properties": {"city": {"type": "string"}},
+                                          "required": ["city"]}}}]
+    out = neutralize_tool_descriptions(tools)
+    assert len(out) == 1, "descriptive extension text must not drop the tool"
+    assert "</think>" not in json.dumps(out)
+    # The real schema identifiers are still byte-exact.
+    assert list(out[0]["function"]["parameters"]["properties"]) == ["city"]
+
+
+def test_tool_loop_controllers_are_built_from_the_sanitized_catalog():
+    """The controller is what prepare_call authorizes against, and llama-server's
+    structured delta.tool_calls path reaches it without passing _enabled_tool_names at
+    all, so sanitizing only the gates left a dropped tool executable by name (#7066)."""
+    for module in ("llama_cpp.py", "safetensors_agentic.py"):
+        source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference"
+                  / module).read_text(encoding = "utf-8")
+        start = source.index("ToolLoopController(")
+        window = source[start:start + 200]
+        assert "neutralize_tool_descriptions" in window, module

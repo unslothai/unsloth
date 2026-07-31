@@ -665,7 +665,9 @@ def neutralize_tool_descriptions(tools):
             )
             changed = True
             continue
-        unsafe = _unsafe_schema_identifier(tool)
+        # Both levels: an OpenAI declaration nests the schema under "function", while an
+        # MCP-shaped one carries "input_schema" on the entry itself.
+        unsafe = _unsafe_schema_identifier(_schema_roots(tool) + _schema_roots(target))
         if unsafe is not None:
             logger.warning(
                 "Dropping tool %r from the catalog: the schema identifier %r carries chat "
@@ -752,6 +754,22 @@ def _first_unsafe_leaf(value):
                     seen.add(id(item))
                     stack.append(item)
     return None
+
+
+# Where a real JSON Schema starts in a declaration. The semantic scan is anchored to
+# these rather than run over the whole entry, because a declaration also carries vendor
+# extension fields, and a "default" or "properties" key inside one of those is ordinary
+# descriptive text that should be neutralized like any other prose, not a reason to drop
+# the tool.
+_SCHEMA_ROOT_KEYS = ("parameters", "input_schema", "inputSchema", "outputSchema",
+                     "output_schema", "returns")
+
+
+def _schema_roots(target):
+    """The schema values of a tool declaration, or an empty list."""
+    if not isinstance(target, dict):
+        return []
+    return [target[key] for key in _SCHEMA_ROOT_KEYS if isinstance(target.get(key), (dict, list))]
 
 
 def _unsafe_schema_identifier(value):

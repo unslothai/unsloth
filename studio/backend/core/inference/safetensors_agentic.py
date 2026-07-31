@@ -557,8 +557,15 @@ def run_safetensors_tool_loop(
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
     _detect_tools = [] if unrestricted_tools else list(tools or [])
+    # Sanitized at construction for the same reason as the GGUF loop: the controller is
+    # what prepare_call authorizes against, so a tool dropped from the prompt for unsafe
+    # markup has to leave the controller too. The detection and strip gates above keep the
+    # ORIGINAL names on purpose, since those decide whether text LOOKS like a call, not
+    # whether it may run (#7066).
+    from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
     tool_controller = ToolLoopController(
-        tools = None if unrestricted_tools else tools,
+        tools = None if unrestricted_tools else neutralize_tool_descriptions(tools),
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
