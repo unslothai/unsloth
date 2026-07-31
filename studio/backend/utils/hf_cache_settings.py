@@ -59,7 +59,11 @@ class HuggingFaceCachePaths:
         return self.source == "studio"
 
     def child_env(self, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-        env = dict(os.environ if base is None else base)
+        # Scrub either way: an explicit base is usually the caller's own os.environ
+        # copy, so it carries any scoped offline flags an open guard has set.
+        from utils.utils import hf_environment_for_spawn, hf_environment_scrubbed
+
+        env = hf_environment_for_spawn() if base is None else hf_environment_scrubbed(base)
         # Do not rewrite HF_HOME. It also owns HF's token path, and credentials
         # must not be moved onto a removable cache volume.
         env["HF_HUB_CACHE"] = str(self.hub_cache)
@@ -157,7 +161,8 @@ def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None
     this short parent-process override atomic through ``Process.start()``.
     """
 
-    with _spawn_env_lock:
+    from utils.utils import hf_environment_restored_for_spawn
+    with _spawn_env_lock, hf_environment_restored_for_spawn():
         missing = object()
         saved_environment: dict[str, str | object] = {}
         for key, value in environment.items():

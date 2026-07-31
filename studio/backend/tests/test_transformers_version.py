@@ -65,6 +65,27 @@ from utils.transformers_version import (
 
 
 @pytest.fixture(autouse = True)
+def _no_ambient_proxy(monkeypatch):
+    """Module-wide: these tests patch urlopen, which a selected proxy opener bypasses.
+
+    Every remote read here goes through ``_hf_urlopen``, which calls ``opener.open`` when
+    a proxy applies. A runner with HTTPS_PROXY / ALL_PROXY set would then make a real
+    request instead of hitting the patch, so results would track ambient CI connectivity.
+    """
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _capturable_logger(monkeypatch):
     """Make the ``caplog`` assertions independent of test collection order.
 
@@ -217,7 +238,7 @@ class TestRemoteLoraBase:
 
         with patch("urllib.request.urlopen", side_effect = fake_urlopen):
             assert _remote_lora_base("user/adapter") == "org/base"
-        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/raw/main/")
+        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/resolve/main/")
 
     @staticmethod
     def _seed_adapter_cache(
@@ -373,6 +394,33 @@ class TestCheckTokenizerConfigNeedsV5:
         assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
         assert seen_auth == [None, "Bearer tok"]
         assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
+
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return json.dumps({"tokenizer_class": "TokenizersBackend"}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        assert _check_tokenizer_config_needs_v5("org/model") is True
+        assert seen["url"] == (
+            "https://hf.mirror.internal/org/model/resolve/main/tokenizer_config.json"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +765,20 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh  # network wins, not stale cache
+
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _hf_response({"model_type": "llama"})
+
+        with patch("urllib.request.urlopen", side_effect = fake_urlopen):
+            assert _load_config_json("org/model") == {"model_type": "llama"}
+        assert seen["url"] == "https://hf.mirror.internal/org/model/resolve/main/config.json"
 
     def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
@@ -2527,6 +2589,8 @@ class TestOfflineCacheNotPoisoned:
 
 
 class TestHfEndpointUnreachable:
+    # Ambient proxies are cleared module-wide by _no_ambient_proxy.
+
     def test_reachable_returns_false(self, monkeypatch):
         class _Resp:
             def __enter__(self):
@@ -2566,6 +2630,70 @@ class TestHfEndpointUnreachable:
         monkeypatch.setattr("urllib.request.urlopen", _tls)
         # TLS reached the server: treat as reachable so the load surfaces the cert error.
         assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_connection_refused_is_reachable(self, monkeypatch):
+        import urllib.error
+
+        def _refused(*a, **k):
+            raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _refused)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_connection_reset_is_reachable(self, monkeypatch):
+        """A reset proves the path answered, exactly like the refusal above.
+
+        urllib wraps an OSError raised while sending, so this is the URLError form.
+        """
+        import urllib.error
+
+        def _reset(*a, **k):
+            raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _reset)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_remote_disconnect_is_reachable(self, monkeypatch):
+        """getresponse() is not inside urllib's OSError->URLError wrapper, so a server
+        that accepts the HEAD then closes raises http.client.RemoteDisconnected raw --
+        and it subclasses ConnectionResetError -> OSError."""
+        import http.client
+
+        def _disconnect(*a, **k):
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+        monkeypatch.setattr("urllib.request.urlopen", _disconnect)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_real_server_that_accepts_then_closes_is_reachable(self, monkeypatch):
+        """End-to-end over a real socket: no mocking of the exception type at all."""
+        import socket
+        import threading
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+
+        def _accept_then_close():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(4096)
+            except OSError:
+                pass
+            conn.close()
+
+        thread = threading.Thread(target = _accept_then_close, daemon = True)
+        thread.start()
+        monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{srv.getsockname()[1]}")
+        try:
+            assert hf_endpoint_unreachable(timeout = 2) is False
+        finally:
+            srv.close()
+            thread.join(5)
 
     def test_dns_failure_is_unreachable(self, monkeypatch):
         import socket
@@ -2721,7 +2849,9 @@ class TestLatestTierForces16Bit:
             "fallback so /validate does not 409 a 4-bit load /load would allow"
         )
         # requires_trust_remote_code must be resolved before the flip consumes it.
-        assert body.index("requires_trust_remote_code = any(") < body.index(
+        # Anchored on the resolving call, not its expression form: the any() now runs
+        # inside _offline_guarded on a worker thread.
+        assert body.index("_requires_trust_remote_code_for_model(_t") < body.index(
             "not requires_trust_remote_code"
         )
 

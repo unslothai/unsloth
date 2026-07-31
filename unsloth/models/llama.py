@@ -76,7 +76,8 @@ from transformers.models.llama.modeling_llama import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
-from transformers.modeling_attn_mask_utils import (
+from unsloth.models._attn_mask_compat import (
+    AttentionMaskConverter,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from ..kernels import *
@@ -1103,8 +1104,6 @@ def LlamaModel_fast_forward(
                 # masked_fill is making stuff slower!
                 # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
                 # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
-                from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-
                 self.SWA_mask = (
                     AttentionMaskConverter(
                         is_causal = True,

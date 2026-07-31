@@ -58,6 +58,7 @@ import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
+  CardSettingsButton,
   CardUpdateButton,
   DeleteConfirmDialog,
   UpdateConfirmDialog,
@@ -104,6 +105,12 @@ interface LocalOnDeviceCardProps {
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /**
+   * Open settings for the quant this card is showing. ``quantIsUserPicked`` says whether
+   * it came from this card's selector or was derived from the resident model, which
+   * decides whether a fresher status read may override it.
+   */
+  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
 }
 
 function formatAdapterLabel(
@@ -225,6 +232,7 @@ export function LocalOnDeviceCard({
   onEject,
   onTrain,
   onChange,
+  onOpenSettings,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -367,6 +375,13 @@ export function LocalOnDeviceCard({
         )?.quant ??
         sortedVariants?.[0]?.quant ??
         null);
+  // Only the first branch is a choice; the rest read the store, which can be stale.
+  const quantIsUserPicked = Boolean(
+    selectedVariantOverride &&
+      sortedVariants?.some((variant) =>
+        ggufVariantsMatch(variant.quant, selectedVariantOverride),
+      ),
+  );
   const selectedVariant =
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
@@ -578,6 +593,15 @@ export function LocalOnDeviceCard({
               )}
             </span>
             <div className="ml-auto flex items-center gap-0.5">
+              {onOpenSettings && (
+                <CardSettingsButton
+                  label={`Settings for ${repoId}`}
+                  // The quant this card resolved, so settings edits what is on screen.
+                  onClick={() =>
+                    onOpenSettings(selectedQuant ?? null, quantIsUserPicked)
+                  }
+                />
+              )}
               {canUpdate && (
                 <CardUpdateButton
                   label={`Update ${repoId}`}

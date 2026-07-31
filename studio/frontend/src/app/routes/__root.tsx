@@ -3,28 +3,27 @@
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
-import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import {
-  SettingsDialog,
-  useSettingsDialogStore,
-} from "@/features/settings";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
+import { hasAuthToken } from "@/features/auth";
 import {
   ChatPage,
+  type ChatSearch,
   clearNewChatDraft,
   StopRunningChatsDialog,
   useChatRuntimeStore,
-  type ChatSearch,
 } from "@/features/chat";
-import { RemoteCodeConsentDialog } from "@/features/security";
-import { HfTokenWarningDialog } from "@/features/hf-auth";
-import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
-import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
-import { hasAuthToken } from "@/features/auth";
+import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
+import { RemoteCodeConsentDialog } from "@/features/security";
+import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { useTrainingUnloadGuard } from "@/features/training";
+import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
-import { useT, type TranslationKey } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import {
   Outlet,
   createRootRoute,
@@ -34,13 +33,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import {
-  Suspense,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useState,
-} from "react";
+import { Suspense, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { AppProvider } from "../provider";
 
 declare module "@tanstack/react-router" {
@@ -77,11 +70,15 @@ const CHAT_ONLY_ALLOWED = new Set([
   // Export stays reachable on chat-only hosts so the page can show its own grayed-out reason
   // instead of a silent redirect; it self-gates via export capability, so nothing runs.
   "/export",
+  // Chat-only hosts serve the API like any other, so the monitor must be reachable there
+  // or the overlay's "Expand" and the Settings API card redirect to /chat.
+  "/api-monitor",
 ]);
 
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
-  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
+  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
+    return true;
   return false;
 }
 
@@ -177,6 +174,15 @@ function RootLayout() {
       : DEFAULT_DOCUMENT_TITLE;
   }, [documentTitle]);
 
+  // Settings predating the server override map live only here, so an API load would use
+  // app defaults. Backfill once, after auth.
+  useEffect(() => {
+    if (isAuthFlowRoute) {
+      return;
+    }
+    void backfillModelOverrides();
+  }, [isAuthFlowRoute]);
+
   useEffect(() => {
     if (isAuthFlowRoute) {
       useSettingsDialogStore.getState().closeDialog();
@@ -225,6 +231,8 @@ function RootLayout() {
     <AppProvider>
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
+      {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
+      {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
@@ -244,7 +252,9 @@ function RootLayout() {
           className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
-          <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
+          <SidebarInset
+            className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}
+          >
             <Navbar />
             <div
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}

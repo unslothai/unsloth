@@ -1431,6 +1431,32 @@ LAUNCHER_EOF
         rm -f "$_css_gem_png"
     fi
 
+    # Also try to find the pre-built Tauri icon.icns (1024×1024, professionally
+    # built with all required sizes).  Prefer it over the sips-generated icon
+    # for the macOS .app bundle — it ships in the pip package at
+    # studio/src-tauri/icons/icon.icns and is higher quality with @2x variants.
+    _css_tauri_icns=""
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
+        if [ -f "$_sp/icon.icns" ]; then
+            _css_tauri_icns="$_sp/icon.icns"
+        fi
+    done
+    if [ -z "$_css_tauri_icns" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/src-tauri/icons/icon.icns" ]; then
+        _css_tauri_icns="$_css_script_dir/studio/src-tauri/icons/icon.icns"
+    fi
+
+    # Also look for the higher-resolution Tauri icon.png (1024×1024) for
+    # the Linux .desktop icon — better than the 512px rounded variant.
+    _css_tauri_png=""
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
+        if [ -f "$_sp/icon.png" ]; then
+            _css_tauri_png="$_sp/icon.png"
+        fi
+    done
+    if [ -z "$_css_tauri_png" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/src-tauri/icons/icon.png" ]; then
+        _css_tauri_png="$_css_script_dir/studio/src-tauri/icons/icon.png"
+    fi
+
     # ── Platform-specific shortcuts ──
     # Env-mode installs are workspace-scoped: skip persistent desktop /
     # Start-Menu / dock launchers that may point at a deleted workspace.
@@ -1450,7 +1476,19 @@ LAUNCHER_EOF
         _css_desktop="$_css_app_dir/unsloth-studio.desktop"
         # Escape backslashes and double-quotes for .desktop Exec= field
         _css_exec_escaped=$(printf '%s' "$_css_launcher" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        _css_icon_escaped=$(printf '%s' "$_css_icon_png" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        # Prefer the higher-resolution Tauri icon.png, but persist it under the
+        # installed data directory so local-checkout shortcuts survive repo moves.
+        _css_desktop_icon="$_css_icon_png"
+        if [ -f "$_css_tauri_png" ]; then
+            _css_desktop_icon_tmp="${_css_icon_png}.tmp"
+            if cp "$_css_tauri_png" "$_css_desktop_icon_tmp" 2>/dev/null \
+                && mv "$_css_desktop_icon_tmp" "$_css_icon_png" 2>/dev/null; then
+                :
+            else
+                rm -f "$_css_desktop_icon_tmp"
+            fi
+        fi
+        _css_icon_escaped=$(printf '%s' "$_css_desktop_icon" | sed 's/\\/\\\\/g; s/"/\\"/g')
         cat > "$_css_desktop" << DESKTOP_EOF
 [Desktop Entry]
 Version=1.0
@@ -1542,8 +1580,14 @@ STUB_EOF
             && mv "$_css_macos_dir/launch-studio.tmp" "$_css_macos_dir/launch-studio"
         chmod +x "$_css_macos_dir/launch-studio"
 
-        # Build AppIcon.icns from unsloth-gem.png (2240x2240)
-        if [ -f "$_css_gem_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+        # ── AppIcon ──
+        # Prefer the pre-built Tauri icon.icns (1024×1024, professionally built
+        # with all sizes).  Fall back to generating one from the gem PNG via
+        # sips+iconutil, then to a plain PNG copy.
+        if [ -f "$_css_tauri_icns" ] \
+            && cp "$_css_tauri_icns" "$_css_res_dir/AppIcon.icns" 2>/dev/null; then
+            :
+        elif [ -f "$_css_gem_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
             _css_tmpdir=$(mktemp -d 2>/dev/null)
             if [ -d "$_css_tmpdir" ]; then
                 _css_iconset="$_css_tmpdir/AppIcon.iconset"
@@ -1560,7 +1604,7 @@ STUB_EOF
                 rm -rf "$_css_tmpdir"
             fi
         fi
-        # Fallback: copy PNG as icon
+        # Last-resort fallback: copy PNG as icon
         if [ ! -f "$_css_res_dir/AppIcon.icns" ] && [ -f "$_css_icon_png" ]; then
             cp "$_css_icon_png" "$_css_res_dir/AppIcon.icns" 2>/dev/null || true
         fi

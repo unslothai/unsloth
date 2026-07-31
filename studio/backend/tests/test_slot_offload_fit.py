@@ -67,7 +67,10 @@ def _run(
     total_by_idx,
     overhead_mib = 0,
     swa_full = False,
+    split_extra_mib = 0,
 ):
+    # Split step passed only when set, so the other cases keep exercising the default.
+    extra = {"split_extra_bytes": int(split_extra_mib * MIB)} if split_extra_mib else {}
     return b._slots_that_fit_on_gpu(
         n_parallel,
         CTX,
@@ -80,6 +83,7 @@ def _run(
         1,
         n_ubatch = 512,
         swa_full = swa_full,
+        **extra,
     )
 
 
@@ -126,6 +130,20 @@ class TestSlotsThatFitOnGpu:
         # base 19500 (= 22500 total at par-independent terms) the same par3 fit holds.
         gi, use_fit, slots = _run(_backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576})
         assert use_fit is False and slots == 3
+
+    def test_split_rate_is_rechecked_on_multi_gpu_candidates(self):
+        # The base footprint carries the context-compute buffer at the single-device
+        # rate, so a candidate that lands on 2 GPUs owes one enlarged copy per card.
+        # Charging it drops the count further (3 -> 1) rather than pinning an OOM.
+        gpus, totals = [(0, 24576), (1, 24576)], {0: 24576, 1: 24576}
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 500) == ([0, 1], False, 1)
+        # And when no count clears it, offload (the pre-existing failure mode).
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 1000) == (None, True, 4)
+
+    def test_split_step_does_not_touch_a_single_gpu_candidate(self):
+        assert _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576}, split_extra_mib = 500) == (
+            _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576})
+        )
 
     def test_swa_full_is_used_for_every_candidate(self):
         calls = []

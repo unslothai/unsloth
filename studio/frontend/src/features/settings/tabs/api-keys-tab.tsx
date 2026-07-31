@@ -14,7 +14,7 @@ import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
-import { ApiMonitorConsole } from "../components/api-monitor-console";
+import { MonitorLink } from "../components/monitor-link";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
@@ -160,7 +160,7 @@ export function ApiKeysTab() {
             {t("settings.apiKeys.noAccess")}
           </p>
         ) : (
-          <div className="flex min-w-0 flex-col">
+          <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
             {keys.map((k) => (
               <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
             ))}
@@ -168,9 +168,9 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <ModelAutoSwitchSection />
+      <MonitorLink />
 
-      <ApiMonitorConsole />
+      <ModelAutoSwitchSection />
 
       <UsageExamples apiKey={revealed} />
 

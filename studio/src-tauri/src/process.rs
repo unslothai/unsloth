@@ -594,6 +594,10 @@ pub fn start_backend(
             crate::desktop_backend_owner::OWNER_KIND_ENV,
             crate::desktop_backend_owner::OWNER_KIND_TAURI,
         );
+        cmd.env(
+            crate::desktop_backend_owner::OWNER_PID_ENV,
+            std::process::id().to_string(),
+        );
     }
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks the spawned

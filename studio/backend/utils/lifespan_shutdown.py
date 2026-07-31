@@ -55,6 +55,18 @@ async def run_lifespan_shutdown(
         detection_complete = getattr(hw_module, "DETECTION_COMPLETE", None)
         if detection_complete is not None:
             detection_complete.clear()
+        # The verdict those two describe goes back to its pre-detection value as
+        # well. Health falls back to a bare CHAT_ONLY read while the event is
+        # clear, so a GPU run that left CHAT_ONLY False would have the next
+        # lifespan publishing chat_only: false before anything re-measured it --
+        # and frontend/src/config/env.ts stores that answer even without
+        # device_type, which is enough to show Train and Export and let the route
+        # guard through on a host whose capabilities are not known yet. True is
+        # the conservative direction: features stay hidden until detection says
+        # otherwise, never offered and then withdrawn.
+        hw_module.CHAT_ONLY = True
+        hw_module.CHAT_ONLY_REASON = None
+        hw_module.IS_ROCM = False
     except Exception as exc:
         logger.warning("clearing hardware detection state failed at shutdown: %s", exc)
 

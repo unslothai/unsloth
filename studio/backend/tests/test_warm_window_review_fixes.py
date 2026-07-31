@@ -307,7 +307,13 @@ def test_the_openai_model_listing_reaches_the_singleton_off_loop(function):
 
 
 def test_the_model_config_capability_block_runs_off_loop():
-    """is_vision_model() reaches _detection_sets(), so it cannot run inline."""
+    """is_vision_model() reaches _detection_sets(), so it cannot run inline.
+
+    Which nested helper carries it is main's business -- it wraps the whole
+    resolution in one now -- so this pins the property instead of the name: the
+    handler body itself must not call the probes, and whatever the worker runs
+    must.
+    """
     path = _BACKEND / "routes" / "models.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(
@@ -315,18 +321,42 @@ def test_the_model_config_capability_block_runs_off_loop():
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "get_model_config"
     )
-    dumped = ast.dump(fn)
-    assert "_capabilities" in dumped, (
-        "the capability detection block is inline again; is_vision_model() can "
-        "import transformers on the event-loop thread"
-    )
-    # And the inline calls must be gone from the handler body proper.
+    nested = {
+        sub
+        for helper in ast.walk(fn)
+        if isinstance(helper, ast.FunctionDef)
+        for sub in ast.walk(helper)
+    }
     inline = [
         sub
         for sub in ast.walk(fn)
-        if isinstance(sub, ast.Call) and getattr(sub.func, "id", None) == "is_vision_model"
+        if isinstance(sub, ast.Call)
+        and getattr(sub.func, "id", None) in {"is_vision_model", "is_embedding_model"}
+        and sub not in nested
     ]
-    assert len(inline) == 1, "is_vision_model is called somewhere other than the offloaded helper"
+    assert not inline, (
+        "the capability detection block is inline again; is_vision_model() can "
+        "import transformers on the event-loop thread"
+    )
+    offloaded = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "to_thread"
+    ]
+    assert offloaded, "nothing in the config handler goes to a worker thread any more"
+    reached = {
+        call.func.id
+        for helper in ast.walk(fn)
+        if isinstance(helper, ast.FunctionDef)
+        for call in ast.walk(helper)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+    assert "is_vision_model" in reached, (
+        "no offloaded helper reaches is_vision_model; the probe moved somewhere "
+        "this test no longer covers"
+    )
 
 
 # ------------------------------------------------------------- kill switch
@@ -864,12 +894,20 @@ def test_the_standalone_vision_probe_runs_off_the_event_loop():
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "check_vision_model"
     )
 
+    # Nested helpers are the offload, so only the handler's own body counts as
+    # inline. The helper the worker runs may call is_vision_model freely.
+    nested = {
+        sub for helper in ast.walk(fn)
+        if isinstance(helper, ast.FunctionDef)
+        for sub in ast.walk(helper)
+    }
     direct = [
         sub
         for sub in ast.walk(fn)
         if isinstance(sub, ast.Call)
         and isinstance(sub.func, ast.Name)
         and sub.func.id == "is_vision_model"
+        and sub not in nested
     ]
     assert not direct, (
         "is_vision_model() is called inline from the handler again; the lazy "
@@ -882,9 +920,19 @@ def test_the_standalone_vision_probe_runs_off_the_event_loop():
         if isinstance(sub, ast.Call)
         and isinstance(sub.func, ast.Attribute)
         and sub.func.attr == "to_thread"
-        and any(isinstance(a, ast.Name) and a.id == "is_vision_model" for a in sub.args)
     ]
     assert offloaded, "the vision probe is no longer handed to a worker thread"
+    reached = {
+        call.func.id
+        for helper in ast.walk(fn)
+        if isinstance(helper, ast.FunctionDef)
+        for call in ast.walk(helper)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+    assert "is_vision_model" in reached, (
+        "nothing handed to the worker calls is_vision_model; the probe moved "
+        "somewhere this test no longer covers"
+    )
 
 
 # ------------------------------------------------------ offline is not just 1
@@ -941,3 +989,55 @@ def test_the_shared_offline_check_accepts_the_other_spellings(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     assert not hf_env_offline(), "a host with neither variable set was called offline"
+
+
+# --------------------------------------------- shutdown resets the whole verdict
+def test_shutdown_resets_chat_only_with_the_detection_event():
+    """Clearing DEVICE without CHAT_ONLY leaves a stale capability published.
+
+    Health falls back to a bare CHAT_ONLY read while the completion event is
+    clear, so a second lifespan after a GPU run would answer chat_only: false
+    before anything re-measured it. config/env.ts stores that even with no
+    device_type, which shows Train and Export and lets the route guard through.
+    """
+    import asyncio as _asyncio
+
+    from utils import lifespan_shutdown as shutdown_mod
+
+    hw_mod = _FakeHardwareModule()
+    hw_mod.DEVICE = "cuda"
+    hw_mod.CHAT_ONLY = False
+    hw_mod.CHAT_ONLY_REASON = None
+    hw_mod.IS_ROCM = True
+    hw_mod.DETECTION_COMPLETE.set()
+
+    _asyncio.run(_run_shutdown(shutdown_mod, hw_mod))
+
+    assert hw_mod.DEVICE is None
+    assert not hw_mod.DETECTION_COMPLETE.is_set()
+    assert hw_mod.CHAT_ONLY is True, (
+        "a torn-down GPU verdict is still published as chat_only: false; the "
+        "next lifespan offers Train and Export before detection has run"
+    )
+    assert hw_mod.CHAT_ONLY_REASON is None
+    assert hw_mod.IS_ROCM is False, "a stale ROCm flag would mislabel the next host"
+
+
+class _FakeHardwareModule:
+    """The minimal hardware surface run_lifespan_shutdown touches."""
+
+    def __init__(self) -> None:
+        self.DEVICE = None
+        self.CHAT_ONLY = True
+        self.CHAT_ONLY_REASON = None
+        self.IS_ROCM = False
+        self.DETECTION_COMPLETE = threading.Event()
+
+
+async def _run_shutdown(shutdown_mod, hw_mod) -> None:
+    """Drive run_lifespan_shutdown with everything but the hardware reset stubbed."""
+    await shutdown_mod.run_lifespan_shutdown(
+        terminate_downloads = lambda: None,
+        clear_compiled_cache = lambda: None,
+        hw_module = hw_mod,
+    )
