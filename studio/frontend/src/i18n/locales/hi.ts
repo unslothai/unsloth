@@ -786,6 +786,21 @@ export const hi = {
       evalDataset: "Eval डेटासेट",
       uploading: "अपलोड हो रहा है...",
       uploadEvalFile: "eval फ़ाइल अपलोड करें",
+      fileTooLarge: "फ़ाइल बहुत बड़ी है",
+      fileTooLargeDescription:
+        "{file} का आकार {size} है। ट्रेनिंग अपलोड की अधिकतम सीमा {limit} है।",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · अधिकतम {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "इस फ़ाइल को पहले रूपांतरित करना होगा",
+        genericFile: "यह फ़ाइल",
+        description:
+          "{file} स्रोत सामग्री है, ट्रेनिंग के लिए तैयार डेटासेट नहीं। दस्तावेज़ को डेटासेट में बदलने के लिए Data Recipes का उपयोग करें, फिर फ़ाइन-ट्यूनिंग के लिए यहां लौटें।",
+        nextStepTitle: "अगला सुझाया गया कदम",
+        nextStepDescription:
+          "Learning Recipes खोलें और PDF grounded QA जैसी दस्तावेज़-आधारित रेसिपी से शुरू करें।",
+        openAction: "Learning Recipes खोलें",
+      },
       evalDatasetDescription:
         "वैकल्पिक। यदि प्रदान नहीं किया गया, तो ट्रेनिंग डेटा से एक छोटा हिस्सा अलग किया जाएगा।",
       advanced: "उन्नत",

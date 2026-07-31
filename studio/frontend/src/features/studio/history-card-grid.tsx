@@ -234,7 +234,6 @@ export function HistoryCardGrid({
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleteArtifacts, setDeleteArtifacts] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<string | null>(null);
@@ -363,7 +362,6 @@ export function HistoryCardGrid({
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    setDeleteError(null);
     try {
       const result = await deleteTrainingRun(deleteTarget, { deleteArtifacts });
       if (deleteArtifacts) {
@@ -382,7 +380,7 @@ export function HistoryCardGrid({
         // Refresh failed; card is already removed, no stale display.
       });
     } catch (err) {
-      setDeleteError(
+      toast.error(
         err instanceof HistoryRequestError &&
           err.status === 409 &&
           deleteArtifacts
@@ -441,11 +439,6 @@ export function HistoryCardGrid({
 
   return (
     <div className="contents" aria-label={t("studio.history.title")}>
-      {deleteError && (
-        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-          {deleteError}
-        </div>
-      )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {runs.map((run) => {
           const wasContinued =

@@ -4,13 +4,14 @@
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { translate, type TranslationKey } from "@/i18n";
+import { type TranslationKey, translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { getTrainingRun } from "../api/history-api";
 import { startTraining } from "../api/train-api";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
+import { resolveResumeRemoteCodeCache } from "./resume-remote-code-cache";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import {
   TRAINING_SETUP_CHANGED_ERROR,
@@ -206,9 +207,15 @@ async function confirmResumeRemoteCode(
   let trustRemoteCode = Boolean(payload.trust_remote_code);
   let approvedRemoteCodeFingerprint =
     payload.approved_remote_code_fingerprint ?? null;
+  const remoteCodeCache = resolveResumeRemoteCodeCache({
+    modelKnownCached: payload.model_known_cached,
+    modelLocalPath: payload.model_local_path,
+    modelSnapshotPath: payload.model_snapshot_path,
+  });
   const remoteCodeOk = await confirmRemoteCodeIfNeeded({
     modelName: payload.model_name,
     hfToken: payload.hf_token ?? null,
+    ...remoteCodeCache,
     requiresTrustRemoteCode: trustRemoteCode,
     onApprove: (fingerprint) => {
       trustRemoteCode = true;

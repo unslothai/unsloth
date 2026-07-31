@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
+import { SegmentedTabsList } from "@/components/segmented-tabs";
 import {
   Select,
   SelectContent,
@@ -47,7 +47,7 @@ function SectionBox({
   title,
   description,
   icon,
-  iconColor,
+  chipTint,
   titleAction,
   children,
   dataTour,
@@ -55,7 +55,7 @@ function SectionBox({
   title?: string;
   description?: string;
   icon?: IconSvgElement;
-  iconColor?: string;
+  chipTint?: string;
   titleAction?: ReactNode;
   children: ReactNode;
   dataTour?: string;
@@ -72,8 +72,8 @@ function SectionBox({
               <span
                 className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
                 style={
-                  iconColor
-                    ? ({ "--chip-color": iconColor } as CSSProperties)
+                  chipTint
+                    ? ({ "--chip-tint": chipTint } as CSSProperties)
                     : undefined
                 }
               >
@@ -286,7 +286,7 @@ export function TrainingWizard() {
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
         icon={BrainIcon}
-        iconColor="#7abf85"
+        chipTint="var(--chart-1)"
         dataTour="studio-model"
       >
         <ModelPanel />
@@ -296,7 +296,7 @@ export function TrainingWizard() {
         title={t("studio.wizard.datasetTitle")}
         description={t("studio.wizard.datasetDescription")}
         icon={Database02Icon}
-        iconColor="#e7828c"
+        chipTint="var(--chart-4)"
         dataTour="studio-dataset"
       >
         <DatasetPanel />
@@ -306,7 +306,7 @@ export function TrainingWizard() {
         title={t("studio.wizard.paramsTitle")}
         description={t("studio.wizard.paramsDescription")}
         icon={Settings05Icon}
-        iconColor="#8a7cce"
+        chipTint="var(--chart-5)"
         dataTour="studio-params"
         titleAction={
           <ParamModeToggle mode={paramMode} onChange={setParamMode} />
@@ -319,7 +319,7 @@ export function TrainingWizard() {
         title={t("studio.wizard.configTitle")}
         description={t("studio.wizard.configDescription")}
         icon={FloppyDiskIcon}
-        iconColor="#6ab7be"
+        chipTint="var(--chart-3)"
       >
         <ConfigActions />
       </SectionBox>

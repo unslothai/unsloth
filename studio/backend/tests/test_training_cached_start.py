@@ -164,6 +164,79 @@ def test_untrainable_gate_passes_trainable_local_dir(tmp_path):
     route._reject_untrainable_model_request(request)
 
 
+def test_wsl_windows_model_path_is_normalized_for_preflight_and_worker(monkeypatch, tmp_path):
+    route = _load_route_module("training_route_wsl_windows_model_path")
+    model_path = tmp_path / "models" / "alpha"
+    model_path.mkdir(parents = True)
+    (model_path / "config.json").write_text("{}")
+    (model_path / "model.safetensors").write_bytes(b"x")
+    windows_path = r"C:\models\alpha"
+    captured: dict = {}
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: captured.update(kwargs) or True,
+    )
+    normalized: list[str] = []
+
+    def normalize_model_path(value: str) -> str:
+        normalized.append(value)
+        return str(model_path) if value == windows_path else value
+
+    monkeypatch.setattr(route, "normalize_path", normalize_model_path)
+
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route, "load_model_defaults", return_value = {}),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        patch("utils.transformers_version.latest_tier_active_for", return_value = False),
+        patch(
+            "core.inference.get_inference_backend",
+            return_value = type("InferenceBackend", (), {"active_model_name": None})(),
+        ),
+        patch(
+            "core.export.get_export_backend",
+            return_value = type("ExportBackend", (), {"current_checkpoint": None})(),
+        ),
+    ):
+        response = _start(
+            route,
+            _request(model_name = windows_path, model_local_path = windows_path),
+        )
+
+    assert response.status == "queued"
+    assert captured["model_name"] == str(model_path.resolve())
+    assert captured["model_local_path"] == str(model_path)
+    assert normalized == [windows_path]
+
+
+def test_wsl_windows_cache_hint_is_normalized_for_preflight(monkeypatch):
+    route = _load_route_module("training_route_wsl_windows_cache_hint")
+    windows_path = r"C:\cache\models--unsloth--test"
+    normalized_path = "/mnt/c/cache/models--unsloth--test"
+    probed: list[str | None] = []
+
+    monkeypatch.setattr(
+        route,
+        "normalize_path",
+        lambda value: normalized_path if value == windows_path else value,
+    )
+
+    with (
+        patch(
+            "core.training.training._resolve_model_snapshot",
+            side_effect = lambda _model_name, local_path: probed.append(local_path) or None,
+        ),
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
+    ):
+        result = route._reject_untrainable_model_request(
+            _request(model_known_cached = True, model_local_path = windows_path)
+        )
+
+    assert probed == [normalized_path]
+    assert result.model_local_path == normalized_path
+
+
 def test_untrainable_gate_does_not_trust_claimed_safetensors(tmp_path):
     route = _load_route_module("training_route_pass_safetensors_format")
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
@@ -252,9 +325,9 @@ def test_unavailable_probe_uses_cached_shorthand_model(tmp_path):
         "_remote_untrainable_model_format",
         side_effect = HTTPException(status_code = 503, detail = "unavailable"),
     ):
-        pin = route._reject_untrainable_model_request(_request(model_name = "test"))
+        result = route._reject_untrainable_model_request(_request(model_name = "test"))
 
-    assert pin == ("unsloth/test", str(snapshot.resolve()))
+    assert result.cached_model_pin == ("unsloth/test", str(snapshot.resolve()))
 
 
 @pytest.mark.parametrize("status_code", [400, 401, 403, 404, 429])
@@ -274,9 +347,9 @@ def test_client_error_probe_uses_unadvertised_cached_model(tmp_path, status_code
         "_remote_untrainable_model_format",
         side_effect = metadata_error,
     ):
-        pin = route._reject_untrainable_model_request(_request())
+        result = route._reject_untrainable_model_request(_request())
 
-    assert pin == ("unsloth/test", str(snapshot.resolve()))
+    assert result.cached_model_pin == ("unsloth/test", str(snapshot.resolve()))
 
 
 @pytest.mark.parametrize("status_code", [400, 401, 403, 404, 429])
@@ -387,9 +460,9 @@ def test_client_error_probe_uses_complete_sharded_cache(tmp_path):
         "_remote_untrainable_model_format",
         side_effect = HTTPException(status_code = 403, detail = "unavailable"),
     ):
-        pin = route._reject_untrainable_model_request(_request())
+        result = route._reject_untrainable_model_request(_request())
 
-    assert pin == ("unsloth/test", str(snapshot.resolve()))
+    assert result.cached_model_pin == ("unsloth/test", str(snapshot.resolve()))
 
 
 def test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights(tmp_path):

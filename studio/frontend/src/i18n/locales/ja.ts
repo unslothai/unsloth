@@ -839,6 +839,21 @@ export const ja = {
       evalDataset: "評価データセット",
       uploading: "アップロード中...",
       uploadEvalFile: "評価ファイルをアップロード",
+      fileTooLarge: "ファイルが大きすぎます",
+      fileTooLargeDescription:
+        "{file} のサイズは {size} です。トレーニング用アップロードの上限は {limit} です。",
+      uploadLimitsHint:
+        "CSV、JSONL、JSON、Parquet · 上限 {limit}、PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "このファイルは先に変換する必要があります",
+        genericFile: "このファイル",
+        description:
+          "{file} は素材であり、そのままトレーニングできるデータセットではありません。Data Recipes で文書をデータセットに変換してから、ここに戻ってファインチューニングしてください。",
+        nextStepTitle: "おすすめの次のステップ",
+        nextStepDescription:
+          "Learning Recipes を開き、PDF grounded QA などの文書ベースのレシピから始めます。",
+        openAction: "Learning Recipes を開く",
+      },
       evalDatasetDescription: "オプション。提供されない場合は、トレーニングデータから一部が自動的に分割されます。",
       advanced: "高度な設定",
       targetFormat: "ターゲットフォーマット",

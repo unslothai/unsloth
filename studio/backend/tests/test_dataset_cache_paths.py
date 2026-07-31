@@ -714,23 +714,39 @@ def test_manifest_v2_rejects_non_string_variant(monkeypatch, tmp_path, variant):
     )
 
 
-def test_repo_state_purge_uses_enumerated_variant_path(monkeypatch, tmp_path):
+@pytest.mark.parametrize("state_kind", ["manifest", "cancel_marker"])
+def test_repo_state_purge_uses_enumerated_variant_path(monkeypatch, tmp_path, state_kind):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model",
-        "Q4_K_M",
-        [download_manifest.ExpectedFile("model.gguf", 4)],
-        hub_cache = hub_cache,
-    )
-    path = download_manifest.manifest_path(
-        "model",
-        "Org/Model",
-        "Q4_K_M",
-        hub_cache = hub_cache,
-    )
+    if state_kind == "manifest":
+        assert download_manifest.write_manifest(
+            "model",
+            "Org/Model",
+            "Q4_K_M",
+            [download_manifest.ExpectedFile("model.gguf", 4)],
+            hub_cache = hub_cache,
+        )
+        path = download_manifest.manifest_path(
+            "model",
+            "Org/Model",
+            "Q4_K_M",
+            hub_cache = hub_cache,
+        )
+    else:
+        assert download_manifest.write_cancel_marker(
+            "model",
+            "Org/Model",
+            "Q4_K_M",
+            "http",
+            hub_cache = hub_cache,
+        )
+        path = download_manifest.marker_path(
+            "model",
+            "Org/Model",
+            "Q4_K_M",
+            hub_cache = hub_cache,
+        )
     assert path is not None
     payload = json.loads(path.read_text(encoding = "utf-8"))
     payload["variant"] = "Q8_0"

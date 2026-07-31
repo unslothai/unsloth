@@ -136,6 +136,7 @@ try:
     from core.inference import get_inference_backend
     from utils.paths import (
         is_local_path,
+        normalize_path,
         outputs_root,
         exports_root,
         resolve_cached_repo_id_case,
@@ -169,6 +170,7 @@ except ImportError:
     from core.inference import get_inference_backend
     from utils.paths import (
         is_local_path,
+        normalize_path,
         outputs_root,
         exports_root,
         resolve_cached_repo_id_case,
@@ -2062,12 +2064,22 @@ async def scan_model_remote_code(
     try:
         from utils.security import preflight_remote_code_consent_for_targets
 
-        if not is_local_path(model_name):
+        local_model = is_local_path(model_name)
+        if not local_model:
             model_name = resolve_cached_repo_id_case(model_name)
         scan_target = model_name
-        if prefer_local_cache is True and not is_local_path(model_name):
+        if local_model:
+            normalized_model_name = normalize_path(model_name)
+            try:
+                scan_target = str(
+                    Path(normalized_model_name).expanduser().resolve(strict = False)
+                )
+            except (OSError, RuntimeError, ValueError):
+                scan_target = normalized_model_name
+        if prefer_local_cache is True and not local_model:
             from core.training.training import _resolve_model_snapshot
-            scan_target = _resolve_model_snapshot(model_name, model_local_path) or model_name
+            local_path = normalize_path(model_local_path) if model_local_path else None
+            scan_target = _resolve_model_snapshot(model_name, local_path) or model_name
         # Scan the adapter AND the base together (a LoRA runs both repos' code; a pickle
         # can live in either), pinned by one combined fingerprint. Snapshot the primary's
         # cache state BEFORE resolving the base: for a remote adapter that resolve
@@ -2082,7 +2094,7 @@ async def scan_model_remote_code(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a LOCAL or REMOTE adapter's base so its code/weights are scanned too.
-            _base = get_base_model_from_lora_identifier(model_name, hf_token)
+            _base = get_base_model_from_lora_identifier(scan_target, hf_token)
             if _base:
                 security_targets.append(_base)
         except Exception:

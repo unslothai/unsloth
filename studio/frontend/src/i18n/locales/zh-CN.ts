@@ -861,6 +861,21 @@ export const zhCN = {
       evalDataset: "评估数据集",
       uploading: "上传中...",
       uploadEvalFile: "上传评估文件",
+      fileTooLarge: "文件过大",
+      fileTooLargeDescription:
+        "{file} 大小为 {size}。训练上传最大支持 {limit}。",
+      uploadLimitsHint:
+        "CSV、JSONL、JSON、Parquet · 最大 {limit}；PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "此文件需要先转换",
+        genericFile: "此文件",
+        description:
+          "{file} 是源材料，并非可直接用于训练的数据集。请使用 Data Recipes 将文档转换为数据集，然后返回此处进行微调。",
+        nextStepTitle: "推荐的下一步",
+        nextStepDescription:
+          "打开 Learning Recipes，并从基于文档的方案开始，例如 PDF grounded QA。",
+        openAction: "打开 Learning Recipes",
+      },
       evalDatasetDescription:
         "可选。如果未提供，将从训练数据中切分出一小部分。",
       advanced: "高级",

@@ -823,6 +823,21 @@ export const de = {
       evalDataset: "Eval-Datensatz",
       uploading: "Wird hochgeladen...",
       uploadEvalFile: "Eval-Datei hochladen",
+      fileTooLarge: "Datei ist zu groß",
+      fileTooLargeDescription:
+        "{file} ist {size} groß. Trainings-Uploads unterstützen bis zu {limit}.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · bis zu {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "Diese Datei muss zuerst konvertiert werden",
+        genericFile: "Diese Datei",
+        description:
+          "{file} ist Quellmaterial und kein trainingsbereiter Datensatz. Verwenden Sie Data Recipes, um das Dokument in einen Datensatz umzuwandeln, und kehren Sie dann zum Fine-Tuning hierher zurück.",
+        nextStepTitle: "Empfohlener nächster Schritt",
+        nextStepDescription:
+          "Öffnen Sie Learning Recipes und beginnen Sie mit einem dokumentbasierten Rezept wie PDF grounded QA.",
+        openAction: "Learning Recipes öffnen",
+      },
       evalDatasetDescription:
         "Optional. Wird keiner angegeben, wird ein kleiner Teil aus den Trainingsdaten abgetrennt.",
       advanced: "Erweitert",

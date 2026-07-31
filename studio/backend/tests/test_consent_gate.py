@@ -277,15 +277,62 @@ class TestConsentGate:
         assert d3.blocked is False
         assert d3.reason == "approved by fingerprint"
 
-    def test_fingerprint_target_key_keeps_local_path_casing(self):
+    def test_fingerprint_target_key_canonicalizes_local_aliases(self, monkeypatch, tmp_path):
         from utils.security.consent import _fingerprint_target_key
 
-        # A local path is case-sensitive (case-sensitive filesystems); never folded.
-        with patch("utils.paths.is_local_path", return_value = True):
-            assert _fingerprint_target_key("/Models/Foo") == "/Models/Foo"
-        # A Hub repo id is case-insensitive; folded so the pin is casing-robust.
-        with patch("utils.paths.is_local_path", return_value = False):
-            assert _fingerprint_target_key("Org/Model") == "org/model"
+        model = tmp_path / "models" / "Foo"
+        model.mkdir(parents = True)
+        alias = tmp_path / "model-alias"
+        try:
+            alias.symlink_to(model, target_is_directory = True)
+        except OSError:
+            pytest.skip("Symlinks are unavailable on this host")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        expected = os.path.normcase(str(model.resolve()))
+        assert _fingerprint_target_key("./models/Foo") == expected
+        assert _fingerprint_target_key("~/models/Foo") == expected
+        assert _fingerprint_target_key(str(alias)) == expected
+        assert _fingerprint_target_key("Org/Model") == "org/model"
+
+    def test_fingerprint_target_key_normalizes_wsl_drive_path(self, monkeypatch, tmp_path):
+        from utils.security.consent import _fingerprint_target_key
+
+        model = tmp_path / "models" / "Foo"
+        model.mkdir(parents = True)
+        windows_path = r"C:\models\Foo"
+        monkeypatch.setattr(
+            "utils.paths.normalize_path",
+            lambda value: str(model) if value == windows_path else value,
+        )
+
+        assert _fingerprint_target_key(windows_path) == os.path.normcase(str(model.resolve()))
+
+    def test_local_path_alias_approval_matches_authoritative_target(self, tmp_path):
+        model = tmp_path / "model"
+        model.mkdir()
+        alias = tmp_path / "model-alias"
+        try:
+            alias.symlink_to(model, target_is_directory = True)
+        except OSError:
+            pytest.skip("Symlinks are unavailable on this host")
+
+        a, b = _with_auto_map(_HIGH)
+        with a, b:
+            preflight = evaluate_remote_code_consent_for_targets(
+                [str(alias)], trust_remote_code = True
+            )
+            authoritative = evaluate_remote_code_consent_for_targets(
+                [str(model.resolve())],
+                trust_remote_code = True,
+                approved_fingerprint = preflight.fingerprint,
+            )
+
+        assert preflight.fingerprint == authoritative.fingerprint
+        assert authoritative.blocked is False
+        assert authoritative.reason == "approved by fingerprint"
 
     def test_unscannable_target_fails_closed_for_whole_load(self):
         # If ANY target is present-but-unscannable, the whole load fails closed (non-approvable).
@@ -585,9 +632,11 @@ class TestStructuredFindingsForDialog:
         import utils.security.remote_code_scan as remote_code_scan
 
         model_name = "someone/cached-model"
-        local_path = str(tmp_path / "models--someone--cached-model")
+        local_path = r"C:\cache\models--someone--cached-model"
+        normalized_local_path = str(tmp_path / "models--someone--cached-model")
         snapshot = str(tmp_path / "models--someone--cached-model" / "snapshots" / "old")
         resolved = []
+        base_targets = []
         preflight_targets = []
         file_targets = []
 
@@ -617,12 +666,17 @@ class TestStructuredFindingsForDialog:
             "is_local_path",
             lambda value: value == snapshot,
         )
+        monkeypatch.setattr(
+            models_route,
+            "normalize_path",
+            lambda value: normalized_local_path if value == local_path else value,
+        )
         monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda value: value)
         monkeypatch.setattr(training_core, "_resolve_model_snapshot", resolve_snapshot)
         monkeypatch.setattr(
             model_config,
             "get_base_model_from_lora_identifier",
-            lambda *_args, **_kwargs: None,
+            lambda target, *_args, **_kwargs: base_targets.append(target) or "someone/base",
         )
         monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
         monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
@@ -644,9 +698,80 @@ class TestStructuredFindingsForDialog:
             )
         )
 
-        assert resolved == [(model_name, local_path)]
-        assert preflight_targets == [snapshot]
-        assert file_targets == [snapshot]
+        assert resolved == [(model_name, normalized_local_path)]
+        assert base_targets == [snapshot]
+        assert preflight_targets == [snapshot, "someone/base"]
+        assert file_targets == [snapshot, "someone/base"]
+        assert payload["model_name"] == model_name
+        assert payload["scan_created_repos"] == []
+
+    def test_scan_route_canonicalizes_local_adapter_target(self, monkeypatch, tmp_path):
+        import asyncio
+
+        import routes.models as models_route
+        import utils.models.model_config as model_config
+        import utils.security as security
+        import utils.security.remote_code_scan as remote_code_scan
+
+        model_name = r"C:\models\adapter"
+        normalized_path = tmp_path / "models" / "adapter"
+        normalized_path.mkdir(parents = True)
+        scan_target = str(normalized_path.resolve())
+        base_targets = []
+        preflight_targets = []
+        file_targets = []
+
+        monkeypatch.setattr(
+            models_route,
+            "is_local_path",
+            lambda value: value in {model_name, scan_target},
+        )
+        monkeypatch.setattr(
+            models_route,
+            "normalize_path",
+            lambda value: str(normalized_path) if value == model_name else value,
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_base_model_from_lora_identifier",
+            lambda target, *_args, **_kwargs: base_targets.append(target) or "someone/base",
+        )
+        monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda *_args: True)
+        monkeypatch.setattr(remote_code_scan, "external_auto_map_repos", lambda *_args: set())
+        monkeypatch.setattr(
+            security,
+            "preflight_remote_code_consent_for_targets",
+            lambda targets, **_kwargs: preflight_targets.extend(targets)
+            or SimpleNamespace(
+                has_remote_code = True,
+                blocked = True,
+                reason = "approval required",
+                response_payload = lambda: {
+                    "model_name": scan_target,
+                    "has_remote_code": True,
+                    "approvable": True,
+                },
+            ),
+        )
+        monkeypatch.setattr(security, "security_load_subdirs", lambda *_args: ())
+        monkeypatch.setattr(
+            security,
+            "evaluate_file_security",
+            lambda target, **_kwargs: file_targets.append(target)
+            or SimpleNamespace(blocked = False, unsafe_files = []),
+        )
+
+        payload = asyncio.run(
+            models_route.scan_model_remote_code(
+                model_name = model_name,
+                hf_token = None,
+                current_subject = "tester",
+            )
+        )
+
+        assert base_targets == [scan_target]
+        assert preflight_targets == [scan_target, "someone/base"]
+        assert file_targets == [scan_target, "someone/base"]
         assert payload["model_name"] == model_name
         assert payload["scan_created_repos"] == []
 

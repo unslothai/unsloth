@@ -1463,7 +1463,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (legacyToken && !getHfToken()) {
             useHfTokenStore.getState().setToken(legacyToken);
           }
-          s.hfToken = undefined;
+          delete s.hfToken;
         }
         if (version < 13) {
           s.modelKnownCached ??= false;

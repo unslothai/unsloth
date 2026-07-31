@@ -784,6 +784,21 @@ export const ar = {
       evalDataset: "مجموعة بيانات التقييم",
       uploading: "جارٍ التحميل...",
       uploadEvalFile: "تحميل ملف التقييم",
+      fileTooLarge: "الملف كبير جدًا",
+      fileTooLargeDescription:
+        "حجم {file} هو {size}. تدعم عمليات تحميل بيانات التدريب حجمًا يصل إلى {limit}.",
+      uploadLimitsHint:
+        "CSV وJSONL وJSON وParquet · بحد أقصى {limit}؛ PDF/DOCX/TXT ← Learning Recipes",
+      documentRedirect: {
+        title: "يجب تحويل هذا الملف أولًا",
+        genericFile: "هذا الملف",
+        description:
+          "{file} مادة مصدر وليس مجموعة بيانات جاهزة للتدريب. استخدم Data Recipes لتحويل المستند إلى مجموعة بيانات، ثم عُد إلى هنا لإجراء الضبط الدقيق.",
+        nextStepTitle: "أفضل خطوة تالية",
+        nextStepDescription:
+          "افتح Learning Recipes وابدأ بوصفة قائمة على المستندات مثل PDF grounded QA.",
+        openAction: "فتح Learning Recipes",
+      },
       evalDatasetDescription:
         "اختياري. إذا لم يُقدَّم، سيتم فصل جزء صغير من بيانات التدريب.",
       advanced: "متقدم",

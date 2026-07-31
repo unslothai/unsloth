@@ -787,6 +787,21 @@ export const ru = {
       evalDataset: "Датасет для оценки",
       uploading: "Загрузка...",
       uploadEvalFile: "Загрузить файл для оценки",
+      fileTooLarge: "Файл слишком большой",
+      fileTooLargeDescription:
+        "Размер файла {file} — {size}. Для загрузки обучающих данных поддерживается размер до {limit}.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · до {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "Сначала преобразуйте этот файл",
+        genericFile: "Этот файл",
+        description:
+          "{file} — это исходный материал, а не готовый датасет для обучения. Преобразуйте документ в датасет с помощью Data Recipes, затем вернитесь сюда для дообучения.",
+        nextStepTitle: "Рекомендуемый следующий шаг",
+        nextStepDescription:
+          "Откройте Learning Recipes и начните с рецепта на основе документов, например PDF grounded QA.",
+        openAction: "Открыть Learning Recipes",
+      },
       evalDatasetDescription:
         "Необязательно. Если не указан, небольшая часть будет выделена из обучающих данных.",
       advanced: "Дополнительно",

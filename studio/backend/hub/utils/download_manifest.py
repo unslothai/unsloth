@@ -817,7 +817,7 @@ def purge_all_state_for_repo(
             if not entry.is_file():
                 continue
             fallback = entry.stem[len(prefix) :]
-            variants.add(_variant_from_state_file(entry, fallback))
+            variants.add(fallback)
     for variant in variants:
         if purge_state(repo_type, repo_id, variant, hub_cache = hub_cache):
             removed += 1

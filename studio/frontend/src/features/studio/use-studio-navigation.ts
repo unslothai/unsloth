@@ -134,6 +134,19 @@ export function useStudioNavigation() {
   }, [activeTab, setCurrentRunViewActive]);
 
   useEffect(() => {
+    if (activeTab !== "current-run" || selectedHistoryRunId === null) {
+      return;
+    }
+    if (
+      requestedTabRef.current === "current-run" &&
+      useTrainingRuntimeStore.getState().selectedHistoryRunId ===
+        selectedHistoryRunId
+    ) {
+      setSelectedHistoryRunId(null);
+    }
+  }, [activeTab, selectedHistoryRunId, setSelectedHistoryRunId]);
+
+  useEffect(() => {
     return useTrainingRuntimeStore.subscribe((state, previousState) => {
       const nextTab = runtimeRequestedTab({
         jobId: state.jobId,
@@ -148,11 +161,8 @@ export function useStudioNavigation() {
         return;
       }
       setRequestedTab(nextTab);
-      if (nextTab === "current-run") {
-        setSelectedHistoryRunId(null);
-      }
     });
-  }, [setRequestedTab, setSelectedHistoryRunId]);
+  }, [setRequestedTab]);
 
   const handleTabChange = useCallback(
     (value: TrainSubTab) => {

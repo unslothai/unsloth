@@ -808,6 +808,21 @@ export const fr = {
       evalDataset: "Jeu de données d'évaluation",
       uploading: "Téléversement...",
       uploadEvalFile: "Téléverser un fichier d'évaluation",
+      fileTooLarge: "Fichier trop volumineux",
+      fileTooLargeDescription:
+        "{file} fait {size}. Les téléversements d’entraînement sont limités à {limit}.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · jusqu’à {limit} ; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "Ce fichier doit d’abord être converti",
+        genericFile: "Ce fichier",
+        description:
+          "{file} est un document source, pas un jeu de données prêt pour l’entraînement. Utilisez Data Recipes pour convertir le document en jeu de données, puis revenez ici pour l’affinage.",
+        nextStepTitle: "Étape suivante recommandée",
+        nextStepDescription:
+          "Ouvrez Learning Recipes et commencez par une recette basée sur un document, comme PDF grounded QA.",
+        openAction: "Ouvrir Learning Recipes",
+      },
       evalDatasetDescription:
         "Facultatif. Si non fourni, une petite portion sera prélevée sur les données d'entraînement.",
       advanced: "Avancé",

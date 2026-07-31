@@ -195,15 +195,16 @@ def evaluate_remote_code_consent(
 
 
 def _fingerprint_target_key(target: str) -> str:
-    """Namespace key for a target in the combined fingerprint. The pin is over CODE
-    BYTES, not the repo-id spelling: the scan canonicalizes a cached repo's casing while
-    workers pass raw input, so lowercase Hub ids (keep local paths as-is) or ``Org/Model``
-    vs ``org/model`` would fingerprint differently and reject a valid approval.
-    """
+    """Canonical namespace key for a target in the combined fingerprint."""
     try:
-        from utils.paths import is_local_path
+        import os
+        from pathlib import Path
+
+        from utils.paths import is_local_path, normalize_path
+
         if is_local_path(target):
-            return target
+            path = Path(normalize_path(target)).expanduser().resolve(strict = False)
+            return os.path.normcase(str(path))
     except Exception:
         return target
     return target.lower()

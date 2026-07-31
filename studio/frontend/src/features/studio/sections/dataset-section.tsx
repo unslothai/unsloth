@@ -75,8 +75,6 @@ const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(
 );
 const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
 const TRAINING_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet, PDF, DOCX, TXT";
-const TRAINING_DATASET_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet";
-const DOCUMENT_REDIRECT_LABEL = "PDF/DOCX/TXT open Learning Recipes";
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
 const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
@@ -339,10 +337,12 @@ export function DatasetPanel() {
   ) => {
     const latestLimit = await getLatestUploadLimit();
     if (file.size > latestLimit.maxUploadSizeBytes) {
-      toast.error("File too large", {
-        description: `${file.name} is ${formatUploadSize(
-          file.size,
-        )}. Training uploads support up to ${latestLimit.maxUploadSizeLabel}.`,
+      toast.error(t("studio.dataset.fileTooLarge"), {
+        description: t("studio.dataset.fileTooLargeDescription", {
+          file: file.name,
+          size: formatUploadSize(file.size),
+          limit: latestLimit.maxUploadSizeLabel,
+        }),
       });
       return;
     }
@@ -509,8 +509,9 @@ export function DatasetPanel() {
               </span>
             </button>
             <p className="truncate text-ui-10 text-muted-foreground">
-              {TRAINING_DATASET_UPLOAD_LABEL} · up to {uploadLimitLabel};{" "}
-              {DOCUMENT_REDIRECT_LABEL}
+              {t("studio.dataset.uploadLimitsHint", {
+                limit: uploadLimitLabel,
+              })}
             </p>
           </div>
         </div>

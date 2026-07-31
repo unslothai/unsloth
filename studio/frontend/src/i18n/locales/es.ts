@@ -807,6 +807,21 @@ export const es = {
       evalDataset: "Conjunto de datos de evaluación",
       uploading: "Subiendo...",
       uploadEvalFile: "Subir archivo de evaluación",
+      fileTooLarge: "El archivo es demasiado grande",
+      fileTooLargeDescription:
+        "{file} ocupa {size}. Las cargas de entrenamiento admiten hasta {limit}.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · hasta {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "Este archivo debe convertirse primero",
+        genericFile: "Este archivo",
+        description:
+          "{file} es material de origen, no un conjunto de datos listo para entrenar. Usa Data Recipes para convertir el documento en un conjunto de datos y vuelve aquí para ajustar el modelo.",
+        nextStepTitle: "Mejor siguiente paso",
+        nextStepDescription:
+          "Abre Learning Recipes y empieza con una receta basada en documentos, como PDF grounded QA.",
+        openAction: "Abrir Learning Recipes",
+      },
       evalDatasetDescription:
         "Opcional. Si no se proporciona, se separará una pequeña porción de los datos de entrenamiento.",
       advanced: "Avanzado",

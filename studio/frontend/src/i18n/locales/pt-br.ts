@@ -890,6 +890,21 @@ export const ptBR = {
       evalDataset: "Dataset de validação (Eval)",
       uploading: "Enviando...",
       uploadEvalFile: "Enviar arquivo de validação",
+      fileTooLarge: "Arquivo muito grande",
+      fileTooLargeDescription:
+        "{file} tem {size}. Os uploads de treinamento aceitam até {limit}.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · até {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "Este arquivo precisa ser convertido primeiro",
+        genericFile: "Este arquivo",
+        description:
+          "{file} é material de origem, não um dataset pronto para treinamento. Use Data Recipes para transformar o documento em um dataset e depois volte aqui para fazer o ajuste fino.",
+        nextStepTitle: "Melhor próximo passo",
+        nextStepDescription:
+          "Abra Learning Recipes e comece com uma receita baseada em documento, como PDF grounded QA.",
+        openAction: "Abrir Learning Recipes",
+      },
       evalDatasetDescription:
         "Opcional. Se não for fornecido, uma pequena parte será dividida a partir dos dados de treinamento.",
       advanced: "Avançado",

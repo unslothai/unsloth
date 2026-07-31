@@ -784,6 +784,21 @@ export const ko = {
       evalDataset: "평가 데이터셋",
       uploading: "업로드 중...",
       uploadEvalFile: "평가 파일 업로드",
+      fileTooLarge: "파일이 너무 큽니다",
+      fileTooLargeDescription:
+        "{file}의 크기는 {size}입니다. 학습용 업로드는 최대 {limit}까지 지원합니다.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · 최대 {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "이 파일은 먼저 변환해야 합니다",
+        genericFile: "이 파일",
+        description:
+          "{file}: 학습 준비가 된 데이터셋이 아닌 원본 자료입니다. Data Recipes에서 문서를 데이터셋으로 변환한 후 여기로 돌아와 파인튜닝하세요.",
+        nextStepTitle: "권장하는 다음 단계",
+        nextStepDescription:
+          "Learning Recipes를 열고 PDF grounded QA와 같은 문서 기반 레시피로 시작하세요.",
+        openAction: "Learning Recipes 열기",
+      },
       evalDatasetDescription:
         "선택 사항. 제공하지 않으면 학습 데이터에서 일부가 분할됩니다.",
       advanced: "고급",

@@ -2939,9 +2939,13 @@ html[data-chat-font] .aui-root {
   .train-section-chip {
     background-color: color-mix(
       in srgb,
-      var(--chip-color, transparent) 12%,
+      var(--chip-tint, transparent) 12%,
       transparent
     );
-    color: var(--chip-color, currentColor);
+    color: color-mix(
+      in srgb,
+      var(--control-accent) 60%,
+      var(--foreground)
+    );
   }
 }

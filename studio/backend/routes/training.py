@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -34,7 +35,7 @@ try:
     )
     from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import detect_gguf_model, load_model_defaults
-    from utils.paths import is_local_path, resolve_dataset_path
+    from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 except ImportError:
     # Fallback: parent directory.
     parent_backend = backend_path.parent / "backend"
@@ -49,7 +50,7 @@ except ImportError:
     )
     from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import detect_gguf_model, load_model_defaults
-    from utils.paths import is_local_path, resolve_dataset_path
+    from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 # Auth
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -85,6 +86,13 @@ _REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS = 10.0
 
 class _LocalModelProbeIncomplete(RuntimeError):
     pass
+
+
+@dataclass(frozen = True)
+class _ModelPreflightResult:
+    model_name: str
+    model_local_path: Optional[str]
+    cached_model_pin: Optional[tuple[str, str]]
 
 
 # Consecutive 1s polls without a step update that count as a stall. Applied only
@@ -341,7 +349,7 @@ def _detect_local_gguf(path: Path) -> Optional[str]:
 
 def _reject_untrainable_model_request(
     request: TrainingStartRequest, actual_model_repo_id: Optional[str] = None
-) -> Optional[tuple[str, str]]:
+) -> _ModelPreflightResult:
     model_format = (request.model_format or "").strip().lower()
     if model_format == "gguf":
         raise HTTPException(
@@ -354,16 +362,28 @@ def _reject_untrainable_model_request(
             detail = "Adapter models are inference-only and cannot be trained as base models.",
         )
     path: Optional[Path] = None
+    model_name = request.model_name
+    model_local_path: Optional[str] = None
     cached_model_pin: Optional[tuple[str, str]] = None
     if is_local_path(request.model_name):
         try:
-            path = Path(request.model_name).expanduser().resolve(strict = True)
+            path = Path(normalize_path(request.model_name)).expanduser().resolve(strict = True)
         except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(
                 status_code = 400,
                 detail = "Local model path was not found or could not be accessed.",
             ) from error
+        model_name = str(path)
+        if request.model_local_path:
+            model_local_path = (
+                model_name
+                if request.model_local_path == request.model_name
+                else normalize_path(request.model_local_path)
+            )
     else:
+        model_local_path = (
+            normalize_path(request.model_local_path) if request.model_local_path else None
+        )
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
         snapshot = None
@@ -379,7 +399,7 @@ def _reject_untrainable_model_request(
             from core.training.training import _resolve_model_snapshot
             snapshot = _resolve_model_snapshot(
                 request.model_name,
-                request.model_local_path,
+                model_local_path,
             )
         if snapshot:
             path = Path(snapshot)
@@ -401,7 +421,7 @@ def _reject_untrainable_model_request(
 
             snapshot = _resolve_model_snapshot(
                 request.model_name,
-                request.model_local_path,
+                model_local_path,
             )
             if snapshot is None:
                 raise
@@ -412,7 +432,7 @@ def _reject_untrainable_model_request(
             )
         else:
             if remote_format is None:
-                return
+                return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
                 raise HTTPException(
                     status_code = 400,
@@ -424,7 +444,7 @@ def _reject_untrainable_model_request(
             )
     has_trainable_weights = _has_trainable_local_weights(path)
     if has_trainable_weights:
-        return cached_model_pin
+        return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _has_adapter_metadata(path):
         raise HTTPException(
             status_code = 400,
@@ -449,6 +469,7 @@ def _reject_untrainable_model_request(
         )
     if metadata_error is not None:
         raise metadata_error
+    return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
 
 
 _RESUME_DATASET_DEFAULTS = {
@@ -821,11 +842,12 @@ async def start_training(
                     ),
                 )
 
-        cached_model_pin = await asyncio.to_thread(
+        model_preflight = await asyncio.to_thread(
             _reject_untrainable_model_request,
             request,
             resume_actual_model_repo_id,
         )
+        cached_model_pin = model_preflight.cached_model_pin
         training_actual_model_repo_id = resume_actual_model_repo_id
         training_model_snapshot_path = request.model_snapshot_path
         if cached_model_pin is not None:
@@ -833,7 +855,7 @@ async def start_training(
 
         # Convert request to backend kwargs.
         training_kwargs = {
-            "model_name": request.model_name,
+            "model_name": model_preflight.model_name,
             "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
@@ -842,7 +864,7 @@ async def start_training(
             "vision_image_size": request.vision_image_size,
             "hf_dataset": request.hf_dataset or "",
             "model_known_cached": request.model_known_cached,
-            "model_local_path": request.model_local_path,
+            "model_local_path": model_preflight.model_local_path,
             "model_format": request.model_format,
             "model_snapshot_path": training_model_snapshot_path,
             "actual_model_repo_id": training_actual_model_repo_id,
