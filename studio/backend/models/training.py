@@ -767,16 +767,28 @@ class DiffusionTrainingStartRequest(BaseModel):
         default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
         description = "U-Net modules to attach LoRA to",
     )
+    # Finite as well as non-negative: JSON accepts 1e309 (and the stdlib parser FastAPI uses accepts
+    # the Infinity literal), which floats to inf and satisfies a ge-only constraint. clip_grad_norm_
+    # then computes a clip coefficient of inf, clamps it to 1.0 and scales nothing, so the run trains
+    # completely unclipped while the config and the UI still report clipping at the requested value.
+    # (NaN already fails ge; allow_inf_nan makes that rejection explicit rather than incidental.)
     max_grad_norm: float = Field(
-        1.0, ge = 0, description = "Gradient clipping max-norm; 0 disables clipping"
+        1.0,
+        ge = 0,
+        allow_inf_nan = False,
+        description = "Gradient clipping max-norm; 0 disables clipping",
     )
     # Bounded to what torch.manual_seed unpacks (int64 low / uint64 high): an out-of-range value
     # otherwise passes every route preflight, evicts the resident image/video/chat models, spawns
     # the trainer, and only then dies on "Overflow when unpacking long long".
     seed: int = Field(42, ge = -(2**63), le = 2**64 - 1)
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
+    # Finite for the same reason as max_grad_norm: an inf gamma passes the gt-only bound here and
+    # the > 0 check in DiffusionLoraConfig.normalized(), then min(snr, inf) / snr collapses every
+    # min-SNR weight to 1.0 -- the run silently trains on plain unweighted MSE while reporting the
+    # requested weighting. null is the documented disable.
     snr_gamma: Optional[float] = Field(
-        5.0, gt = 0, description = "Min-SNR loss weighting; null disables"
+        5.0, gt = 0, allow_inf_nan = False, description = "Min-SNR loss weighting; null disables"
     )
     gradient_checkpointing: bool = Field(True)
     lr_scheduler: Literal[

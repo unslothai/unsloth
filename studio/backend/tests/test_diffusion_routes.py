@@ -851,6 +851,12 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
         "resolve_diffusion_device_target",
         lambda: SimpleNamespace(backend = "cpu", device = "cpu"),
     )
+    # Stubbed because select_and_activate_engine probes THIS first, with
+    # allow_install = _install_allowed(), which defaults on. Unstubbed it ran the real installer:
+    # 108 MB of prebuilt binaries downloaded and unpacked into managed_install_root(), which is the
+    # developer's own ~/.unsloth/stable-diffusion.cpp when UNSLOTH_STUDIO_HOME is unset. Returning
+    # None also keeps this test on the sd-cli path it is about.
+    monkeypatch.setattr(engine_router, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(engine_router, "ensure_sd_cpp_binary", lambda **_: "/x/sd-cli")
     # The router probes runnability before committing to native; treat the stub binary as executable.
     monkeypatch.setattr(

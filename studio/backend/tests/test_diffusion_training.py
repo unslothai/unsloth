@@ -1736,6 +1736,54 @@ def test_request_model_rejects_non_finite_learning_rate():
             R(**base, learning_rate = bad)
 
 
+def test_request_model_rejects_non_finite_clipping_and_snr():
+    # Same 1e309 -> inf vector as learning_rate, on the two knobs whose bound is one-sided.
+    # max_grad_norm = inf passed ge = 0 and reached clip_grad_norm_, whose clip coefficient
+    # (max_norm / total_norm) is inf and clamps to 1.0: the run trained completely unclipped while
+    # the config still said 1.0. snr_gamma = inf passed gt = 0 here AND the > 0 check in
+    # DiffusionLoraConfig.normalized(), then min(snr, inf) / snr made every min-SNR weight 1.0, so
+    # the loss silently degraded to unweighted MSE.
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest as R
+
+    base = dict(base_model = "b", data_dir = "d", output_dir = "o")
+    # The legitimate range is untouched, including the documented disables.
+    assert R(**base, max_grad_norm = 0.0).max_grad_norm == 0.0
+    assert R(**base, max_grad_norm = 1.0).max_grad_norm == 1.0
+    assert R(**base, snr_gamma = 5.0).snr_gamma == 5.0
+    assert R(**base, snr_gamma = None).snr_gamma is None
+    for bad in (float("inf"), float("-inf"), 1e309, float("nan")):
+        with pytest.raises(ValidationError):
+            R(**base, max_grad_norm = bad)
+        with pytest.raises(ValidationError):
+            R(**base, snr_gamma = bad)
+
+
+def test_start_route_never_starts_a_run_with_a_non_finite_knob(client):
+    # End to end: FastAPI parses the body with the stdlib json module, which accepts the
+    # non-standard Infinity literal, and plain 1e309 floats to inf under any parser -- so the
+    # schema is the only thing standing between that and a run started with the knob disabled.
+    # Asserted on the outcome rather than the code: FastAPI's default validation handler cannot
+    # serialise the offending inf back into the 422 body, so a non-finite input already answers
+    # 500 for learning_rate today. What matters is that no run is spawned.
+    from fastapi.testclient import TestClient
+
+    strict = TestClient(client._app, raise_server_exceptions = False)
+    for raw in ('"max_grad_norm": 1e309', '"max_grad_norm": Infinity', '"snr_gamma": 1e309'):
+        body = json.dumps(_BODY)[:-1] + ", " + raw + "}"
+        r = strict.post(
+            "/api/train/diffusion/start",
+            content = body,
+            headers = {"content-type": "application/json"},
+        )
+        assert r.status_code >= 400, (raw, r.text)
+        assert client._fake.started_with is None, raw
+    # Positive control, so the assertions above cannot pass vacuously.
+    assert strict.post("/api/train/diffusion/start", json = _BODY).status_code == 200
+    assert client._fake.started_with is not None
+
+
 def test_dataset_mutation_and_reserve_refuse_each_other():
     """The route layer checked is_active() and only then handed the filesystem work to a thread, so
     a /diffusion/start could reserve inside that gap and the caption or image changed underneath the

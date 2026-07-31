@@ -349,6 +349,13 @@ class VideoBackend:
         self._load_token = 0
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
+        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline.
+        # A generation queued behind the active one holds no cancel event yet, so the cancel they
+        # signal cannot reach it: without this fence it could win the lock as the active generation
+        # released it, see a still-loaded _state, and denoise a whole new clip against the pipeline
+        # the teardown then frees. A count, not a flag, so concurrent teardowns each own their own
+        # release. Mirrors DiffusionBackend._teardown_waiters.
+        self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second begin_generate() is refused while the first still runs.
@@ -643,7 +650,7 @@ class VideoBackend:
     def _rollback_precommit_globals(self, token: Optional[int]) -> None:
         """Restore process-wide speed globals (cudnn.benchmark / TF32 / the compiled
         GGUF dequantizer) for a load that died BEFORE committing _VideoLoadState.
-        _teardown_state only restores from the committed state's snapshot, so an
+        _teardown_state_locked only restores from the committed state's snapshot, so an
         uncommitted load would otherwise leak its profile into the next speed=off
         load. Token-scoped: when a newer load has already taken the snapshot slot,
         the stale worker must leave the globals alone."""
@@ -1113,13 +1120,24 @@ class VideoBackend:
             # Signal a generation from the PREVIOUS model (the token check above bailed a superseded worker).
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
+            # Same fence unload() takes, raised BEFORE the barrier: a generation queued behind the
+            # active one holds no cancel event, so the signal above cannot reach it, and it would
+            # otherwise slip through the moment the barrier released _generate_lock and run against
+            # the pipeline this load is about to free.
+            self._teardown_waiters += 1
         # Barrier: wait for the signalled generation to exit before teardown, or two models coexist in VRAM (the denoise loop holds its pipe ref until the next callback).
         with self._generate_lock:
-            pass
-        # The barrier wait can outlive this load (a newer load / unload superseded it); recheck before touching shared state so we do not destroy the current model or build a dead pipe.
-        if _load_token is not None and _load_token != self._load_token:
-            raise RuntimeError("Video load was cancelled or superseded.")
-        self._teardown_state()
+            with self._lock:
+                try:
+                    # The barrier wait can outlive this load (a newer load / unload superseded it); recheck before touching shared state so we do not destroy the current model or build a dead pipe.
+                    if _load_token is not None and _load_token != self._load_token:
+                        raise RuntimeError("Video load was cancelled or superseded.")
+                    self._teardown_state_locked()
+                finally:
+                    # Released here, not at the end of the load: the old pipe is gone (or this load
+                    # bailed), and a raising teardown must not leave the fence up for the life of
+                    # the process. In a finally for the same reason unload() uses one.
+                    self._teardown_waiters -= 1
 
         target = resolve_diffusion_device_target()
         device = target.device
@@ -1377,7 +1395,7 @@ class VideoBackend:
             )
             effective_speed = SPEED_DEFAULT
         backend_flags = snapshot_backend_flags()
-        # Until the state commit transfers ownership to _teardown_state, a failure must restore these globals itself (_rollback_precommit_globals). Registered BEFORE the first mutation.
+        # Until the state commit transfers ownership to _teardown_state_locked, a failure must restore these globals itself (_rollback_precommit_globals). Registered BEFORE the first mutation.
         self._precommit_globals = (_load_token, backend_flags)
         # Step cache tri-state: unset/"auto" -> step-count policy decides (FBCACHE_MIN_STEPS, re-checked per generation); "off"/"fbcache" pinned. Run per expert so both denoisers cache.
         cache_request = normalize_transformer_cache(transformer_cache)
@@ -1540,7 +1558,7 @@ class VideoBackend:
                     text_encoder_quant = text_encoder_quant_engaged,
                     resolved = resolved,
                 )
-                # Ownership of the globals transferred to _state / _teardown_state.
+                # Ownership of the globals transferred to _state / _teardown_state_locked.
                 self._precommit_globals = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
@@ -1764,6 +1782,11 @@ class VideoBackend:
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
             with self._lock:
+                # An unload / superseding load signalled the active generation and is waiting for
+                # this lock. Python locks are not FIFO, so this request can get in first; refuse
+                # instead of denoising against a pipeline that is already being torn down.
+                if self._teardown_waiters:
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
                 state = self._state
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
@@ -2013,10 +2036,11 @@ class VideoBackend:
 
     # ── teardown + status ────────────────────────────────────────────────────
 
-    def _teardown_state(self) -> None:
-        state = None
-        with self._lock:
-            state, self._state = self._state, None
+    def _teardown_state_locked(self) -> None:
+        """Free the committed state. The caller holds _generate_lock (no generation
+        in flight) AND _lock, so the whole teardown is one atomic step: a generation
+        cannot observe a half-torn-down backend."""
+        state, self._state = self._state, None
         if state is not None:
             restore_backend_flags(state.backend_flags)
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later speed=off load gets the bit-identical path (mirrors image unload).
@@ -2033,10 +2057,22 @@ class VideoBackend:
             self._loading = None
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
+            # Fence generations queued behind the active one too: they hold no cancel event yet,
+            # so the signal above cannot reach them.
+            self._teardown_waiters += 1
         # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free (and let the arbiter start another load) while the clip still holds it.
+        # The teardown runs INSIDE the barrier, not after it: releasing the lock first would hand
+        # the pipeline to a queued generation for one last clip.
         with self._generate_lock:
-            pass
-        self._teardown_state()
+            with self._lock:
+                try:
+                    self._teardown_state_locked()
+                finally:
+                    # Released in a finally: _teardown_state_locked ends in clear_gpu_cache(),
+                    # whose CUDA branch raises on a sticky fault, and an un-drained fence would
+                    # refuse every later generation for the life of the process (a fresh load
+                    # included: its own increment/decrement are symmetric and never drain it).
+                    self._teardown_waiters -= 1
         logger.info("video.unloaded")
         return self.status()
 

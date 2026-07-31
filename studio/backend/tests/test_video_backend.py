@@ -8,6 +8,7 @@ stack loads."""
 
 import contextlib
 import sys
+import threading
 import time
 import types
 
@@ -2133,7 +2134,8 @@ def test_each_video_load_gets_its_own_cancel_event(monkeypatch):
     started.append(first)
 
     # unload() signals the in-flight worker and clears _loading, letting a new load through.
-    backend._teardown_state = lambda: None
+    backend._teardown_waiters = 0
+    backend._teardown_state_locked = lambda: None
     backend.unload()
     assert first.is_set(), "unload must cancel the in-flight load"
 
@@ -2142,3 +2144,139 @@ def test_each_video_load_gets_its_own_cancel_event(monkeypatch):
     assert second is not first, "each load needs its own event"
     assert first.is_set(), "the replaced load must stay cancelled"
     assert not second.is_set(), "a fresh load starts uncancelled"
+
+
+# ── teardown fence ────────────────────────────────────────────────────────────
+
+
+class _HookedLock:
+    """threading.Lock wrapper that fires ``on_release`` after a release made by the
+    named thread. Lets a test stand in the shoes of a generation parked on
+    _generate_lock: it is admitted at the exact instant the teardown releases it."""
+
+    def __init__(self, on_release, thread_name: str) -> None:
+        self._lock = threading.Lock()
+        self._on_release = on_release
+        self._thread_name = thread_name
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self) -> None:
+        self._lock.release()
+        if threading.current_thread().name == self._thread_name:
+            self._on_release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+
+def _run_teardown_race(backend, teardown):
+    """Park a generation behind ``teardown``'s _generate_lock barrier, admit it the
+    instant that barrier releases the lock, and report what it did."""
+    queued: dict = {}
+    admitted = threading.Event()
+    finished = threading.Event()
+
+    def queued_generate():
+        assert admitted.wait(timeout = 5), "queued generation never admitted"
+        try:
+            queued["out"] = backend.generate(prompt = "queued", steps = 2)
+        except RuntimeError as exc:
+            queued["error"] = str(exc)
+        finally:
+            finished.set()
+
+    waiter = threading.Thread(target = queued_generate, daemon = True)
+    waiter.start()
+
+    def on_release():
+        # The barrier just released _generate_lock: this is the window the queued
+        # generation wins it in. Hold the teardown here until it has had its turn.
+        admitted.set()
+        finished.wait(timeout = 5)
+
+    backend._generate_lock = _HookedLock(on_release, "teardown-under-test")
+    runner = threading.Thread(target = teardown, name = "teardown-under-test")
+    runner.start()
+    runner.join(timeout = 10)
+    assert not runner.is_alive(), "teardown never finished"
+    waiter.join(timeout = 5)
+    assert not waiter.is_alive(), "queued generation never finished"
+    return queued
+
+
+def test_unload_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_path):
+    # A generation queued behind unload's barrier holds no cancel event yet, so unload's signal
+    # cannot reach it. Python locks are not FIFO and the barrier only *acquires and releases*
+    # _generate_lock, so the queued request won it the moment the barrier let go, read a
+    # still-non-None _state, and started denoising on the pipeline the teardown then freed.
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    queued = _run_teardown_race(backend, backend.unload)
+
+    assert "out" not in queued, (
+        "a generation queued behind the unload barrier ran against a pipeline being torn down"
+    )
+    assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
+    assert backend._state is None
+    assert backend._teardown_waiters == 0  # the fence drained
+
+
+def test_superseding_load_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_path):
+    # The load path takes the same barrier before tearing the old model down, so it has the
+    # same hole: a queued generation would denoise on the pipeline the incoming load frees.
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    queued = _run_teardown_race(backend, lambda: _load_gguf(backend, tmp_path))
+
+    assert "out" not in queued, (
+        "a generation queued behind the load barrier ran against a pipeline being torn down"
+    )
+    assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
+    assert backend._teardown_waiters == 0  # the fence drained
+
+
+def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
+    # The fence's effect: with a teardown waiting on _generate_lock, a generation that wins the
+    # lock refuses instead of denoising on a pipeline that is being freed.
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    assert backend.generate(prompt = "before", steps = 2)["mp4_bytes"] == b"MP4"
+
+    backend._teardown_waiters = 1
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate(prompt = "during", steps = 2)
+    # Still loaded: the refusal is about the pending teardown, not a missing model.
+    assert backend._state is not None
+
+    backend._teardown_waiters = 0
+    assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
+
+
+def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monkeypatch):
+    # _teardown_state_locked ends in clear_gpu_cache(), whose CUDA branch raises on a sticky fault.
+    # Without the finally the fence stayed up forever, so every later generation was refused as
+    # cancelled for the life of the process.
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    def _sticky():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", _sticky)
+    with pytest.raises(RuntimeError, match = "illegal memory access"):
+        backend.unload()
+    assert backend._teardown_waiters == 0, "a failed teardown must not leave the fence up"
+
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: None)
+    _load_gguf(backend, tmp_path)
+    assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
