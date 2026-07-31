@@ -90,7 +90,7 @@ def test_preset_load_config_carries_reasoning_budget():
     assert '| "reasoningBudget"' in source
     assert '| "reasoningBudgetMessage"' in source
     assert "reasoningBudget: isGguf ? snapshot.reasoningBudget : -1" in source
-    assert "reasoningBudgetMessage: isGguf ? snapshot.reasoningBudgetMessage : \"\"" in source
+    assert 'reasoningBudgetMessage: isGguf ? snapshot.reasoningBudgetMessage : ""' in source
     routes = _read("studio/backend/routes/chat_history.py")
     assert "reasoningBudget: Optional[int]" in routes
     assert "reasoningBudgetMessage: Optional[str]" in routes

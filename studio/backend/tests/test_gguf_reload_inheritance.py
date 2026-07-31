@@ -278,19 +278,22 @@ def test_reasoning_budget_is_part_of_backend_dedupe():
         "--reasoning-budget-message",
         "limit",
     ]
-    assert backend._already_in_target_state(
-        **{
-            **common,
-            "reasoning_budget": -1,
-            "reasoning_budget_message": "",
-            "extra_args": [
-                "--reasoning-budget",
-                "64",
-                "--reasoning-budget-message",
-                "limit",
-            ],
-        }
-    ) is True
+    assert (
+        backend._already_in_target_state(
+            **{
+                **common,
+                "reasoning_budget": -1,
+                "reasoning_budget_message": "",
+                "extra_args": [
+                    "--reasoning-budget",
+                    "64",
+                    "--reasoning-budget-message",
+                    "limit",
+                ],
+            }
+        )
+        is True
+    )
 
 
 def test_reasoning_budget_state_resets_on_unload():

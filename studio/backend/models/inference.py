@@ -500,9 +500,7 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
-    reasoning_budget: int = Field(
-        -1, description = "Effective llama-server reasoning token budget."
-    )
+    reasoning_budget: int = Field(-1, description = "Effective llama-server reasoning token budget.")
     reasoning_budget_message: str = Field(
         "", description = "Effective llama-server reasoning-budget exhaustion message."
     )
@@ -681,9 +679,7 @@ class InferenceStatusResponse(BaseModel):
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
     )
-    reasoning_budget: int = Field(
-        -1, description = "Effective llama-server reasoning token budget."
-    )
+    reasoning_budget: int = Field(-1, description = "Effective llama-server reasoning token budget.")
     reasoning_budget_message: str = Field(
         "", description = "Effective llama-server reasoning-budget exhaustion message."
     )

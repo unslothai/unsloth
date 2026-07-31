@@ -149,9 +149,7 @@ _CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
 _CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
 _CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
 _REASONING_BUDGET_FLAGS: frozenset[str] = frozenset({"--reasoning-budget"})
-_REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset(
-    {"--reasoning-budget-message"}
-)
+_REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset({"--reasoning-budget-message"})
 _REASONING_BUDGET_MAX = 2_147_483_647
 _REASONING_BUDGET_MESSAGE_MAX_CHARS = 65_536
 _SPEC_FLAGS: frozenset[str] = frozenset(
@@ -352,9 +350,7 @@ def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[i
     return value
 
 
-def parse_reasoning_budget_message_override(
-    args: Optional[Iterable[str]],
-) -> Optional[str]:
+def parse_reasoning_budget_message_override(args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last user-supplied ``--reasoning-budget-message`` value."""
     value = _last_flag_value(args, _REASONING_BUDGET_MESSAGE_FLAGS)
     if value is not None and len(value) > _REASONING_BUDGET_MESSAGE_MAX_CHARS:
