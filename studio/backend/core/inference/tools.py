@@ -7236,9 +7236,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
         # result whose server changed or was removed mid-probe, else a stale
         # tool list (or cool-off on a just-fixed server) persists.
         current_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
-        current = {
-            server["id"]: server for server in _load_enabled_mcp_servers(current_metadata)
-        }
+        current = {server["id"]: server for server in _load_enabled_mcp_servers(current_metadata)}
         for server, payload in zip(uncached, results):
             fresh = current.get(server["id"])
             if fresh is None or any(
