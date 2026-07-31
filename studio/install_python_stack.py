@@ -2790,6 +2790,9 @@ def pip_install_try(
         env = _install_env_for_cmd(cmd),
     )
     if result.returncode == 0:
+        # As pip_install below: `nobuild` only catches a build that reaches the log.
+        if VERBOSE and result.stdout:
+            print(_redact_install_output(result.stdout))
         return True
     if VERBOSE and result.stdout:
         # pip/uv echo index URLs (credentials included) in failure output.
@@ -2845,6 +2848,14 @@ def pip_install(
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
+                # Echo success under UNSLOTH_VERBOSE, as install.sh's run_install_cmd
+                # does. Without it the dependency phase never reached the log that
+                # clean-machine-assert.sh's `nobuild` greps for uv's
+                # "Building <pkg>==<ver>", so a source build here -- the studio.txt
+                # install, where sdist-only dependencies show up -- reported
+                # "built: none" and stayed green. Redacted: uv echoes credentialed URLs.
+                if VERBOSE and result.stdout:
+                    print(_redact_install_output(result.stdout))
                 return
             print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:

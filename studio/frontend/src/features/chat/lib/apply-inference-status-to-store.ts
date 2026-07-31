@@ -24,6 +24,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { sameGpuSelection } from "@/hooks/gpu-selection";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 
@@ -244,15 +245,21 @@ export function applyActiveModelStatusToStore(
     incomingGpuMode === "manual" ? (status.n_cpu_moe ?? null) : null;
   const incomingSplit =
     incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
-  const incomingGpuIds = status.is_gguf
-    ? (status.requested_gpu_ids ?? status.gpu_ids ?? null)
-    : null;
+  const incomingGpuFields = loadedGpuMemoryFields(status);
+  const incomingGpuIds = incomingGpuFields.loadedGpuIds;
+  const incomingGpuIndexKind = incomingGpuFields.loadedGpuIndexKind;
   const gpuStatusChanged =
     prevState.loadedGpuMemoryMode !== incomingGpuMode ||
     prevState.loadedGpuLayers !== incomingGpuLayers ||
     prevState.loadedNCpuMoe !== incomingNCpuMoe ||
     !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
-    !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
+    !sameGpuSelection(
+      {
+        ids: prevState.loadedGpuIds,
+        indexKind: prevState.loadedGpuIndexKind,
+      },
+      { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
+    ) ||
     prevState.loadedCustomContextLength !== gpuPin;
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
@@ -262,11 +269,16 @@ export function applyActiveModelStatusToStore(
         prevState.nCpuMoe !== prevState.loadedNCpuMoe ||
         !sameArray(prevState.splitRatio, prevState.loadedSplitRatio))) ||
     prevState.customContextLength !== prevState.loadedCustomContextLength;
-  const gpuIdsEditPending = !sameArray(
-    prevState.selectedGpuIds,
-    prevState.loadedGpuIds,
+  const gpuIdsEditPending = !sameGpuSelection(
+    {
+      ids: prevState.selectedGpuIds,
+      indexKind: prevState.selectedGpuIndexKind,
+    },
+    {
+      ids: prevState.loadedGpuIds,
+      indexKind: prevState.loadedGpuIndexKind,
+    },
   );
-  const incomingGpuFields = loadedGpuMemoryFields(status);
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
   const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
@@ -283,7 +295,10 @@ export function applyActiveModelStatusToStore(
         customContextLength: prevState.customContextLength,
       }),
     ...(preserveSameModelEdits &&
-      gpuIdsEditPending && { selectedGpuIds: prevState.selectedGpuIds }),
+      gpuIdsEditPending && {
+        selectedGpuIds: prevState.selectedGpuIds,
+        selectedGpuIndexKind: prevState.selectedGpuIndexKind,
+      }),
   };
 
   useChatRuntimeStore.setState({
@@ -311,6 +326,7 @@ export function applyActiveModelStatusToStore(
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
+    activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     // The spec / KV seeds share the GPU-fields reseed mechanism below: a
     // non-GGUF status leaves their loaded baselines null, so the "unseeded"
@@ -396,12 +412,28 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel &&
     storedReasoningEnabled === null
   ) {
+    // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
+    // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't match
+    // first, and for "Qwen3.5-35B-A3B" the result is 35 (total params),
+    // not 3 (MoE active params). Mirrors the regex in
+    // use-chat-model-runtime.ts and the inline one in llama_cpp.py.
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-      const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-      if (sizeMatch && Number.parseFloat(sizeMatch[1]) < 9) {
-        reasoningDefault = false;
+      // Scan path segments right to left so the size nearest the leaf wins over
+      // a size-like parent dir; trailing boundary prevents matching "8bit".
+      const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
+      const sizeMatch = mid
+        .replace(/\\/g, "/")
+        .split("/")
+        .reduceRight<RegExpMatchArray | null>(
+          (found, seg) => found ?? seg.match(sizeRe),
+          null,
+        );
+      if (sizeMatch) {
+        const size = Number.parseFloat(sizeMatch[1]);
+        const sizeB = sizeMatch[2] === "m" ? size / 1000 : size;
+        if (sizeB <= 9) reasoningDefault = false;
       }
     }
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });

@@ -806,6 +806,8 @@ def _pid_alive(pid: int) -> bool:
                 ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 10,
             ).stdout
         except Exception:
@@ -2053,6 +2055,18 @@ def run_server(
     # The headless `run --api-only` path opts out so it does not leak this line.
     if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
+        # Desktop-owned backends only (the owner env handshake): a headless
+        # `unsloth studio --api-only` has no app to bind its lifetime to and
+        # must survive its terminal (e.g. nohup). If the app dies without
+        # running its cleanup, exit instead of orphaning on the port.
+        from main import _desktop_owner
+        if _desktop_owner() is not None:
+            from utils.parent_watchdog import start_parent_watchdog
+            owner_pid = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_PID", "")
+            start_parent_watchdog(
+                _trigger_shutdown,
+                parent_pid = int(owner_pid) if owner_pid.isdigit() else None,
+            )
 
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can

@@ -769,8 +769,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = f"Unsloth: Sample packing skipped ({reason} detected)."
-            print(message)
+            elif data_collator is None:
+                # compute_metrics, preprocess_logits_for_metrics, for_inference() and the
+                # user can all set it, so name the flag and not a setter.
+                reason = "UNSLOTH_RETURN_LOGITS=1"
+            logger.warning(f"Unsloth: packing=True ignored ({reason}).")
 
         packing_active = False
         if _should_pack(config_arg) and not blocked:
