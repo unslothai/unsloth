@@ -1431,6 +1431,11 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         for f in _iter_gguf_files(d):
             try:
                 resolved = f.resolve()
+                # An interrupted projector download: llama-server cannot open it, and the
+                # inventory already reports such a row text-only. Skipping keeps the two agreed,
+                # and stops an empty one shadowing a whole projector beside it.
+                if resolved.stat().st_size <= 0:
+                    continue
             except OSError:
                 continue
             if resolved in seen_resolved:
