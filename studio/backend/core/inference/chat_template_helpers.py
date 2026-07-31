@@ -319,8 +319,7 @@ def _neutralize_leaves(
 # (mlx_inference.py:130) and the registered VLM renderer passes those messages through
 # this sweep, so its payload is a URL to fetch, not prompt text.
 _MEDIA_PART_TYPES = frozenset(
-    {"image", "image_url", "input_image", "input_audio", "audio", "audio_url",
-     "video", "video_url"}
+    {"image", "image_url", "input_image", "input_audio", "audio", "audio_url", "video", "video_url"}
 )
 _OPAQUE_PART_KEYS = frozenset(
     {"image_url", "input_audio", "image", "audio", "video", "url", "data", "b64_json"}

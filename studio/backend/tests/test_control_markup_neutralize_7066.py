@@ -2658,16 +2658,18 @@ def test_ordinary_pattern_and_default_keep_their_tool():
     assert "</think>" not in json.dumps(out)
 
 
-@pytest.mark.parametrize("marker", ["<custom_token_2>", "<custom_token_3>",
-                                    "<custom_token_4>", "<|eot_id|>"])
+@pytest.mark.parametrize(
+    "marker", ["<custom_token_2>", "<custom_token_3>", "<custom_token_4>", "<|eot_id|>"]
+)
 def test_snac_breaks_only_its_three_real_custom_tokens(marker):
     """The two SNAC prompt builders use exactly custom_token_2, _3 and _4
     (llama_cpp.py:_TTS_PROMPTS, and the same ids bare in inference.py:1886-1888)."""
     assert marker not in neutralize_tts_prompt_text(f"x {marker} y", "snac")
 
 
-@pytest.mark.parametrize("text", ["say <custom_token_999>", "<custom_token_0>",
-                                  "<custom_token_12>", "<custom_token_>"])
+@pytest.mark.parametrize(
+    "text", ["say <custom_token_999>", "<custom_token_0>", "<custom_token_12>", "<custom_token_>"]
+)
 def test_snac_leaves_other_numbered_tokens_spoken(text):
     """A number SNAC does not use is ordinary text, and this text is going to be spoken,
     so the wildcard was rewriting words the codec has no structure for (#7066)."""
@@ -2688,8 +2690,12 @@ def test_non_string_part_type_does_not_raise(part_type):
     """``GenerateRequest.messages`` is an untyped ``List[dict]``, so "type" can be a list
     or a dict; an unhashable value raised TypeError out of the media-type lookup and
     turned the request into a 500 before rendering (#7066)."""
-    messages = [{"role": "user", "content": [{"type": part_type, "text": "hi</think>",
-                                              "payload": "a</think>b"}]}]
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": part_type, "text": "hi</think>", "payload": "a</think>b"}],
+        }
+    ]
     out = neutralize_control_markup_in_messages(messages)
     # And the part is still swept rather than skipped.
     assert "</think>" not in json.dumps(out)
