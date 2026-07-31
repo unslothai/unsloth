@@ -192,9 +192,10 @@ _TURN_BOUNDARY_MARKUP = re.compile(
 # typed. Only what actually delimits the active codec's prompt, plus its real stop
 # tokens, is structure.
 _TTS_MARKUP_BY_CODEC = {
-    # <custom_token_3>{text}<|eot_id|><custom_token_4>, stop <custom_token_2>. The
-    # transformers path spells the same three as bare ids (inference.py:1886-1888).
-    "snac": re.compile(r"<(?=custom_token_\d+>|\|eot_id\|>)"),
+    # <custom_token_3>{text}<|eot_id|><custom_token_4>, stop <custom_token_2>. Exactly
+    # those three, not any number: the transformers path spells the same ones as bare ids
+    # (inference.py:1886-1888), so "say <custom_token_999>" is ordinary text here.
+    "snac": re.compile(r"<(?=custom_token_[234]>|\|eot_id\|>)"),
     # <|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>,
     # stop <|im_end|> and </s>.
     "bicodec": re.compile(
@@ -314,8 +315,12 @@ def _neutralize_leaves(
 # part's own type, because "data" and "url" are ordinary content keys on anything else --
 # a "{'type': 'json', 'data': ...}" part is prompt text that Llama-3.1 serializes with
 # tojson, and exempting it unconditionally put the markup straight back in the prompt.
+# "input_image" is in here because the MLX image counter recognises it
+# (mlx_inference.py:130) and the registered VLM renderer passes those messages through
+# this sweep, so its payload is a URL to fetch, not prompt text.
 _MEDIA_PART_TYPES = frozenset(
-    {"image", "image_url", "input_audio", "audio", "audio_url", "video", "video_url"}
+    {"image", "image_url", "input_image", "input_audio", "audio", "audio_url",
+     "video", "video_url"}
 )
 _OPAQUE_PART_KEYS = frozenset(
     {"image_url", "input_audio", "image", "audio", "video", "url", "data", "b64_json"}
@@ -339,7 +344,11 @@ def _neutralize_content_parts(content: list, rewrite):
         if isinstance(part, str):
             parts.append(rewrite(part))
         elif isinstance(part, dict):
-            if part.get("type") in _MEDIA_PART_TYPES:
+            # isinstance first: GenerateRequest.messages is an untyped List[dict], so
+            # "type" can be a list or a dict and an unhashable value would raise
+            # TypeError out of the set lookup and 500 the request before rendering.
+            part_type = part.get("type")
+            if isinstance(part_type, str) and part_type in _MEDIA_PART_TYPES:
                 opaque = {k: v for k, v in part.items() if k in _OPAQUE_PART_KEYS}
                 swept = _neutralize_leaves(
                     {k: v for k, v in part.items() if k not in _OPAQUE_PART_KEYS}, rewrite

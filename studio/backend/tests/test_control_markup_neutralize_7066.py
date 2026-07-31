@@ -2656,3 +2656,40 @@ def test_ordinary_pattern_and_default_keep_their_tool():
     assert len(out) == 1
     assert out[0]["function"]["parameters"]["properties"]["x"]["pattern"] == "^[a-z]+$"
     assert "</think>" not in json.dumps(out)
+
+
+@pytest.mark.parametrize("marker", ["<custom_token_2>", "<custom_token_3>",
+                                    "<custom_token_4>", "<|eot_id|>"])
+def test_snac_breaks_only_its_three_real_custom_tokens(marker):
+    """The two SNAC prompt builders use exactly custom_token_2, _3 and _4
+    (llama_cpp.py:_TTS_PROMPTS, and the same ids bare in inference.py:1886-1888)."""
+    assert marker not in neutralize_tts_prompt_text(f"x {marker} y", "snac")
+
+
+@pytest.mark.parametrize("text", ["say <custom_token_999>", "<custom_token_0>",
+                                  "<custom_token_12>", "<custom_token_>"])
+def test_snac_leaves_other_numbered_tokens_spoken(text):
+    """A number SNAC does not use is ordinary text, and this text is going to be spoken,
+    so the wildcard was rewriting words the codec has no structure for (#7066)."""
+    assert neutralize_tts_prompt_text(text, "snac") == text
+
+
+def test_input_image_parts_keep_their_payload():
+    """The MLX image counter recognises "input_image" (mlx_inference.py:130) and the
+    registered VLM renderer passes those messages through this sweep, so its payload is a
+    URL to fetch and rewriting it would fetch a different or invalid resource."""
+    part = {"type": "input_image", "image_url": "https://host/<|image|>.png"}
+    out = neutralize_control_markup_in_messages([{"role": "user", "content": [part]}])
+    assert out[0]["content"][0] == part
+
+
+@pytest.mark.parametrize("part_type", [["x"], {"a": 1}, 5, None, ("t",)])
+def test_non_string_part_type_does_not_raise(part_type):
+    """``GenerateRequest.messages`` is an untyped ``List[dict]``, so "type" can be a list
+    or a dict; an unhashable value raised TypeError out of the media-type lookup and
+    turned the request into a 500 before rendering (#7066)."""
+    messages = [{"role": "user", "content": [{"type": part_type, "text": "hi</think>",
+                                              "payload": "a</think>b"}]}]
+    out = neutralize_control_markup_in_messages(messages)
+    # And the part is still swept rather than skipped.
+    assert "</think>" not in json.dumps(out)
