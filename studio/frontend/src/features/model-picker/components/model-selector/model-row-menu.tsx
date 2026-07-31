@@ -28,6 +28,7 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
+  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshCw } from "lucide-react";
@@ -73,11 +74,17 @@ interface ModelRowMenuCachePath {
   variant?: string;
 }
 
+/** The model's settings page: load config plus what the API will apply. */
+interface ModelRowMenuSettings {
+  onOpen: () => void;
+}
+
 export function ModelRowMenu({
   ariaLabel,
   buttonClassName,
   iconClassName,
   cachePath,
+  settings,
   pin,
   update,
   del,
@@ -87,6 +94,7 @@ export function ModelRowMenu({
   iconClassName?: string;
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
+  settings?: ModelRowMenuSettings;
   pin?: ModelRowMenuPin;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
@@ -167,7 +175,7 @@ export function ModelRowMenu({
     });
   }, [cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath) return null;
+  if (!pin && !update && !del && !cachePath && !settings) return null;
 
   return (
     <>
@@ -195,6 +203,21 @@ export function ModelRowMenu({
           sideOffset={2}
           className="unsloth-plus-menu menu-flat-destructive w-48"
         >
+          {settings && (
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.stopPropagation();
+                settings.onOpen();
+              }}
+            >
+              <HugeiconsIcon
+                icon={Settings02Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              <span>Settings</span>
+            </DropdownMenuItem>
+          )}
           {pin && (
             <DropdownMenuItem
               onSelect={(e) => {

@@ -3,6 +3,7 @@
 
 export { SettingsDialog } from "./settings-dialog";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
