@@ -17,11 +17,19 @@ import {
 } from "@/features/hub";
 import { useMemo } from "react";
 import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-picker-policy";
+import {
+  completeCachedModelKeys,
+  isHfCacheDuplicate,
+} from "./chat-picker-inventory-sources";
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
   "models_dir",
   "ollama",
+  // A cached Hugging Face repo materialized on disk is a loadable local model; without it
+  // the chat picker hid every model that only exists in the HF cache. Duplicates against a
+  // complete cached entry are dropped below via isHfCacheDuplicate.
+  "hf_cache",
   "custom",
 ]);
 
@@ -65,8 +73,12 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
   return {
     id: row.loadId,
     display_name: row.displayName ?? row.title,
+    // A cached HF repo on disk loads exactly like a models-dir entry; presenting it under its
+    // own "hf_cache" source would leak an origin the chat loader/UI does not special-case.
+    source: (row.source === "hf_cache"
+      ? "models_dir"
+      : row.source) as LocalModelInfo["source"],
     path: row.path,
-    source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
     updated_at: epochMillisecondsToSeconds(row.updatedAt),
@@ -133,27 +145,29 @@ export function useChatPickerInventory(
         .map(toCachedModelRepo),
     [inventory.cachedRows, options.allowedHiddenModelIds],
   );
-  const localModels = useMemo(
-    () =>
-      inventory.localRows
-        .filter(
-          (row) =>
-            PICKER_LOCAL_SOURCES.has(row.source) &&
-            // Skip non-chat rows (a folder with only config.json classifies "unknown" -> canChat false); selecting one would load a weightless path.
-            // toLocalModelInfo drops capabilities, so this is the only place the guard can live. A row the backend classified as a generation task is
-            // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
-            (row.capabilities.canChat ||
-              studioPageForTask(row.task) !== undefined) &&
-            (!isHiddenModelId(row.modelId, row.repoId, row.path) ||
-              allowedHiddenModelIdMatches(
-                options.allowedHiddenModelIds,
-                row.modelId,
-                row.repoId,
-              )),
-        )
-        .map(toLocalModelInfo),
-    [inventory.localRows, options.allowedHiddenModelIds],
-  );
+  const localModels = useMemo(() => {
+    // A cached model already surfaced above makes its hf_cache twin redundant; key the
+    // complete cached entries once so the row filter can drop the duplicates.
+    const completeCachedKeys = completeCachedModelKeys(inventory.cachedRows);
+    return inventory.localRows
+      .filter(
+        (row) =>
+          PICKER_LOCAL_SOURCES.has(row.source) &&
+          // Skip non-chat rows (a folder with only config.json classifies "unknown" -> canChat false); selecting one would load a weightless path.
+          // toLocalModelInfo drops capabilities, so this is the only place the guard can live. A row the backend classified as a generation task is
+          // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
+          (row.capabilities.canChat ||
+            studioPageForTask(row.task) !== undefined) &&
+          (!isHiddenModelId(row.modelId, row.repoId, row.path) ||
+            allowedHiddenModelIdMatches(
+              options.allowedHiddenModelIds,
+              row.modelId,
+              row.repoId,
+            )) &&
+          !isHfCacheDuplicate(row, completeCachedKeys),
+      )
+      .map(toLocalModelInfo);
+  }, [inventory.localRows, inventory.cachedRows, options.allowedHiddenModelIds]);
 
   return {
     cachedGguf,
