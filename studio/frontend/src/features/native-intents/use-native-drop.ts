@@ -21,6 +21,10 @@ interface NativeModelDropOptions {
   onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
 }
 
+function canAttachDocs(options: NativeModelDropOptions): boolean {
+  return options.nativePathLeasesSupported && Boolean(options.onAttach);
+}
+
 function canAutoLoadModel(options: NativeModelDropOptions): boolean {
   return (
     options.nativePathLeasesSupported &&
@@ -36,7 +40,9 @@ function dropStateForPaths(
   const dropped = classifyDropPaths(paths);
   if (dropped.kind === "none") return { status: "idle" };
   if (dropped.kind === "docs") {
-    return options.onAttach
+    // Unlike a browser upload, a document drop only reaches the ingest through a signed
+    // lease, so don't offer it as a target before the backend can verify one.
+    return canAttachDocs(options)
       ? { status: "attach", count: dropped.paths.length }
       : { status: "invalid" };
   }
@@ -85,13 +91,18 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           return;
         }
         if (dropped.kind === "docs") {
-          if (!currentOptions.onAttach) return;
+          if (!canAttachDocs(currentOptions)) {
+            toast.error("Attaching files needs the desktop backend", {
+              description: "Retry once Studio has finished starting up.",
+            });
+            return;
+          }
           try {
             const intents = await Promise.all(
               dropped.paths.map(registerNativeAttachmentPath),
             );
             if (disposed) return;
-            await currentOptions.onAttach(intents);
+            await currentOptions.onAttach?.(intents);
           } catch (error) {
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),

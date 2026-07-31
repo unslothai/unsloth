@@ -15,6 +15,8 @@ use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
+// How long after the OS reports a drop the renderer may still register those paths.
+const DROP_GRACE: Duration = Duration::from_secs(2 * 60);
 
 fn normalize_windows_verbatim_path(path: String) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
@@ -65,6 +67,9 @@ pub struct NativePathRef {
     display_label: String,
     allowed_operations: Vec<NativePathOperation>,
     expires_at_ms: u64,
+    // The frontend dedups uploads on these the way it does on a File's size/mtime.
+    size_bytes: Option<u64>,
+    modified_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -81,6 +86,9 @@ pub struct NativeIntent {
 struct NativeIntakeInner {
     tokens: HashMap<String, NativePathEntry>,
     queued_intents: VecDeque<NativeIntent>,
+    // Paths Rust itself saw land on the window, so the renderer can only register
+    // what the user actually dropped. Expiry keeps a stale drop from being spent later.
+    recent_drops: HashMap<PathBuf, u64>,
 }
 
 pub struct NativeIntakeState {
@@ -121,12 +129,38 @@ impl NativeIntakeState {
         self.register_classified_path(classified, source_kind, NativePathValidationPolicy::Model)
     }
 
+    /// Record what the OS dropped on the window. Called from the window event handler,
+    /// never from the renderer.
+    pub fn note_dropped_paths(&self, paths: &[PathBuf]) {
+        let Ok(mut inner) = self.inner.lock() else { return };
+        let now = now_ms();
+        inner.recent_drops.retain(|_, expires| *expires > now);
+        let expires_at = now + DROP_GRACE.as_millis() as u64;
+        for path in paths {
+            if let Ok(canonical) = path.canonicalize() {
+                inner.recent_drops.insert(canonical, expires_at);
+            }
+        }
+    }
+
+    fn was_recently_dropped(&self, canonical: &Path) -> Result<bool, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let now = now_ms();
+        inner.recent_drops.retain(|_, expires| *expires > now);
+        Ok(inner.recent_drops.contains_key(canonical))
+    }
+
     fn register_attachment_path(
         &self,
         path: impl AsRef<Path>,
         source_kind: NativePathSourceKind,
     ) -> Result<NativeIntent, String> {
         let classified = classify_native_attachment_path(path.as_ref())?;
+        // The renderer hands us a path string, so a script in the webview could name any
+        // readable document. Only paths the user actually dropped can be registered.
+        if !self.was_recently_dropped(&classified.canonical_path)? {
+            return Err("Attachments must come from a file dropped on the window.".to_string());
+        }
         self.register_classified_path(
             classified,
             source_kind,
@@ -282,6 +316,8 @@ impl NativePathEntry {
             display_label: self.display_label.clone(),
             allowed_operations: self.allowed_operations.clone(),
             expires_at_ms: self.expires_at_ms,
+            size_bytes: self.size_bytes,
+            modified_ms: self.modified_ms,
         }
     }
 }
@@ -523,6 +559,48 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("changed"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn attachment_registration_needs_a_real_drop() {
+        let state = new_native_intake_state();
+        let path = temp_path("attachment").with_extension("txt");
+        fs::write(&path, b"notes").unwrap();
+
+        // A renderer naming a path we never saw dropped gets nothing.
+        let err = state
+            .register_attachment_path(&path, NativePathSourceKind::Drop)
+            .unwrap_err();
+        assert!(err.contains("dropped on the window"));
+
+        state.note_dropped_paths(&[path.clone()]);
+        let intent = state
+            .register_attachment_path(&path, NativePathSourceKind::Drop)
+            .unwrap();
+        assert_eq!(intent.kind, NativePathKind::Attachment);
+        assert!(intent
+            .path
+            .allowed_operations
+            .contains(&NativePathOperation::Attach));
+        // The fingerprint the frontend dedups on comes from the stat, not the label.
+        assert_eq!(intent.path.size_bytes, Some(5));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_drop_does_not_unlock_its_neighbours() {
+        let state = new_native_intake_state();
+        let dropped = temp_path("dropped").with_extension("txt");
+        let sibling = temp_path("sibling").with_extension("txt");
+        fs::write(&dropped, b"dropped").unwrap();
+        fs::write(&sibling, b"sibling").unwrap();
+
+        state.note_dropped_paths(&[dropped.clone()]);
+        assert!(state
+            .register_attachment_path(&sibling, NativePathSourceKind::Drop)
+            .is_err());
+        let _ = fs::remove_file(dropped);
+        let _ = fs::remove_file(sibling);
     }
 
     #[test]

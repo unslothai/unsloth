@@ -143,6 +143,8 @@ export function ThreadDocumentsBar({
         kind: "native" as const,
         token: intent.path.token,
         name: intent.displayLabel,
+        sizeBytes: intent.path.sizeBytes,
+        modifiedMs: intent.path.modifiedMs,
       })),
       ensureThreadId().then((id) =>
         id ? ({ type: "thread", threadId: id } as const) : null,

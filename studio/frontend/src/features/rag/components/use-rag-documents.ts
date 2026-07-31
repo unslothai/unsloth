@@ -22,7 +22,13 @@ export interface TrackedDocument extends RagDocument {
 /** A browser File, or a desktop drop addressed by its native path token. */
 export type RagUploadItem =
   | { kind: "file"; file: File }
-  | { kind: "native"; token: string; name: string };
+  | {
+      kind: "native";
+      token: string;
+      name: string;
+      sizeBytes?: number | null;
+      modifiedMs?: number | null;
+    };
 
 export function fileItems(files: FileList | File[]): RagUploadItem[] {
   return Array.from(files).map((file) => ({ kind: "file" as const, file }));
@@ -32,12 +38,17 @@ function itemName(item: RagUploadItem): string {
   return item.kind === "file" ? item.file.name : item.name;
 }
 
-// Client-side dedup key; backend dedups authoritatively by content hash. Native
-// drops have no size/mtime on this side, so they dedup by name alone.
+// Client-side dedup key; backend dedups authoritatively by content hash. Native drops
+// carry the size/mtime Rust stat'd, so same-named files from different folders are
+// still distinct; without them the drop is never blocked client-side.
 function itemSignature(item: RagUploadItem): string {
-  return item.kind === "file"
-    ? `${item.file.name}|${item.file.size}|${item.file.lastModified}`
-    : `${item.name}|native`;
+  if (item.kind === "file") {
+    return `${item.file.name}|${item.file.size}|${item.file.lastModified}`;
+  }
+  if (item.sizeBytes == null || item.modifiedMs == null) {
+    return `${item.name}|native|${item.token}`;
+  }
+  return `${item.name}|${item.sizeBytes}|${item.modifiedMs}`;
 }
 
 export type RagDocumentScope =
