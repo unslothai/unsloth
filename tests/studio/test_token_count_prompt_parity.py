@@ -55,6 +55,15 @@ def _outbound_builder() -> str:
     )
 
 
+def _extras_builder() -> str:
+    """buildLocalTokenCountExtras, the tool flags the count sends."""
+    return slice_between(
+        read(ADAPTER),
+        "export async function buildLocalTokenCountExtras(",
+        "\n\nasync function resolveUseAdapter(",
+    )
+
+
 def _reasoning_builder() -> str:
     """buildLocalTokenCountReasoning plus the clamp it shares with the request build."""
     clamp = slice_between(
@@ -118,6 +127,16 @@ async function resolveProjectInstructions(_threadId: any): Promise<string> {
   return "";
 }
 
+// The extras builder resolves a project from the thread; no project is configured here, so
+// the RAG scope depends on the Docs pill and the thread id alone.
+async function resolveProjectId(_threadId: any): Promise<string | null> {
+  return null;
+}
+
+async function projectHasSources(_projectId: any): Promise<boolean> {
+  return false;
+}
+
 // A stand-in for the server-side tokenizer: proportional to the rendered prompt, so a
 // dropped instruction shows up as a smaller total rather than a missing symbol.
 export function estimateTokens(messages: any[]): number {
@@ -136,7 +155,13 @@ def _estimate(contents: list[str]) -> int:
 
 
 def _harness_source() -> str:
-    return HARNESS + _canvas_constants() + _outbound_builder() + _reasoning_builder()
+    return (
+        HARNESS
+        + _canvas_constants()
+        + _outbound_builder()
+        + _reasoning_builder()
+        + _extras_builder()
+    )
 
 
 def _run(script: str) -> dict:
@@ -278,3 +303,44 @@ def test_the_request_path_clamps_the_effort_the_same_way():
     assert (
         src.count("clampReasoningEffortToLevels( reasoningEffort, reasoningEffortLevels, )") == 2
     ), "the request build and the token recount must clamp from the same store fields"
+
+
+RAG_ON = (
+    "{ supportsTools: true, toolsEnabled: false, codeToolsEnabled: false, "
+    'artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: true, '
+    'ragSource: { type: "thread" }, ragMode: "hybrid", ragTopK: 5, '
+    "autoHealToolCalls: true }"
+)
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "expected_thread_id"),
+    [("undefined", None), ('"thread-a"', "thread-a")],
+    ids = ["unpersisted_new_chat", "persisted_thread"],
+)
+def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_id):
+    """The backend keeps search_knowledge_base and its grounding nudge only while rag_scope
+    is truthy, and ``{}`` is falsy in Python. A New Chat has no thread and no project, so an
+    id-only scope would drop from the count a tool schema and a nudge the send still pays."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+            seed({RAG_ON});
+            const extras = await buildLocalTokenCountExtras({thread_id});
+            console.log(JSON.stringify({{
+              scope: extras.rag_scope,
+              keys: Object.keys(extras.rag_scope ?? {{}}),
+              enabledTools: extras.enabled_tools,
+            }}));
+            """
+        )
+    )
+    assert "search_knowledge_base" in (out.get("enabledTools") or []), (
+        "the Docs pill must still ask for the tool"
+    )
+    assert out.get("keys"), (
+        "an empty rag_scope is falsy server-side and drops the tool and the nudge"
+    )
+    assert (out.get("scope") or {}).get("thread_id") == expected_thread_id

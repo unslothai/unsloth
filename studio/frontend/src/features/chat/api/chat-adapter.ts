@@ -1408,6 +1408,8 @@ export async function buildLocalTokenCountExtras(
     mcpEnabledForChat,
     ragEnabled,
     ragSource,
+    ragMode,
+    ragTopK,
     autoHealToolCalls,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
@@ -1442,15 +1444,21 @@ export async function buildLocalTokenCountExtras(
     // catalog and its grounding nudge in the prompt; no retrieval runs for a count.
     ...(ragOn
       ? {
-          rag_scope:
-            ragEnabled && ragSource.type === "kb"
+          rag_scope: {
+            ...(ragEnabled && ragSource.type === "kb"
               ? { kb_id: ragSource.kbId }
               : {
                   ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
                   ...(projectRagEnabled && ragProjectId
                     ? { project_id: ragProjectId }
                     : {}),
-                },
+                }),
+            // Carried for the same reason the completion carries them: an unpersisted New
+            // Chat has neither id, and {} is falsy in Python, so the count alone would drop
+            // the tool and the nudge that the send prices.
+            default_top_k: ragTopK,
+            mode: ragMode,
+          },
         }
       : {}),
   };

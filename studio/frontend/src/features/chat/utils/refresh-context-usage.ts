@@ -117,11 +117,24 @@ function foldHash(text: string, seed: number): number {
   return hash;
 }
 
+function foldPart(part: unknown, seed: number): number {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(part) ?? "";
+  } catch {
+    // An unserializable artifact or interrupt payload: fall back to the part kind, which
+    // both sides of the comparison derive the same way.
+    serialized = String((part as { type?: unknown })?.type);
+  }
+  return foldHash(serialized, seed);
+}
+
 /**
  * Identity of the branch a count priced. Content is hashed rather than measured because a
  * run mutates a turn that already exists without moving the count or the last id: streaming
  * grows its text, and a tool result lands on a part that has no `text` at all, so neither a
- * length nor a part tally sees it.
+ * length nor a part tally sees it. Attachments are in it because the counter prices their
+ * text and images too, and deleting one rewrites `attachments` alone.
  */
 function branchSignature(messages: readonly ThreadMessage[]): string {
   let hash = 0;
@@ -129,15 +142,13 @@ function branchSignature(messages: readonly ThreadMessage[]): string {
   for (const message of messages) {
     for (const part of message.content as readonly unknown[]) {
       parts += 1;
-      let serialized: string;
-      try {
-        serialized = JSON.stringify(part) ?? "";
-      } catch {
-        // An unserializable artifact or interrupt payload: fall back to the part kind, which
-        // both sides of the comparison derive the same way.
-        serialized = String((part as { type?: unknown })?.type);
-      }
-      hash = foldHash(serialized, hash);
+      hash = foldPart(part, hash);
+    }
+    const attachments = (message as { attachments?: readonly unknown[] })
+      .attachments;
+    for (const attachment of attachments ?? []) {
+      parts += 1;
+      hash = foldPart(attachment, hash);
     }
   }
   return `${messages.length}:${parts}:${messages.at(-1)?.id ?? ""}:${hash}`;

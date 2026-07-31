@@ -836,9 +836,18 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
         ("live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };", None),
         # An edit to different text of the same length, which a size-based signature cannot see.
         ('live[0].content = [{ type: "text", text: "ih" }];', None),
+        # Deleting an attachment. The counter prices attachment text through collectTextParts,
+        # but the removal handler rewrites `attachments` alone and leaves content and ids as
+        # they were, so nothing else in the branch moves.
+        ("live[0].attachments = [];", None),
         ("", 62),
     ],
-    ids = ["tool_result_filled_in", "text_swapped_same_length", "unchanged"],
+    ids = [
+        "tool_result_filled_in",
+        "text_swapped_same_length",
+        "attachment_deleted",
+        "unchanged",
+    ],
 )
 def test_a_count_for_a_branch_mutated_without_growing_is_dropped(mutation, expected_total):
     """The branch a count priced has to be identified by its content, not its size: a tool loop
@@ -857,7 +866,17 @@ def test_a_count_for_a_branch_mutated_without_growing_is_dropped(mutation, expec
             }} from "./harness.ts";
             {LOADED_MODEL}
             const live = [
-              {{ id: "m1", role: "user", createdAt: new Date(1), content: [{{ type: "text", text: "hi" }}] }},
+              {{
+                id: "m1",
+                role: "user",
+                createdAt: new Date(1),
+                content: [{{ type: "text", text: "hi" }}],
+                attachments: [{{
+                  id: "a1",
+                  name: "notes.txt",
+                  content: [{{ type: "text", text: "a stored note the count priced" }}],
+                }}],
+              }},
               {{
                 id: "m2",
                 role: "assistant",
