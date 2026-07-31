@@ -96,7 +96,7 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
-    device_context,
+    get_device_stats,
     clean_gpu_cache,
     is_hip,
     get_device_type,
@@ -930,7 +930,7 @@ class FastBaseModel:
         token = hf_login(token)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        gpu_stats_name, gpu_stats_snippet, max_memory = device_context.get_stats()
+        gpu_stats_name, gpu_stats_snippet, max_memory = get_device_stats()
         if DEVICE_TYPE == "xpu":
             vllm_version = ""
         else:

@@ -61,7 +61,7 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
-    device_context,
+    get_device_stats,
     clean_gpu_cache,
     get_current_device,
 )
@@ -2345,7 +2345,7 @@ class FastLlamaModel:
             model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        gpu_stats_name, gpu_stats_snippet, max_memory = device_context.get_stats()
+        gpu_stats_name, gpu_stats_snippet, max_memory = get_device_stats()
 
         try:
             vllm_version = f" vLLM: {importlib_version('vllm')}."

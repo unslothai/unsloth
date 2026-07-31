@@ -16,7 +16,7 @@ def _load_device_type(
     torch_module,
     mlx_available = False,
 ):
-    package_name = f"_device_context_test_{uuid.uuid4().hex}"
+    package_name = f"_device_helpers_test_{uuid.uuid4().hex}"
     package = types.ModuleType(package_name)
     package.__path__ = [str(DEVICE_TYPE_PATH.parent)]
     monkeypatch.setitem(sys.modules, package_name, package)
@@ -91,8 +91,7 @@ def test_cuda_import_does_not_require_torch_xpu(monkeypatch):
     device_type = _load_device_type(monkeypatch, torch)
 
     assert not hasattr(torch, "xpu")
-    assert device_type.device_context.device_type == "cuda"
-    assert device_type.device_context.torch_module is torch.cuda
+    assert device_type._get_device_module() is torch.cuda
 
 
 def test_hip_stats_preserve_arch_name_fallback(monkeypatch):
@@ -104,7 +103,7 @@ def test_hip_stats_preserve_arch_name_fallback(monkeypatch):
     torch, _ = _fake_torch(properties = properties, hip_version = "6.3")
     device_type = _load_device_type(monkeypatch, torch)
 
-    name, snippet, max_memory = device_type.device_context.get_stats()
+    name, snippet, max_memory = device_type.get_device_stats()
 
     assert name == "AMD gfx1100 GPU. "
     assert snippet == "ROCm Toolkit: 6.3."
@@ -125,8 +124,7 @@ def test_xpu_cache_and_current_device_dispatch(monkeypatch):
     )
     torch, _ = _fake_torch(properties = properties, xpu_backend = xpu_backend)
     device_type = _load_device_type(monkeypatch, torch)
-    context = device_type.DeviceContext("xpu")
-    device_type.device_context = context
+    device_type.DEVICE_TYPE = "xpu"
 
     device_type.clean_gpu_cache()
 
@@ -134,7 +132,7 @@ def test_xpu_cache_and_current_device_dispatch(monkeypatch):
     assert device_type.get_current_device() == 3
 
 
-def test_mlx_import_does_not_construct_gpu_context(monkeypatch):
+def test_mlx_helpers_do_not_require_torch(monkeypatch):
     device_type = _load_device_type(
         monkeypatch,
         torch_module = None,
@@ -142,7 +140,7 @@ def test_mlx_import_does_not_construct_gpu_context(monkeypatch):
     )
     device_type.clean_gpu_cache()
 
-    assert device_type.device_context is None
+    assert device_type._get_device_module() is None
     assert device_type.get_current_device() == 0
 
 
@@ -153,4 +151,6 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "torch.xpu.empty_cache()" not in llama_source
     assert "torch.xpu.empty_cache()" not in vision_source
     assert "torch.cuda.empty_cache()" not in vision_source
+    assert "device_context" not in llama_source
+    assert "device_context" not in vision_source
     assert 'if DEVICE_TYPE == "xpu":\n            vllm_version = ""' in vision_source

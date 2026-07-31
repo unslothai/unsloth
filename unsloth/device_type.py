@@ -20,8 +20,7 @@ __all__ = [
     "DEVICE_COUNT",
     "ALLOW_PREQUANTIZED_MODELS",
     "ALLOW_BITSANDBYTES",
-    "DeviceContext",
-    "device_context",
+    "get_device_stats",
     "clean_gpu_cache",
     "get_current_device",
     "resolve_hip_gpu_stats_name",
@@ -217,60 +216,44 @@ def resolve_hip_gpu_stats_name(gpu_stats):
     return "AMD GPU. "
 
 
-class DeviceContext:
-    """Encapsulates device-specific operations for CUDA, HIP, and XPU."""
-
-    _DEFAULT_NAMES = {
-        "cuda": "NVIDIA GPU",
-        "hip": "AMD GPU",
-        "xpu": "Intel XPU",
-    }
-
-    def __init__(self, device_type: str = DEVICE_TYPE) -> None:
-        if device_type not in self._DEFAULT_NAMES:
-            raise ValueError(f"Unsloth: Unsupported device type: {device_type}")
-        self.device_type = device_type
-        if _IS_MLX:
-            raise RuntimeError("Unsloth: PyTorch backends are unavailable on the MLX runtime.")
-        module_name = "xpu" if device_type == "xpu" else "cuda"
-        self.torch_module = getattr(torch, module_name, None)
-        if self.torch_module is None:
-            raise RuntimeError(f"Unsloth: PyTorch does not provide the {module_name} backend.")
-
-    def get_stats(self) -> tuple[str, str, float]:
-        """Return (name, stats_snippet, max_memory_gb)."""
-        gpu_stats = self.torch_module.get_device_properties(0)
-        max_mem = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
-
-        if self.device_type == "hip":
-            name = resolve_hip_gpu_stats_name(gpu_stats)
-        else:
-            default_name = self._DEFAULT_NAMES[self.device_type] + " Device. "
-            name = gpu_stats.name + ". " if gpu_stats.name else default_name
-        snippet = self._get_toolkit_snippet(gpu_stats)
-
-        return name, snippet, max_mem
-
-    def _get_toolkit_snippet(self, props) -> str:
-        """Get toolkit version snippet."""
-        if self.device_type == "cuda":
-            return f"CUDA: {props.major}.{props.minor}. CUDA Toolkit: {torch.version.cuda}."
-        if self.device_type == "hip":
-            return f"ROCm Toolkit: {torch.version.hip}."
-        return f"Intel Toolkit: {torch.version.xpu}."
+def _get_device_module():
+    if _IS_MLX:
+        return None
+    module_name = "xpu" if DEVICE_TYPE == "xpu" else "cuda"
+    device_module = getattr(torch, module_name, None)
+    if device_module is None:
+        raise RuntimeError(f"Unsloth: PyTorch does not provide the {module_name} backend.")
+    return device_module
 
 
-# Singleton instance
-device_context = None if _IS_MLX else DeviceContext()
+def get_device_stats() -> tuple[str, str, float]:
+    """Return (name, stats_snippet, max_memory_gb)."""
+    device_module = _get_device_module()
+    if device_module is None:
+        raise RuntimeError("Unsloth: GPU statistics are unavailable on the MLX runtime.")
+    gpu_stats = device_module.get_device_properties(0)
+    max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+
+    if DEVICE_TYPE == "hip":
+        name = resolve_hip_gpu_stats_name(gpu_stats)
+        snippet = f"ROCm Toolkit: {torch.version.hip}."
+    elif DEVICE_TYPE == "xpu":
+        name = gpu_stats.name + ". " if gpu_stats.name else "Intel XPU Device. "
+        snippet = f"Intel Toolkit: {torch.version.xpu}."
+    else:
+        name = gpu_stats.name + ". " if gpu_stats.name else "NVIDIA GPU Device. "
+        snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}."
+    return name, snippet, max_memory
 
 
-# Module-level functions for backward compatibility
 def clean_gpu_cache() -> None:
     """Clear GPU cache for current device type."""
-    if device_context is not None:
-        device_context.torch_module.empty_cache()
+    device_module = _get_device_module()
+    if device_module is not None:
+        device_module.empty_cache()
 
 
 def get_current_device() -> int:
     """Get current device index."""
-    return 0 if device_context is None else device_context.torch_module.current_device()
+    device_module = _get_device_module()
+    return 0 if device_module is None else device_module.current_device()
