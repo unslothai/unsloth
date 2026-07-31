@@ -906,6 +906,79 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
     assert str(install_dir) in ld_dirs
 
 
+def test_binary_env_windows_skips_inaccessible_inherited_path_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    denied = (
+        r"C:\WINDOWS\system32\config\systemprofile"
+        r"\AppData\Local\Microsoft\WindowsApps"
+    )
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "bin"
+    runtime_dir = tmp_path / "runtime"
+    inherited_dir = tmp_path / "usable-path"
+    for directory in (bin_dir, runtime_dir, inherited_dir):
+        directory.mkdir(parents = True)
+    inaccessible = {denied}
+
+    class FakePath:
+        def __init__(self, raw):
+            self.raw = str(raw)
+
+        def expanduser(self):
+            return self
+
+        def is_dir(self):
+            if self.raw in inaccessible:
+                raise PermissionError(13, "Access is denied", self.raw, 5)
+            return Path(self.raw).is_dir()
+
+        def resolve(self):
+            return Path(self.raw).resolve()
+
+    host = HostInfo(
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+
+    # Exercise Windows PATH parsing even when this test runs on a POSIX host.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "pathsep", ";")
+    monkeypatch.setenv(
+        "PATH",
+        ";".join((denied, str(inherited_dir), str(runtime_dir), str(inherited_dir))),
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "Path", FakePath)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "windows_runtime_dirs_for_runtime_line",
+        lambda _runtime_line: [str(runtime_dir)],
+    )
+
+    env = binary_env(bin_dir / "llama-server.exe", install_dir, host, runtime_line = "cuda")
+
+    assert env["PATH"].split(";") == [
+        str(bin_dir.resolve()),
+        str(runtime_dir.resolve()),
+        str(inherited_dir.resolve()),
+    ]
+    assert denied not in env["PATH"]
+
+    inaccessible.add(str(runtime_dir))
+    with pytest.raises(PermissionError, match = "Access is denied"):
+        binary_env(bin_dir / "llama-server.exe", install_dir, host, runtime_line = "cuda")
+
+
 def test_scrub_env_drops_secrets_and_keeps_runtime_vars():
     raw = {
         # secrets

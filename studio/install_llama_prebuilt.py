@@ -4999,7 +4999,9 @@ def binary_env(
             *windows_runtime_dirs_for_runtime_line(runtime_line),
         ]
         existing = [part for part in env.get("PATH", "").split(os.pathsep) if part]
-        env["PATH"] = os.pathsep.join(dedupe_existing_dirs([*path_dirs, *existing]))
+        required = dedupe_existing_dirs(path_dirs)
+        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        env["PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_linux:
         ld_dirs = [
             str(binary_path.parent),
