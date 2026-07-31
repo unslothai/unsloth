@@ -392,7 +392,14 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     )
     assert "cachePath={c.cache_path}" in picker
 
+    # A reload rebuilds its target from the checkpoint, which is the id, so the pin has to be
+    # remembered on the resident model or Apply sends the load back down the repo's ref.
+    page = _read("features/chat/chat-page.tsx")
+    assert "loadId: activeLoadId," in page
+    assert "activeLoadId: string | null;" in _read("features/chat/stores/chat-runtime-store.ts")
+
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"

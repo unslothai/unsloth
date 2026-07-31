@@ -600,6 +600,13 @@ def _repo_has_a_dangling_ref(repo_cache_dir: Path) -> bool:
     return False
 
 
+def repo_signal_applies_to_snapshot(
+    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
+) -> bool:
+    """Public form of the attribution the inventory row uses, for callers pinning a snapshot."""
+    return _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
+
+
 def _repo_signal_applies_to_snapshot(
     repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
 ) -> bool:
@@ -1037,8 +1044,11 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 # prefix), since then the weights it would stand in for do exist.
                 return kind != wanted and wanted not in payload.ungrouped
             if suffix in payload.empty_whole[kind]:
-                # The name exists, so the loader stops here and opens nothing.
-                return True
+                # The name exists, so the loader stops here and opens nothing. Same exemption as
+                # above though: an empty file belonging to the other family is not what this row
+                # loads, so it vetoes nothing once the row's own payload is here but names no
+                # family of its own.
+                return kind == wanted or wanted not in payload.ungrouped
             families = {
                 family: indices
                 for family, indices in payload.groups[kind].items()

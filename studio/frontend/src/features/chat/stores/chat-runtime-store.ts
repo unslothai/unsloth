@@ -1105,6 +1105,10 @@ type ChatRuntimeStore = {
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
+  // What the resident model was actually loaded from, when that is not its id. A reload rebuilds
+  // its target from the checkpoint, which is the id, so without this it would go back down the
+  // ref the pinned load stepped around.
+  activeLoadId: string | null;
   activeNativePathToken: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host
   // prunes file leases after a TTL, so a reload checks this to prompt
@@ -1593,6 +1597,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsageByThreadId: {},
   modelLoading: false,
   loadingModelPick: null,
+  activeLoadId: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
@@ -1910,6 +1915,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeModelIsLocal: false,
+      activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,

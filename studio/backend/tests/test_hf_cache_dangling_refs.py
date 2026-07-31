@@ -1812,6 +1812,44 @@ def test_trainer_state_beside_real_weights_changes_nothing(tmp_path, monkeypatch
     assert rows[0]["capabilities"]["can_chat"] is True
 
 
+def test_an_empty_stray_adapter_does_not_veto_a_checkpoint(tmp_path, monkeypatch):
+    """A zero-byte file from the other family is not what this row loads. The non-empty case is
+    already exempted when the row's own payload names no family, and this is the same shape."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.ckpt": b"\0" * 256,
+                "adapter_model.safetensors": b"",
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_an_empty_weight_of_the_rows_own_kind_still_vetoes(tmp_path, monkeypatch):
+    """Negative control for the test above: the loader stops on a name of the kind it wants."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model.safetensors": b"",
+                "adapter_model.bin": b"",
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    assert _autoload_rows(tmp_path, monkeypatch) == []
+
+
 def test_a_config_that_parses_still_proves_a_payload(tmp_path, monkeypatch):
     """Negative control for the test above: the same shape with a readable config."""
     _repo_with(

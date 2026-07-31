@@ -2788,6 +2788,7 @@ export function ChatPage({
       const checkpoint = inferenceParams.checkpoint;
       if (!checkpoint) return;
       const runtime = useChatRuntimeStore.getState();
+      const activeLoadId = runtime.activeLoadId;
       const nativeToken = runtime.activeNativePathToken;
       const nativeExpiry = runtime.activeNativePathExpiresAtMs;
       // A file-picked GGUF is reachable only via its native path token, which
@@ -2803,6 +2804,9 @@ export function ChatPage({
       handleCheckpointChange(checkpoint, {
         source: "local",
         isLora: activeModelIsLora,
+        // The checkpoint is the id, so a model loaded from a pinned snapshot has to be reloaded
+        // from that same snapshot rather than sent back down its repo's ref.
+        loadId: activeLoadId,
         ggufVariant: activeGgufVariant ?? undefined,
         // Without the native token the reload validates the display label as a
         // repo and fails.

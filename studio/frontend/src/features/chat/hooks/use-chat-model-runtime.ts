@@ -1218,6 +1218,7 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
+              activeLoadId: loadPath === modelId ? null : loadPath,
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs

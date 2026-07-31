@@ -833,10 +833,15 @@ async def get_gguf_variants_response(
         except Exception as e:
             logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
             incomplete_hashes = set()
-        scan_snapshot_dir = hf_cache_scan.resolve_snapshot_dir_for_scan(
+        scan_snapshot_dir = snapshot_scope or hf_cache_scan.resolve_snapshot_dir_for_scan(
             "model",
             repo_id,
             repo_cache_dir,
+        )
+        # A marker or manifest carries no revision, so attribute it the way the inventory row does
+        # rather than letting a later attempt mark the pinned snapshot's own quant broken.
+        repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
+            repo_cache_dir, scan_snapshot_dir
         )
         # Manifest + marker + main incomplete-blob check: catches variants whose
         # download was cancelled or whose expected shards are missing/undersized.
@@ -859,6 +864,7 @@ async def get_gguf_variants_response(
                     incomplete_blob_hashes = incomplete_hashes,
                     variant_blob_hashes = variant_hashes,
                     repo_cache_dir = repo_cache_dir,
+                    repo_signal_applies = repo_signal_applies,
                 ):
                     partial_quants.add(variant.quant)
                     partial_quant_transports[variant.quant] = _partial_transport_for_variant(
