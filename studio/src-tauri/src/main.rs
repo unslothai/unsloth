@@ -7,6 +7,7 @@ mod desktop_backend_owner;
 mod desktop_update_policy;
 mod diagnostics;
 mod install;
+mod loopback_http;
 mod native_backend_lease;
 mod native_clipboard;
 mod native_file_dialogs;

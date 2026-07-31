@@ -740,10 +740,7 @@ pub fn start_backend(
 
 async fn generic_backend_health_ok(port: u16) -> bool {
     let started = std::time::Instant::now();
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(error) => {
             warn!("Could not build backend validation client: {}", error);
