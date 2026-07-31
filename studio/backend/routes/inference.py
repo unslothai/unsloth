@@ -11,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, List, Literal, Optional, Union
@@ -1027,8 +1028,11 @@ try:
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
+    from utils.paths import is_local_path
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        colocated_split_shards,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1036,6 +1040,7 @@ try:
         NativePathLeaseError,
         display_label_for_native_path,
         is_registered_native_path_label,
+        native_gguf_companion_parent_allowed,
         redact_native_paths,
         verify_native_path_lease,
     )
@@ -1072,8 +1077,11 @@ except ImportError:
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
+    from utils.paths import is_local_path
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        colocated_split_shards,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1081,6 +1089,7 @@ except ImportError:
         NativePathLeaseError,
         display_label_for_native_path,
         is_registered_native_path_label,
+        native_gguf_companion_parent_allowed,
         redact_native_paths,
         verify_native_path_lease,
     )
@@ -1555,6 +1564,74 @@ def _tracked_cancel_unstarted_cleanup(tracker):
         tracker.__exit__(None, None, None)
 
     return _cleanup
+
+
+# Cloudflare quick tunnels (--secure) drop a request whose origin has sent no body
+# bytes for ~100s, and a 600 GB GGUF load runs 100-330s. Measured on a real quick
+# tunnel: headers at t=0 with no body still 524s, one space every 20s survives. So
+# a slow call commits a 200 and pads until its payload is ready; leading whitespace
+# is legal JSON, so clients parse the body as-is.
+_TUNNEL_KEEPALIVE_AFTER_S = 15.0
+_TUNNEL_KEEPALIVE_EVERY_S = 20.0
+
+# Underscored so it cannot collide with a real field or the OpenAI ``error`` envelope.
+_DEFERRED_ERROR_KEY = "_deferred_error"
+
+
+def _deferred_error_body(status_code: int, detail) -> bytes:
+    body = {_DEFERRED_ERROR_KEY: {"status_code": status_code, "detail": detail}}
+    return json.dumps(body).encode()
+
+
+async def _tunnel_safe_json(coro, *, label: str):
+    """Await ``coro``, padding the response body if it outruns the tunnel timer.
+
+    A call finishing within ``_TUNNEL_KEEPALIVE_AFTER_S`` keeps the current
+    contract exactly, HTTPException status code included; every early failure
+    (validation, unknown identifier, download-manager and sidecar 409s) raises in
+    that window. Only a slower call switches to a padded stream, and it must
+    report a late failure in the body because the status line is already gone.
+
+    A client disconnect does not cancel the work: the model stays resident, as
+    it does today.
+    """
+    task = asyncio.ensure_future(coro)
+    # A client that disconnects mid-pad leaves nobody to await the task, and an
+    # unretrieved exception logs "Task exception was never retrieved". Retrieving
+    # it here does not consume it: result() below still raises.
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
+    if done:
+        return task.result()  # re-raises exactly as an un-wrapped await would
+
+    logger.info(
+        f"{label} exceeded {_TUNNEL_KEEPALIVE_AFTER_S:.0f}s; "
+        "padding the response so a proxy cannot time it out"
+    )
+
+    async def _body():
+        while True:
+            finished, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_EVERY_S)
+            if not finished:
+                yield b" "
+                continue
+            try:
+                payload = task.result()
+            except HTTPException as exc:
+                logger.info(f"{label} failed with {exc.status_code} after the response committed")
+                yield _deferred_error_body(exc.status_code, exc.detail)
+            except Exception as exc:
+                logger.exception(f"{label} failed after the response was committed")
+                yield _deferred_error_body(500, f"{type(exc).__name__}: {exc}")
+            else:
+                yield json.dumps(jsonable_encoder(payload)).encode()
+            return
+
+    return _SameTaskStreamingResponse(
+        _body(),
+        media_type = "application/json",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 async def _aclose_stream_resources(
@@ -3203,11 +3280,16 @@ def _monitor_active_model() -> Optional[str]:
 
 
 def _validate_native_gguf_companion(
-    companion_path: str | None, gguf_path: str | None, label: str
+    companion_path: str | None,
+    gguf_path: str | None,
+    label: str,
+    *,
+    allow_mtp_subdir: bool = False,
+    mtp_search_root: str | Path | None = None,
 ) -> None:
     """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
     would otherwise hand to llama-server: must be a regular file (no symlink
-    escaping the leased directory) living next to the selected GGUF."""
+    escaping the leased directory) in a permitted location."""
     if not companion_path or not gguf_path:
         return
     import stat as _stat_module
@@ -3229,16 +3311,81 @@ def _validate_native_gguf_companion(
             detail = f"Native {label} must be a regular file.",
         )
     try:
-        if companion.resolve(strict = True).parent != gguf.resolve(strict = True).parent:
+        if not native_gguf_companion_parent_allowed(
+            companion,
+            gguf,
+            allow_mtp_subdir = allow_mtp_subdir,
+            mtp_search_root = mtp_search_root,
+        ):
+            location = (
+                "beside the selected GGUF or in its MTP directory"
+                if allow_mtp_subdir
+                else "next to the selected GGUF"
+            )
             raise HTTPException(
                 status_code = 400,
-                detail = f"Native {label} must live next to the selected GGUF.",
+                detail = f"Native {label} must live {location}.",
             )
     except OSError as exc:
         raise HTTPException(
             status_code = 400,
             detail = f"Native {label} is no longer accessible.",
         ) from exc
+
+
+def _loaded_is_local_model(
+    llama_backend: LlamaCppBackend, native_grant_backed: bool, model_id: str | None
+) -> bool:
+    """Provenance of the running model, preferring what the load recorded.
+
+    Falls back to the filesystem for a server started before the flag existed.
+    """
+    if native_grant_backed:
+        return True
+    stored = getattr(llama_backend, "_is_local_model", None)
+    if stored is not None:
+        return bool(stored)
+    return bool(model_id and is_local_path(model_id))
+
+
+def _validate_native_mtp_drafter(
+    companion_path: str | None,
+    gguf_path: str | None,
+    *,
+    mtp_search_root: str | Path | None = None,
+) -> None:
+    """Validate an MTP drafter for a native load, every shard of it.
+
+    llama-server opens the sibling shards of a split drafter implicitly, so
+    checking only the launch path would let a later shard be a symlink out of
+    the permitted directory without ever facing the native rules.
+    """
+    if not companion_path or not gguf_path:
+        return
+    shards, _ = colocated_split_shards(Path(companion_path))
+    for shard in shards or [Path(companion_path)]:
+        _validate_native_gguf_companion(
+            str(shard),
+            gguf_path,
+            "MTP drafter",
+            allow_mtp_subdir = True,
+            mtp_search_root = mtp_search_root,
+        )
+
+
+def _native_gguf_companion_usable(
+    companion_path: str | None,
+    gguf_path: str | None,
+    *,
+    mtp_search_root: str | Path | None = None,
+) -> bool:
+    """Whether a native load would accept this MTP drafter, as a predicate for
+    reload dedup. Same rules, so the two cannot disagree."""
+    try:
+        _validate_native_mtp_drafter(companion_path, gguf_path, mtp_search_root = mtp_search_root)
+    except HTTPException:
+        return False
+    return True
 
 
 def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
@@ -3333,6 +3480,7 @@ def _request_matches_loaded_settings(
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
     requested_parallel_slots: Optional[int] = None,
+    native_grant_backed: bool = False,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -3520,7 +3668,29 @@ def _request_matches_loaded_settings(
             else llama_backend.extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
-            detected = detect_mtp_file(llama_backend.gguf_path)
+            companion_root = _local_gguf_companion_search_root(
+                llama_backend.gguf_path, llama_backend.gguf_path
+            )
+            detected = detect_mtp_file(llama_backend.gguf_path, search_root = companion_root)
+            if native_grant_backed:
+                # Mirror the load path's choice, or the comparison is against a
+                # drafter that never launched. A native grant cannot reach a
+                # root drafter outside it, so the load falls back to the MTP/
+                # copy and, failing that, to no drafter at all. An ordinary
+                # load reaches the root drafter, so it keeps root-first
+                # detection and reloads when one appears.
+                def _usable(candidate: str) -> bool:
+                    return _native_gguf_companion_usable(
+                        candidate, llama_backend.gguf_path, mtp_search_root = companion_root
+                    )
+
+                if detected and not _usable(detected):
+                    detected = detect_mtp_file(
+                        llama_backend.gguf_path,
+                        search_root = companion_root,
+                        skip_root = True,
+                        accept = _usable,
+                    )
             stored = llama_backend.mtp_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
@@ -5374,6 +5544,19 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    return await _tunnel_safe_json(
+        load_model_gated(request, fastapi_request, current_subject), label = "Model load"
+    )
+
+
+async def load_model_gated(request: LoadRequest, fastapi_request: Request, current_subject: str):
+    """Everything ``POST /load`` does except the tunnel-safe padding.
+
+    In-process callers (preview) must await THIS, not the route: the route's slow
+    path returns a StreamingResponse nobody in-process drains, so awaiting it would
+    return mid-load and hide a late failure in an unread body. This blocks until the
+    model is resident and raises the real exception.
+    """
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -5526,6 +5709,7 @@ async def _load_model_impl(
                     llama_backend,
                     effective_chat_template_override,
                     requested_parallel_slots = _n_parallel,
+                    native_grant_backed = native_grant_backed,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
@@ -5552,6 +5736,9 @@ async def _load_model_impl(
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_local_model = _loaded_is_local_model(
+                        llama_backend, native_grant_backed, llama_backend.model_identifier
+                    ),
                     is_diffusion = llama_backend.is_diffusion,
                     diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
                     is_audio = _gguf_is_audio,
@@ -5613,6 +5800,7 @@ async def _load_model_impl(
                     is_vision = _model_info.get("is_vision", False),
                     is_lora = _model_info.get("is_lora", False),
                     is_gguf = False,
+                    is_local_model = native_grant_backed or is_local_path(backend.active_model_name),
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
@@ -5846,13 +6034,41 @@ async def _load_model_impl(
                     if config.gguf_mtp_file:
                         # The drafter is optional (unlike mmproj for a vision
                         # model): drop it rather than fail the load.
-                        try:
-                            _validate_native_gguf_companion(
-                                config.gguf_mtp_file, config.gguf_file, "MTP drafter"
+                        mtp_search_root = _local_gguf_companion_search_root(
+                            config.gguf_file, config.gguf_file
+                        )
+
+                        def _mtp_allowed(candidate: str) -> bool:
+                            try:
+                                _validate_native_mtp_drafter(
+                                    candidate,
+                                    config.gguf_file,
+                                    mtp_search_root = mtp_search_root,
+                                )
+                                return True
+                            except HTTPException as exc:
+                                logger.warning(
+                                    "Dropping MTP drafter for native load: %s", exc.detail
+                                )
+                                return False
+
+                        if not _mtp_allowed(config.gguf_mtp_file):
+                            # The preferred root drafter is out of bounds for a
+                            # grant on a quant subdir, but an MTP/ copy may not
+                            # be. Scan them in preference order rather than
+                            # dropping MTP on the first rejection.
+                            fallback = detect_mtp_file(
+                                config.gguf_file,
+                                search_root = mtp_search_root,
+                                skip_root = True,
+                                accept = _mtp_allowed,
                             )
-                        except HTTPException as exc:
-                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
-                            config.gguf_mtp_file = None
+                            if fallback:
+                                logger.info(
+                                    "Using MTP subdirectory drafter for native load: %s",
+                                    fallback,
+                                )
+                            config.gguf_mtp_file = fallback
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
@@ -5966,6 +6182,10 @@ async def _load_model_impl(
             _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = model_log_label if native_grant_backed else None
             llama_backend._native_grant_backed = bool(native_grant_backed)
+            # Provenance is a load-time fact. Re-deriving it per status poll
+            # would flip a local model to remote if its directory is deleted
+            # or unmounted underneath a still-running server.
+            llama_backend._is_local_model = bool(native_grant_backed or config.is_local)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
 
@@ -5978,6 +6198,7 @@ async def _load_model_impl(
                 is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
+                is_local_model = config.is_local,
                 is_diffusion = llama_backend.is_diffusion,
                 diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
                 is_audio = _gguf_is_audio,
@@ -6034,10 +6255,11 @@ async def _load_model_impl(
                 current_request_counted = current_request_counted,
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
-        # Unload any active GGUF model first
+        # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
+        # 160s and on-loop would block _tunnel_safe_json's own padding.
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
-            llama_backend.unload_model()
+            await asyncio.to_thread(llama_backend.unload_model)
 
         # Shut down any export subprocess to free VRAM
         try:
@@ -6140,6 +6362,7 @@ async def _load_model_impl(
             is_vision = config.is_vision,
             is_lora = config.is_lora,
             is_gguf = False,
+            is_local_model = config.is_local,
             is_audio = config.is_audio,
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
@@ -6810,6 +7033,19 @@ async def install_latest_transformers_route(
 
 @router.post("/unload", response_model = UnloadResponse)
 async def unload_model(request: UnloadRequest, current_subject: str = Depends(get_current_subject)):
+    """Unload a model from memory.
+
+    Padded like /load: a 600 GB GGUF teardown measures 160s, past the proxy timer.
+    See ``_tunnel_safe_json``. No in-process caller today; a future one must await
+    ``_unload_model_impl`` (as preview awaits ``load_model_gated``), since the padded
+    path returns a StreamingResponse, not the payload.
+    """
+    return await _tunnel_safe_json(
+        _unload_model_impl(request, current_subject), label = "Model unload"
+    )
+
+
+async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
@@ -6909,7 +7145,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
-                llama_backend.unload_model()
+                # Off-loop like the in-flight branch above: a 160s teardown on the
+                # loop would block this route's own padding.
+                await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
                 api_monitor.record_lifecycle(
                     event = "unload",
@@ -7234,6 +7472,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
+                is_local_model = _loaded_is_local_model(
+                    llama_backend, _native_grant_backed, _model_id
+                ),
                 is_diffusion = llama_backend.is_diffusion,
                 diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
                 gguf_variant = llama_backend.hf_variant,
@@ -7307,6 +7548,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             model_identifier = backend.active_model_name,
             is_vision = is_vision,
             is_gguf = False,
+            is_local_model = bool(
+                backend.active_model_name and is_local_path(backend.active_model_name)
+            ),
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,

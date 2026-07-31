@@ -4,7 +4,7 @@
 """Security smoke for the public /p preview routes.
 
 Exercises the route layer with a real ``preview_router`` while stubbing the
-expensive model calls (``load_model`` / ``openai_chat_completions``). Covers the
+expensive model calls (``load_model_gated`` / ``openai_chat_completions``). Covers the
 public-surface guarantees: HMAC capability gating (a valid ``?k=`` token or
 Bearer credential is required; missing/invalid/wrong-ref tokens 404 before any
 model load), path-traversal rejection, request sanitization (tools / provider
@@ -96,7 +96,7 @@ def client(tmp_path, monkeypatch, captured):
         captured["payload"] = payload
         return {"ok": True}
 
-    monkeypatch.setattr(preview, "load_model", _fake_load_model)
+    monkeypatch.setattr(preview, "load_model_gated", _fake_load_model)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
@@ -291,7 +291,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
         captured["payload"] = payload
         return {"ok": True}
 
-    monkeypatch.setattr(preview, "load_model", _fake_load)
+    monkeypatch.setattr(preview, "load_model_gated", _fake_load)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
@@ -325,7 +325,7 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
     async def _fake_chat(payload, request, subject):
         return StreamingResponse(_gen())
 
-    monkeypatch.setattr(preview, "load_model", _fake_load_model)
+    monkeypatch.setattr(preview, "load_model_gated", _fake_load_model)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     async def _run():

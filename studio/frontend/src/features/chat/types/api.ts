@@ -168,6 +168,7 @@ export interface LoadModelResponse {
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
    *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
@@ -235,6 +236,7 @@ export interface InferenceStatusResponse {
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
    *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while

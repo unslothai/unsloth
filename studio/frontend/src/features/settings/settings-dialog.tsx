@@ -66,7 +66,12 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
-  { id: "profile", labelKey: "settings.tabs.profile", icon: UserIcon },
+  {
+    id: "profile",
+    labelKey: "settings.tabs.profile",
+    icon: UserIcon,
+    badgeKey: "common.new",
+  },
   {
     id: "appearance",
     labelKey: "settings.tabs.appearance",
@@ -190,22 +195,19 @@ export function SettingsDialog() {
 
   // Scroll to the row/section a search result points at once the tab has
   // rendered, and flash it so the eye lands on the right place. The tab panel
-  // renders deferred, so retry across frames until the row exists instead of
-  // racing a single fixed delay (which silently missed under render lag).
+  // renders deferred and some sections load their data lazily, so observe the
+  // panel until the requested row exists instead of imposing a render deadline.
   useEffect(() => {
     if (!pendingScroll) return;
     // Wait until the destination tab is mounted before matching, so a same-named
     // row in the previous tab (for example "Storage") is not scrolled to instead.
     if (panelTab !== pendingScroll.tab) return;
-    let frame = 0;
-    let tries = 0;
-    const attempt = () => {
-      const root = mainScrollRef.current;
-      const target = root
-        ? [
-            ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
-          ].find((el) => el.dataset.settingsLabel === pendingScroll.entry)
-        : undefined;
+    const root = mainScrollRef.current;
+    if (!root) return;
+    const attempt = (): boolean => {
+      const target = [
+        ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
+      ].find((el) => el.dataset.settingsLabel === pendingScroll.entry);
       if (target) {
         target.scrollIntoView({ behavior: "smooth", block: "center" });
         target.classList.add("settings-search-hit");
@@ -214,18 +216,30 @@ export function SettingsDialog() {
           1600,
         );
         setPendingScroll(null);
-      } else if (tries++ < 30) {
-        frame = window.requestAnimationFrame(attempt);
-      } else {
-        setPendingScroll(null);
+        return true;
       }
+      return false;
     };
-    frame = window.requestAnimationFrame(attempt);
-    return () => window.cancelAnimationFrame(frame);
+    const observer = new MutationObserver(() => {
+      if (attempt()) observer.disconnect();
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    const frame = window.requestAnimationFrame(() => {
+      if (attempt()) observer.disconnect();
+    });
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
   }, [pendingScroll, panelTab]);
 
   useEffect(() => {
-    if (!open) setQuery("");
+    if (open) return;
+    const frame = window.requestAnimationFrame(() => {
+      setQuery("");
+      setPendingScroll(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [open]);
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,

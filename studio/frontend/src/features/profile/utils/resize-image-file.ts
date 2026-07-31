@@ -28,7 +28,11 @@ function loadImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
-function canvasHasTransparency(ctx: CanvasRenderingContext2D, width: number, height: number): boolean {
+function canvasHasTransparency(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): boolean {
   const { data } = ctx.getImageData(0, 0, width, height);
   for (let i = 3; i < data.length; i += 4) {
     if (data[i] < 255) return true;
@@ -67,7 +71,12 @@ function drawScaled(
   w: number,
   h: number,
   maxEdge: number,
-): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; cw: number; ch: number } {
+): {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  cw: number;
+  ch: number;
+} {
   const scale = Math.min(1, maxEdge / Math.max(w, h));
   const cw = Math.max(1, Math.round(w * scale));
   const ch = Math.max(1, Math.round(h * scale));
@@ -96,16 +105,28 @@ export async function resizeImageFileToDataUrl(file: File): Promise<string> {
     // would paint a background behind a transparent image.
     for (let edge = MAX_EDGE; edge >= MIN_EDGE; edge -= EDGE_STEP) {
       const { canvas } = edge === MAX_EDGE ? base : drawScaled(img, w, h, edge);
-      const webpDataUrl = encodeCanvasWithinLimit(canvas, "image/webp", WEBP_QUALITY_START);
+      const webpDataUrl = encodeCanvasWithinLimit(
+        canvas,
+        "image/webp",
+        WEBP_QUALITY_START,
+      );
       if (webpDataUrl) return webpDataUrl;
       const pngDataUrl = encodePngWithinLimit(canvas);
       if (pngDataUrl) return pngDataUrl;
     }
-    throw new Error("Image is still too large after compression. Try a smaller file.");
+    throw new Error(
+      "Image is still too large after compression. Try a smaller file.",
+    );
   }
 
-  const jpegDataUrl = encodeCanvasWithinLimit(base.canvas, "image/jpeg", JPEG_QUALITY_START);
+  const jpegDataUrl = encodeCanvasWithinLimit(
+    base.canvas,
+    "image/jpeg",
+    JPEG_QUALITY_START,
+  );
   if (jpegDataUrl) return jpegDataUrl;
 
-  throw new Error("Image is still too large after compression. Try a smaller file.");
+  throw new Error(
+    "Image is still too large after compression. Try a smaller file.",
+  );
 }
