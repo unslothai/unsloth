@@ -150,6 +150,9 @@ def test_mlx_helpers_do_not_require_torch(monkeypatch):
 def test_model_call_sites_use_shared_cache_dispatch():
     llama_source = (REPO_ROOT / "unsloth" / "models" / "llama.py").read_text(encoding = "utf-8")
     vision_source = (REPO_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8")
+    gemma_source = (REPO_ROOT / "unsloth" / "models" / "gemma.py").read_text(encoding = "utf-8")
+    gemma2_source = (REPO_ROOT / "unsloth" / "models" / "gemma2.py").read_text(encoding = "utf-8")
+    granite_source = (REPO_ROOT / "unsloth" / "models" / "granite.py").read_text(encoding = "utf-8")
 
     assert "torch.xpu.empty_cache()" not in llama_source
     assert "torch.xpu.empty_cache()" not in vision_source
@@ -157,3 +160,11 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "device_context" not in llama_source
     assert "device_context" not in vision_source
     assert 'if DEVICE_TYPE == "xpu":\n            vllm_version = ""' in vision_source
+    assert "torch.cuda.current_device()" not in gemma_source
+    assert gemma_source.count("get_current_device()") >= 3
+    assert "torch.cuda.empty_cache()" not in gemma_source
+    assert "clean_gpu_cache()" in gemma_source
+    assert "torch.cuda.empty_cache()" not in gemma2_source
+    assert "clean_gpu_cache()" in gemma2_source
+    assert "torch.cuda.empty_cache()" not in granite_source
+    assert "clean_gpu_cache()" in granite_source
