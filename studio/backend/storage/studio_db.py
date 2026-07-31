@@ -3048,11 +3048,25 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def upsert_app_setting_map_entry(
-    key: str, entry_key: str, entry_value: dict[str, Any] | None
+    key: str,
+    entry_key: str,
+    entry_value: dict[str, Any] | None,
+    *,
+    fill_absent_fields: bool = False,
 ) -> dict[str, Any]:
     """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
     app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
-    sub-entries cannot drop each other's updates."""
+    sub-entries cannot drop each other's updates.
+
+    ``fill_absent_fields`` writes only what is missing: the entry is created when
+    it is not there, and otherwise gains the fields it does not already hold while
+    every stored value is left exactly as it is. Nothing is ever deleted. The read
+    and the write share this transaction, so a caller that read the map earlier
+    cannot replace a value written since. Used by the one-time localStorage
+    backfill, whose contract is that the server copy is the newer authority: an
+    upgraded install can hold an entry with only the fields an older release knew,
+    while this browser holds the rest, and entry-level skipping would strand them.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -3060,7 +3074,21 @@ def upsert_app_setting_map_entry(
         current = _json_loads(row["value_json"], {}) if row else {}
         if not isinstance(current, dict):
             current = {}
-        if entry_value:
+        if fill_absent_fields:
+            if not entry_value:
+                conn.rollback()
+                return current
+            stored = current.get(entry_key)
+            if isinstance(stored, dict):
+                # Stored values win field by field, so this only adds.
+                merged = {**entry_value, **stored}
+                if merged == stored:
+                    conn.rollback()
+                    return current
+                current[entry_key] = merged
+            else:
+                current[entry_key] = entry_value
+        elif entry_value:
             current[entry_key] = entry_value
         else:
             current.pop(entry_key, None)

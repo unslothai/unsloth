@@ -36,6 +36,10 @@ export type {
   InferenceStatusResponse,
 } from "./types/api";
 export {
+  applyActiveModelStatusToStore,
+  resolveInferenceCheckpointId,
+} from "./lib/apply-inference-status-to-store";
+export {
   ChatSettingsPanel,
   ParamSlider,
   defaultInferenceParams,
