@@ -1184,6 +1184,9 @@ export function useChatModelRuntime() {
                 ? stateBeforeUnload.reasoningEnabled
                 : reasoningDefault;
             rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
+            // A pinned load reports the snapshot path as its identity, so the checkpoint a later
+            // rollback reads is that path rather than the id the approval was stored under.
+            rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,

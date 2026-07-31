@@ -1978,6 +1978,54 @@ def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_pa
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+def test_a_config_the_loader_cannot_open_by_name_does_not_classify(tmp_path, monkeypatch):
+    """The loaders open config.json by its exact path, so on a case-sensitive volume a Config.json
+    is not the file they find. The filesystem answers that, not a lowercased basename."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {"Config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256}
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    probe = tmp_path / "case-probe"
+    probe.mkdir()
+    (probe / "A").write_bytes(b"")
+    case_sensitive = not (probe / "a").is_file()
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    if case_sensitive:
+        assert rows[0]["partial"] is True
+        assert rows[0]["capabilities"]["can_chat"] is False
+    else:
+        assert rows[0]["partial"] is False
+
+
+def test_a_root_index_naming_shards_in_a_subdirectory_still_serves(tmp_path, monkeypatch):
+    """The loader resolves every weight_map entry against the index it selected, so a canonical root
+    index pointing into weights/ is one it can load. Only the index's own paths are judged."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors.index.json": _shard_index(
+                    "weights/model-00001-of-00001.safetensors"
+                ),
+                "weights/model-00001-of-00001.safetensors": b"\0" * 64,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_a_canonical_index_with_no_shards_is_not_skipped_for_the_bin(tmp_path, monkeypatch):
     """_get_resolved_checkpoint_files tries model.safetensors.index.json before pytorch_model.bin,
     and the branches are exclusive, so a whole .bin beside an index whose shards were never

@@ -597,12 +597,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
             name = lower.replace("\\", "/").rsplit("/", 1)[-1]
             if _is_gguf_filename(lower):
                 continue
-            # from_pretrained reads the config at the pinned snapshot root, so a nested copy does not count.
+            # from_pretrained opens the config at the pinned snapshot root, by its exact name, so
+            # a nested or differently cased copy does not count. Probed off the snapshot below.
             if name in ("config.json", "adapter_config.json"):
-                if "/" in _cached_repo_file_name(f):
-                    continue
-                key = "has_config" if name == "config.json" else "has_adapter_config"
-                flags[key] = True
                 continue
             is_adapter = _is_adapter_weight_name(name)
             is_safetensors = (
@@ -627,6 +624,15 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 _record_blob(checkpoint_blobs, f, rev_id, file_name)
         snapshot = getattr(revision, "snapshot_path", None)
         if snapshot is not None:
+            for config_name, key in (
+                ("config.json", "has_config"),
+                ("adapter_config.json", "has_adapter_config"),
+            ):
+                try:
+                    if (Path(snapshot) / config_name).is_file():
+                        flags[key] = True
+                except OSError:
+                    continue
             revision_flags.append((Path(snapshot), flags))
         for key, seen in flags.items():
             if seen:

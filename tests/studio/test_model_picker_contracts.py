@@ -419,6 +419,10 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # Staged metadata, validate and load: all three read the copy that loads.
     assert runtime.count("model_path: loadPath,") == 3
     assert "model_path: modelId," not in runtime
+    # A pinned load reports the snapshot path as its identity, so the rollback reads the approval
+    # under that path. Store it under both or the worker blocks the restore.
+    assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime
+    assert "approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null," in runtime
 
 
 def test_a_local_quant_short_a_shard_is_not_selectable():

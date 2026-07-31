@@ -820,6 +820,24 @@ class _SnapshotPayload(NamedTuple):
     nested: frozenset
     # Suffixes whose canonical root index exists, shards recovered or not.
     root_indexes: frozenset
+    # Of those, the ones naming a file that is missing or empty.
+    unusable_root_indexes: frozenset
+
+
+def _root_file_is_empty(snapshot_dir: Path, name: str) -> Optional[bool]:
+    """None when *name* is not a file at the root, else whether it is zero bytes.
+
+    The loaders open exact paths, so the filesystem answers the case question: a Config.json serves
+    config.json on a case-insensitive volume and not on a case-sensitive one, and lowercasing every
+    basename got that wrong in one direction or the other.
+    """
+    path = snapshot_dir / name
+    try:
+        if not path.is_file():
+            return None
+        return path.stat().st_size <= 0
+    except OSError:
+        return None
 
 
 def _required_config_is_unreadable(path: Path, empty: bool) -> bool:
@@ -911,19 +929,10 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         name = path.name.lower()
         if is_gguf_filename(name):
             continue
-        # Both loaders open the config at the directory they are handed, never a nested one.
+        # Both loaders open the config at the directory they are handed, never a nested one, and
+        # by its exact name: probed below rather than matched here.
         at_root = path.parent == snapshot_dir
-        if name == "config.json":
-            if at_root:
-                flags["has_config"] = True
-                if _required_config_is_unreadable(path, empty):
-                    unreadable.update(("safetensors", "checkpoint"))
-            continue
-        if name == "adapter_config.json":
-            if at_root:
-                flags["has_adapter_config"] = True
-                if _required_config_is_unreadable(path, empty):
-                    unreadable.add("adapter")
+        if name in ("config.json", "adapter_config.json"):
             continue
         if empty:
             # The loader picks a name by existence, so a zero-byte weight is opened and unreadable.
@@ -988,19 +997,35 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             nested.add(kind)
         groups[kind].setdefault(family, set()).add(int(match.group(1)))
         shard_names.setdefault(family, set()).add(path.name)
+    for config_name, formats in (
+        ("config.json", ("safetensors", "checkpoint")),
+        ("adapter_config.json", ("adapter",)),
+    ):
+        config_empty = _root_file_is_empty(snapshot_dir, config_name)
+        if config_empty is None:
+            continue
+        flags["has_config" if config_name == "config.json" else "has_adapter_config"] = True
+        if _required_config_is_unreadable(snapshot_dir / config_name, config_empty):
+            unreadable.update(formats)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
     # from_pretrained reads the shard map from the index and never globs, so shards without one are
     # invisible and neither serve nor veto the row; an unusable index is picked and failed on instead.
     unloadable: set = set()
     invisible: set = set()
-    # The index is selected by its own name, so it counts even when the walk grouped no shard of it.
+    # The index is selected by its own name, so it counts even when the walk grouped no shard of it,
+    # and it carries its own paths: the loader resolves every weight_map entry against the index.
     root_indexes: set[str] = set()
+    unusable_root_indexes: set[str] = set()
     for suffix, canonical in _LOADER_WEIGHT_NAMES["base"].items():
+        index_path = snapshot_dir / f"{canonical}.index.json"
         try:
-            if (snapshot_dir / f"{canonical}.index.json").is_file():
-                root_indexes.add(suffix)
+            if not index_path.is_file():
+                continue
         except OSError:
             continue
+        root_indexes.add(suffix)
+        if _index_cannot_serve_its_shards(index_path, set()):
+            unusable_root_indexes.add(suffix)
     for family in groups["base"]:
         # Only the canonical index is probed, so a set behind any other name is one it never opens.
         index_path = (
@@ -1028,6 +1053,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         empty_whole,
         frozenset(nested),
         frozenset(root_indexes),
+        frozenset(unusable_root_indexes),
     )
 
 
@@ -1111,9 +1137,12 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             }
             if not families:
                 if kind == "base" and suffix in payload.root_indexes:
-                    # The loader selects this index and loads exactly what it names. With none of
-                    # those shards here it fails rather than trying the next name.
-                    return kind == wanted or wanted not in payload.ungrouped
+                    # The loader selects this index and loads exactly what it names, wherever those
+                    # paths point, so it is judged on its own contents rather than on this walk's
+                    # families. It stops here either way: the next name is never tried.
+                    if suffix in payload.unusable_root_indexes:
+                        return kind == wanted or wanted not in payload.ungrouped
+                    return kind != wanted and wanted not in payload.ungrouped
                 continue
             if all(family in payload.invisible_families for family in families):
                 # Nothing names these shards, so the loader looks past them: they neither serve nor veto.
