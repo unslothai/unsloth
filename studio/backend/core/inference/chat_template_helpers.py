@@ -911,6 +911,10 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # targets are identifiers, with no prose field to protect, so every leaf under it is
         # machine-valued: the server resolves the original while the model sees the rewrite.
         "discriminator",
+        # Same shape: an OpenAPI xml object is "name" / "namespace" / "prefix" plus two
+        # booleans, all serialization identifiers and no prose, so a rewrite would advertise
+        # element names the server does not produce.
+        "xml",
         # A reference is resolved, not read: rewriting "$id", "$anchor" or a "$ref" pointing
         # at them leaves the model and llama-server's grammar on a different schema than the
         # MCP server registered. "$ref" can also name an external URI, which no "$defs" drop
