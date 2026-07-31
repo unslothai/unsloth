@@ -653,9 +653,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
             if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == fmt
         ]
         return snapshots, [
-            s
-            for s in snapshots
-            if hf_cache_scan.snapshot_holds_a_complete_payload(s, quants = False)
+            s for s in snapshots if hf_cache_scan.snapshot_holds_a_complete_payload(s, quants = False)
         ]
 
     payload_snapshots, complete = _revisions_of(model_format)

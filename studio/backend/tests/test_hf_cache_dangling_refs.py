@@ -3874,9 +3874,7 @@ def test_an_index_naming_half_of_the_family_it_describes_still_reads_as_torn(tmp
         snapshots = {
             SNAPSHOT: {
                 "config.json": b'{"model_type":"llama"}',
-                "model.safetensors.index.json": _shard_index(
-                    "model-00001-of-00002.safetensors"
-                ),
+                "model.safetensors.index.json": _shard_index("model-00001-of-00002.safetensors"),
                 "model-00001-of-00002.safetensors": b"\0" * 256,
             }
         },
