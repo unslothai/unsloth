@@ -2927,7 +2927,9 @@ def update(
             typer.echo("  This CLI is running from an installed copy, not a source tree.", err = True)
             typer.echo("", err = True)
             typer.echo("  Point at a checkout:", err = True)
-            typer.echo("    STUDIO_LOCAL_REPO=/path/to/unsloth unsloth studio update --local", err = True)
+            typer.echo(
+                "    STUDIO_LOCAL_REPO=/path/to/unsloth unsloth studio update --local", err = True
+            )
             typer.echo("  Or update from PyPI:", err = True)
             typer.echo("    unsloth studio update", err = True)
             raise typer.Exit(2)
