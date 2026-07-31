@@ -54,6 +54,139 @@ export function formatDayCount(value: number, locale: string): string {
   }).format(value);
 }
 
+export type ProfileCountUnit = "week" | "token" | "message" | "step";
+
+type LexicalProfileCountUnit = Exclude<ProfileCountUnit, "week">;
+type PluralCategory = "zero" | "one" | "two" | "few" | "many" | "other";
+type CountTemplate = { other: string } & Partial<
+  Record<PluralCategory, string>
+>;
+
+// Intl formats calendar units such as weeks, but not app-specific nouns such
+// as tokens, messages, or training steps. Keep those forms together here so
+// every call site selects them with the same CLDR plural category.
+const PROFILE_COUNT_TEMPLATES = {
+  en: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} message", other: "{value} messages" },
+    step: { one: "{value} step", other: "{value} steps" },
+  },
+  "zh-CN": {
+    token: { other: "{value} 个 token" },
+    message: { other: "{value} 条消息" },
+    step: { other: "{value} 步" },
+  },
+  ja: {
+    token: { other: "{value} トークン" },
+    message: { other: "{value} 件のメッセージ" },
+    step: { other: "{value} ステップ" },
+  },
+  ko: {
+    token: { other: "{value} 토큰" },
+    message: { other: "메시지 {value}개" },
+    step: { other: "{value} 스텝" },
+  },
+  es: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} mensaje", other: "{value} mensajes" },
+    step: { one: "{value} paso", other: "{value} pasos" },
+  },
+  "pt-BR": {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} mensagem", other: "{value} mensagens" },
+    step: { one: "{value} passo", other: "{value} passos" },
+  },
+  fr: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} message", other: "{value} messages" },
+    step: { one: "{value} étape", other: "{value} étapes" },
+  },
+  de: {
+    token: { one: "{value} Token", other: "{value} Tokens" },
+    message: { one: "{value} Nachricht", other: "{value} Nachrichten" },
+    step: { one: "{value} Schritt", other: "{value} Schritte" },
+  },
+  ru: {
+    token: {
+      one: "{value} токен",
+      few: "{value} токена",
+      many: "{value} токенов",
+      other: "{value} токена",
+    },
+    message: {
+      one: "{value} сообщение",
+      few: "{value} сообщения",
+      many: "{value} сообщений",
+      other: "{value} сообщения",
+    },
+    step: {
+      one: "{value} шаг",
+      few: "{value} шага",
+      many: "{value} шагов",
+      other: "{value} шага",
+    },
+  },
+  hi: {
+    token: { one: "{value} टोकन", other: "{value} टोकन" },
+    message: { one: "{value} संदेश", other: "{value} संदेश" },
+    step: { one: "{value} स्टेप", other: "{value} स्टेप" },
+  },
+  ar: {
+    token: {
+      zero: "{value} توكن",
+      one: "توكن واحد",
+      two: "توكنان",
+      few: "{value} توكنات",
+      many: "{value} توكنًا",
+      other: "{value} توكن",
+    },
+    message: {
+      zero: "{value} رسالة",
+      one: "رسالة واحدة",
+      two: "رسالتان",
+      few: "{value} رسائل",
+      many: "{value} رسالة",
+      other: "{value} رسالة",
+    },
+    step: {
+      zero: "{value} خطوة",
+      one: "خطوة واحدة",
+      two: "خطوتان",
+      few: "{value} خطوات",
+      many: "{value} خطوة",
+      other: "{value} خطوة",
+    },
+  },
+} satisfies Record<string, Record<LexicalProfileCountUnit, CountTemplate>>;
+
+type ProfileCountLocale = keyof typeof PROFILE_COUNT_TEMPLATES;
+
+/** A localized count phrase for the dynamic nouns used by profile stats. */
+export function formatProfileCount(
+  value: number,
+  unit: ProfileCountUnit,
+  locale: ProfileCountLocale,
+  displayValue?: string,
+): string {
+  const finiteValue = Number.isFinite(value) ? value : 0;
+  if (unit === "week") {
+    return new Intl.NumberFormat(locale, {
+      style: "unit",
+      unit: "week",
+      unitDisplay: "long",
+    }).format(finiteValue);
+  }
+
+  const category = new Intl.PluralRules(locale).select(
+    finiteValue,
+  ) as PluralCategory;
+  const templates: CountTemplate = PROFILE_COUNT_TEMPLATES[locale][unit];
+  const template = templates[category] ?? templates.other;
+  const formattedValue =
+    displayValue ?? new Intl.NumberFormat(locale).format(finiteValue);
+  return template.replace("{value}", formattedValue);
+}
+
 /** Compact duration for chat and training time: 4h 8m, 12m 30s, 45s. */
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0m";

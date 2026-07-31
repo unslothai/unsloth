@@ -157,8 +157,8 @@ export const ar = {
         sttDownloadComplete: "تم تنزيل نموذج التعرّف على الكلام",
         sttDownloadFailed: "تعذّر تنزيل نموذج التعرّف على الكلام",
         sttLoad: "تحميل",
-        sttUnload: "إلغاء التحميل",
-        sttUnloading: "جارٍ إلغاء التحميل…",
+        sttUnload: "تفريغ النموذج من الذاكرة",
+        sttUnloading: "جارٍ تفريغ النموذج من الذاكرة…",
         microphoneLabel: "الميكروفون",
         microphoneDescription: "يُستخدم للإملاء",
         microphoneFallbackHint:
@@ -301,22 +301,22 @@ export const ar = {
         enable: "تبديل النموذج حسب الطلب",
         enableDescription:
           "عندما يسمّي طلب متوافق مع OpenAI ملف GGUF مُنزّلاً مختلفًا، يتم تحميله قبل الخدمة. مُعطّل افتراضيًا؛ الأسماء غير المعروفة تُبقي على النموذج المُحمَّل.",
-        idleUnload: "الإلغاء التلقائي عند الخمول",
+        idleUnload: "التفريغ التلقائي عند الخمول",
         idleUnloadDescription:
-          "إلغاء تحميل النموذج بعد هذا العدد من ثواني الخمول لتحرير الـ VRAM؛ الطلب التالي يعيد تحميله. القيمة 0 تُبقيه محمَّلاً. الحد الأدنى 60 ثانية.",
+          "تفريغ النموذج من الذاكرة بعد هذا العدد من ثواني الخمول لتحرير الـ VRAM؛ الطلب التالي يعيد تحميله. القيمة 0 تُبقيه محمَّلاً. الحد الأدنى 60 ثانية.",
         idleNeedsEnable:
           "فعّل تبديل النموذج حسب الطلب حتى يعاد تحميل النموذج غير المحمَّل عند الاستخدام التالي.",
         idleActiveViaEnv:
-          "الإلغاء التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
+          "التفريغ التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "فشل تحميل إعدادات التبديل التلقائي للنموذج.",
         saveError: "فشل حفظ إعدادات التبديل التلقائي للنموذج.",
         idleError: "أدخل 0 لإبقاء النموذج محمَّلاً، أو 60 ثانية على الأقل.",
         autoDownload: "تنزيل النماذج غير المنزَّلة",
         autoDownloadDescription:
           "يجلب ملف GGUF المذكور في طلب واجهة API إذا لم يكن منزَّلًا بعد. عندئذٍ يمكن لأي شخص لديه مفتاح API استهلاك مساحة القرص وعرض النطاق.",
-        keepKv: "الاحتفاظ بسياق المحادثة عند إلغاء التحميل التلقائي بسبب الخمول",
+        keepKv: "الاحتفاظ بسياق المحادثة عند التفريغ التلقائي بسبب الخمول",
         keepKvDescription:
-          "يحفظ ذاكرة KV المؤقتة قبل إلغاء التحميل التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
+          "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -392,7 +392,7 @@ export const ar = {
         sectionTitle: "الأذونات",
         bypassLabel: "أذونات الأدوات",
         bypassDescription:
-          "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. الوصول الكامل يعطّل الموافقات وصندوق عزل الشيفرة.",
+          "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. وضع «Full access» يعطّل الموافقات وصندوق عزل الشيفرة.",
       },
     },
     profile: {
@@ -439,14 +439,14 @@ export const ar = {
         currentStreak: "التتابع الحالي",
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
-        activityDescription: "{total} توكن خلال آخر {weeks} أسبوعًا",
+        activityDescription: "الفترة: {weeks} · {total}",
         mode: {
           daily: "يومي",
           weekly: "أسبوعي",
           cumulative: "تراكمي",
         },
-        cellTooltip: "{date} · {tokens} توكن، {messages} رسالة",
-        weekTooltip: "أسبوع {date} · {tokens} توكن",
+        cellTooltip: "{date} · {tokens}، {messages}",
+        weekTooltip: "أسبوع {date} · {tokens}",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",
@@ -467,7 +467,7 @@ export const ar = {
         tokensPerSecond: "{value} توكن/ث",
         topModelsTitle: "النماذج الأكثر استخدامًا",
         topModelsDescription: "مرتّبة حسب التوكنات المتبادلة",
-        modelSummary: "{tokens} · {messages} رسالة",
+        modelSummary: "{tokens} · {messages}",
         noModels: "لم يُسجَّل أي استخدام للنماذج بعد.",
         trainingTitle: "التدريب",
         trainingDescription: "عمليات الضبط الدقيق في مساحة العمل هذه",
@@ -476,9 +476,9 @@ export const ar = {
         trainingSteps: "الخطوات",
         trainingTokens: "التوكنات المُدرَّب عليها",
         trainingTime: "زمن التدريب",
-        bestLoss: "أفضل loss",
-        runSteps: "{steps} خطوة",
-        runLoss: "loss {loss}",
+        bestLoss: "أقل خسارة",
+        runSteps: "{steps}",
+        runLoss: "الخسارة {loss}",
       },
     },
     appearance: {

@@ -409,7 +409,7 @@ export const de = {
         sectionTitle: "Berechtigungen",
         bypassLabel: "Tool-Berechtigungen",
         bypassDescription:
-          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. Vollzugriff deaktiviert die Freigaben und die Code-Sandbox.",
+          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Full access“ deaktiviert die Freigaben und die Code-Sandbox.",
       },
     },
     profile: {
@@ -456,14 +456,14 @@ export const de = {
         currentStreak: "Aktuelle Serie",
         longestStreak: "Längste Serie",
         activityTitle: "Token-Aktivität",
-        activityDescription: "{total} Tokens in den letzten {weeks} Wochen",
+        activityDescription: "Zeitraum: {weeks} · {total}",
         mode: {
           daily: "Täglich",
           weekly: "Wöchentlich",
           cumulative: "Kumuliert",
         },
-        cellTooltip: "{date} · {tokens} Tokens, {messages} Nachrichten",
-        weekTooltip: "Woche vom {date} · {tokens} Tokens",
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "Woche vom {date} · {tokens}",
         less: "Weniger",
         more: "Mehr",
         insightsTitle: "Aktivitätsauswertung",
@@ -484,7 +484,7 @@ export const de = {
         tokensPerSecond: "{value} Tok/s",
         topModelsTitle: "Meistgenutzte Modelle",
         topModelsDescription: "Nach ausgetauschten Tokens sortiert",
-        modelSummary: "{tokens} · {messages} Nachrichten",
+        modelSummary: "{tokens} · {messages}",
         noModels: "Noch keine Modellnutzung vorhanden.",
         trainingTitle: "Training",
         trainingDescription: "Fine-Tuning-Läufe aus diesem Arbeitsbereich",
@@ -494,7 +494,7 @@ export const de = {
         trainingTokens: "Trainierte Tokens",
         trainingTime: "Trainingszeit",
         bestLoss: "Bester Loss",
-        runSteps: "{steps} Schritte",
+        runSteps: "{steps}",
         runLoss: "Loss {loss}",
       },
     },
@@ -774,7 +774,7 @@ export const de = {
       remote: {
         title: "Mit einem entfernten Studio verbinden",
         description:
-          "Richten Sie unsloth start auf ein anderswo laufendes Studio, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
+          "Richten Sie unsloth start auf ein anderswo laufendes Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
       },
       passthrough: {
         title: "Argumente an den Agenten übergeben",
