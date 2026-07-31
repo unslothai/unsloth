@@ -142,7 +142,8 @@ async def _inline_to_thread(func, /, *args, **kwargs):
 
 
 async def _no_gguf_gpu_ids(*_args, **_kwargs):
-    return None
+    # Mirrors the resolver's no-gpu_ids early return: no ids, not Vulkan ordinals.
+    return None, False
 
 
 class TestLoadReusesCachedCopy:

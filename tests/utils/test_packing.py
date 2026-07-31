@@ -26,6 +26,7 @@ from unsloth.utils.packing import (
     patch_hybrid_linear_attention_varlen,
 )
 
+import logging
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -37,6 +38,12 @@ from trl import SFTConfig, SFTTrainer
 from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
 
 
+class _FakeConfig(SimpleNamespace):
+    # get_transformers_model_type() resolves through to_dict(), which SimpleNamespace lacks.
+    def to_dict(self):
+        return dict(self.__dict__)
+
+
 def _build_packed_training_setup(tmp_path, device):
     dtype = None
     if device.type == "cuda":
@@ -44,6 +51,8 @@ def _build_packed_training_setup(tmp_path, device):
             dtype = torch.bfloat16
         else:
             dtype = torch.float16
+    elif device.type == "xpu":
+        dtype = torch.bfloat16
 
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
@@ -76,8 +85,8 @@ def _build_packed_training_setup(tmp_path, device):
         max_length = 64,
         logging_steps = 1,
         max_steps = 1,
-        fp16 = device.type == "cuda" and not torch.cuda.is_bf16_supported(),
-        bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported(),
+        fp16 = dtype == torch.float16,
+        bf16 = dtype == torch.bfloat16,
         dataset_num_proc = 1,
         output_dir = str(tmp_path),
         packing = True,
@@ -168,15 +177,13 @@ def test_configure_padding_free():
 
 def _hybrid_config_model():
     # Qwen3.5 / Qwen3-Next style: explicit linear_attention layer schedule.
-    return SimpleNamespace(
-        config = SimpleNamespace(layer_types = ["linear_attention", "full_attention"])
-    )
+    return SimpleNamespace(config = _FakeConfig(layer_types = ["linear_attention", "full_attention"]))
 
 
 def _gemma3_model():
     # Has layer_types but no linear_attention -> must NOT be flagged as hybrid.
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = "gemma3", layer_types = ["sliding_attention", "full_attention"]
         ),
     )
@@ -184,7 +191,7 @@ def _gemma3_model():
 
 def _dense_qwen3_model():
     return SimpleNamespace(
-        config = SimpleNamespace(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"])
+        config = _FakeConfig(model_type = "qwen3", architectures = ["Qwen3ForCausalLM"])
     )
 
 
@@ -497,7 +504,7 @@ def _patch_fake_sft_trainer():
 
 def _vlm_model():
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             architectures = ["Gemma4ForConditionalGeneration"],
             model_type = "gemma4",
             vision_config = SimpleNamespace(),
@@ -508,7 +515,7 @@ def _vlm_model():
 
 def _text_model():
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             architectures = ["LlamaForCausalLM"],
             model_type = "llama",
         ),
@@ -576,7 +583,7 @@ def test_encoder_decoder_disables_packing(model_type, architecture):
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     model = SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = model_type,
             architectures = [architecture],
             is_encoder_decoder = True,
@@ -595,7 +602,7 @@ def test_decoder_only_conditional_generation_keeps_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
     model = SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = "csm",
             architectures = ["CsmForConditionalGeneration"],
             is_encoder_decoder = False,
@@ -612,7 +619,7 @@ def test_decoder_only_conditional_generation_keeps_packing():
 
 def _hybrid_trainer_model():
     return SimpleNamespace(
-        config = SimpleNamespace(
+        config = _FakeConfig(
             model_type = "qwen3_next",
             architectures = ["Qwen3NextForCausalLM"],
             layer_types = ["linear_attention", "full_attention"],
@@ -649,7 +656,7 @@ def test_string_hybrid_model_disables_packing(monkeypatch):
     monkeypatch.setattr(
         trainer_module,
         "_resolve_string_model_config",
-        lambda name, cfg: SimpleNamespace(
+        lambda name, cfg: _FakeConfig(
             model_type = "qwen3_next",
             architectures = ["Qwen3NextForCausalLM"],
             layer_types = ["linear_attention", "full_attention"],
@@ -973,8 +980,16 @@ def test_enable_sample_packing():
     assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
+)
 def test_enable_sample_packing_trl_collator(tmp_path):
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        device = torch.device("cpu")
     model, _, trainer, _ = _build_packed_training_setup(tmp_path, device)
 
     enable_sample_packing(model, trainer)
@@ -1029,8 +1044,16 @@ def test_enable_padding_free_metadata():
     assert trainer.args.remove_unused_columns is False
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
+)
 def test_packing_sdpa(tmp_path):
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        device = torch.device("cpu")
     model, batch, trainer, llama_mod = _build_packed_training_setup(tmp_path, device)
 
     assert "packed_seq_lengths" in batch
@@ -1236,3 +1259,61 @@ def test_resolve_string_model_config_merges_top_level_trust_remote_code(monkeypa
     )
     trainer_module._resolve_string_model_config("org/remote-hybrid", config_arg)
     assert captured.get("trust_remote_code") is False
+
+
+def _warn_text_model():
+    return SimpleNamespace(
+        config = _FakeConfig(architectures = ["LlamaForCausalLM"], model_type = "llama"),
+        max_seq_length = 16,
+    )
+
+
+def test_packing_skip_warning_is_accurate(monkeypatch, caplog):
+    # Two things the message used to get wrong: it blamed a "custom data collator" for
+    # UNSLOTH_RETURN_LOGITS (which unsloth sets itself for compute_metrics), and it quoted a
+    # token limit read before max_seq_length / max_length / the model limit are reconciled.
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(
+        packing = True,
+        padding_free = None,
+        remove_unused_columns = True,
+        max_seq_length = 4096,
+        max_length = 512,
+    )
+
+    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
+        fake_trainer(
+            model = _warn_text_model(),
+            args = config,
+            train_dataset = Dataset.from_dict({"text": ["sample"]}),
+        )
+
+    messages = [r.message for r in caplog.records if "packing=True ignored" in r.message]
+    assert len(messages) == 1
+    assert "UNSLOTH_RETURN_LOGITS" in messages[0]
+    assert "custom data collator" not in messages[0]
+    assert "4096" not in messages[0] and "512" not in messages[0]
+    # compute_metrics is one of several setters, so the message must not name it.
+    assert "compute_metrics" not in messages[0]
+
+
+def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
+    # A passed collator must still be named as the cause; the env-var fallback is only for
+    # the case where nothing else blocks packing.
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    with caplog.at_level(logging.WARNING, logger = "unsloth.trainer"):
+        fake_trainer(
+            model = _warn_text_model(),
+            args = config,
+            data_collator = lambda features: features,
+            train_dataset = Dataset.from_dict({"text": ["sample"]}),
+        )
+
+    messages = [r.message for r in caplog.records if "packing=True ignored" in r.message]
+    assert len(messages) == 1
+    assert "custom data collator" in messages[0]
+    assert "UNSLOTH_RETURN_LOGITS" not in messages[0]

@@ -31,6 +31,7 @@ from auth import storage, hashing
 from auth.authentication import (
     create_access_token,
     create_refresh_token,
+    get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
     refresh_access_token,
@@ -399,7 +400,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
-    salt, pwd_hash, _jwt_secret, must_change_password = record
+    salt, pwd_hash, jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
@@ -409,8 +410,10 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    access_token = create_access_token(subject = payload.username)
-    refresh_token = create_refresh_token(subject = payload.username)
+    # Issue against the credential version just verified, not whatever is in the DB
+    # now: a concurrent reset-password must not hand this login a post-reset session.
+    access_token = create_access_token(subject = payload.username, secret = jwt_secret)
+    refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -438,16 +441,17 @@ async def logout(
 @router.post("/desktop-login", response_model = Token)
 async def desktop_login(payload: DesktopLoginRequest) -> Token:
     """Exchange a local desktop secret for normal admin-subject tokens."""
-    username = storage.validate_desktop_secret(payload.secret)
-    if username is None:
+    verified = storage.validate_desktop_secret_with_credential(payload.secret)
+    if verified is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Desktop authentication failed",
         )
+    username, jwt_secret = verified
 
     return Token(
-        access_token = create_access_token(subject = username, desktop = True),
-        refresh_token = create_refresh_token(subject = username, desktop = True),
+        access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
+        refresh_token = create_refresh_token(subject = username, desktop = True, secret = jwt_secret),
         token_type = "bearer",
         must_change_password = False,
     )
@@ -462,9 +466,11 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
-    username, is_desktop = consumed
-    new_access_token = create_access_token(subject = username, desktop = is_desktop)
-    new_refresh_token = create_refresh_token(subject = username, desktop = is_desktop)
+    username, is_desktop, jwt_secret = consumed
+    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
+    new_refresh_token = create_refresh_token(
+        subject = username, desktop = is_desktop, secret = jwt_secret
+    )
 
     return Token(
         access_token = new_access_token,
@@ -507,13 +513,25 @@ async def change_password(
 
     # Single transaction: a separate refresh-token purge could fail after the
     # password commit, leaving pre-change tokens able to mint access tokens.
-    storage.update_password(current_subject, payload.new_password, revoke_refresh_tokens = True)
+    # Conditional on the hash just verified: a reset-password that landed while
+    # this request was in flight must not be overwritten by it.
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Sign in again.",
+        )
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    access_token = create_access_token(subject = current_subject)
-    refresh_token = create_refresh_token(subject = current_subject)
+    access_token = create_access_token(subject = current_subject, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, secret = new_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -541,20 +559,28 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, current_subject: str = Depends(get_current_subject)
+    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
+    current_subject, generation = credential
     expires_at = None
     if payload.expires_in_days is not None:
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
         ).isoformat()
 
-    raw_key, row = storage.create_api_key(
-        username = current_subject,
-        name = payload.name,
-        expires_at = expires_at,
-    )
+    try:
+        raw_key, row = storage.create_api_key(
+            username = current_subject,
+            name = payload.name,
+            expires_at = expires_at,
+            expect_gen = generation,
+        )
+    except storage.CredentialRotated:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
     return CreateApiKeyResponse(
         key = raw_key,
         api_key = _row_to_api_key_response(row),
