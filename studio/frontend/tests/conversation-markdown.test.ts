@@ -3,7 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildConversationMarkdown } from "../src/features/chat/utils/conversation-markdown.ts";
+import {
+  buildConversationMarkdown,
+  renderConversationBlocks,
+} from "../src/features/chat/utils/conversation-markdown.ts";
 
 test("exports a readable markdown transcript in conversation order", () => {
   assert.equal(
@@ -54,5 +57,59 @@ test("labels a missing role as a generic message", () => {
   assert.equal(
     buildConversationMarkdown([{ role: "", content: "orphaned content" }]),
     "## Message\n\norphaned content\n",
+  );
+});
+
+test("fences tool calls so raw html in the args cannot leak into the document", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "tool-call",
+        name: "render_html",
+        args: { code: "<script>alert(1)</script>" },
+        result: "ok",
+      },
+    ]),
+    [
+      "```json",
+      "{",
+      `  "tool_call": "render_html",`,
+      `  "args": {`,
+      `    "code": "<script>alert(1)</script>"`,
+      "  },",
+      `  "result": "ok"`,
+      "}",
+      "```",
+    ].join("\n"),
+  );
+});
+
+test("widens the fence when the payload contains backticks", () => {
+  const rendered = renderConversationBlocks([
+    { kind: "tool-call", name: "run", args: { cmd: "echo ```x```" } },
+  ]);
+  assert.ok(rendered.startsWith("````json\n"));
+  assert.ok(rendered.endsWith("\n````"));
+});
+
+test("collapses thinking and leaves prose untouched", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "thinking", text: "weighing options" },
+      { kind: "text", text: "Here is the answer." },
+      { kind: "attachment", label: "[image attachment]" },
+    ]),
+    [
+      "<details>",
+      "<summary>thinking</summary>",
+      "",
+      "weighing options",
+      "",
+      "</details>",
+      "",
+      "Here is the answer.",
+      "",
+      "[image attachment]",
+    ].join("\n"),
   );
 });
