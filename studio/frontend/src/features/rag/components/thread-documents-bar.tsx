@@ -7,7 +7,10 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useNativeIntentStore } from "@/features/native-intents";
+import {
+  useNativeAttachmentTargetKey,
+  useNativeIntentStore,
+} from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
@@ -120,20 +123,30 @@ export function ThreadDocumentsBar({
   }, [aui, effectiveThreadId]);
 
   // Desktop drops land in the native-intent store because the drop listener lives on
-  // the chat page; drain them here, where the upload and the thread id live.
-  const pendingAttachments = useNativeIntentStore((s) => s.pendingAttachments);
+  // the chat page; only the chat that received the OS drop may drain its batch.
+  const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const hasPendingAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
   useEffect(() => {
-    if (pendingAttachments.length === 0) return;
+    if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
+      return;
+    }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows.
     if (ragSource.type === "kb") {
-      useNativeIntentStore.getState().takeAttachments();
+      useNativeIntentStore.getState().takeAttachments(nativeAttachmentTargetKey);
       toast.error("This chat retrieves from a knowledge base", {
         description: "Add these files to the knowledge base instead.",
       });
       return;
     }
-    const intents = useNativeIntentStore.getState().takeAttachments();
+    const intents = useNativeIntentStore
+      .getState()
+      .takeAttachments(nativeAttachmentTargetKey);
     if (intents.length === 0) return;
     // Dropping a document is the intent; without retrieval on, the file would index
     // into a bar that renders nothing and never reach a reply.
@@ -150,7 +163,15 @@ export function ThreadDocumentsBar({
         id ? ({ type: "thread", threadId: id } as const) : null,
       ),
     );
-  }, [pendingAttachments, upload, ensureThreadId, ragEnabled, ragSource, setRagEnabled]);
+  }, [
+    hasPendingAttachments,
+    nativeAttachmentTargetKey,
+    upload,
+    ensureThreadId,
+    ragEnabled,
+    ragSource,
+    setRagEnabled,
+  ]);
 
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);

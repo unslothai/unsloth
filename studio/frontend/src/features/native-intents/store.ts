@@ -1,39 +1,62 @@
 import { create } from "zustand";
+import {
+  type PendingNativeAttachments,
+  dequeueNativeAttachments,
+  enqueueNativeAttachments,
+} from "./attachment-queue";
 import type { NativeIntent } from "./types";
 
 interface NativeIntentState {
   pendingModelIntent: NativeIntent | null;
-  // Dropped documents wait here until the thread bar (which owns the RAG upload and
-  // the lazy thread id) drains them.
-  pendingAttachments: NativeIntent[];
+  // Key each batch to the chat that received the OS drop. Registration crosses an
+  // async Rust boundary, so the active chat may change before these arrive.
+  pendingAttachments: PendingNativeAttachments;
   addIntent: (intent: NativeIntent) => void;
-  addAttachments: (intents: NativeIntent[]) => void;
-  takeAttachments: () => NativeIntent[];
+  addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
+  takeAttachments: (targetKey: string) => NativeIntent[];
   clearModelIntent: (intentId?: string) => void;
 }
 
 export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingModelIntent: null,
-  pendingAttachments: [],
-  addAttachments: (intents) => {
-    const fresh = intents.filter((intent) => intent.kind === "attachment");
-    if (fresh.length === 0) return;
-    set({ pendingAttachments: [...get().pendingAttachments, ...fresh] });
+  pendingAttachments: {},
+  addAttachments: (targetKey, intents) => {
+    const current = get().pendingAttachments;
+    const pendingAttachments = enqueueNativeAttachments(
+      current,
+      targetKey,
+      intents,
+    );
+    if (pendingAttachments !== current) {
+      set({ pendingAttachments });
+    }
   },
-  takeAttachments: () => {
-    const queued = get().pendingAttachments;
-    if (queued.length > 0) set({ pendingAttachments: [] });
+  takeAttachments: (targetKey) => {
+    const current = get().pendingAttachments;
+    const [queued, pendingAttachments] = dequeueNativeAttachments(
+      current,
+      targetKey,
+    );
+    if (pendingAttachments !== current) {
+      set({ pendingAttachments });
+    }
     return queued;
   },
   addIntent: (intent) => {
-    if (intent.kind !== "model") return;
+    if (intent.kind !== "model") {
+      return;
+    }
     const current = get().pendingModelIntent;
-    if (current?.path.token === intent.path.token) return;
+    if (current?.path.token === intent.path.token) {
+      return;
+    }
     set({ pendingModelIntent: intent });
   },
   clearModelIntent: (intentId) => {
     const current = get().pendingModelIntent;
-    if (intentId && current?.id !== intentId) return;
+    if (intentId && current?.id !== intentId) {
+      return;
+    }
     set({ pendingModelIntent: null });
   },
 }));

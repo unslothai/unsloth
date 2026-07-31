@@ -57,9 +57,10 @@ def _sanitize_filename(name: str) -> str:
     return stem[: 200 - len(ext)] + ext
 
 
-def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Persist an upload; returns (stored_path, filename)."""
-    filename = _sanitize_filename(file.filename or "document")
+def _persist_upload_stream(
+    source, filename: str, *, empty_detail: str
+) -> tuple[str, str]:
+    """Copy a validated document stream into the managed uploads root."""
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise HTTPException(
@@ -70,27 +71,39 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     size = 0
     cap = config.MAX_UPLOAD_BYTES
-    too_big = False
-    with open(stored_path, "wb") as out:
-        while True:
-            block = file.file.read(1 << 20)
-            if not block:
-                break
-            size += len(block)
-            if cap and size > cap:
-                too_big = True
-                break
-            out.write(block)
-    if too_big:
-        os.remove(stored_path)
+    try:
+        with open(stored_path, "wb") as out:
+            while True:
+                block = source.read(1 << 20)
+                if not block:
+                    break
+                size += len(block)
+                if cap and size > cap:
+                    break
+                out.write(block)
+    except OSError:
+        _remove_stored_upload(stored_path)
+        raise
+    if cap and size > cap:
+        _remove_stored_upload(stored_path)
         raise HTTPException(
             status_code = 413,
             detail = f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
         )
     if size == 0:
-        os.remove(stored_path)
-        raise HTTPException(status_code = 400, detail = "Uploaded file is empty.")
+        _remove_stored_upload(stored_path)
+        raise HTTPException(status_code = 400, detail = empty_detail)
     return stored_path, filename
+
+
+def _save_upload(file: UploadFile) -> tuple[str, str]:
+    """Persist a browser upload; returns (stored_path, filename)."""
+    filename = _sanitize_filename(file.filename or "document")
+    return _persist_upload_stream(
+        file.file,
+        filename,
+        empty_detail = "Uploaded file is empty.",
+    )
 
 
 def _save_native_path_upload(lease: str) -> tuple[str, str]:
@@ -113,41 +126,15 @@ def _save_native_path_upload(lease: str) -> tuple[str, str]:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     filename = _sanitize_filename(grant.canonical_path.name)
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in config.UPLOAD_EXTS:
-        raise HTTPException(
-            status_code = 400,
-            detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
-        )
-    uploads = ensure_dir(rag_uploads_root())
-    stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
-    size = 0
-    cap = config.MAX_UPLOAD_BYTES
-    too_big = False
     try:
-        with open(grant.canonical_path, "rb") as src, open(stored_path, "wb") as out:
-            while True:
-                block = src.read(1 << 20)
-                if not block:
-                    break
-                size += len(block)
-                if cap and size > cap:
-                    too_big = True
-                    break
-                out.write(block)
+        with open(grant.canonical_path, "rb") as source:
+            return _persist_upload_stream(
+                source,
+                filename,
+                empty_detail = "Dropped file is empty.",
+            )
     except OSError as exc:
-        _remove_stored_upload(stored_path)
         raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
-    if too_big:
-        os.remove(stored_path)
-        raise HTTPException(
-            status_code = 413,
-            detail = f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
-        )
-    if size == 0:
-        os.remove(stored_path)
-        raise HTTPException(status_code = 400, detail = "Dropped file is empty.")
-    return stored_path, filename
 
 
 def _resolve_document_upload(

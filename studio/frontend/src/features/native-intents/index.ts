@@ -8,6 +8,10 @@ export {
   openModelsDir,
   pickHuggingFaceCacheDir,
 } from "./api";
+export {
+  NativeAttachmentTargetContext,
+  useNativeAttachmentTargetKey,
+} from "./attachment-target";
 export { useNativeIntentStore } from "./store";
 export type { NativeIntent } from "./types";
 export { useChooseNativeModel } from "./use-native-dialogs";

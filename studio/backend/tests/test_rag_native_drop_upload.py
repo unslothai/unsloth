@@ -13,8 +13,10 @@ import time
 import pytest
 from fastapi import HTTPException
 
+from core.rag import config
 import utils.native_path_leases as leases
 from routes.rag import _resolve_document_upload, _save_native_path_upload
+from utils.paths import rag_uploads_root
 
 SECRET = b"n" * 32
 
@@ -117,6 +119,17 @@ def test_empty_file_is_rejected(rag_home, tmp_path):
     with pytest.raises(HTTPException) as excinfo:
         _save_native_path_upload(_sign(source))
     assert excinfo.value.status_code == 400
+
+
+def test_native_drop_uses_the_shared_size_limit(rag_home, tmp_path, monkeypatch):
+    source = _doc(tmp_path, body = "x" * 4096)
+    monkeypatch.setattr(config, "MAX_UPLOAD_BYTES", 1024)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _save_native_path_upload(_sign(source))
+
+    assert excinfo.value.status_code == 413
+    assert list(rag_uploads_root().glob("*.txt")) == []
 
 
 def test_grant_is_single_use(rag_home, tmp_path):
