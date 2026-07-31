@@ -35,8 +35,8 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
 
 
 def _touch(path: Path) -> Path:
-    """A headerless GGUF: unparseable, so selection falls to the filename, but not zero bytes,
-    which now means an interrupted download rather than a placeholder."""
+    """A headerless GGUF: selection falls to the filename, but non-empty since zero bytes now
+    means an interrupted download."""
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0" * 32)
     return path
@@ -324,8 +324,8 @@ def test_metadata_score_outranks_filename_prefix(tmp_path: Path):
 
 
 def test_a_zero_byte_projector_is_not_offered_to_the_loader(tmp_path: Path):
-    """An interrupted projector download is a file llama-server cannot open, and the inventory
-    already reports such a row text-only. Handing the path over anyway fails the whole load."""
+    """llama-server cannot open an interrupted download, and the inventory already reports such
+    a row text-only, so handing the path over would fail the whole load."""
     weight = _touch(tmp_path / "Model-Q4_K_M.gguf")
     (tmp_path / "mmproj-F16.gguf").write_bytes(b"")
 
@@ -334,8 +334,7 @@ def test_a_zero_byte_projector_is_not_offered_to_the_loader(tmp_path: Path):
 
 
 def test_a_zero_byte_projector_does_not_shadow_a_whole_one(tmp_path: Path):
-    """Control: the empty one is skipped rather than the directory being given up on, so a
-    projector beside it is still found."""
+    """Control: only the empty one is skipped, so a projector beside it is still found."""
     weight = _touch(tmp_path / "Model-Q4_K_M.gguf")
     (tmp_path / "mmproj-F16.gguf").write_bytes(b"")
     whole = _touch(tmp_path / "mmproj-Q8_0.gguf")

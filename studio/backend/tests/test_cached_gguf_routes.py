@@ -1811,8 +1811,8 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
 
 
 def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch, tmp_path):
-    """A pin names the copy that will load. Enumeration may still be repo wide, but the native
-    context has to come from that snapshot or the dialog offers a length the model cannot serve."""
+    """Enumeration may be repo wide, but the native context must come from the pinned snapshot
+    or the dialog offers a length the model cannot serve."""
     snapshot = tmp_path / "active" / "models--org--repo" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
 
@@ -1841,8 +1841,8 @@ def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch,
 
 
 def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_path):
-    """Control: only a snapshot of the requested repo may answer for it, so a path pointing
-    elsewhere falls back to the repo id rather than reporting a stranger's metadata."""
+    """Control: a pin naming another repo falls back to the repo id rather than reporting a
+    stranger's metadata."""
     other = tmp_path / "active" / "models--org--other" / "snapshots" / "rev"
     other.mkdir(parents = True)
 
