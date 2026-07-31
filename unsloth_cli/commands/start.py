@@ -2347,6 +2347,7 @@ def _print_env(
     command: list,
     unset_env: tuple = (),
     wsl_env_bridge: tuple = (),
+    cwd_env: tuple = (),
 ) -> None:
     if os.name == "nt":
         for name in unset_env:
@@ -2355,12 +2356,16 @@ def _print_env(
             # PowerShell: ` is the escape char, and $ triggers expansion inside "".
             escaped = value.replace("`", "``").replace('"', '`"').replace("$", "`$")
             typer.echo(f'$env:{name} = "{escaped}"')
+        for name in cwd_env:
+            typer.echo(f"$env:{name} = (Get-Location).Path")
         typer.echo(" ".join(_powershell_quote(arg) for arg in command))
         return
     for name in unset_env:
         typer.echo(f"export {name}=" if wsl_env_bridge else f"unset {name}")
     for name, value in env.items():
         typer.echo(f"export {name}={shlex.quote(value)}")
+    for name in cwd_env:
+        typer.echo(f'export {name}="$PWD"')
     if wsl_env_bridge:
         typer.echo(
             f"export WSLENV={shlex.quote(_merge_wslenv(os.environ.get('WSLENV', ''), wsl_env_bridge))}"
@@ -2373,6 +2378,7 @@ def _print_env(
     # invocation, so a partial copy behaves the same as pasting the whole block.
     inline = [f"{name}=" for name in unset_env]
     inline += [f"{name}={shlex.quote(value)}" for name, value in env.items()]
+    inline += [f'{name}="$PWD"' for name in cwd_env]
     if wsl_env_bridge:
         inline.append(
             f"WSLENV={shlex.quote(_merge_wslenv(os.environ.get('WSLENV', ''), wsl_env_bridge))}"
@@ -2691,14 +2697,22 @@ def _require_agent_for_launch(name: str, install_hint: str, launch: bool) -> Opt
     return _resolve_or_install_agent(name, install_hint, _which_with_install_dirs)
 
 
-def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tuple]:
-    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
-    if not wsl_env_bridge:
-        return env, wsl_env_bridge
+def _wsl_shim_env(
+    command: list,
+    env: dict,
+    unset_env: tuple,
+    cwd_env: tuple = (),
+) -> tuple[dict, tuple]:
+    if not _wsl_windows_executable(command):
+        return env, ()
+    wsl_env_bridge = _wsl_bridge_names(env, unset_env)
+    if not wsl_env_bridge and not cwd_env:
+        return env, ()
     # Bridge PWD via WSLENV (PWD/p) so the Windows shim finds its project root from the
     # live cwd, not a stale inherited Linux PWD. Don't freeze env["PWD"]: a --no-launch
     # recipe must translate the live PWD when run, not when generated; _launch overrides it.
-    return env, (*wsl_env_bridge, "PWD/p")
+    # cwd_env values likewise resolve at execution time and are always filesystem paths.
+    return env, tuple(dict.fromkeys((*wsl_env_bridge, *(f"{name}/p" for name in cwd_env), "PWD/p")))
 
 
 def _launch(
@@ -2706,12 +2720,14 @@ def _launch(
     env: dict,
     install_hint: str,
     unset_env: tuple = (),
+    cwd_env: tuple = (),
 ) -> int:
     # Resolve well-known install dirs (e.g. ~/.local/bin) first, so an already-installed
     # agent not yet on PATH is found instead of prompting a needless reinstall.
     _augment_path_with_install_dirs()
     executable = _resolve_or_install_agent(command[0], install_hint, shutil.which)
-    env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
+    env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env, cwd_env)
+    env = {**env, **{name: os.getcwd() for name in cwd_env}}
     child_env = dict(os.environ)
     if wsl_env_bridge:
         # Override stale inherited PWD with the real cwd so the shim resolves the project root.
@@ -2782,6 +2798,7 @@ def _run(
     install_hint: str,
     unset_env: tuple = (),
     clear_screen: bool = False,
+    cwd_env: tuple = (),
 ) -> None:
     # Some agents (Pi) render inline from wherever the cursor sits: their first
     # paint assumes a clean screen rather than clearing or entering the
@@ -2793,14 +2810,26 @@ def _run(
         click.clear()
     typer.echo(f"Unsloth ready at {base} · model {entry['id']}")
     if not launch:
-        env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env)
-        _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
+        env, wsl_env_bridge = _wsl_shim_env(command, env, unset_env, cwd_env)
+        _print_env(
+            env,
+            command,
+            unset_env = unset_env,
+            wsl_env_bridge = wsl_env_bridge,
+            cwd_env = cwd_env,
+        )
         if _keep_auto_served():
             typer.echo(f"Unsloth Studio is still running at {base}.")
             typer.echo("Stop it with: unsloth studio stop")
         return
     try:
-        code = _launch(command, env, install_hint = install_hint, unset_env = unset_env)
+        code = _launch(
+            command,
+            env,
+            install_hint = install_hint,
+            unset_env = unset_env,
+            cwd_env = cwd_env,
+        )
     except BaseException:
         # Startup succeeded but the agent failed to launch; tear the server down
         # rather than orphan it.
@@ -3060,11 +3089,19 @@ def write_openclaw_config(
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
-    # OPENCLAW_STATE_DIR does not relocate the workspace. Keep it beside the managed
-    # config so ephemeral launches avoid ~/.openclaw and persisted sessions retain it.
-    workspace = path.parent / "workspace"
-    workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
-    defaults["workspace"] = workspace_path or str(workspace)
+    # `unsloth start openclaw` is a coding-agent entry point, so the selected
+    # project may already contain its own AGENTS.md and git metadata. Do not seed
+    # OpenClaw's personal-assistant bootstrap files or initialize a repository in it.
+    defaults["skipBootstrap"] = True
+    # OPENCLAW_STATE_DIR does not relocate the workspace. Callers normally pin it to
+    # the directory where `unsloth start openclaw` was invoked so OpenClaw edits the
+    # same project as every other coding agent. Keep the managed fallback for direct
+    # config-writer callers that do not provide an explicit workspace.
+    if workspace_path is None:
+        workspace = path.parent / "workspace"
+        workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        workspace_path = str(workspace)
+    defaults["workspace"] = workspace_path
     # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This
     # config is itself an isolated Unsloth copy, so remove stale explicit paths and let
     # OpenClaw resolve every listed agent beneath the managed defaults/state directory.
@@ -3663,21 +3700,28 @@ def openclaw(
     command = ["openclaw", *openclaw_args]
     with _session_config("openclaw", launch, persist = persist) as cfg:
         config_path = cfg / "openclaw.json"
-        workspace_path = None
-        if _wsl_windows_executable(command):
-            workspace_path = _wsl_windows_path(cfg / "workspace")
         # key lives in the config, not the env; --yolo writes the exec policy here too.
+        # Resolve the project only when the recipe executes: a --no-launch command may be
+        # generated in one directory, saved, and intentionally run later from another.
         write_openclaw_config(
             base,
             key,
             entry,
             config_path,
             yolo = yolo,
-            workspace_path = workspace_path,
+            workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            cwd_env = ("OPENCLAW_WORKSPACE_DIR",),
+        )
 
 
 @start_app.command("opencode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)

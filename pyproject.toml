@@ -59,6 +59,8 @@ studio = [
     "*.ps1",
     "*.bat",
     "node_prebuilt_pins.json",
+    "src-tauri/icons/icon.icns",
+    "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
