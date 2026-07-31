@@ -8295,7 +8295,8 @@ class LlamaCppBackend:
                         f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"{_mtp_note}"
                         f"context: {effective_ctx}, "
-                        f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
+                        # --fit flag state, not "does it fit": off means this subset provably fits.
+                        f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")

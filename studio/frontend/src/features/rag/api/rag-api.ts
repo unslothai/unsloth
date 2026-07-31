@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   DocumentUploadResult,
@@ -288,10 +289,12 @@ export function getPreviewTarget(
   );
 }
 
-// Signed URL (no bearer) so pdf.js can issue Range requests.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
+// consumers bypass authFetch, and a relative path under Tauri resolves against
+// the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,
   );
-  return data.url;
+  return apiUrl(data.url);
 }

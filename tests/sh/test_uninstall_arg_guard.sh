@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Argument and pipe-safety tests for scripts/uninstall.sh.
-#
-# Behavioral cases use an instrumented copy that aborts before uninstalling.
-# The real no-argument case is skipped on WSL because it reaches host state.
+# Argument and pipe-safety tests for scripts/uninstall.sh. Behavioral cases use
+# an instrumented copy that aborts before uninstalling.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -54,7 +52,6 @@ assert_not_says() {
     esac
 }
 
-# Check the fixture as a unit.
 FIXTURE_PATHS=".unsloth/studio .unsloth/studio/auth/.desktop_secret .local/bin/unsloth .local/share/unsloth"
 
 # assert_fixture <label> <home> present|gone
@@ -70,13 +67,11 @@ assert_fixture() {
     if [ -z "$_missing" ]; then ok "$1"; else nope "$1 (wrong state:$_missing)"; fi
 }
 
-# Publish a validated fixture path. A global keeps setup failures from being
-# hidden by command-substitution errexit behavior.
+# A global, not command substitution: $() would swallow setup failures under -e.
 FIXTURE_HOME=""
 make_home() {
-    # Explicit template, not TMPDIR: BSD mktemp with no template implies -t and
-    # resolves the directory itself, so on macOS TMPDIR= lands a sibling of
-    # _TMP_ROOT and the check below aborts the suite.
+    # Explicit template: BSD mktemp with no template implies -t and picks its
+    # own directory, so TMPDIR= lands outside _TMP_ROOT on macOS.
     FIXTURE_HOME=$(mktemp -d "$_TMP_ROOT/home.XXXXXX") || FIXTURE_HOME=""
     case "$FIXTURE_HOME" in
         "$_TMP_ROOT"/*) ;;
@@ -170,8 +165,7 @@ fi
 
 echo "=== behaviour: a piped --help must not break the writer ==="
 
-# Shrink the pipe so an unread script tail produces a broken writer. Skip where
-# Linux F_SETPIPE_SZ is unavailable.
+# Shrink the pipe so an unread script tail produces a broken writer.
 if python3 -c 'import fcntl, sys; sys.exit(0 if sys.platform.startswith("linux") else 1)' 2>/dev/null; then
     make_home
     verdict=$(UNINSTALL_SH="$UNINSTALL_SH" FAKE_HOME="$FIXTURE_HOME" python3 - <<'PY'
@@ -209,7 +203,6 @@ PY
     case "$verdict" in
         skip:*|vacuous:*) echo "  SKIP: ${verdict#*: }" ;;
         *)
-            # Check both the writer and script exit codes.
             check "piped --help stays guarded" "ok:0:guarded" "$verdict"
             ;;
     esac
