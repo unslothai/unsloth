@@ -251,6 +251,13 @@ class UnslothTrainer:
         trainer_ref = self
 
         class _ProgressCallback(TrainerCallback):
+            def on_train_begin(self, args, state, control, **kwargs):
+                # on_log reports an empty status, so without this the UI stays on the
+                # pre-train "Starting training..." for the whole run.
+                if trainer_ref.should_stop:
+                    return
+                trainer_ref._update_progress(status_message = "Training in progress...")
+
             def on_log(
                 self,
                 args,
