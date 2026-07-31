@@ -1853,6 +1853,31 @@ def test_route_start_carries_and_contains_the_conditioning_cache_dir(client):
     assert client._fake.started_with["cond_cache_dir"] is None
 
 
+def test_route_refuses_an_output_dir_that_is_the_outputs_root(client):
+    # "." / "outputs" / "./." all clean away to nothing and resolve to the outputs ROOT rather than a run inside it. The trainer would write pytorch_lora_weights.safetensors flat into the root, where the trained-model and checkpoint listings (both is_dir() filtered) cannot see it, and the next such run would overwrite it. The UI only checks the field is non-empty, so "outputs" is a plausible run name.
+    from pathlib import Path
+
+    for name in (".", "./", "./.", "outputs", "outputs/outputs", " . "):
+        r = client.post("/api/train/diffusion/start", json = {**_BODY, "output_dir": name})
+        assert r.status_code == 400, f"{name!r} -> {r.status_code} {r.text}"
+        assert "not a run inside it" in r.json()["detail"]
+    # A real name still works.
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "output_dir": "outputs/run-1"})
+    assert r.status_code == 200, r.text
+    assert Path(client._fake.started_with["output_dir"]).name == "run-1"
+
+
+def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client):
+    # Same collapse on the cache side, but here there is an honest "off" to fall back to: resolving to the root drops one flat safetensors per cached latent and caption straight into the directory trained models live in.
+    for name in (".", "./.", "outputs", " . "):
+        r = client.post(
+            "/api/train/diffusion/start",
+            json = {**_BODY, "model_family": "z-image", "cond_cache_dir": name},
+        )
+        assert r.status_code == 200, r.text
+        assert client._fake.started_with["cond_cache_dir"] is None, name
+
+
 def test_route_rejects_cond_cache_dir_for_sdxl(client):
     # Only the DiT trainer reads cond_cache_dir. The SDXL trainer builds a per-process in-memory latent cache and never touches the persistent store, so accepting the option there promised cross-run reuse that never happened. Refuse it rather than ignore it.
     r = client.post(

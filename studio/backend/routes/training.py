@@ -1397,13 +1397,28 @@ async def start_diffusion_training(
     # Resolve + contain the dataset and output paths BEFORE spawning, so Studio-relative names work and absolute paths stay under a Studio root -- the trainer subprocess otherwise resolves them relative to its own cwd.
     config = body.model_dump()
     try:
-        from utils.paths import resolve_output_dir
+        from utils.paths import outputs_root, resolve_output_dir
 
         config["data_dir"] = str(_resolve_diffusion_data_dir(config["data_dir"]))
-        config["output_dir"] = str(resolve_output_dir(config["output_dir"]))
+        # A name that cleans away to nothing ("." / "outputs" / "./.") resolves to the outputs ROOT, not a run directory under it. The trainer would then write pytorch_lora_weights.safetensors flat into the root, where the trained-model and checkpoint listings -- both is_dir() filtered -- cannot see it, and the next such run would overwrite it. The UI only checks the field is non-empty, so "outputs" is one plausible run name away.
+        root = outputs_root().resolve()
+        out_dir = resolve_output_dir(config["output_dir"])
+        if Path(out_dir).resolve() == root:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"'{config['output_dir']}' is the outputs folder itself, not a run inside it. "
+                    "Pick a name for this run."
+                ),
+            )
+        config["output_dir"] = str(out_dir)
         # The persistent conditioning cache is another directory the TRAINER writes to, so it gets the same containment as output_dir rather than the trainer cwd. Blank/None means the in-memory cache (the trainer own "off"), so it must not resolve to the outputs root.
         cond_cache = str(config.get("cond_cache_dir") or "").strip()
-        config["cond_cache_dir"] = str(resolve_output_dir(cond_cache)) if cond_cache else None
+        cond_cache_dir = resolve_output_dir(cond_cache) if cond_cache else None
+        # Same collapse, but the cache has an honest "off" to fall back to: dropping one flat safetensors per cached latent and caption into the directory trained models live in is never what was meant.
+        if cond_cache_dir is not None and Path(cond_cache_dir).resolve() == root:
+            cond_cache_dir = None
+        config["cond_cache_dir"] = str(cond_cache_dir) if cond_cache_dir is not None else None
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
