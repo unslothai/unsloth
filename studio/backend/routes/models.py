@@ -2807,7 +2807,9 @@ async def get_gguf_variants(
             local_path = local_path,
             hf_token = hf_token,
         )
-        context_model = (
+        # A pin names the one copy that will load, so its header answers for it however
+        # enumeration was scoped; a repo-wide walk can read another revision's context length.
+        context_model = hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path) or (
             local_path
             if prefer_local_cache and local_path and is_local_path(local_path)
             else repo_id

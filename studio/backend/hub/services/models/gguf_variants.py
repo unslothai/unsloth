@@ -475,6 +475,12 @@ def _snapshot_scope_for_request(repo_id: str, local_path: Optional[str]) -> Opti
     return local if local.parent.parent.name.lower() == expected else None
 
 
+def pinned_snapshot_for_request(repo_id: str, local_path: Optional[str]) -> Optional[str]:
+    """The snapshot *local_path* pins, for callers outside this module that must read that copy."""
+    scope = _snapshot_scope_for_request(repo_id, local_path)
+    return str(scope) if scope is not None else None
+
+
 def _repo_cache_dir_for_request(repo_id: str, local_path: Optional[str]) -> Path:
     """Resolve the one Hub repo cache represented by this variant request."""
     expected_name = repo_cache_dir_name("model", repo_id).lower()

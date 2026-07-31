@@ -1810,6 +1810,70 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
     assert result.context_length == 8192
 
 
+def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch, tmp_path):
+    """A pin names the copy that will load. Enumeration may still be repo wide, but the native
+    context has to come from that snapshot or the dialog offers a length the model cannot serve."""
+    snapshot = tmp_path / "active" / "models--org--repo" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+
+    async def scoped_variants(repo_id, **kwargs):
+        return SimpleNamespace(
+            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
+        )
+
+    context_calls = []
+    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            prefer_local_cache = False,
+            local_path = str(snapshot),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert context_calls == [(str(snapshot.resolve()), True)]
+
+
+def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_path):
+    """Control: only a snapshot of the requested repo may answer for it, so a path pointing
+    elsewhere falls back to the repo id rather than reporting a stranger's metadata."""
+    other = tmp_path / "active" / "models--org--other" / "snapshots" / "rev"
+    other.mkdir(parents = True)
+
+    async def scoped_variants(repo_id, **kwargs):
+        return SimpleNamespace(
+            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
+        )
+
+    context_calls = []
+    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            prefer_local_cache = False,
+            local_path = str(other),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert context_calls == [("org/repo", False)]
+
+
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
     siblings = [
         SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
