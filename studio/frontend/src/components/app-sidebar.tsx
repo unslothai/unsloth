@@ -119,14 +119,12 @@ import {
   usePinnedChatsStore,
   usePinnedProjectsStore,
   useChatPreferencesStore,
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
-import {
-  CONVERSATION_MARKDOWN_FORMAT,
-  CONVERSATION_MARKDOWN_LABEL,
-} from "@/features/chat/utils/conversation-markdown";
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 export type ConversationMarkdownMessage = {
   readonly role: string;
   readonly content: string;
@@ -37,7 +40,12 @@ export type ConversationMarkdownBlock =
       readonly args?: unknown;
       readonly result?: unknown;
     }
-  | { readonly kind: "attachment"; readonly label: string };
+  | { readonly kind: "attachment"; readonly label: string }
+  | { readonly kind: "source"; readonly title: string; readonly url: string };
+
+const GENERATED_IMAGE_PLACEHOLDER = "[generated image omitted]";
+const GENERATED_IMAGE_BYTES_KEY = "image_b64";
+const LINE_BREAK_PATTERN = /[\r\n]/;
 
 // Long enough to not be closed early by backticks inside the body.
 function fence(body: string, language = ""): string {
@@ -60,6 +68,28 @@ function inlineCode(value: string): string {
   return `${ticks}${pad}${value}${pad}${ticks}`;
 }
 
+function escapeMarkdownLabel(value: string): string {
+  return value.replace(/([\\[\]])/g, "\\$1");
+}
+
+function safeSourceUrl(raw: string): string {
+  const value = raw.trim();
+  if (!value || LINE_BREAK_PATTERN.test(value)) {
+    return "";
+  }
+  if (value.startsWith("#")) {
+    return encodeURI(value).replaceAll("<", "%3C").replaceAll(">", "%3E");
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.href.replaceAll("<", "%3C").replaceAll(">", "%3E")
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -68,15 +98,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // it as-is so it reads as code instead of a JSON string full of \n. No language
 // tag, since guessing one wrong is worse than none.
 function renderValue(label: string, value: unknown): string[] {
+  const escapedLabel = escapeMarkdownLabel(label);
   if (typeof value === "string") {
-    if (value.includes("\n")) return [`**${label}:**`, fence(value)];
+    if (value.includes("\n")) return [`**${escapedLabel}:**`, fence(value)];
     // Prose stays prose; anything that could be read as markup or a fence
     // becomes an inline code span so it renders as itself.
     const inert = /[<`]/.test(value) ? inlineCode(value) : value;
-    return [`**${label}:** ${inert}`];
+    return [`**${escapedLabel}:** ${inert}`];
   }
   if (value === undefined) return [];
-  return [`**${label}:**`, fence(JSON.stringify(value, null, 2), "json")];
+  return [
+    `**${escapedLabel}:**`,
+    fence(JSON.stringify(value, null, 2), "json"),
+  ];
 }
 
 function renderBlock(block: ConversationMarkdownBlock): string {
@@ -94,6 +128,11 @@ function renderBlock(block: ConversationMarkdownBlock): string {
   if (block.kind === "attachment") {
     return block.label;
   }
+  if (block.kind === "source") {
+    const title = escapeMarkdownLabel(block.title);
+    const url = safeSourceUrl(block.url);
+    return url ? `**source:** [${title}](<${url}>)` : `**source:** ${title}`;
+  }
   const parts: string[] = [`**tool call:** \`${block.name}\``];
   if (isPlainObject(block.args)) {
     for (const [key, value] of Object.entries(block.args)) {
@@ -106,6 +145,65 @@ function renderBlock(block: ConversationMarkdownBlock): string {
     parts.push(...renderValue("result", block.result));
   }
   return parts.join("\n\n");
+}
+
+function withoutGeneratedImageBytes(value: unknown): unknown {
+  if (!isPlainObject(value) || typeof value.image_b64 !== "string") {
+    return value;
+  }
+  const metadata = Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== GENERATED_IMAGE_BYTES_KEY),
+  );
+  return { image: GENERATED_IMAGE_PLACEHOLDER, ...metadata };
+}
+
+export function contentBlocksToMarkdownBlocks(
+  content: unknown,
+  normalizeToolResult: (
+    result: unknown,
+  ) => unknown = withoutGeneratedImageBytes,
+): ConversationMarkdownBlock[] {
+  if (typeof content === "string") {
+    return [{ kind: "text", text: content }];
+  }
+  if (!Array.isArray(content)) {
+    return [{ kind: "text", text: JSON.stringify(content) }];
+  }
+
+  const blocks: ConversationMarkdownBlock[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const p = part as Record<string, unknown>;
+    if (p.type === "text" && typeof p.text === "string") {
+      blocks.push({ kind: "text", text: p.text });
+    } else if (p.type === "reasoning" || p.type === "thinking") {
+      const thinkText =
+        typeof p.thinking === "string"
+          ? p.thinking
+          : typeof p.text === "string"
+            ? p.text
+            : "";
+      if (thinkText) blocks.push({ kind: "thinking", text: thinkText });
+    } else if (p.type === "tool-call") {
+      blocks.push({
+        kind: "tool-call",
+        name: typeof p.toolName === "string" ? p.toolName : "unknown",
+        args: p.args,
+        result: withoutGeneratedImageBytes(normalizeToolResult(p.result)),
+      });
+    } else if (
+      p.type === "source" &&
+      typeof p.title === "string" &&
+      typeof p.url === "string"
+    ) {
+      blocks.push({ kind: "source", title: p.title, url: p.url });
+    } else if (p.type === "image") {
+      blocks.push({ kind: "attachment", label: "[image attachment]" });
+    } else if (p.type === "audio") {
+      blocks.push({ kind: "attachment", label: "[audio attachment]" });
+    }
+  }
+  return blocks;
 }
 
 export function renderConversationBlocks(

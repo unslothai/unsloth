@@ -61,8 +61,8 @@ import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
 import {
+  contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
-  type ConversationMarkdownBlock,
 } from "../utils/conversation-markdown";
 
 function newId(): string {
@@ -258,57 +258,22 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
-function contentBlocksToMarkdownBlocks(
-  content: unknown,
-): ConversationMarkdownBlock[] {
-  if (typeof content === "string") {
-    return [{ kind: "text", text: content }];
-  }
-  if (!Array.isArray(content)) {
-    return [{ kind: "text", text: JSON.stringify(content) }];
-  }
-
-  const blocks: ConversationMarkdownBlock[] = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const p = part as Record<string, unknown>;
-    if (p.type === "text" && typeof p.text === "string") {
-      blocks.push({ kind: "text", text: p.text });
-    } else if (p.type === "reasoning" || p.type === "thinking") {
-      const thinkText =
-        typeof p.thinking === "string"
-          ? p.thinking
-          : typeof p.text === "string"
-            ? p.text
-            : "";
-      if (thinkText) blocks.push({ kind: "thinking", text: thinkText });
-    } else if (p.type === "tool-call") {
-      // Same base64-image guard the other exports use.
-      const result = isMcpImageToolResult(p.result) ? p.result.text : p.result;
-      blocks.push({
-        kind: "tool-call",
-        name: typeof p.toolName === "string" ? p.toolName : "unknown",
-        args: p.args,
-        result,
-      });
-    } else if (p.type === "image") {
-      blocks.push({ kind: "attachment", label: "[image attachment]" });
-    } else if (p.type === "audio") {
-      blocks.push({ kind: "attachment", label: "[audio attachment]" });
-    }
-  }
-  return blocks;
-}
-
 // Markdown counterpart to messageToText: same content and same attachment
 // handling, but each part keeps its shape so the renderer can fence tool calls
 // and collapse thinking instead of inlining both as prose.
 function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
-  const blocks = contentBlocksToMarkdownBlocks(msg.content);
+  const normalizeToolResult = (result: unknown): unknown =>
+    isMcpImageToolResult(result) ? result.text : result;
+  const blocks = contentBlocksToMarkdownBlocks(msg.content, normalizeToolResult);
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
       if (!attachment?.content) continue;
-      blocks.push(...contentBlocksToMarkdownBlocks(attachment.content));
+      blocks.push(
+        ...contentBlocksToMarkdownBlocks(
+          attachment.content,
+          normalizeToolResult,
+        ),
+      );
     }
   }
   return renderConversationBlocks(blocks);
@@ -465,7 +430,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
 export const exportConversationMarkdown = createConversationMarkdownExporter({
   loadMessages: loadConversationMessages,
-  messageToText: messageToMarkdown,
+  renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportTimestamp: exportTs,
   notifyNoContent: () => toast.info("No exportable content."),

@@ -24,7 +24,7 @@ function exporterFor(
       assert.equal(threadId, "thread-1");
       return messages;
     },
-    messageToText: (message) => message.text,
+    renderMessage: (message) => message.text,
     download: async (content, filename, mimeType) => {
       downloads.push({ content, filename, mimeType });
     },
