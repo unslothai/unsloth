@@ -1978,6 +1978,54 @@ def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_pa
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+def test_a_family_behind_an_alternate_index_name_is_not_visible(tmp_path, monkeypatch):
+    """transformers probes model.safetensors.index.json, never model-copy.safetensors.index.json, so
+    a set behind the alternate name is one the pinned load never opens."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-copy-00001-of-00001.safetensors": b"\0" * 64,
+                "model-copy.safetensors.index.json": _shard_index(
+                    "model-copy-00001-of-00001.safetensors"
+                ),
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_an_alternate_index_family_does_not_rescue_a_broken_canonical_one(tmp_path, monkeypatch):
+    """Same reason from the other side: the loader opens the canonical index, fails on the shard it
+    is short, and never reaches the alternate set sitting beside it."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": _SHARD_INDEX,
+                "model-copy-00001-of-00001.safetensors": b"\0" * 64,
+                "model-copy.safetensors.index.json": _shard_index(
+                    "model-copy-00001-of-00001.safetensors"
+                ),
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
 def test_an_empty_canonical_weight_is_not_excused_by_another_root_file(tmp_path, monkeypatch):
     """_get_resolved_checkpoint_files opens model.safetensors first and pytorch_model.bin next, and
     falls back to neither once the name it picked exists. A whole consolidated.safetensors beside an

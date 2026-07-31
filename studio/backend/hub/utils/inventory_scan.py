@@ -993,7 +993,11 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     unloadable: set = set()
     invisible: set = set()
     for family in groups["base"]:
-        index_path = snapshot_dir / family[0] / f"{family[1]}{family[3]}.index.json"
+        # The loader probes only its canonical index, so a set behind model-copy.safetensors.index
+        # is one it never opens, and cannot stand in for the canonical family either.
+        index_path = (
+            snapshot_dir / family[0] / f"{_LOADER_WEIGHT_NAMES['base'][family[3]]}.index.json"
+        )
         try:
             present = index_path.is_file()
         except OSError:
