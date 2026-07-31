@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { toast } from "@/lib/toast";
+import { consumeNativePathToken } from "@/features/native-intents";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteDocument,
@@ -18,9 +19,25 @@ export interface TrackedDocument extends RagDocument {
   progress?: number | null;
 }
 
-// Client-side dedup key; backend dedups authoritatively by content hash.
-function fileSignature(file: File): string {
-  return `${file.name}|${file.size}|${file.lastModified}`;
+/** A browser File, or a desktop drop addressed by its native path token. */
+export type RagUploadItem =
+  | { kind: "file"; file: File }
+  | { kind: "native"; token: string; name: string };
+
+export function fileItems(files: FileList | File[]): RagUploadItem[] {
+  return Array.from(files).map((file) => ({ kind: "file" as const, file }));
+}
+
+function itemName(item: RagUploadItem): string {
+  return item.kind === "file" ? item.file.name : item.name;
+}
+
+// Client-side dedup key; backend dedups authoritatively by content hash. Native
+// drops have no size/mtime on this side, so they dedup by name alone.
+function itemSignature(item: RagUploadItem): string {
+  return item.kind === "file"
+    ? `${item.file.name}|${item.file.size}|${item.file.lastModified}`
+    : `${item.name}|native`;
 }
 
 export type RagDocumentScope =
@@ -253,13 +270,23 @@ export function useRagDocuments(
   // the chip if the backend deduped. `seenIds` holds ids present/added this batch.
   const uploadOne = useCallback(
     async (
-      file: File,
+      item: RagUploadItem,
       seenIds: Set<string>,
       activeScope: RagDocumentScope,
       tempId: string,
     ) => {
+      const name = itemName(item);
       try {
         const { ocr, caption } = resolveVisionOverrides();
+        // Leases are short-lived, so mint one per upload rather than at drop time.
+        const file =
+          item.kind === "file"
+            ? item.file
+            : {
+                nativePathLease: (
+                  await consumeNativePathToken(item.token, "attach")
+                ).nativePathLease,
+              };
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(
@@ -281,12 +308,10 @@ export function useRagDocuments(
                   ocr,
                   caption,
                 );
-        sigByDocId.current.set(result.documentId, fileSignature(file));
+        sigByDocId.current.set(result.documentId, itemSignature(item));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          toast.info(
-            `${result.filename || file.name} is already indexed - skipping`,
-          );
+          toast.info(`${result.filename || name} is already indexed - skipping`);
           return;
         }
         seenIds.add(result.documentId);
@@ -302,12 +327,12 @@ export function useRagDocuments(
               : row,
           ),
         );
-        trackJob(result.jobId, result.documentId, result.filename || file.name);
+        trackJob(result.jobId, result.documentId, result.filename || name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Drop the chip rather than show "Failed"; warn via toast.
         setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-        toast.error(`Couldn't upload ${file.name}`, { description: message });
+        toast.error(`Couldn't upload ${name}`, { description: message });
       }
     },
     [trackJob],
@@ -318,7 +343,7 @@ export function useRagDocuments(
   // the hook scope.
   const upload = useCallback(
     async (
-      files: FileList | File[],
+      files: FileList | File[] | RagUploadItem[],
       overrideScope?: RagDocumentScope | Promise<RagDocumentScope | null>,
     ) => {
       // Flip the in-flight guard synchronously, before awaiting a thread id that
@@ -330,23 +355,28 @@ export function useRagDocuments(
         // Show an optimistic chip per file before awaiting the thread id;
         // materialization is a round-trip and gating chips behind it makes a slow
         // one look like nothing happened. Dedup re-selections up front.
-        const fresh: Array<{ tempId: string; file: File }> = [];
-        for (const file of Array.from(files)) {
-          if (sigBlocksReupload(fileSignature(file))) {
-            toast.info(`${file.name} is already indexed - skipping`);
+        const fresh: Array<{ tempId: string; item: RagUploadItem }> = [];
+        const entries: Array<File | RagUploadItem> = Array.isArray(files)
+          ? files
+          : Array.from(files);
+        for (const entry of entries) {
+          const item: RagUploadItem =
+            entry instanceof File ? { kind: "file", file: entry } : entry;
+          if (sigBlocksReupload(itemSignature(item))) {
+            toast.info(`${itemName(item)} is already indexed - skipping`);
             continue;
           }
           fresh.push({
             tempId: `pending_${Math.random().toString(36).slice(2)}`,
-            file,
+            item,
           });
         }
         if (fresh.length === 0) return;
         setDocuments((rows) => [
           ...rows,
-          ...fresh.map(({ tempId, file }) => ({
+          ...fresh.map(({ tempId, item }) => ({
             id: tempId,
-            filename: file.name,
+            filename: itemName(item),
             status: "pending" as const,
             progress: null,
           })),
@@ -372,8 +402,8 @@ export function useRagDocuments(
             .filter((d) => !d.id.startsWith("pending_"))
             .map((d) => d.id),
         );
-        for (const { tempId, file } of fresh) {
-          await uploadOne(file, seenIds, activeScope, tempId);
+        for (const { tempId, item } of fresh) {
+          await uploadOne(item, seenIds, activeScope, tempId);
         }
       } finally {
         setUploading(false);

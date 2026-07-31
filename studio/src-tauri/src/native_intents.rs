@@ -3,8 +3,8 @@ use crate::native_backend_lease::{
     NativePathLeaseResponse, NativePathOperation, NativePathSourceKind, NativePathType,
 };
 use crate::native_path_policy::{
-    classify_artifact_path, classify_native_model_path, reveal_target, ClassifiedPath,
-    NativeArtifactKind,
+    classify_artifact_path, classify_native_attachment_path, classify_native_model_path,
+    reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -53,6 +53,7 @@ struct NativePathEntry {
 #[derive(Clone, Copy, Debug)]
 enum NativePathValidationPolicy {
     Model,
+    Attachment,
     Artifact(NativeArtifactKind),
 }
 
@@ -118,6 +119,19 @@ impl NativeIntakeState {
     ) -> Result<NativeIntent, String> {
         let classified = classify_native_model_path(path.as_ref())?;
         self.register_classified_path(classified, source_kind, NativePathValidationPolicy::Model)
+    }
+
+    fn register_attachment_path(
+        &self,
+        path: impl AsRef<Path>,
+        source_kind: NativePathSourceKind,
+    ) -> Result<NativeIntent, String> {
+        let classified = classify_native_attachment_path(path.as_ref())?;
+        self.register_classified_path(
+            classified,
+            source_kind,
+            NativePathValidationPolicy::Attachment,
+        )
     }
 
     fn register_artifact(
@@ -237,6 +251,9 @@ fn validate_entry_path(
 ) -> Result<(), String> {
     let classified = match entry.validation_policy {
         NativePathValidationPolicy::Model => classify_native_model_path(&entry.canonical_path)?,
+        NativePathValidationPolicy::Attachment => {
+            classify_native_attachment_path(&entry.canonical_path)?
+        }
         NativePathValidationPolicy::Artifact(kind) => {
             classify_artifact_path(kind, &entry.canonical_path)?
         }
@@ -302,6 +319,16 @@ pub fn register_native_model_path(
 ) -> Result<NativeIntent, String> {
     ensure_main_window(&window)?;
     state.register_model_path(path, NativePathSourceKind::Drop)
+}
+
+#[tauri::command]
+pub fn register_native_attachment_path(
+    window: WebviewWindow,
+    state: tauri::State<'_, NativeIntakeState>,
+    path: String,
+) -> Result<NativeIntent, String> {
+    ensure_main_window(&window)?;
+    state.register_attachment_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]

@@ -2564,12 +2564,18 @@ export function ChatPage({
     shouldAutoLoad: canAutoLoadPickedNativeModel,
     onAutoLoad: handleNativeModelPickerAutoLoad,
   });
+  // Dropped documents go to the thread bar, which owns the RAG upload and can
+  // materialize a thread id for a chat that hasn't been sent to yet.
+  const handleNativeAttachmentDrop = useCallback((intents: NativeIntent[]) => {
+    useNativeIntentStore.getState().addAttachments(intents);
+  }, []);
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
+    onAttach: handleNativeAttachmentDrop,
   });
 
   const handleCheckpointChange = useCallback(

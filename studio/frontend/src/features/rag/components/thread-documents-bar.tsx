@@ -7,6 +7,7 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useNativeIntentStore } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
@@ -116,6 +117,25 @@ export function ThreadDocumentsBar({
     initPromiseRef.current = pending;
     return pending;
   }, [aui, effectiveThreadId]);
+
+  // Desktop drops land in the native-intent store because the drop listener lives on
+  // the chat page; drain them here, where the upload and the thread id live.
+  const pendingAttachments = useNativeIntentStore((s) => s.pendingAttachments);
+  useEffect(() => {
+    if (pendingAttachments.length === 0) return;
+    const intents = useNativeIntentStore.getState().takeAttachments();
+    if (intents.length === 0) return;
+    void upload(
+      intents.map((intent) => ({
+        kind: "native" as const,
+        token: intent.path.token,
+        name: intent.displayLabel,
+      })),
+      ensureThreadId().then((id) =>
+        id ? ({ type: "thread", threadId: id } as const) : null,
+      ),
+    );
+  }, [pendingAttachments, upload, ensureThreadId]);
 
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);

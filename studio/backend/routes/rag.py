@@ -93,6 +93,74 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     return stored_path, filename
 
 
+def _save_native_path_upload(lease: str) -> tuple[str, str]:
+    """Persist a desktop drop; returns (stored_path, filename).
+
+    The webview never gets to name a path directly: Rust signs the path it saw and we
+    re-verify + re-stat that grant here before reading a byte.
+    """
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = "attach",
+            expected_kind = "attachment",
+            expected_path_type = "file",
+            allowed_suffixes = sorted(config.UPLOAD_EXTS),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+    filename = _sanitize_filename(grant.canonical_path.name)
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in config.UPLOAD_EXTS:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
+        )
+    uploads = ensure_dir(rag_uploads_root())
+    stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
+    size = 0
+    cap = config.MAX_UPLOAD_BYTES
+    too_big = False
+    try:
+        with open(grant.canonical_path, "rb") as src, open(stored_path, "wb") as out:
+            while True:
+                block = src.read(1 << 20)
+                if not block:
+                    break
+                size += len(block)
+                if cap and size > cap:
+                    too_big = True
+                    break
+                out.write(block)
+    except OSError as exc:
+        _remove_stored_upload(stored_path)
+        raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
+    if too_big:
+        os.remove(stored_path)
+        raise HTTPException(
+            status_code = 413,
+            detail = f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
+        )
+    if size == 0:
+        os.remove(stored_path)
+        raise HTTPException(status_code = 400, detail = "Dropped file is empty.")
+    return stored_path, filename
+
+
+def _resolve_document_upload(
+    file: UploadFile | None,
+    native_path_lease: str | None,
+) -> tuple[str, str]:
+    if native_path_lease:
+        return _save_native_path_upload(native_path_lease)
+    if file is None:
+        raise HTTPException(status_code = 400, detail = "No file was provided.")
+    return _save_upload(file)
+
+
 def _remove_stored_upload(stored_path: str | None) -> None:
     """Best-effort cleanup for files saved by _save_upload."""
     if not stored_path:
@@ -224,7 +292,8 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
 @router.post("/knowledge-bases/{kb_id}/documents")
 async def upload_kb_document(
     kb_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
     ocr: bool | None = Form(None),
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
@@ -236,7 +305,7 @@ async def upload_kb_document(
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
     finally:
         conn.close()
-    stored_path, filename = _save_upload(file)
+    stored_path, filename = _resolve_document_upload(file, native_path_lease)
     document_id, job_id = ingestion.start_ingestion(
         store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
     )
@@ -257,13 +326,14 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
 @router.post("/threads/{thread_id}/documents")
 async def upload_thread_document(
     thread_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
     ocr: bool | None = Form(None),
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    stored_path, filename = _save_upload(file)
+    stored_path, filename = _resolve_document_upload(file, native_path_lease)
     document_id, job_id = ingestion.start_ingestion(
         store.thread_scope(thread_id),
         None,
@@ -290,7 +360,8 @@ def list_thread_documents(thread_id: str, subject: str = Depends(get_current_sub
 @router.post("/projects/{project_id}/documents")
 async def upload_project_document(
     project_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
     ocr: bool | None = Form(None),
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
@@ -300,7 +371,7 @@ async def upload_project_document(
 
     if get_chat_project(project_id) is None:
         raise HTTPException(status_code = 404, detail = "Project not found")
-    stored_path, filename = _save_upload(file)
+    stored_path, filename = _resolve_document_upload(file, native_path_lease)
     document_id, job_id = ingestion.start_ingestion(
         store.project_scope(project_id),
         None,

@@ -5,8 +5,14 @@ import type { NativeModelDropState } from "../use-native-drop";
 function overlayCopy(state: NativeModelDropState): { title: string; description: string } {
   if (state.status === "invalid") {
     return {
-      title: "GGUF models only",
-      description: "Other files are not handled here yet.",
+      title: "Can't use these files",
+      description: "Drop a .gguf model, or documents to chat with.",
+    };
+  }
+  if (state.status === "attach") {
+    return {
+      title: state.count === 1 ? "Drop to attach file" : `Drop to attach ${state.count} files`,
+      description: "Indexed for this chat.",
     };
   }
   if (state.status === "valid" && state.action === "replace") {
@@ -29,7 +35,8 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
 
 export function NativeModelDropOverlay({ state }: { state: NativeModelDropState }) {
   const isIdle = state.status === "idle";
-  const isAutoLoad = state.status === "valid" && state.action !== "chip";
+  const isAutoLoad =
+    (state.status === "valid" && state.action !== "chip") || state.status === "attach";
   const isInvalid = state.status === "invalid";
   const { title, description } = overlayCopy(state);
 
