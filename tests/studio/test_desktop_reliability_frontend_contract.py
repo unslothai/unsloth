@@ -24,9 +24,7 @@ NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
 TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
 TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
-UPDATE_INSTRUCTIONS = (
-    FRONTEND / "features/settings/components/update-studio-instructions.tsx"
-)
+UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
 DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
@@ -51,7 +49,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "useContext(TauriUpdateContext)" in context
     assert "checkForUpdate," in hook
     assert "setDismissed(false);" in hook
-    assert 'const available = update.info !== null && !checking;' in settings
+    assert "const available = update.info !== null && !checking;" in settings
     assert "update.dismissed" not in settings
     assert "void update.installUpdate();" in settings
     assert "void update.checkForUpdate();" in settings
