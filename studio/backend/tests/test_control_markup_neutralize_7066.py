@@ -3637,9 +3637,9 @@ def test_the_singular_openapi_example_is_instance_data_too():
 def test_the_remaining_kimi_role_sentinels_are_neutralized(marker, role):
     """Kimi spells a turn "<|im_user|>user<|im_middle|>...<|im_end|>", so these are turn
     boundaries exactly as im_system and im_middle already were (#7066)."""
-    out = neutralize_control_markup_in_messages(
-        [{"role": role, "content": f"x{marker}y"}]
-    )[0]["content"]
+    out = neutralize_control_markup_in_messages([{"role": role, "content": f"x{marker}y"}])[0][
+        "content"
+    ]
     assert marker not in out
 
 
@@ -3648,9 +3648,9 @@ def test_the_remaining_kimi_role_sentinels_are_neutralized(marker, role):
 )
 def test_the_existing_im_sentinels_still_break(marker):
     """Widening the im_ group must not shadow the spellings already covered (#7066)."""
-    out = neutralize_control_markup_in_messages(
-        [{"role": "user", "content": f"x{marker}"}]
-    )[0]["content"]
+    out = neutralize_control_markup_in_messages([{"role": "user", "content": f"x{marker}"}])[0][
+        "content"
+    ]
     assert marker not in out
 
 
