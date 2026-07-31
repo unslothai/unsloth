@@ -293,7 +293,7 @@ jobs:
         # Chromium needs (Edge / WebView2) already.
         run: |
           python -m pip install 'playwright>=1.45'
-          python -m playwright install chromium firefox webkit
+          python -m playwright install chromium
 
       - name: Reset auth + boot Unsloth
         run: |
@@ -396,7 +396,8 @@ jobs:
         env:
           BASE_URL: http://127.0.0.1:18897
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
-          STUDIO_PLAYWRIGHT_BROWSERS: chromium,firefox,webkit
+          STUDIO_PLAYWRIGHT_BROWSERS: chromium
+          STUDIO_UNMANAGED_DATASET_PATH: 'C:\fixtures\datasets\unmanaged.jsonl'
           PW_ART_DIR: logs/playwright_train_pickers
         run: |
           mkdir -p logs/playwright_train_pickers

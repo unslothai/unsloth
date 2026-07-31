@@ -39,7 +39,10 @@ LOCAL_MODEL_ALPHA = "/fixtures/models/alpha"
 LOCAL_MODEL_BETA = "/fixtures/models/beta"
 LOCAL_DATASET_ALPHA = "/fixtures/datasets/alpha/parquet-files/train.parquet"
 LOCAL_DATASET_BETA = "/fixtures/datasets/beta/parquet-files/train.parquet"
-UNMANAGED_DATASET_PATH = r"C:\fixtures\datasets\unmanaged.jsonl"
+UNMANAGED_DATASET_PATH = os.environ.get(
+    "STUDIO_UNMANAGED_DATASET_PATH",
+    "/fixtures/datasets/unmanaged.jsonl",
+)
 FINAL_DATASET_ID = "playwright/dataset-072"
 
 

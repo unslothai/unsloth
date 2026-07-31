@@ -333,6 +333,17 @@ jobs:
             exit "$rc"
           done
 
+      - name: Drive Train model and dataset pickers with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18897
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          STUDIO_PLAYWRIGHT_BROWSERS: webkit
+          STUDIO_UNMANAGED_DATASET_PATH: /fixtures/datasets/unmanaged.jsonl
+          PW_ART_DIR: logs/playwright_train_pickers
+        run: |
+          mkdir -p logs/playwright_train_pickers
+          python tests/studio/playwright_train_pickers.py
+
       - name: Stop second Unsloth
         if: always()
         run: |
@@ -351,5 +362,6 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_train_pickers
             logs/studio-permissions-*.log
           retention-days: 7

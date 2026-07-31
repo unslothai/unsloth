@@ -7,16 +7,14 @@ import {
   LR_DEFAULT_CPT,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
-  STEPS,
   TARGET_MODULES,
 } from "@/config/training";
-import { authFetch } from "@/features/auth";
-import { getHfToken, useHfTokenStore } from "@/features/hub";
-import { getLocale, translate } from "@/i18n";
+import { getHfToken } from "@/features/hub";
+import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { isAdapterMethod, isTrainingMethod } from "@/types/training";
+import { isAdapterMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
-import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
+import type { ModelType, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -27,116 +25,33 @@ import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { inferTrainingModelTypeFromFlags } from "../lib/model-type-inference";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
-import { validateS3Source } from "../lib/validation";
 import type {
-  BrowseDatasetSelection,
   DatasetCacheReferenceOptions,
   TrainingConfigState,
   TrainingConfigStore,
   TrainingModelSelectionOptions,
 } from "../types/config";
+import {
+  TRAINING_CONFIG_PERSISTENCE_NAME,
+  TRAINING_CONFIG_PERSISTENCE_VERSION,
+  mergeTrainingConfig,
+  migrateTrainingConfig,
+  partializeTrainingConfig,
+} from "./training-config-persistence";
+import {
+  canProceedForTrainingStep,
+  clampTrainingStep,
+  createHfBrowseDatasetSelection,
+  createUploadBrowseDatasetSelection,
+  emptyManualMapping,
+  formatStreamingDisabledOptions,
+  hasSeparateStreamingEvalSplit,
+  initialTrainingConfigState,
+  streamingCompatiblePatch,
+} from "./training-config-policy";
+import { selectTrainingMethodForHardware } from "./training-method-hardware-policy";
 
-const MIN_STEP: StepNumber = 1;
-const MAX_STEP: StepNumber = STEPS.length as StepNumber;
-
-/**
- * Auto-select LoRA (16-bit) vs QLoRA (4-bit) by model size and GPU memory.
- * Use "lora" if model_size_gb * 1.5 * context_scale fits in free VRAM, else "qlora".
- * Context scale: <=8192 = 1.0, >8192 = 1.7, >=16384 = 2.0, >=32768 = 4.0
- */
-async function autoSelectTrainingMethod(
-  modelSizeBytes: number,
-  contextLength: number,
-  signal: AbortSignal,
-): Promise<TrainingMethod | null> {
-  try {
-    const res = await authFetch("/api/system/hardware", { signal });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const freeGb: number | null = data?.gpu?.vram_free_gb ?? null;
-    if (freeGb == null) return null;
-
-    const modelSizeGb = modelSizeBytes / 1024 ** 3;
-
-    let contextScale = 1.0;
-    if (contextLength >= 32768) contextScale = 4.0;
-    else if (contextLength >= 16384) contextScale = 2.0;
-    else if (contextLength > 8192) contextScale = 1.7;
-
-    const estimatedUsage = modelSizeGb * 1.5 * contextScale;
-    return estimatedUsage <= freeGb ? "lora" : "qlora";
-  } catch {
-    return null;
-  }
-}
-
-function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
-  return {};
-}
-
-function createHfBrowseDatasetSelection(
-  dataset: string | null,
-  options?: DatasetCacheReferenceOptions,
-): Extract<BrowseDatasetSelection, { source: "huggingface" }> {
-  return {
-    source: "huggingface",
-    dataset,
-    knownCached: dataset ? (options?.knownCached ?? false) : false,
-    localPath: dataset ? (options?.localPath ?? null) : null,
-  };
-}
-
-function createUploadBrowseDatasetSelection(
-  uploadedFile: string | null,
-): Extract<BrowseDatasetSelection, { source: "upload" }> {
-  return {
-    source: "upload",
-    uploadedFile,
-  };
-}
-
-const initialState: TrainingConfigState = {
-  userEditRevision: 0,
-  currentStep: MIN_STEP,
-  modelType: null,
-  selectedModel: null,
-  modelKnownCached: false,
-  modelLocalPath: null,
-  modelFormat: null,
-  projectName: "",
-  trainingMethod: "qlora",
-  datasetSource: "huggingface",
-  browseDatasetSelection: createHfBrowseDatasetSelection(null),
-  datasetFormat: "auto",
-  dataset: null,
-  datasetKnownCached: false,
-  datasetLocalPath: null,
-  datasetSubset: null,
-  datasetSplit: null,
-  datasetEvalSplit: null,
-  datasetStreaming: false,
-  datasetManualMapping: emptyManualMapping(),
-  datasetSystemPrompt: "",
-  datasetLabelMapping: {},
-  datasetAdvisorNotification: null,
-  datasetSliceStart: null,
-  datasetSliceEnd: null,
-  uploadedFile: null,
-  uploadedEvalFile: null,
-  isCheckingVision: false,
-  isVisionModel: false,
-  isEmbeddingModel: false,
-  isAudioModel: false,
-  isLoadingModelDefaults: false,
-  modelDefaultsError: null,
-  modelDefaultsAppliedFor: null,
-  isCheckingDataset: false,
-  isDatasetImage: null,
-  isDatasetAudio: false,
-  datasetCheckFailed: false,
-  maxPositionEmbeddings: null,
-  ...DEFAULT_HYPERPARAMS,
-};
+export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 
 // AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
@@ -161,127 +76,6 @@ let _yamlLearningRate: number | undefined;
 // leaving CPT can restore the prior user-visible format.
 let _datasetFormatBeforeCpt: DatasetFormat | null = null;
 let _datasetFormatAutoForcedByCpt = false;
-
-// Model capability flags persist so modality-specific UI paints correctly on
-// reload; the model-config fetch still re-derives them.
-const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
-  new Set([
-    "userEditRevision",
-    "isCheckingVision",
-    "isLoadingModelDefaults",
-    "modelDefaultsError",
-    "modelDefaultsAppliedFor",
-    "isCheckingDataset",
-    "isDatasetImage",
-    "isDatasetAudio",
-    "datasetCheckFailed",
-    "trainOnCompletions",
-    "maxPositionEmbeddings",
-    "s3Config",
-  ]);
-
-function partializePersistedState(
-  state: TrainingConfigStore,
-): Partial<TrainingConfigStore> {
-  return Object.fromEntries(
-    Object.entries(state).filter(([key, value]) => {
-      if (typeof value === "function") return false;
-      const stateKey = key as keyof TrainingConfigState;
-      return !NON_PERSISTED_STATE_KEYS.has(stateKey);
-    }),
-  ) as Partial<TrainingConfigStore>;
-}
-
-function clampStep(step: number): StepNumber {
-  return Math.min(MAX_STEP, Math.max(MIN_STEP, step)) as StepNumber;
-}
-
-function canProceedForStep(state: TrainingConfigState): boolean {
-  switch (state.currentStep) {
-    case 1:
-      return state.modelType !== null;
-    case 2:
-      return state.selectedModel !== null;
-    case 3:
-      if (state.datasetSource === "upload") {
-        return state.uploadedFile !== null;
-      }
-      if (state.datasetSource === "s3") {
-        return validateS3Source(state).ok;
-      }
-      return state.dataset !== null;
-    case 4:
-    case 5:
-      return true;
-    default:
-      return false;
-  }
-}
-
-// Single source of truth for the "streaming + eval needs a distinct split"
-// rule. Shared between the store's compatibility patch and the UI gate
-// (DatasetSection) so the two never drift apart.
-export function hasSeparateStreamingEvalSplit(
-  state: Pick<
-    TrainingConfigState,
-    "evalSteps" | "datasetSplit" | "datasetEvalSplit"
-  >,
-): boolean {
-  if (state.evalSteps <= 0) return true;
-  const trainSplit = state.datasetSplit || "train";
-  return !!state.datasetEvalSplit && state.datasetEvalSplit !== trainSplit;
-}
-
-function streamingCompatiblePatch(
-  state: TrainingConfigState,
-): Partial<TrainingConfigState> {
-  const patch: Partial<TrainingConfigState> = {};
-
-  if (state.datasetStreaming && state.maxSteps <= 0) {
-    patch.datasetStreaming = false;
-  }
-
-  // Evaluate the remaining streaming constraints against the *post-patch*
-  // streaming value. If streaming is being turned off in this same patch
-  // (e.g. maxSteps dropped to 0), its other constraints are moot and we must
-  // NOT clobber unrelated user preferences like trainOnCompletions/evalSteps.
-  const willStream =
-    patch.datasetStreaming !== undefined
-      ? patch.datasetStreaming
-      : state.datasetStreaming;
-
-  if (willStream && state.trainOnCompletions) {
-    patch.trainOnCompletions = false;
-  }
-
-  if (willStream && !hasSeparateStreamingEvalSplit(state)) {
-    patch.evalSteps = 0;
-  }
-
-  return patch;
-}
-
-function formatStreamingDisabledOptions(
-  trainOnCompletions: boolean,
-  evaluation: boolean,
-): string {
-  const options: string[] = [];
-  if (trainOnCompletions) {
-    options.push(
-      translate("studio.dataset.streaming.options.trainOnCompletions"),
-    );
-  }
-  if (evaluation) {
-    options.push(translate("studio.dataset.streaming.options.evaluation"));
-  }
-  if (typeof Intl.ListFormat !== "function") {
-    return options.join(", ");
-  }
-  return new Intl.ListFormat(getLocale(), {
-    style: "long",
-    type: "conjunction",
-  }).format(options);
-}
 
 // streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
 // toast when it does, so the indirect setters (split / eval-split / max-steps /
@@ -554,7 +348,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               typeof modelSizeBytes === "number" &&
               modelSizeBytes > 0 &&
               get().trainingMethod !== "cpt"
-                ? autoSelectTrainingMethod(
+                ? selectTrainingMethodForHardware(
                     modelSizeBytes,
                     patch.contextLength ?? get().contextLength,
                     controller.signal,
@@ -730,6 +524,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             set({
               isDatasetImage: null,
+              isDatasetAudio: false,
               isCheckingDataset: false,
               datasetCheckFailed: true,
             });
@@ -934,10 +729,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       };
 
       return {
-        ...initialState,
+        ...initialTrainingConfigState,
         setStep: (step) => set({ currentStep: step }),
-        nextStep: () => set({ currentStep: clampStep(get().currentStep + 1) }),
-        prevStep: () => set({ currentStep: clampStep(get().currentStep - 1) }),
+        nextStep: () =>
+          set({ currentStep: clampTrainingStep(get().currentStep + 1) }),
+        prevStep: () =>
+          set({ currentStep: clampTrainingStep(get().currentStep - 1) }),
         setModelType: (modelType) => {
           _modelConfigController?.abort();
           _modelConfigController = null;
@@ -1389,13 +1186,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ finetuneMLPModules }),
         setTargetModules: (targetModules) => setUserEdit({ targetModules }),
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
-        canProceed: () => canProceedForStep(get()),
+        canProceed: () => canProceedForTrainingStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;
           _learningRateManuallySet = false;
           _yamlLearningRate = undefined;
           clearCptDatasetFormatTracking();
-          setUserEdit(initialState);
+          setUserEdit(initialTrainingConfigState);
         },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
@@ -1418,108 +1215,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       };
     },
     {
-      name: "unsloth_training_config_v1",
-      version: 16,
-      migrate: (persisted, version) => {
-        const s = persisted as Record<string, unknown>;
-        if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
-          s.datasetSubset = s.datasetConfig;
-        }
-        s.datasetConfig = undefined;
-        if (version < 3 && s.modelDefaultsAppliedFor == null) {
-          s.modelDefaultsAppliedFor = null;
-        }
-        if (version < 4 && s.optimizerType == null) {
-          s.optimizerType = DEFAULT_HYPERPARAMS.optimizerType;
-        }
-        if (version < 5 && s.lrSchedulerType == null) {
-          s.lrSchedulerType = DEFAULT_HYPERPARAMS.lrSchedulerType;
-        }
-        if (version < 6 && s.datasetEvalSplit == null) {
-          s.datasetEvalSplit = null;
-        }
-        if (version < 7) {
-          s.datasetSliceStart ??= null;
-          s.datasetSliceEnd ??= null;
-        }
-        if (version < 8) {
-          s.datasetSystemPrompt ??= "";
-          s.datasetLabelMapping ??= {};
-          s.datasetAdvisorNotification ??= null;
-        }
-        if (version < 9) {
-          // weight_decay default changed from 0.01 to 0.001.
-          if (s.weightDecay === 0.01) {
-            s.weightDecay = DEFAULT_HYPERPARAMS.weightDecay;
-          }
-        }
-        if (version < 10 && s.trainingMethod === "cpt") {
-          // Backfill CPT defaults for state persisted before they existed.
-          s.loraRank = 128;
-          s.loraAlpha = 32;
-          s.loraVariant = "rslora";
-          s.targetModules = CPT_TARGET_MODULES;
-          s.datasetFormat = "raw";
-          if (s.learningRate == null || s.learningRate === LR_DEFAULT_LORA) {
-            s.learningRate = LR_DEFAULT_CPT;
-          }
-        }
-        if (version < 11) {
-          // Standalone bump: users already on main's v10 (CPT) skipped the
-          // streaming backfill when it was nested under v<10, so give it its
-          // own version guard.
-          s.datasetStreaming ??= false;
-        }
-        if (version < 12) {
-          const legacyToken =
-            typeof s.hfToken === "string" ? s.hfToken.trim() : "";
-          if (legacyToken && !getHfToken()) {
-            useHfTokenStore.getState().setToken(legacyToken);
-          }
-          delete s.hfToken;
-        }
-        if (version < 13) {
-          s.modelKnownCached ??= false;
-          s.modelLocalPath ??= null;
-          s.modelFormat ??= null;
-          s.datasetKnownCached ??= false;
-          s.datasetLocalPath ??= null;
-        }
-        if (version < 14) {
-          const dataset = typeof s.dataset === "string" ? s.dataset : null;
-          const uploadedFile =
-            typeof s.uploadedFile === "string" ? s.uploadedFile : null;
-          s.browseDatasetSelection =
-            s.datasetSource === "upload"
-              ? createUploadBrowseDatasetSelection(uploadedFile)
-              : createHfBrowseDatasetSelection(dataset, {
-                  knownCached: s.datasetKnownCached === true,
-                  localPath:
-                    typeof s.datasetLocalPath === "string"
-                      ? s.datasetLocalPath
-                      : null,
-                });
-        }
-        if (version < 15) {
-          s.isEmbeddingModel = s.modelType === "embeddings";
-        }
-        if (version < 16) {
-          delete s.datasetUserTemplate;
-          delete s.datasetAssistantTemplate;
-        }
-        return s as unknown as TrainingConfigStore;
-      },
-      partialize: partializePersistedState,
-      merge: (persisted, current) => {
-        const persistedState = persisted as Partial<TrainingConfigState>;
-        return {
-          ...current,
-          ...persistedState,
-          trainingMethod: isTrainingMethod(persistedState.trainingMethod)
-            ? persistedState.trainingMethod
-            : current.trainingMethod,
-        };
-      },
+      name: TRAINING_CONFIG_PERSISTENCE_NAME,
+      version: TRAINING_CONFIG_PERSISTENCE_VERSION,
+      migrate: migrateTrainingConfig,
+      partialize: partializeTrainingConfig,
+      merge: mergeTrainingConfig,
       onRehydrateStorage: () => (state) => {
         // datasetStreaming, maxSteps, and evalSteps persist, while
         // trainOnCompletions rehydrates to its default. That can resurrect an

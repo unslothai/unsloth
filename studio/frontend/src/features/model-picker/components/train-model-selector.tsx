@@ -568,7 +568,9 @@ export function TrainModelSelector() {
   const showUseThis =
     activeQuery.trim().length > 0 &&
     !hasExactMatch &&
-    (tab === "device" || isValidHubResourceId(activeQuery));
+    (tab === "device"
+      ? !isLoadingLocalModels
+      : isValidHubResourceId(activeQuery));
   const useThisLabel =
     tab === "hub"
       ? t("studio.modelPicker.useAsHubModel")

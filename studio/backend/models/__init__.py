@@ -43,10 +43,6 @@ from .export import (
     ExportLoRAAdapterRequest,
 )
 from .users import Token
-from .datasets import (
-    CheckFormatRequest,
-    CheckFormatResponse,
-)
 from .inference import (
     LoadRequest,
     UnloadRequest,
@@ -107,9 +103,6 @@ __all__ = [
     "ExportGGUFRequest",
     "ExportLoRAAdapterRequest",
     "Token",
-    # Dataset schemas
-    "CheckFormatRequest",
-    "CheckFormatResponse",
     # Inference schemas
     "LoadRequest",
     "UnloadRequest",

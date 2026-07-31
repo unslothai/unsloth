@@ -100,14 +100,16 @@ export async function aiAssistMapping({
   modelName,
   modelType,
 }: AiAssistMappingArgs): Promise<AiAssistMappingResponse> {
-  const res = await authFetch("/api/datasets/ai-assist-mapping", {
+  const res = await authFetch("/api/hub/datasets/ai-assist-mapping", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...hubTokenHeader(hfToken),
+    },
     body: JSON.stringify({
       columns,
       samples: samples.slice(0, 5),
       dataset_name: datasetName || undefined,
-      hf_token: hfToken || undefined,
       model_name: modelName || undefined,
       model_type: modelType || undefined,
     }),
