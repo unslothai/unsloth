@@ -1577,8 +1577,9 @@ STUB_EOF
         # Prefer the pre-built Tauri icon.icns (1024×1024, professionally built
         # with all sizes).  Fall back to generating one from the gem PNG via
         # sips+iconutil, then to a plain PNG copy.
-        if [ -f "$_css_tauri_icns" ]; then
-            cp "$_css_tauri_icns" "$_css_res_dir/AppIcon.icns" 2>/dev/null || true
+        if [ -f "$_css_tauri_icns" ] \
+            && cp "$_css_tauri_icns" "$_css_res_dir/AppIcon.icns" 2>/dev/null; then
+            :
         elif [ -f "$_css_gem_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
             _css_tmpdir=$(mktemp -d 2>/dev/null)
             if [ -d "$_css_tmpdir" ]; then
