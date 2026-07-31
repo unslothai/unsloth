@@ -1394,6 +1394,7 @@ type FirstChatManagedDownloadDeps<TLoad> = {
   requestStart: () => Promise<
     "started" | "cancelling" | "conflict" | "busy" | "error"
   >;
+  tryAdoptServerActiveModel: () => Promise<boolean>;
   readActivationState: () => { modelLoading: boolean; checkpoint: string };
   waitForModelReady: () => Promise<void>;
   reserveActivation: () => boolean;
@@ -1471,6 +1472,11 @@ export async function runFirstChatManagedDownload<TLoad>(
   if (terminal !== "complete") {
     deps.dismissToast();
     return false;
+  }
+
+  if (await deps.tryAdoptServerActiveModel()) {
+    deps.dismissToast();
+    return true;
   }
 
   while (true) {
@@ -2163,6 +2169,7 @@ async function autoLoadSmallestModel(): Promise<{
             variant: DEFAULT_AUTO_LOAD_VARIANT,
             expectedBytes: 0,
           }),
+        tryAdoptServerActiveModel: () => tryAdoptServerActiveModel(),
         readActivationState: () => {
           const current = useChatRuntimeStore.getState();
           return {

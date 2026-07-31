@@ -5,6 +5,7 @@ import {
   type DownloadStartOutcome,
   type PendingStartMap,
   hasPendingStartForRepo,
+  resolveJoinedPendingStart,
   runOrJoinPendingStart,
 } from "../src/features/hub/download-manager/pending-start.ts";
 
@@ -41,6 +42,42 @@ test("exact starts share one action and clean up", async () => {
   gate.resolve("started");
   assert.deepEqual(await Promise.all([first, second]), ["started", "started"]);
   assert.equal(pending.size, 0);
+});
+
+test("an exact join observes cancellation independently of the owner", async () => {
+  const gate = deferred<DownloadStartOutcome>();
+  let cancelling = false;
+  let stateListener = () => {};
+  const owner = gate.promise;
+  const joined = resolveJoinedPendingStart(
+    owner,
+    () => cancelling,
+    (listener) => {
+      stateListener = listener;
+      return () => {};
+    },
+  );
+
+  cancelling = true;
+  stateListener();
+  cancelling = false;
+  gate.resolve("started");
+
+  assert.equal(await owner, "started");
+  assert.equal(await joined, "cancelling");
+});
+
+test("an exact join preserves cancellation visible when it joined", async () => {
+  const gate = deferred<DownloadStartOutcome>();
+  let cancelling = true;
+  const joined = resolveJoinedPendingStart(
+    gate.promise,
+    () => cancelling,
+    () => () => {},
+  );
+  cancelling = false;
+  gate.resolve("started");
+  assert.equal(await joined, "cancelling");
 });
 
 test("repo conflicts are boundary-safe across variants and snapshots", () => {

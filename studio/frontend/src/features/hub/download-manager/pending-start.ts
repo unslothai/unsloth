@@ -10,6 +10,31 @@ export type DownloadStartOutcome =
 
 export type PendingStartMap = Map<string, Promise<DownloadStartOutcome>>;
 
+export async function resolveJoinedPendingStart(
+  pending: Promise<DownloadStartOutcome>,
+  isCancelling: () => boolean,
+  subscribeState: (listener: () => void) => () => void,
+): Promise<DownloadStartOutcome> {
+  let observedCancelling = false;
+  const unsubscribe = subscribeState(() => {
+    if (isCancelling()) {
+      observedCancelling = true;
+    }
+  });
+  if (isCancelling()) {
+    observedCancelling = true;
+  }
+  try {
+    const outcome = await pending;
+    if (observedCancelling || isCancelling()) {
+      return "cancelling";
+    }
+    return outcome;
+  } finally {
+    unsubscribe();
+  }
+}
+
 export function hasPendingStartForRepo(
   pendingStarts: PendingStartMap,
   repoKey: string,

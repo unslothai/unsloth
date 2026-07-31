@@ -2494,6 +2494,11 @@ export function ChatPage({
         expectedBytes: pending.selection.expectedBytes ?? 0,
       });
       if (!active) return;
+      if (outcome === "cancelling") {
+        // Keep the pending selection attached until its terminal event decides
+        // whether this selection should load or be cleared.
+        return;
+      }
       if (outcome === "started") {
         toast.info("Downloading model", {
           description: "It'll load automatically once the download finishes.",

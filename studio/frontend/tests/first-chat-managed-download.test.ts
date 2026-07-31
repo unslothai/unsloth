@@ -65,7 +65,11 @@ function shared(): Shared {
   };
   return value;
 }
-function caller(common: Shared, start: () => Promise<Outcome>) {
+function caller(
+  common: Shared,
+  start: () => Promise<Outcome>,
+  options: { tryAdoptServerActiveModel?: () => Promise<boolean> } = {},
+) {
   let handlers: Terminal | undefined;
   let unsubscribed = 0;
   let dismissed = 0;
@@ -79,6 +83,8 @@ function caller(common: Shared, start: () => Promise<Outcome>) {
     isRequestedVariant: (variant: string | null) => variant === "q4",
     requestStart: start,
     readActivationState: () => common.state,
+    tryAdoptServerActiveModel:
+      options.tryAdoptServerActiveModel ?? (async () => false),
     waitForModelReady: () =>
       common.state.modelLoading
         ? new Promise<void>((resolve) => common.waiters.push(resolve))
@@ -223,4 +229,22 @@ test("an external checkpoint wins without stale publication", async () => {
   assert.equal(common.publishes, 0);
   assert.equal(common.state.modelLoading, false);
   assert.equal(current.stats().dismissed, 1);
+});
+
+test("a server model loaded during the download is adopted before activation", async () => {
+  const common = shared();
+  let adoptionChecks = 0;
+  const current = caller(common, async () => "started", {
+    tryAdoptServerActiveModel: async () => {
+      adoptionChecks += 1;
+      common.state.checkpoint = "server:model";
+      return true;
+    },
+  });
+  const result = runManaged(current.deps);
+  current.fire().onComplete("q4");
+  assert.equal(await result, true);
+  assert.equal(adoptionChecks, 1);
+  assert.equal(common.loads, 0);
+  assert.equal(common.publishes, 0);
 });

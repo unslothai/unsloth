@@ -20,11 +20,13 @@ import {
   jobKeyOf,
   repoKeyOf,
   setConflict,
+  useDownloadManagerStore,
 } from "./download-manager-state";
 import type { DownloadRequest } from "./download-manager-types";
 import {
   type DownloadStartOutcome,
   hasPendingStartForRepo,
+  resolveJoinedPendingStart,
   runOrJoinPendingStart,
 } from "./pending-start";
 import { startJob } from "./poll-loop";
@@ -110,7 +112,13 @@ async function runWithPendingStartGuard(
   const pendingStarts = runtimeRegistry.pendingStartRepoKeys;
 
   const exactPending = pendingStarts.get(startKey);
-  if (exactPending) return exactPending;
+  if (exactPending) {
+    return resolveJoinedPendingStart(
+      exactPending,
+      () => existingJobStartOutcome(req) === "cancelling",
+      (listener) => useDownloadManagerStore.subscribe(listener),
+    );
+  }
 
   const repoKey = repoKeyOf(req.kind, req.repoId);
   if (hasPendingStartForRepo(pendingStarts, repoKey)) return "busy";
