@@ -1015,8 +1015,7 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
-        // A folder has no download to resume, so a quant short a shard is not a pick: the load
-        // would ask llama-server for files that are not on disk.
+        // A folder has no download to resume, and a quant short a shard has no files to load.
         const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);

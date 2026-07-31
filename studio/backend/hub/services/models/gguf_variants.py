@@ -841,9 +841,8 @@ async def get_gguf_variants_response(
         repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
             repo_cache_dir, scan_snapshot_dir
         )
-        # The excuse is that this snapshot holds the quant whole, so it covers only those quants: one
-        # the snapshot does not hold is still the cancelled download the signal describes, and it
-        # needs its resume and delete affordances.
+        # The excuse is that this snapshot holds the quant whole, so it covers only those quants: a
+        # quant it lacks is still the cancelled download, and needs its resume and delete affordances.
         excused_quants = (
             frozenset()
             if repo_signal_applies or scan_snapshot_dir is None
@@ -888,8 +887,7 @@ async def get_gguf_variants_response(
                 logger.warning(
                     f"Manifest-based partial check failed for " f"{repo_id}/{variant.quant}: {e}"
                 )
-        # Same attribution as the main check above: a pinned older snapshot is not judged by the
-        # blobs a newer attempt left behind.
+        # Same attribution as above: a pinned snapshot is not judged by a newer attempt's blobs.
         if incomplete_hashes:
             for variant in variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())

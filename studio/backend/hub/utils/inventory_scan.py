@@ -914,8 +914,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             empty_match = _WEIGHT_SHARD_RE.search(path.name)
             if empty_kind is None:
                 # An ungroupable payload is judged on nothing else, so an empty one must be
-                # remembered. Same evidence rule as the walk below: a diffusion .safetensors counts
-                # there, so an empty one has to count here.
+                # remembered. Same set the walk below counts, diffusion .safetensors included.
                 if (
                     not _is_adapter_weight_name(name)
                     and not _is_training_artefact_name(name)
@@ -1356,8 +1355,7 @@ def is_variant_partial(
             variant,
             hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
         ),
-        # blobs/ is repo-wide and each attempt rewrites it, so a retry's .incomplete belongs to the
-        # newest snapshot the same way a marker does.
+        # blobs/ is repo-wide, so a retry's .incomplete belongs to the newest snapshot, like a marker.
         lambda: repo_signal_applies
         and bool(
             incomplete_blob_hashes
