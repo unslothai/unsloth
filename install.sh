@@ -1476,10 +1476,17 @@ LAUNCHER_EOF
         _css_desktop="$_css_app_dir/unsloth-studio.desktop"
         # Escape backslashes and double-quotes for .desktop Exec= field
         _css_exec_escaped=$(printf '%s' "$_css_launcher" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        # Prefer the higher-resolution Tauri icon.png for Linux when available
+        # Prefer the higher-resolution Tauri icon.png, but persist it under the
+        # installed data directory so local-checkout shortcuts survive repo moves.
         _css_desktop_icon="$_css_icon_png"
         if [ -f "$_css_tauri_png" ]; then
-            _css_desktop_icon="$_css_tauri_png"
+            _css_desktop_icon_tmp="${_css_icon_png}.tmp"
+            if cp "$_css_tauri_png" "$_css_desktop_icon_tmp" 2>/dev/null \
+                && mv "$_css_desktop_icon_tmp" "$_css_icon_png" 2>/dev/null; then
+                :
+            else
+                rm -f "$_css_desktop_icon_tmp"
+            fi
         fi
         _css_icon_escaped=$(printf '%s' "$_css_desktop_icon" | sed 's/\\/\\\\/g; s/"/\\"/g')
         cat > "$_css_desktop" << DESKTOP_EOF
