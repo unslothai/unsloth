@@ -45,10 +45,14 @@ assert_contains "install.sh: documents the correct (post-pipe) env form" \
     "$INSTALL_SH" "| UNSLOTH_LLAMA_CPP_BACKEND=cpu sh"
 
 echo ""
-echo "=== install.ps1: parses --cpu/--vulkan and exports $ENV_VAR ==="
-assert_contains "install.ps1: accepts --cpu flag"    "$INSTALL_PS1" '"--cpu"      { $LlamaCppBackendFlag = "cpu" }'
-assert_contains "install.ps1: accepts --vulkan flag" "$INSTALL_PS1" '"--vulkan"   { $LlamaCppBackendFlag = "vulkan" }'
-assert_contains "install.ps1: exports $ENV_VAR"      "$INSTALL_PS1" '$env:UNSLOTH_LLAMA_CPP_BACKEND = $LlamaCppBackendFlag'
+echo "=== install.ps1: parses --cpu/--vulkan and sets $ENV_VAR ==="
+assert_contains "install.ps1: accepts --cpu flag"    "$INSTALL_PS1" '$LlamaCppBackendFlag = "cpu"'
+assert_contains "install.ps1: accepts --vulkan flag" "$INSTALL_PS1" '$LlamaCppBackendFlag = "vulkan"'
+assert_contains "install.ps1: sets $ENV_VAR for the setup run" "$INSTALL_PS1" '$env:UNSLOTH_LLAMA_CPP_BACKEND = $LlamaCppBackendFlag'
+# The iex path runs in the caller's session, so the backend must be restored/cleared
+# after setup rather than leaking (mirrors UNSLOTH_STUDIO_HOME / _LOCAL_LLAMA_CPP_DIR).
+assert_contains "install.ps1: restores/clears $ENV_VAR after setup (no iex leak)" \
+    "$INSTALL_PS1" "Remove-Item Env:UNSLOTH_LLAMA_CPP_BACKEND"
 
 echo ""
 echo "=== setup scripts already consume $ENV_VAR (the flag's target) ==="

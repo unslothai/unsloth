@@ -169,11 +169,9 @@ function Install-UnslothStudio {
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
 
-    # llama.cpp backend: a --cpu / --vulkan flag works through `iex` / scriptblock
-    # where $env:UNSLOTH_LLAMA_CPP_BACKEND set before the pipe would too, but the
-    # flag is the documented parity path to install.sh's --cpu (#7213). setup.ps1
-    # reads $env:UNSLOTH_LLAMA_CPP_BACKEND; an explicit flag wins over the env var.
-    if ($LlamaCppBackendFlag) { $env:UNSLOTH_LLAMA_CPP_BACKEND = $LlamaCppBackendFlag }
+    # A --cpu / --vulkan backend choice is applied around the setup.ps1 call below
+    # (with save/restore), not here: `irm | iex` runs in the caller's session, so
+    # setting $env:UNSLOTH_LLAMA_CPP_BACKEND at parse time would leak into it (#7213).
 
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
@@ -2800,6 +2798,13 @@ exit 0
     } else {
         Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
     }
+    # Apply the --cpu / --vulkan backend choice only around the setup run, with
+    # save/restore, so `irm | iex` doesn't leave it set in the caller's session
+    # (#7213). setup.ps1 reads $env:UNSLOTH_LLAMA_CPP_BACKEND; the flag wins over
+    # an inherited value for this run.
+    $previousLlamaBackend = $env:UNSLOTH_LLAMA_CPP_BACKEND
+    $hadPreviousLlamaBackend = ($null -ne $previousLlamaBackend)
+    if ($LlamaCppBackendFlag) { $env:UNSLOTH_LLAMA_CPP_BACKEND = $LlamaCppBackendFlag }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     if ($WithLlamaCppDir) {
@@ -2832,6 +2837,13 @@ exit 0
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
+        if ($LlamaCppBackendFlag) {
+            if ($hadPreviousLlamaBackend) {
+                $env:UNSLOTH_LLAMA_CPP_BACKEND = $previousLlamaBackend
+            } else {
+                Remove-Item Env:UNSLOTH_LLAMA_CPP_BACKEND -ErrorAction SilentlyContinue
+            }
+        }
     }
     if ($setupExit -ne 0) {
         if (-not $TauriMode) {
