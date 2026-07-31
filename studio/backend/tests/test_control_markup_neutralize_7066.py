@@ -28,6 +28,21 @@ from core.inference.chat_template_helpers import (
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _inference_module():
+    """``core.inference.inference`` or a skip.
+
+    It imports unsloth at module scope, which raises ImportError("Unsloth: torch not
+    found") on a runner without torch. ``pytest.importorskip`` does not turn that into a
+    skip, because the error comes from unsloth rather than from the module named here, so
+    the guard has to be explicit.
+    """
+    try:
+        import core.inference.inference as inference_module
+    except ImportError as exc:  # pragma: no cover - depends on the runner's deps
+        pytest.skip(f"core.inference.inference is unavailable here: {exc}")
+    return inference_module
+
+
 # Every marker family a vendored template emits. Each must stop being a delimiter.
 @pytest.mark.parametrize(
     "marker",
@@ -594,7 +609,7 @@ def test_vision_processor_render_is_neutralized():
     import threading
 
     torch = pytest.importorskip("torch")
-    inf = pytest.importorskip("core.inference.inference")
+    inf = _inference_module()
 
     seen: dict = {}
 
@@ -1017,7 +1032,7 @@ def test_anthropic_passthrough_body_is_neutralized():
 def test_text_only_vision_system_prompt_is_neutralized():
     """``format_chat_prompt`` renders with the tokenizer directly, so a text-only request
     to a vision model skipped the choke point and kept a raw system prompt (#7066)."""
-    inf = pytest.importorskip("core.inference.inference")
+    inf = _inference_module()
 
     seen: dict = {}
 
