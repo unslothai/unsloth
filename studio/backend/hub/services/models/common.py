@@ -266,6 +266,15 @@ def _is_checkpoint_weight_name(name: str) -> bool:
     return lower.endswith(_LOCAL_CHECKPOINT_EXTENSIONS)
 
 
+def _is_discoverable_ungrouped_weight_name(name: str) -> bool:
+    """A payload no shard family groups that a runtime still opens by name: a diffusers component
+    weight, or a single-file checkpoint. An arbitrary foo.safetensors is neither."""
+    lower = _weight_basename(name)
+    if lower.endswith(".safetensors"):
+        return lower.startswith("diffusion_pytorch_model")
+    return _is_checkpoint_weight_name(lower)
+
+
 def _is_adapter_weight_file(path: Path) -> bool:
     return _is_adapter_weight_name(path.name)
 

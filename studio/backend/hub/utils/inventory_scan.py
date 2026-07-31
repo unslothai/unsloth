@@ -825,6 +825,8 @@ class _SnapshotPayload(NamedTuple):
     root_indexes: frozenset
     # Of those, the ones naming a file that is missing or empty.
     unusable_root_indexes: frozenset
+    # Kinds whose root payload no loader opens by name, e.g. an arbitrary foo.safetensors.
+    unreachable_root: frozenset
 
 
 def _root_file_is_empty(snapshot_dir: Path, name: str) -> Optional[bool]:
@@ -895,6 +897,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         _classify_non_gguf_model_format,
         _is_adapter_weight_name,
         _is_checkpoint_weight_name,
+        _is_discoverable_ungrouped_weight_name,
         _is_training_artefact_name,
         _is_transformers_safetensors_weight_name,
     )
@@ -917,6 +920,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     empty_whole: dict[str, set[str]] = {"base": set(), "adapter": set()}
     empty_ungrouped: set[str] = set()
     nested: set[str] = set()
+    unreachable_root: set[str] = set()
     unreadable: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
@@ -978,12 +982,16 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             base_evidence = not is_adapter
         kind = _weight_family_kind(path.name)
         if kind is None:
-            # Ungroupable (.ckpt, diffusion prefix) but still a payload; only a root copy is found.
+            # Ungroupable but still a payload; only a root copy is found.
             if base_evidence:
-                if at_root:
+                if not at_root:
+                    nested.add("base")
+                elif _is_discoverable_ungrouped_weight_name(name):
+                    # A .ckpt or diffusers component: no family groups it, a runtime still opens it.
                     ungrouped.add("base")
                 else:
-                    nested.add("base")
+                    # An arbitrary root .safetensors, which nothing probes by name.
+                    unreachable_root.add("base")
             continue
         match = _WEIGHT_SHARD_RE.search(path.name)
         if match is None:
@@ -1055,6 +1063,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         frozenset(nested),
         frozenset(root_indexes),
         frozenset(unusable_root_indexes),
+        frozenset(unreachable_root),
     )
 
 
@@ -1164,8 +1173,11 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         ):
             # This kind's weights are here but no name the loader tries reaches them.
             return True
-    # No family either way: an ungroupable payload is evidence only when empty and alone.
-    return wanted in payload.empty_ungrouped and wanted not in payload.ungrouped
+    # No family either way: an ungroupable payload is evidence only when empty and alone, and one
+    # under a name nothing opens is no better than none.
+    return (
+        wanted in payload.empty_ungrouped or wanted in payload.unreachable_root
+    ) and wanted not in payload.ungrouped
 
 
 def _snapshot_cannot_serve_its_payload(

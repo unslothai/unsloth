@@ -3724,3 +3724,47 @@ def test_an_index_less_shard_set_does_not_veto_a_whole_family(tmp_path, monkeypa
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is False
     assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_root_weight_no_runtime_discovers_by_name_does_not_serve(tmp_path, monkeypatch):
+    """An arbitrary root .safetensors classifies the snapshot but names no family and is not a
+    diffusers component, so nothing probes it. A .ckpt or diffusion weight is discovered by name and
+    still serves."""
+    for weights, serves in (
+        ({"foo.safetensors": b"\0" * 256}, False),
+        ({"foo.safetensors": b"\0" * 256, "bar.safetensors": b"\0" * 256}, False),
+        ({"model.ckpt": b"\0" * 256}, True),
+        ({"diffusion_pytorch_model.safetensors": b"\0" * 256}, True),
+    ):
+        root = tmp_path / "-".join(sorted(weights)).replace(".", "_")
+        _repo_with(
+            root,
+            snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', **weights}},
+            refs = {"main": UPSTREAM_HEAD},
+        )
+
+        rows = _autoload_rows(root, monkeypatch)
+
+        assert rows[0]["partial"] is not serves
+        assert rows[0]["capabilities"]["can_chat"] is serves
+
+
+def test_a_root_weight_no_runtime_discovers_does_not_veto_one_it_does(tmp_path, monkeypatch):
+    """Control for the test above: an unopened name is not evidence either way, so a canonical
+    weight beside it still decides."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "foo.safetensors": b"\0" * 256,
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
