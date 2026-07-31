@@ -326,7 +326,7 @@ _OPAQUE_PART_KEYS = frozenset(
 )
 
 
-def _neutralize_content_parts(content: list, rewrite):
+def _neutralize_content_parts(content: list, rewrite, media_opaque: bool = True):
     """Neutralize an OpenAI-style content parts list (#7066).
 
     Two things the naive per-part rewrite missed. A part that is a mapping without a
@@ -347,7 +347,7 @@ def _neutralize_content_parts(content: list, rewrite):
             # "type" can be a list or a dict and an unhashable value would raise
             # TypeError out of the set lookup and 500 the request before rendering.
             part_type = part.get("type")
-            if isinstance(part_type, str) and part_type in _MEDIA_PART_TYPES:
+            if isinstance(part_type, str) and part_type in _MEDIA_PART_TYPES and media_opaque:
                 opaque = {k: v for k, v in part.items() if k in _OPAQUE_PART_KEYS}
                 swept = _neutralize_leaves(
                     {k: v for k, v in part.items() if k not in _OPAQUE_PART_KEYS}, rewrite
@@ -581,7 +581,12 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 # object value reaches the prompt as live structure too (#7066).
                 new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
-                new_content = _neutralize_content_parts(content, rewrite)
+                # A media part is only opaque where something RESOLVES it. Nothing
+                # resolves one inside a tool result: Studio's vision and audio paths build
+                # from the last user message, while Llama-3.1's tool branch serializes the
+                # whole content iterable with tojson (chat_templates.py:519-520), so an
+                # exempt URL there lands in the prompt as live structure (#7066).
+                new_content = _neutralize_content_parts(content, rewrite, role != "tool")
             if _differs(new_content, content):
                 updates["content"] = new_content
         tool_calls = msg.get("tool_calls")
@@ -668,11 +673,13 @@ _SCHEMA_KEYED_IDENTIFIERS = frozenset(
         "definitions",
         # Both dependent* keywords are keyed BY a property name, and dependentRequired's
         # values are lists of property names as well, so it is checked on both sides below.
+        # "dependencies" is draft-07's spelling of both, so it is keyed and list-valued too.
         "dependentSchemas",
         "dependentRequired",
+        "dependencies",
     }
 )
-_SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired"})
+_SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired", "dependencies"})
 # "pattern" and "default" belong here for the same reason: a grammar built from the
 # schema forces the model to satisfy the rewritten regex or echo the rewritten default,
 # and the MCP server then validates the original and rejects the call. This is the case

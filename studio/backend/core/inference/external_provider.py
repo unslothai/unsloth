@@ -22,7 +22,12 @@ import structlog
 # The providers that are a local server rather than a hosted API: each applies the
 # model's own chat template on the way in, so a prompt built here is rendered by a
 # template just as an in-process one is (#7066).
-_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama"})
+# "custom" is in here because it is a user-supplied OpenAI-compatible base_url
+# (routes/providers.py:207-213), which is exactly how a self-hosted vLLM or llama.cpp gets
+# registered without its preset. Unknown endpoint means assume it applies a template: the
+# cost of sweeping a hosted API is a space in text that looks like a delimiter, and the
+# cost of not sweeping a local one is a forged turn.
+_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
