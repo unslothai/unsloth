@@ -441,6 +441,46 @@ def test_the_local_default_variant_is_one_that_can_load(
     assert {v.quant for v in response.variants if v.downloaded} == expected_ready
 
 
+def test_variant_readiness_is_counted_in_the_snapshot_the_row_pinned(monkeypatch, tmp_path):
+    """A pinned row resolves inside one directory. Counting readiness across the repo offered a
+    quant living in a sibling revision, which the pinned load then cannot find."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Quant"
+    pinned, sibling = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
+    for path in (pinned, sibling):
+        path.mkdir(parents = True)
+    (pinned / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    (sibling / "Model-Q8_0.gguf").write_bytes(b"\0" * 256)
+    os.utime(pinned, (1_000, 1_000))
+    os.utime(sibling, (2_000, 2_000))
+
+    monkeypatch.setattr(
+        "hub.utils.gguf.iter_hf_cache_snapshots",
+        lambda repo_id, root = None: [sibling, pinned],
+    )
+    monkeypatch.setattr(
+        "hub.services.models.gguf_variants.iter_hf_cache_snapshots",
+        lambda repo_id, root = None: [sibling, pinned],
+    )
+
+    scoped = asyncio.run(
+        GV.get_gguf_variants_response(
+            "Org/Quant", prefer_local_cache = True, local_path = str(pinned)
+        )
+    )
+    assert {v.quant for v in scoped.variants if v.downloaded} == {"Q4_K_M"}
+
+    # Control: naming the sibling counts that directory instead.
+    other = asyncio.run(
+        GV.get_gguf_variants_response(
+            "Org/Quant", prefer_local_cache = True, local_path = str(sibling)
+        )
+    )
+    assert {v.quant for v in other.variants if v.downloaded} == {"Q8_0"}
+
+
 def test_list_cached_gguf_pins_a_snapshot_when_the_default_ref_quant_is_torn(monkeypatch, tmp_path):
     """The repo id resolving is not enough: refs/main can land on a revision holding half a split
     while an older one is whole. The compat schema carries no partial flag, so a client loading the

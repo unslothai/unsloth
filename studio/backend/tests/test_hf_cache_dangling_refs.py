@@ -1776,6 +1776,42 @@ def test_a_required_config_has_to_parse_before_it_proves_a_payload(
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+@pytest.mark.parametrize(
+    "artefact",
+    ["optimizer.safetensors", "scheduler.safetensors", "trainer_state.safetensors"],
+)
+def test_trainer_state_is_not_the_model_it_was_saved_beside(tmp_path, monkeypatch, artefact):
+    """A trainer writes these next to the weights. They end in .safetensors and from_pretrained
+    will not load one, so a snapshot holding nothing else has no payload to offer."""
+    _repo_with(
+        tmp_path,
+        snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', artefact: b"\0" * 256}},
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    assert _autoload_rows(tmp_path, monkeypatch) == []
+
+
+def test_trainer_state_beside_real_weights_changes_nothing(tmp_path, monkeypatch):
+    """Negative control for the test above: the artefact is ignored, not held against the row."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "optimizer.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_a_config_that_parses_still_proves_a_payload(tmp_path, monkeypatch):
     """Negative control for the test above: the same shape with a readable config."""
     _repo_with(

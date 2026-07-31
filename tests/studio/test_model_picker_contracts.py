@@ -370,6 +370,8 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
         body = re.search(rf"function {mapper}\(.*?\n}}", inventory, re.S)
         assert body, f"{mapper} not found"
         assert "load_id: row.loadId" in body.group(0), f"{mapper} drops the pinned id"
+        # Delete sends this so it removes the copy on screen, not whichever the active cache holds.
+        assert "cache_path: row.cachePath" in body.group(0), f"{mapper} drops the cache path"
 
     meta = _read("features/model-picker/components/model-selector/types.ts")
     assert "loadId?: string | null;" in meta

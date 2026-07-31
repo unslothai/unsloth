@@ -847,6 +847,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         _classify_non_gguf_model_format,
         _is_adapter_weight_name,
         _is_checkpoint_weight_name,
+        _is_training_artefact_name,
         _is_transformers_safetensors_weight_name,
     )
 
@@ -913,7 +914,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         base_evidence = False
         if is_adapter:
             flags["has_adapter_weights"] = True
-        elif name.endswith(".safetensors"):
+        elif name.endswith(".safetensors") and not _is_training_artefact_name(name):
             flags["has_safetensors"] = True
             base_evidence = True
             if _is_transformers_safetensors_weight_name(name):

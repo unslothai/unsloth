@@ -30,6 +30,7 @@ from hub.services.models.common import (
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
+    _is_training_artefact_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
@@ -608,7 +609,12 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 flags["has_adapter_config"] = True
                 continue
             is_adapter = _is_adapter_weight_name(name)
-            is_safetensors = name.endswith(".safetensors") and not is_adapter
+            is_safetensors = (
+                name.endswith(".safetensors")
+                and not is_adapter
+                # Trainer state is not the model, so it cannot classify a revision as one.
+                and not _is_training_artefact_name(name)
+            )
             is_checkpoint = _is_checkpoint_weight_name(name)
             if is_adapter:
                 flags["has_adapter_weights"] = True

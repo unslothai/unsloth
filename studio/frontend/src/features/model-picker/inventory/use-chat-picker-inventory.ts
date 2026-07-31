@@ -42,6 +42,9 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
   return {
     repo_id: row.repoId,
     load_id: row.loadId,
+    // Delete targets the copy the row describes. Without this the request falls back to the
+    // active cache, which for a deduplicated row is a different copy from the one shown.
+    cache_path: row.cachePath,
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
   };

@@ -455,6 +455,21 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
+def _snapshot_scope_for_request(local_path: Optional[str]) -> Optional[Path]:
+    """The one snapshot *local_path* names, when it names one.
+
+    A row pinned to a snapshot loads out of that directory and nothing else, so readiness has to be
+    counted there: a quant sitting in a sibling revision is not one this row can resolve.
+    """
+    if not local_path:
+        return None
+    try:
+        local = Path(local_path).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return local if local.parent.name == "snapshots" and local.is_dir() else None
+
+
 def _repo_cache_dir_for_request(repo_id: str, local_path: Optional[str]) -> Path:
     """Resolve the one Hub repo cache represented by this variant request."""
     expected_name = repo_cache_dir_name("model", repo_id).lower()
@@ -536,6 +551,7 @@ async def get_gguf_variants_response(
             None if is_local_path(repo_id) else _repo_cache_dir_for_request(repo_id, local_path)
         )
         hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None
+        snapshot_scope = _snapshot_scope_for_request(local_path)
 
         def _local_response(
             response_repo_id: str,
@@ -616,8 +632,22 @@ async def get_gguf_variants_response(
         if not _is_valid_repo_id(repo_id):
             raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
+        def _scoped_local_response():
+            """The pinned snapshot's own answer, or None when it holds nothing."""
+            if snapshot_scope is None:
+                return None
+            variants, has_vision = list_local_gguf_variants(str(snapshot_scope))
+            if not (variants or has_vision):
+                return None
+            return _local_response(
+                repo_id, variants, has_vision, _complete_quants_under(str(snapshot_scope))
+            )
+
         local_only = prefer_local_cache or offline
         if local_only:
+            scoped_response = _scoped_local_response()
+            if scoped_response is not None:
+                return scoped_response
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete = cached
@@ -650,6 +680,9 @@ async def get_gguf_variants_response(
         try:
             variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
         except Exception:
+            scoped_response = _scoped_local_response()
+            if scoped_response is not None:
+                return scoped_response
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete = cached
@@ -672,7 +705,13 @@ async def get_gguf_variants_response(
         cached_filenames_by_snapshot: list[dict[str, int]] = []
         cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
         if _is_valid_repo_id(repo_id):
-            for snap in iter_hf_cache_snapshots(repo_id, root = hub_cache):
+            # A pinned row resolves inside one directory, so nothing else counts as downloaded.
+            scoped_snapshots = (
+                [snapshot_scope]
+                if snapshot_scope is not None
+                else iter_hf_cache_snapshots(repo_id, root = hub_cache)
+            )
+            for snap in scoped_snapshots:
                 try:
                     gguf_paths = list(_iter_gguf_paths(snap))
                 except (OSError, RuntimeError, ValueError) as e:
