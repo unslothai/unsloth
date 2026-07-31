@@ -162,7 +162,6 @@ def usable_prequant_source(
     return src
 
 
-
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
     """Force every loaded fp8 weight onto the plain-torch kernel, matching the local path.
 
