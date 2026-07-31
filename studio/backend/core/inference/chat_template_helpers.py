@@ -761,8 +761,14 @@ def _first_unsafe_leaf(value):
 # extension fields, and a "default" or "properties" key inside one of those is ordinary
 # descriptive text that should be neutralized like any other prose, not a reason to drop
 # the tool.
-_SCHEMA_ROOT_KEYS = ("parameters", "input_schema", "inputSchema", "outputSchema",
-                     "output_schema", "returns")
+_SCHEMA_ROOT_KEYS = (
+    "parameters",
+    "input_schema",
+    "inputSchema",
+    "outputSchema",
+    "output_schema",
+    "returns",
+)
 
 
 def _schema_roots(target):
