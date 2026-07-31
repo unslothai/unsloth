@@ -837,6 +837,28 @@ class TestResolveRepoIdCasing:
             str(old / "qwen-Q4_K_M.gguf"),
         ) == str(new / "mmproj-qwen-F16.gguf")
 
+    def test_older_matching_projector_can_pair_with_same_cached_weight_blob(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "b" * 40,
+        )
+        os.link(new / "qwen-Q4_K_M.gguf", old / "qwen-Q4_K_M.gguf")
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        assert _compatible_cached_mmproj(
+            "unsloth/qwen-GGUF",
+            str(new / "qwen-Q4_K_M.gguf"),
+        ) == str(old / "mmproj-qwen-F16.gguf")
+
     def test_implausible_split_total_does_not_expand_declared_range(self, hf_cache):
         _build_cache(
             hf_cache,

@@ -13604,11 +13604,16 @@ class LlamaCppBackend:
                     return False
                 self._audio_type = detected
         # Audio input = token probe (audio_vlm/whisper) OR mmproj encoder.
-        from utils.models.model_config import is_audio_input_type
+        # A structured preflight can already prove a model is non-chat. Keep that
+        # conservative result, and let a later runtime probe only narrow an
+        # optimistic/unknown preflight when it discovers an ASR or TTS identity.
+        from utils.models.model_config import _NON_CHAT_AUDIO_TYPES, is_audio_input_type
 
         self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
             self._mmproj_has_audio
         )
+        if detected in _NON_CHAT_AUDIO_TYPES:
+            self._is_chat_capable = False
         return True
 
     def _detect_audio_type_strict(self) -> Optional[str]:

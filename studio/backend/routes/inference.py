@@ -3820,6 +3820,21 @@ def _target_is_vision(load_path: str) -> bool:
         return True
 
 
+def _target_has_audio_input(load_path: str) -> bool:
+    """Whether a resolved local GGUF can accept audio input without loading it."""
+    try:
+        config = ModelConfig.from_identifier(
+            model_id = load_path,
+            hf_token = os.environ.get("HF_TOKEN"),
+        )
+        # A resolver hit should produce a config. If probing unexpectedly cannot,
+        # preserve the vision guard's fail-open behavior and let the loader decide.
+        return True if config is None else bool(config.has_audio_input)
+    except Exception as exc:
+        logger.debug("auto-switch: audio probe failed for %s: %s", load_path, exc)
+        return True
+
+
 def _messages_have_image(messages) -> bool:
     return any(
         isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
@@ -4348,15 +4363,16 @@ async def _maybe_auto_switch_model(
     current_subject: str,
     *,
     require_vision: bool = False,
+    require_audio: bool = False,
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
     No-op unless enabled and ``requested_model`` resolves to a downloaded local
     model different from the loaded one. Unknown names fall through (drop-in
     compat); a miss only reaches the network when auto-download is also on, and
-    even then only for ``namespace/name`` ids. ``require_vision`` rejects a swap
-    to a text-only target before it runs, so an image request can't evict the
-    resident vision model only to 400 afterwards.
+    even then only for ``namespace/name`` ids. Capability requirements reject a swap
+    to an incompatible target before it runs, so multimodal requests cannot evict a
+    working model only to fail validation afterwards.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -4402,7 +4418,11 @@ async def _maybe_auto_switch_model(
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
                 await _maybe_auto_download_model(
-                    requested_model, fastapi_request, require_vision = require_vision
+                    requested_model,
+                    fastapi_request,
+                    # The downloader's capability preflight is mmproj-based. Audio
+                    # requests still need that companion downloaded with the weights.
+                    require_vision = require_vision or require_audio,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
@@ -4475,26 +4495,28 @@ async def _maybe_auto_switch_model(
         if _already_serving():
             _record_serving_alias()
             return
-        # An image/audio request naming a different text-only GGUF would load it
-        # here and only 400 below, evicting the working model. Reject before the
-        # swap. Only the resolver branch (an explicit new target); the reload-stash
-        # path just restores the model the request was already using. Both vision and
-        # audio input come from a companion mmproj (a filesystem probe) -- run it off
-        # the loop, like the resolver above.
-        if (
-            require_vision
-            and resolved is not None
-            and not await asyncio.to_thread(_target_is_vision, target_id)
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    "The requested model does not support the image or audio input in this request.",
-                    status = 400,
-                    code = "invalid_value",
-                    param = "model",
-                ),
+        # A multimodal request naming an incompatible GGUF would load it here and
+        # only fail below, evicting the working model. Reject before the swap. The
+        # resolver branch is an explicit new target; a reload-stash restore remains
+        # untouched. Run filesystem/model metadata probes off the event loop.
+        if resolved is not None:
+            unsupported = (
+                require_vision
+                and not await asyncio.to_thread(_target_is_vision, target_id)
+            ) or (
+                require_audio
+                and not await asyncio.to_thread(_target_has_audio_input, target_id)
             )
+            if unsupported:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "The requested model does not support the image or audio input in this request.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "model",
+                    ),
+                )
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
@@ -4699,6 +4721,7 @@ def _estimate_gguf_required_gb(
     cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies."""
     try:
+        mmproj_disabled = extra_args_disable_mmproj(llama_extra_args)
         main = getattr(config, "gguf_file", None)
         main_bytes = 0
         if main and Path(main).is_file():
@@ -4706,6 +4729,8 @@ def _estimate_gguf_required_gb(
         if main_bytes > 0:
             total_bytes = main_bytes
             for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+                if attr == "gguf_mmproj_file" and mmproj_disabled:
+                    continue
                 f = getattr(config, attr, None)
                 if f and Path(f).is_file():
                     total_bytes += Path(f).stat().st_size
@@ -4732,7 +4757,10 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                include_mmproj = bool(has_vision or getattr(config, "has_audio_input", False)),
+                include_mmproj = bool(
+                    not mmproj_disabled
+                    and (has_vision or getattr(config, "has_audio_input", False))
+                ),
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -9056,6 +9084,7 @@ async def openai_chat_completions(
     # Parse once and reuse below.
     _pre_parsed = None
     _needs_vision = False
+    _needs_audio = False
     if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -9152,17 +9181,17 @@ async def openai_chat_completions(
         # serving path decides whether the shape is supported.
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
-        # Audio input rides the same companion-mmproj projector as vision, so a
-        # text-only target can't serve it either; guard both before the switch.
-        _needs_vision = (
-            bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
-        )
+        # Keep image and audio requirements distinct: an audio-only projector correctly
+        # reports no vision support, while ModelConfig still marks audio input support.
+        _needs_vision = bool(_pre_parsed[2]) or _request_has_image(payload)
+        _needs_audio = bool(payload.audio_base64)
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
         require_vision = _needs_vision,
+        require_audio = _needs_audio,
     )
 
     llama_backend = get_llama_cpp_backend()

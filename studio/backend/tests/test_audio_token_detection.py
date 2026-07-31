@@ -10,6 +10,8 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from core.inference import llama_cpp
 from utils.models import model_config
 from utils.models import gguf_metadata
@@ -159,6 +161,25 @@ def test_runtime_audio_probe_preserves_chat_capability(monkeypatch):
     monkeypatch.setattr(gguf_metadata, "detect_gguf_audio_type", lambda _path: "audio_vlm")
 
     assert backend._detect_audio_type_strict() == "audio_vlm"
+
+
+@pytest.mark.parametrize(
+    ("detected", "preflight_chat_capable", "expected_chat_capable"),
+    [
+        ("csm", True, False),
+        ("whisper", True, False),
+        ("audio_vlm", True, True),
+    ],
+)
+def test_runtime_audio_probe_recomputes_chat_capability(
+    detected, preflight_chat_capable, expected_chat_capable
+):
+    backend = llama_cpp.LlamaCppBackend()
+    backend._healthy = True
+    backend._is_chat_capable = preflight_chat_capable
+
+    assert backend._apply_detected_audio(detected) is True
+    assert backend._is_chat_capable is expected_chat_capable
 
 
 def test_runtime_audio_probe_keeps_identity_confirmed_csm(monkeypatch):

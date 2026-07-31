@@ -2100,19 +2100,9 @@ def _compatible_cached_mmproj(repo_id: str, gguf_file: str) -> Optional[str]:
         weight_relative_path = Path(gguf_file).relative_to(gguf_snapshot)
     except ValueError:
         return None
-    try:
-        gguf_snapshot_mtime = gguf_snapshot.stat().st_mtime if gguf_snapshot else None
-    except OSError:
-        gguf_snapshot_mtime = None
     for snapshot in _iter_hf_cache_snapshots(repo_id):
         if gguf_snapshot is not None and snapshot == gguf_snapshot:
             continue
-        if gguf_snapshot_mtime is not None:
-            try:
-                if snapshot.stat().st_mtime < gguf_snapshot_mtime:
-                    continue
-            except OSError:
-                continue
         candidate_weight = snapshot / weight_relative_path
         try:
             if not candidate_weight.is_file() or not os.path.samefile(
