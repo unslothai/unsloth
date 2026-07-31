@@ -15,7 +15,6 @@ def _load_device_type(
     monkeypatch,
     torch_module,
     mlx_available = False,
-    mlx_core = None,
 ):
     package_name = f"_device_context_test_{uuid.uuid4().hex}"
     package = types.ModuleType(package_name)
@@ -44,14 +43,6 @@ def _load_device_type(
         monkeypatch.setitem(sys.modules, "torch", None)
     else:
         monkeypatch.setitem(sys.modules, "torch", torch_module)
-
-    if mlx_core is not None:
-        mlx = types.ModuleType("mlx")
-        mlx.__path__ = []
-        mlx.__version__ = "0.29.0"
-        mlx.core = mlx_core
-        monkeypatch.setitem(sys.modules, "mlx", mlx)
-        monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
 
     module_name = f"{package_name}.device_type"
     spec = importlib.util.spec_from_file_location(module_name, DEVICE_TYPE_PATH)
@@ -135,35 +126,23 @@ def test_xpu_cache_and_current_device_dispatch(monkeypatch):
     torch, _ = _fake_torch(properties = properties, xpu_backend = xpu_backend)
     device_type = _load_device_type(monkeypatch, torch)
     context = device_type.DeviceContext("xpu")
+    device_type.device_context = context
 
-    context.clean_cache()
+    device_type.clean_gpu_cache()
 
     assert xpu_calls == ["empty_cache"]
-    assert context.get_current_device() == 3
+    assert device_type.get_current_device() == 3
 
 
-def test_mlx_context_is_import_safe_and_clears_cache(monkeypatch):
-    cache_calls = []
-    mlx_core = types.ModuleType("mlx.core")
-    mlx_core.device_info = lambda: {
-        "device_name": "Apple M4 Max",
-        "memory_size": 64 * 1024**3,
-    }
-    mlx_core.clear_cache = lambda: cache_calls.append("clear_cache")
-
+def test_mlx_import_does_not_construct_gpu_context(monkeypatch):
     device_type = _load_device_type(
         monkeypatch,
         torch_module = None,
         mlx_available = True,
-        mlx_core = mlx_core,
     )
-    name, snippet, max_memory = device_type.device_context.get_stats()
     device_type.clean_gpu_cache()
 
-    assert name == "Apple M4 Max. "
-    assert snippet == "MLX: 0.29.0."
-    assert max_memory == 64.0
-    assert cache_calls == ["clear_cache"]
+    assert device_type.device_context is None
     assert device_type.get_current_device() == 0
 
 
