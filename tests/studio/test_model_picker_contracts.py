@@ -382,9 +382,12 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     for call in ("onSelect(repoId, {", "onConfigure(repoId, {"):
         block = re.search(re.escape(call) + r".*?\n\s*\}", picker, re.S)
         assert block and "loadId," in block.group(0), f"{call} drops the pin"
+    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants
+    # this repo still offers, which is the whole point of the expanded list.
     assert (
-        "localSource ? { preferLocalCache: true, localPath: localSource } : undefined" in picker
-    ), "a downloaded row has to name its own directory or the quant reads as one to download"
+        "listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)"
+        in picker
+    )
     assert "cachePath={c.cache_path}" in picker
 
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")

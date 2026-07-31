@@ -808,13 +808,10 @@ function GgufVariantExpander({
       setError(null);
     });
 
-    // A downloaded row names its own directory. Without it the request asks the active cache
-    // and then the Hub, so a quant sitting in another cache reads as one to download.
-    listGgufVariants(
-      repoId,
-      hfToken,
-      localSource ? { preferLocalCache: true, localPath: localSource } : undefined,
-    )
+    // A downloaded row names its own directory, so the request counts what is on disk against
+    // that cache rather than the active one. Deliberately without preferLocalCache: that would
+    // answer from disk alone and drop the quants this repo offers but has not downloaded.
+    listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
