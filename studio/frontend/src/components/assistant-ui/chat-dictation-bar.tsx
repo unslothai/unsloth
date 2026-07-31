@@ -42,7 +42,9 @@ function formatElapsed(ms: number): string {
 export const ChatDictationBar: FC<{
   /** Transcribe, then submit the composer. Falls back to stop when absent. */
   onSend?: () => void;
-}> = ({ onSend }) => {
+  /** Send is unavailable (e.g. an attachment is still uploading). */
+  sendDisabled?: boolean;
+}> = ({ onSend, sendDisabled }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
   // Which button started transcription, so only it shows the spinner.
@@ -202,6 +204,7 @@ export const ChatDictationBar: FC<{
 
   // Same transcription, then the message submits on its own.
   const send = () => {
+    if (sendDisabled) return;
     if (!onSend) {
       stop();
       return;
@@ -260,7 +263,7 @@ export const ChatDictationBar: FC<{
           aria-label="Send message"
           variant="default"
           onClick={send}
-          disabled={transcribing !== null}
+          disabled={transcribing !== null || sendDisabled}
           className="aui-composer-send size-8 rounded-full"
         >
           {transcribing === "send" ? (

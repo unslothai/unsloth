@@ -109,6 +109,7 @@ import {
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { dictationProducedText } from "@/features/chat/utils/dictation-send";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -1840,17 +1841,25 @@ const Composer: FC<{
   // clearing identical to a typed send.
   const formRef = useRef<HTMLFormElement | null>(null);
   const sendAfterDictationRef = useRef(false);
+  const dictationBaseTextRef = useRef("");
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     aui.composer().stopDictation();
   }, [aui]);
 
   useEffect(() => {
-    if (isDictating || !sendAfterDictationRef.current) return;
+    if (isDictating) {
+      // Text at session start is the dictation base. Anchor on it, not on the
+      // text when send was pressed: the browser engine streams interim results
+      // into the composer, so a final matching its interim would look unchanged.
+      dictationBaseTextRef.current = aui.composer().getState().text;
+      return;
+    }
+    if (!sendAfterDictationRef.current) return;
     sendAfterDictationRef.current = false;
-    // Silence or a failed transcription: leave the composer untouched.
-    const { text, attachments } = aui.composer().getState();
-    if (text.trim().length === 0 && attachments.length === 0) return;
+    // Silence or a failed transcription: keep the draft, submit nothing.
+    const { text } = aui.composer().getState();
+    if (!dictationProducedText(dictationBaseTextRef.current, text)) return;
     formRef.current?.requestSubmit();
   }, [isDictating, aui]);
 
@@ -2043,7 +2052,12 @@ const Composer: FC<{
         {isDictating ? (
           // The recording UI replaces the input and send controls; only the
           // left plus stays visible alongside it.
-          <ChatDictationBar onSend={sendAfterDictation} />
+          <ChatDictationBar
+            onSend={sendAfterDictation}
+            // Same gate as the regular send: handleSubmit would otherwise
+            // reject the submit after transcription, with no way to retry.
+            sendDisabled={disabled || hasPendingAttachments}
+          />
         ) : (
           <>
             <ComposerPrimitive.Input
