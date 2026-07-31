@@ -267,8 +267,7 @@ def _is_checkpoint_weight_name(name: str) -> bool:
 
 
 def _is_discoverable_ungrouped_weight_name(name: str) -> bool:
-    """A payload no shard family groups that a runtime still opens by name: a diffusers component
-    weight, or a single-file checkpoint. An arbitrary foo.safetensors is neither."""
+    """Ungrouped payloads a runtime opens by name: diffusers components, single-file checkpoints."""
     lower = _weight_basename(name)
     if lower.endswith(".safetensors"):
         return lower.startswith("diffusion_pytorch_model")

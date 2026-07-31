@@ -1274,8 +1274,8 @@ def test_vulkan_inference_devices_are_the_pickable_set():
 def test_chat_autoload_records_every_validation_failure():
     """canAutoLoad runs validateModel, which prepares the token, so a dismissed dialog, a dead
     backend or a model-specific rejection throws there rather than from loadModel. The sweep's
-    catches are bare, so every rejection has to be recorded or an unrecorded one reads as an empty
-    device and fetches the Hub default. Only a declined dialog ends the sweep."""
+    catches are bare, so an unrecorded one reads as an empty device and fetches the Hub default.
+    Only a declined dialog ends the sweep."""
     adapter = _read("features/chat/api/chat-adapter.ts")
     recorder = adapter.split("function recordCandidateFailure", 1)[1]
     recorder = recorder.split("async function canAutoLoadRecordingFailures", 1)[0]
@@ -1326,8 +1326,8 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
 
 def test_external_readoption_drops_a_pin_taken_for_another_model():
     """Status polling skips its own pin clearing while an external provider is selected, so the
-    re-adoption branch can adopt a resident the pin was never taken for. Applying settings then
-    sends that path and reloads the old model, so the branch has to clear it itself."""
+    re-adoption branch can adopt a resident the pin was never taken for and Apply would reload the
+    old model. The branch has to clear it itself."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     branch = src.split("if (!forceReload && isExternalModelId(selectedCheckpoint))", 1)[1]
     branch = branch.split("const stopDecision = await confirmStopRunningChatsIfNeeded", 1)[0]

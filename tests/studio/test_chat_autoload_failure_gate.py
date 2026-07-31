@@ -456,9 +456,8 @@ def test_a_complete_cached_row_is_still_attempted():
 
 
 def test_a_rejected_validation_does_not_download_the_default_model():
-    """A cached candidate can be refused by /validate rather than /load, for a stale snapshot
-    load_id or corrupt files. The sweep's catches are bare, so an unrecorded rejection reads as an
-    empty device and fetches a model the user never asked for."""
+    """A cached candidate can be refused by /validate rather than /load. The sweep's catches are
+    bare, so an unrecorded rejection reads as an empty device and fetches an unasked-for model."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " validate: (p) => p.model_path === GEMMA.repo_id"
@@ -474,8 +473,7 @@ def test_a_rejected_validation_does_not_download_the_default_model():
 
 
 def test_a_rejected_validation_still_lets_a_later_cached_model_load():
-    """Control for the test above: recording the rejection must not end the sweep, since only a
-    declined token dialog does that."""
+    """Control for the test above: recording must not end the sweep; only a declined dialog does."""
     out = _run(
         "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
         " load_id: `r${i}`, size_bytes: i })),"

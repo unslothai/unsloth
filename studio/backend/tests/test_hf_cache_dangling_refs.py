@@ -3727,9 +3727,8 @@ def test_an_index_less_shard_set_does_not_veto_a_whole_family(tmp_path, monkeypa
 
 
 def test_a_root_weight_no_runtime_discovers_by_name_does_not_serve(tmp_path, monkeypatch):
-    """An arbitrary root .safetensors classifies the snapshot but names no family and is not a
-    diffusers component, so nothing probes it. A .ckpt or diffusion weight is discovered by name and
-    still serves."""
+    """An arbitrary root .safetensors names no family and is no diffusers component, so nothing
+    opens it. A .ckpt or diffusion weight is discovered by name and still serves."""
     for weights, serves in (
         ({"foo.safetensors": b"\0" * 256}, False),
         ({"foo.safetensors": b"\0" * 256, "bar.safetensors": b"\0" * 256}, False),
@@ -3750,8 +3749,7 @@ def test_a_root_weight_no_runtime_discovers_by_name_does_not_serve(tmp_path, mon
 
 
 def test_a_root_weight_no_runtime_discovers_does_not_veto_one_it_does(tmp_path, monkeypatch):
-    """Control for the test above: an unopened name is not evidence either way, so a canonical
-    weight beside it still decides."""
+    """Control for the test above: an unopened name is no evidence; a canonical weight decides."""
     _repo_with(
         tmp_path,
         snapshots = {
@@ -3773,9 +3771,8 @@ def test_a_root_weight_no_runtime_discovers_does_not_veto_one_it_does(tmp_path, 
 def test_a_torn_quant_does_not_charge_a_stale_incomplete_blob_to_the_weights_row(
     tmp_path, monkeypatch
 ):
-    """The legacy .incomplete walk attributes a repo-wide signal to a snapshot, and that question is
-    per row: a hybrid repo's weights row loads model.safetensors and never opens a .gguf, so a torn
-    quant must not make the leftover blob describe it."""
+    """The legacy .incomplete walk attributes a repo-wide signal, and that question is per row: a
+    weights row never opens a .gguf, so a torn quant must not charge it the leftover blob."""
     repo_dir = _repo_with(
         tmp_path,
         snapshots = {
@@ -3796,8 +3793,7 @@ def test_a_torn_quant_does_not_charge_a_stale_incomplete_blob_to_the_weights_row
 
 
 def test_a_stale_incomplete_blob_still_reaches_the_snapshot_it_describes(tmp_path, monkeypatch):
-    """Control for the test above: with no quant to mis-attribute, the same leftover blob is charged
-    to the weights row exactly as before."""
+    """Control for the test above: with no quant to mis-attribute, the blob charges the row."""
     repo_dir = _repo_with(
         tmp_path,
         snapshots = {

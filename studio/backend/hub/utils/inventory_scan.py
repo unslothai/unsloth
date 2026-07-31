@@ -668,8 +668,7 @@ def _repo_cache_dir_has_snapshot_legacy_partial(
     if _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(repo_cache_dir, snapshot_dir):
         return True
     # ``.incomplete`` blobs carry no revision, so they need attributing. Judged on this row's
-    # weights like every other signal is_snapshot_partial composes: a torn quant beside them is
-    # another row's payload and must not veto this one.
+    # weights alone: a torn quant beside them is another row's payload, not this one's.
     if snapshot_dir is not None and not _repo_signal_applies_to_snapshot(
         repo_cache_dir, snapshot_dir, quants = False
     ):
@@ -989,10 +988,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
                 if not at_root:
                     nested.add("base")
                 elif _is_discoverable_ungrouped_weight_name(name):
-                    # A .ckpt or diffusers component: no family groups it, a runtime still opens it.
                     ungrouped.add("base")
                 else:
-                    # An arbitrary root .safetensors, which nothing probes by name.
                     unreachable_root.add("base")
             continue
         match = _WEIGHT_SHARD_RE.search(path.name)
@@ -1175,8 +1172,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         ):
             # This kind's weights are here but no name the loader tries reaches them.
             return True
-    # No family either way: an ungroupable payload is evidence only when empty and alone, and one
-    # under a name nothing opens is no better than none.
+    # No family: an ungroupable payload is evidence only when alone and empty or unreachable.
     return (
         wanted in payload.empty_ungrouped or wanted in payload.unreachable_root
     ) and wanted not in payload.ungrouped
