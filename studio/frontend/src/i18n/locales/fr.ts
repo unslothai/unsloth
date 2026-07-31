@@ -175,7 +175,7 @@ export const fr = {
           "L'accès au microphone a été bloqué. Autorisez l'accès au microphone pour cette page Unsloth, puis réessayez.",
         micAccessUnsupported:
           "L'accès au microphone n'est pas pris en charge dans ce navigateur ou ce contexte.",
-        systemDefault: "Par défaut du système",
+        systemDefault: "Par défaut",
         savedMicDisconnected: "Microphone enregistré (non connecté)",
         languageLabel: "Langue de la dictée",
         languageDescription: "Langue à reconnaître",
