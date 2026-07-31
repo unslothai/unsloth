@@ -1151,7 +1151,16 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         assert name in captured["env"]["WSLENV"].split(":")
 
 
-def _npm_node_cmd_shim(target: str) -> str:
+def _npm_node_cmd_shim(
+    target: str,
+    *,
+    node_args: str = "",
+    environment: tuple[tuple[str, str], ...] = (),
+    cmd_shim_version: int = 7,
+) -> str:
+    environment_lines = "".join(f"@SET {name}={value}\r\n" for name, value in environment)
+    legacy_pathext = "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n" if cmd_shim_version < 9 else ""
+    current_pathext = "set PATHEXT=%PATHEXT:;.JS;=;% & " if cmd_shim_version >= 9 else ""
     return (
         "@ECHO off\r\n"
         "GOTO start\r\n"
@@ -1161,16 +1170,17 @@ def _npm_node_cmd_shim(target: str) -> str:
         ":start\r\n"
         "SETLOCAL\r\n"
         "CALL :find_dp0\r\n"
+        f"{environment_lines}"
         "\r\n"
         'IF EXIST "%dp0%\\node.exe" (\r\n'
         '  SET "_prog=%dp0%\\node.exe"\r\n'
         ") ELSE (\r\n"
         '  SET "_prog=node"\r\n'
-        "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+        f"{legacy_pathext}"
         ")\r\n"
         "\r\n"
-        f'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  '
-        f'"%dp0%\\{target}" %*\r\n'
+        f"endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & {current_pathext}"
+        f'"%_prog%" {node_args} "%dp0%\\{target}" %*\r\n'
     )
 
 
@@ -1205,6 +1215,88 @@ def test_launch_windows_npm_shim_preserves_multiline_argument(monkeypatch, tmp_p
         str(target),
         'first line\nsecond "quoted" line',
     ]
+
+
+def test_resolved_launch_command_handles_current_npm_node_shim(monkeypatch, tmp_path):
+    _simulate_windows(monkeypatch)
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(
+        _npm_node_cmd_shim(
+            r"node_modules\fake-agent\index.js",
+            cmd_shim_version = 9,
+        ).encode()
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(cmd), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, tmp_path):
+    _simulate_windows(monkeypatch)
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "cli"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\cli").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(cmd), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_launch_windows_npm_shim_preserves_shebang_args_and_environment(monkeypatch, tmp_path):
+    _simulate_windows(monkeypatch)
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text(
+        "#!/usr/bin/env NODE_OPTIONS=--trace-warnings node --no-warnings\n",
+        encoding = "utf-8",
+    )
+    cmd.write_bytes(
+        _npm_node_cmd_shim(
+            r"node_modules\fake-agent\index.js",
+            node_args = "--no-warnings",
+            environment = (("NODE_OPTIONS", "--trace-warnings"),),
+        ).encode()
+    )
+    captured = {}
+
+    def which(name):
+        return str(cmd) if name == "fake-agent" else r"C:\Program Files\nodejs\node.exe"
+
+    def run(command, env):
+        captured["command"] = command
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.shutil, "which", which)
+    monkeypatch.setattr(start.subprocess, "run", run)
+
+    code = start._launch(
+        ["fake-agent", 'first line\nsecond "quoted" line'],
+        {},
+        install_hint = "unused",
+    )
+
+    assert code == 0
+    assert captured["command"] == [
+        r"C:\Program Files\nodejs\node.exe",
+        "--no-warnings",
+        str(target),
+        'first line\nsecond "quoted" line',
+    ]
+    assert captured["env"]["NODE_OPTIONS"] == "--trace-warnings"
 
 
 def test_resolved_launch_command_uses_native_npm_entrypoint(monkeypatch, tmp_path):
