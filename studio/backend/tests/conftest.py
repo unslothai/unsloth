@@ -26,6 +26,13 @@ if str(_backend_root) not in sys.path:
 # runs accelerator detection at import and raises without a GPU unless this is set (a no-op on a
 # real GPU run). setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
+# The other half of the same guard: unsloth_zoo.__init__ refuses to import unless this is present,
+# and it is normally set by `import unsloth`. Without it the patch backend's only route to the
+# helpers is that ~940 MB import, which a CPU-only host cannot complete, so every patch install
+# returned False and nine arch/eager/compile tests failed on exactly the runners the retry was
+# narrowed to protect. The sentinel alone costs nothing and needs no accelerator. run.py and
+# main.py already set it the same way at module scope, so a real server never took that route.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
 # Pytest CLI options
