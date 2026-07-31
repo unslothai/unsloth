@@ -108,8 +108,7 @@ def _render_registered_vlm_prompt(processor, model, messages, num_images):
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
-    # Recovery path: renders the caller's original list, not the neutralized
-    # copy apply_chat_template_for_generation made (#7066).
+    # Recovery path: renders the caller's original list, not the neutralized copy (#7066).
     rendered = prompt_utils.apply_chat_template(
         processor,
         config,

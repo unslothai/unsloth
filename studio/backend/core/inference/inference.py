@@ -1225,8 +1225,8 @@ class InferenceBackend:
             else:
                 vision_messages = [user_msg]
 
-            # Renders through the processor's own template, so it skips the choke
-            # point (#7066). Rebind user_msg so the no-system retry keeps the copy.
+            # Processor's own template skips the choke point (#7066). Rebind user_msg
+            # so the no-system retry keeps the copy.
             vision_messages = neutralize_control_markup_in_messages(vision_messages)
             user_msg = vision_messages[-1]
 
@@ -1844,8 +1844,8 @@ class InferenceBackend:
             raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
 
         top_k = self._normalize_top_k(top_k)
-        # Every codec below builds its prompt by concatenation rather than through a
-        # template, so this is the one choke point for all four (#7066).
+        # Every codec below concatenates its prompt instead of templating it, so this
+        # is the one choke point for all four (#7066).
         text = neutralize_tts_prompt_text(text, audio_type)
 
         with self._generation_lock:
@@ -2116,9 +2116,8 @@ class InferenceBackend:
             logger.debug("Removing final assistant message to ensure proper alternation")
             chat_messages.pop()
 
-        # Renders with the tokenizer directly, so another path around the choke
-        # point, and the user sub above leaves system_prompt and replayed
-        # assistant text raw (#7066).
+        # Direct tokenizer render bypasses the choke point, and the user sub above
+        # leaves system_prompt and replayed assistant text raw (#7066).
         chat_messages = neutralize_control_markup_in_messages(chat_messages)
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")

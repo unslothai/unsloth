@@ -19,14 +19,12 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
-# The providers that are a local server rather than a hosted API: each applies the
-# model's own chat template on the way in, so a prompt built here is rendered by a
-# template just as an in-process one is (#7066).
-# "custom" is in here because it is a user-supplied OpenAI-compatible base_url
-# (routes/providers.py:207-213), which is exactly how a self-hosted vLLM or llama.cpp gets
-# registered without its preset. Unknown endpoint means assume it applies a template: the
-# cost of sweeping a hosted API is a space in text that looks like a delimiter, and the
-# cost of not sweeping a local one is a forged turn.
+# Local servers, not hosted APIs: each applies the model's own chat template on the way
+# in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
+# a user-supplied OpenAI-compatible base_url (routes/providers.py:207-213), i.e. how a
+# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
+# a template applies: sweeping a hosted API costs a space in delimiter-like text, not
+# sweeping a local one costs a forged turn.
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
@@ -956,9 +954,8 @@ class ExternalProviderClient:
                 yield line
             return
 
-        # A self-hosted server applies the model's own chat template, exactly like the
-        # in-process paths do, so client text reaches a template here too and the same
-        # "</think>" or turn marker forges a turn (#7066). The hosted APIs are left alone:
+        # A self-hosted server templates client text just like the in-process paths, so the
+        # same "</think>" or turn marker forges a turn (#7066). Hosted APIs are left alone:
         # their prompt assembly is not this repo's template and not ours to rewrite.
         if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
             from core.inference.chat_template_helpers import (
@@ -969,10 +966,9 @@ class ExternalProviderClient:
             messages = neutralize_control_markup_in_messages(messages)
             if tools:
                 safe_tools = neutralize_tool_descriptions(tools)
-                # A mixed catalog keeps safe_tools non-empty while still dropping the one
-                # tool the client forced, so an empty check is not enough: the same
-                # per-name reconciliation the passthrough builder uses has to run here or
-                # the body names a function the server was never told about.
+                # A mixed catalog keeps safe_tools non-empty while dropping the one tool the
+                # client forced, so an empty check is not enough: without the passthrough
+                # builder's per-name reconciliation the body names an unadvertised function.
                 tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
                 if not safe_tools:
                     tool_choice = None

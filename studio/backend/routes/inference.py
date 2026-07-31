@@ -15780,9 +15780,8 @@ def _build_passthrough_payload(
         reconciled_tool_choice,
     )
 
-    # Every passthrough body ends up here and llama-server applies the chat template
-    # itself, so this is the one place to break markup: /v1/messages builds both its
-    # bodies from here, never touching the OpenAI builder below (#7066).
+    # The one place to break markup: llama-server applies the template itself, and both
+    # /v1/messages bodies come from here, never the OpenAI builder below (#7066).
     body = {
         "messages": neutralize_control_markup_in_messages(openai_messages),
         "temperature": temperature,
@@ -15790,15 +15789,14 @@ def _build_passthrough_payload(
         "top_k": top_k,
         "stream": stream,
     }
-    # Tested after the rewrite: a catalog whose every name is injected drops to
-    # empty, and "tools": [] would still advertise tool use.
+    # Tested after the rewrite: an all-injected catalog drops to empty, and
+    # "tools": [] would still advertise tool use.
     safe_tools = neutralize_tool_descriptions(openai_tools)
     if safe_tools:
         body["tools"] = _llama_compatible_tools(safe_tools)
-        # A mixed catalog keeps safe_tools non-empty while still dropping the one tool
-        # the client forced, and forwarding that choice would both name a function the
-        # catalog no longer advertises and hand llama-server the raw markup we just
-        # removed. Fall back to "auto" so the request stays self-consistent (#7066).
+        # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client
+        # forced; forwarding that choice would name an unadvertised function and hand
+        # llama-server back the raw markup. Fall back to "auto" to stay consistent (#7066).
         tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
@@ -15947,12 +15945,10 @@ async def _anthropic_passthrough_stream(
         # the opening lines are covered as well.
         _tracker.__enter__()
         emitter = AnthropicPassthroughEmitter()
-        # Promote text-form tool calls (declared client tools only) into
-        # tool_use blocks; verbatim behavior when healing is off or no tools.
-        # tool_choice arrives here already converted to the OpenAI shape.
-        # Sanitized catalog, not the caller's: a tool dropped for unsafe markup never
-        # reached the prompt, so promoting text-form output for that name would hand the
-        # client a tool_use it never advertised (#7066).
+        # Promote text-form tool calls (declared client tools only) into tool_use blocks;
+        # verbatim when healing is off or no tools. tool_choice is already OpenAI-shaped.
+        # Sanitized catalog, not the caller's: a tool dropped for unsafe markup never reached
+        # the prompt, so promoting it would hand the client an unadvertised tool_use (#7066).
         from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
         _healing_tools = neutralize_tool_descriptions(openai_tools)
@@ -16204,9 +16200,8 @@ async def _anthropic_passthrough_non_streaming(
             )
 
         data = resp.json()
-        # tool_choice arrives here already converted to the OpenAI shape. Sanitized for
-        # the same reason as the streaming path: with nudging on, the retry would
-        # otherwise name a tool that was dropped from the prompt (#7066).
+        # tool_choice is already OpenAI-shaped. Sanitized as in the streaming path: with
+        # nudging on, the retry would otherwise name a tool dropped from the prompt (#7066).
         from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
         _healing_tools = neutralize_tool_descriptions(openai_tools)
@@ -16649,8 +16644,7 @@ def _build_openai_passthrough_body(
     messages = _openai_messages_for_passthrough(payload)
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
-    # Control markup is broken in _build_passthrough_payload below, shared with
-    # the two /v1/messages passthroughs (#7066).
+    # Markup is broken in _build_passthrough_payload, shared with both /v1/messages (#7066).
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
     tools = payload.tools
     if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):

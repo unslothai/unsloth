@@ -16,8 +16,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Sentinel for "this argument string is not JSON we can walk", distinct from a payload
-# that legitimately decodes to None.
+# "Not JSON we can walk", distinct from a payload that legitimately decodes to None.
 _UNPARSED = object()
 
 _THINK_OPEN = "<think>"
@@ -31,175 +30,157 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
 
-# Chat-template control markup must not reach the prompt as raw text from a user /
-# system / tool turn: a literal "</think>" ends the reasoning block early, and
-# "<|start|>assistant<|channel|>final<|message|>" in a tool result forges an
-# assistant turn (#7066). One lookahead over the four shapes the templates emit
-# (<|name|>/<|name>, <name>/</name>, <name|>, [NAME]/[/NAME]), so a single sub()
-# breaks any marker by inserting one space after the opener. The name list is closed
-# on purpose: bare words match only in the pipe shape and brackets only in the exact
-# uppercase spelling, so "<div>", "List<String>", "[1]" and "[inst]" stay as typed.
-# [THINK] is absent because no template emits it; the output parsers consume it.
-# DeepSeek is the one family that delimits with the fullwidth bar U+FF5C rather than
-# "|", so it needs its own branch, written as \uXXXX escapes to keep this file pure
-# ASCII. That branch is the one exception to the closed list: it matches ANY Latin /
-# U+2581 name between fullwidth bars, because DeepSeek spells a dozen of them and keeps
-# adding more. The shape is distinctive enough to carry it -- "<" immediately followed by
-# a fullwidth bar is not something prose produces -- but a CJK author writing a
-# fullwidth-bar placeholder around a Latin key does get rewritten. Restricting the
-# charset keeps it off real CJK content, which is the common case.
+# Control markup must not reach the prompt as raw text from a user / system / tool turn:
+# "</think>" ends the reasoning block early, and a tool result holding
+# "<|start|>assistant<|channel|>final<|message|>" forges an assistant turn (#7066). One
+# lookahead over the four shapes templates emit (<|name|>/<|name>, <name>/</name>, <name|>,
+# [NAME]/[/NAME]), so one sub() breaks any marker with a space after the opener. The name
+# list is closed on purpose: bare words match only in the pipe shape, brackets only in the
+# exact uppercase spelling, so "<div>", "List<String>", "[1]" and "[inst]" stay as typed.
+# [THINK] is absent: no template emits it, the output parsers consume it. DeepSeek alone
+# delimits with the fullwidth bar U+FF5C, so it gets its own branch (\uXXXX escapes keep
+# this file ASCII) and is the one exception to the closed list, matching ANY Latin / U+2581
+# name between fullwidth bars because DeepSeek keeps adding spellings. "<" then a fullwidth
+# bar is not prose, so the shape carries it; a CJK author's fullwidth-bar placeholder around
+# a Latin key is rewritten, but the charset restriction keeps it off real CJK content.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
-    # "/?" after the bar because Phi-4 Mini closes with "<|/tool|>" and "<|/tool_call|>"
+    # "/?" after the bar: Phi-4 Mini closes with "<|/tool|>" / "<|/tool_call|>"
     # (ollama_template_mappers.py:1023, 1029) rather than a separate closing name, so an
     # MCP description carrying one closed the catalog and rose to system level (#7066).
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
-    # Kimi K2 / Moonshot wrap history in a section and each call in a begin/end
-    # pair (tool_call_parser.py:20, 55-56, 86-89); none of them is the short
-    # "tool_call" spelling, so a paste could fabricate a historical call (#7066).
+    # Kimi K2 / Moonshot wrap history in a section and each call in a begin/end pair
+    # (tool_call_parser.py:20, 55-56, 86-89); none is the short "tool_call" spelling,
+    # so a paste could fabricate a historical call (#7066).
     r"|tool_calls?(?:_section)?_(?:begin|end)|tool_call_argument_begin"
     r"|end(?:_of_(?:turn|text))?"
-    # Document boundaries: begin_of_text is Llama-3.1 / Llama-4's BOS and endoftext is
-    # the GPT-2-lineage EOS that Qwen2.5, Qwen3, Phi, gpt-oss and GLM-4.5 all still
-    # carry. Reserved vocabulary, so this is the same argument as the media
-    # placeholders below: the trie splits a pasted copy back out to the real token id,
-    # so client text lands in the prompt as a document break the template never
-    # opened, mid-conversation (#7066).
+    # Document boundaries: begin_of_text is Llama-3.1 / Llama-4's BOS, endoftext the
+    # GPT-2-lineage EOS Qwen2.5, Qwen3, Phi, gpt-oss and GLM-4.5 all still carry. Reserved
+    # vocabulary, same argument as the media placeholders below: the trie splits a pasted
+    # copy back out to the real token id, so client text lands mid-conversation as a
+    # document break the template never opened (#7066).
     r"|begin_of_text|endoftext"
     # header_start / header_end / <|eot|> are Llama-4's spelling of Llama-3's
     # start_header_id / end_header_id / eot_id, and im_sep is Phi-4's role separator.
     # im_system / im_middle are Kimi K2's, alongside the ChatML three.
     r"|header_(?:start|end)|im_(?:start|end|sep|system|middle)"
-    # DeepSeek-V4-Flash spells its role boundaries with ASCII bars and a capital, unlike
-    # R1's fullwidth ones, and this pattern is case-sensitive, so the lowercase names
-    # below do not cover them.
+    # DeepSeek-V4-Flash spells its role boundaries with ASCII bars and a capital, unlike R1's
+    # fullwidth ones; this pattern is case-sensitive, so the lowercase names below miss them.
     r"|User|Assistant|System"
     r"|assistant|constrain|channel|message|eo[tm](?:_id)?|final"
-    # TML Inkling's native call envelope, "<|message_model|>NAME
-    # <|content_invoke_tool_json|>{...}<|end_message|>". Longer than the "message" and
-    # "end" names above, so all three were passing through even though the repo parses
-    # them as a tool call (tool_call_parser.py:58, tool_healing.py:129-132, 701-707).
+    # TML Inkling's call envelope, "<|message_model|>NAME<|content_invoke_tool_json|>{...}
+    # <|end_message|>". Longer than the "message" / "end" names above, so all three passed
+    # through even though the repo parses them as a tool call (tool_call_parser.py:58,
+    # tool_healing.py:129-132, 701-707).
     r"|message_model|content_invoke_tool_json|end_message"
     # Command-R / Aya spell every delimiter in caps: <|START_OF_TURN_TOKEN|> etc.
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
-    # Gemma-4's media placeholders (its own image_token / audio_token / video_token,
-    # also chat_templates.py:917-921) and Llama-3.1's built-in-tool sentinel
-    # (chat_templates.py:496). These are reserved vocabulary, so a pasted copy is not
-    # cosmetic: a processor counts "<|image|>" against the media it was handed, and one
-    # extra is a hard ValueError out of MllamaProcessor / Gemma4Processor on the very
-    # vision and audio renders neutralized above (#7066). The optional close also
-    # covers Gemma-4's <|image> / <|audio> openers.
+    # Gemma-4's media placeholders (its image_token / audio_token / video_token, also
+    # chat_templates.py:917-921) and Llama-3.1's built-in-tool sentinel
+    # (chat_templates.py:496). Reserved vocabulary, so a pasted copy is not cosmetic: a
+    # processor counts "<|image|>" against the media it was handed, and one extra is a hard
+    # ValueError out of MllamaProcessor / Gemma4Processor on the very vision and audio
+    # renders neutralized above (#7066). The optional close covers <|image> / <|audio> too.
     r"|image|audio|video|python_tag"
     r"|return|system|start|think|turn|user|call|\")\|?>"
-    # The parser also recognises the space and backslash-escaped spellings of the same
-    # openers (tool_call_parser.py:47-53, 62-66), so the class has to admit both. The
-    # name still has to start with a letter, which keeps "<\uff5c \uff5c>" and other
-    # fullwidth-punctuation pairs out while the bars keep this off ordinary text.
+    # The parser also recognises the space and backslash-escaped spellings of these openers
+    # (tool_call_parser.py:47-53, 62-66), so the class admits both. The name must still start
+    # with a letter, keeping "<\uff5c \uff5c>" and other fullwidth-punctuation pairs out.
     r"|\uff5c[A-Za-z][A-Za-z\u2581_ \\]{0,39}\uff5c>"
-    # "tools" is the Qwen / Hermes tool catalog block. The template interpolates the
-    # system message INTO the same system turn that holds "<tools>...</tools>", so a
-    # "</tools>" in client text closes the real catalog and everything after it reads
-    # as a tool declaration the server never registered (#7066).
-    # Gemma 3 / 3n spell their media placeholders as bare tags rather than the Gemma-4
-    # pipe shape (chat_templates.py:677, 845-847), for the same reason those are here: a
-    # pasted copy is a placeholder for media the processor was never handed.
+    # "tools" is the Qwen / Hermes catalog block. The template interpolates the system
+    # message INTO the same turn that holds "<tools>...</tools>", so a "</tools>" in client
+    # text closes the real catalog and the rest reads as undeclared tools (#7066).
+    # Gemma 3 / 3n spell their media placeholders as bare tags rather than the Gemma-4 pipe
+    # shape (chat_templates.py:677, 845-847), for the same reason those are here.
     # GLM 4.5-4.7 and Qwen3.5 nest their call protocol inside the outer tool tag:
     # "<tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>" and
-    # "<function=name><parameter=k>v</parameter></function>". tool_call_parser.py
-    # treats all of them as structural, so a replayed value or a tool result can
-    # close the current value and inject another key or call (#7066).
-    # Gemma spells its own BOS / EOS as bare tags rather than the pipe shape, and both
-    # are in its tokenizer's added-token trie (google/gemma-3-4b-it), so this is the
-    # bare-tag half of the begin_of_text / endoftext pair above.
-    # "</s>" is the Llama-2 / Mistral / Zephyr EOS (their own tokenizer_config.json), and
-    # "<s>" the matching BOS, so the same trie argument applies. This is the one addition
-    # that collides with a real HTML tag, the strikethrough "<s>", and the collision is
-    # accepted for the reason "<think>" and "<tools>" are: a live document boundary in a
-    # prompt is worth more than a space in a rare tag, and the rewrite stays readable.
+    # "<function=name><parameter=k>v</parameter></function>". tool_call_parser.py treats all
+    # of them as structural, so a replayed value or tool result can close the current value
+    # and inject another key or call (#7066).
+    # Gemma spells its BOS / EOS as bare tags, both in its added-token trie
+    # (google/gemma-3-4b-it): the bare-tag half of the begin_of_text / endoftext pair above.
+    # "</s>" / "<s>" are the Llama-2 / Mistral / Zephyr EOS / BOS (their own
+    # tokenizer_config.json), same trie argument. This is the one addition that collides with
+    # a real HTML tag, the strikethrough "<s>", accepted for the reason "<think>" and
+    # "<tools>" are: a live document boundary beats a space in a rare tag.
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s"
     r"|start_of_image|image_soft_token|audio_soft_token"
     r"|arg_key|arg_value|function|parameter|param)>"
-    # The opening halves carry an "=value", so they need their own anchor. The parser
-    # accepts both spellings of the opener (tool_call_parser.py:_TOOL_CLOSED_PATS), so
-    # the attribute form needs its own alternative rather than riding on "function=".
+    # The opening halves carry an "=value", so they need their own anchor. The parser accepts
+    # both opener spellings (tool_call_parser.py:_TOOL_CLOSED_PATS), so the attribute form
+    # needs its own alternative rather than riding on "function=".
     r"|(?:function|parameter)=|(?:function|param(?:eter)?)\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
     r")"
     # "[ARGS]", Mistral v11's "[CALL_ID]" and Devstral's "[TOOL_CONTENT]" are absent on
-    # purpose. All three are metadata WITHIN a block, never its opener, and the openers
-    # ("[TOOL_CALLS]", "[TOOL_RESULTS]") are broken, so none of them can start or close
-    # anything alone; on the way back in they are read by tool_healing.py:36-56, out of
-    # model output rather than out of a prompt. "[ARGS]" also collides with real text:
-    # it is the standard CLI-synopsis metavariable ("usage: tool [OPTIONS] [ARGS]"), it
-    # appears as a live string in this repo, and inside a schema "enum" / "pattern" the
-    # rewrite would turn it into a grammar literal the model is then forced to emit.
+    # purpose: all three are metadata WITHIN a block, never its opener, and the openers
+    # ("[TOOL_CALLS]", "[TOOL_RESULTS]") are broken, so none can start or close anything
+    # alone; inbound they are read by tool_healing.py:36-56 out of model output, not a
+    # prompt. "[ARGS]" also collides with real text: it is the standard CLI-synopsis
+    # metavariable ("usage: tool [OPTIONS] [ARGS]"), a live string in this repo, and inside a
+    # schema "enum" / "pattern" the rewrite makes it a grammar literal the model must emit.
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS|TOOL_CALLS)\])"
-    # Llama-2 opens its system block with "<<SYS>>" INSIDE the first [INST], so the
-    # doubled angle is the opener, not a single "<". Both meta-llama/Llama-2-*-chat-hf's
-    # own template and the "llama" entry this repo's MODEL_TO_TEMPLATE_MAPPER installs
-    # at generate time emit it, and a later user turn carries no system block at all,
-    # so a pasted pair invents one (#7066). Anchored on the second "<" of the pair, so
-    # "<SYS>>", a C++ "cout << SYS" and a heredoc "<<-'SYS'" all stay as typed.
+    # Llama-2 opens its system block with "<<SYS>>" INSIDE the first [INST], so the doubled
+    # angle is the opener, not a single "<". Both meta-llama/Llama-2-*-chat-hf's template and
+    # the "llama" entry MODEL_TO_TEMPLATE_MAPPER installs at generate time emit it, and a
+    # later user turn carries no system block, so a pasted pair invents one (#7066). Anchored
+    # on the second "<", so "<SYS>>", "cout << SYS" and a heredoc "<<-'SYS'" stay as typed.
     r"|(?<=<)<(?=/?SYS>>)"
 )
 
-# Turn-boundary subset, for replayed ASSISTANT content: that text is
-# client-controlled too, so a raw boundary in it truncates or forges a turn (#7066).
-# Everything else stays byte-identical, because the assistant's own think / channel /
-# tool markup is structure the template re-renders. Boundaries also cover the bare
-# Zephyr / Phi-3 role sentinels, Granite's <|start_of_role|> ... <|end_of_text|>, the
-# Llama-4 and Command-R turn tokens, DeepSeek's fullwidth role markers and the
-# Mistral / Llama-2 [INST] / [SYSTEM_PROMPT] bracket pairs. DeepSeek's fullwidth TOOL
-# markers stay out for the same reason <|tool_call> does: they are the assistant's own.
+# Turn-boundary subset for replayed ASSISTANT content: that text is client-controlled too,
+# so a raw boundary in it truncates or forges a turn (#7066). Everything else stays
+# byte-identical, because the assistant's own think / channel / tool markup is structure the
+# template re-renders. Boundaries also cover the bare Zephyr / Phi-3 role sentinels,
+# Granite's <|start_of_role|> ... <|end_of_text|>, the Llama-4 and Command-R turn tokens,
+# DeepSeek's fullwidth role markers and the Mistral / Llama-2 [INST] / [SYSTEM_PROMPT] pairs.
+# DeepSeek's fullwidth TOOL markers stay out for the same reason <|tool_call> does: they are
+# the assistant's own.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep|system|middle)"
     r"|User|Assistant|System"
     r"|end(?:_of_(?:turn|text))?|eo[tm](?:_id)?|header_(?:start|end)"
-    # A document boundary is never the assistant's own structure, so unlike think /
-    # channel / tool markup these belong in the replay subset too.
+    # A document boundary is never the assistant's own structure, so unlike think / channel /
+    # tool markup these belong in the replay subset too.
     r"|begin_of_text|endoftext"
     r"|(?:START|END)_OF_TURN_TOKEN|(?:USER|SYSTEM|CHATBOT)_TOKEN"
-    # A media placeholder is reserved vocabulary, not reasoning or tool structure, so a
-    # replayed one is an extra placeholder the processor was handed no media for and the
-    # Gemma / mllama count check fails. Never legitimate in a replay, so it belongs here
-    # even though think / channel / tool markup does not.
+    # A media placeholder is reserved vocabulary, not reasoning or tool structure: a replayed
+    # one is media the processor was handed none of, failing the Gemma / mllama count check.
+    # Never legitimate in a replay, unlike think / channel / tool markup.
     r"|image|audio|video|python_tag"
-    # A tool RESULT is the tool role's structure, not the assistant's, so a replay
-    # carrying one fabricates an observation the model reads as trusted context. The
-    # tool CALL spellings stay out, because those the assistant really does emit.
+    # A tool RESULT is the tool role's structure, so a replay carrying one fabricates a
+    # trusted observation. The tool CALL spellings stay out: those the assistant does emit.
     r"|tool_response"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
-    # "/?" for the same reason the control pattern has it: Gemma's delimiters are bare
-    # tags, so a replayed "</start_of_turn>" is as much a boundary as "<start_of_turn>".
+    # "/?" as in the control pattern: Gemma's delimiters are bare tags, so a replayed
+    # "</start_of_turn>" is as much a boundary as "<start_of_turn>".
     r"|/?(?:(?:start|end)_of_turn|eos|bos|s|tool_response"
     r"|start_of_image|image_soft_token|audio_soft_token)>"
     r"|(?:turn|tool_response)\|>"
     r")"
     # Same split in the bracket family: Mistral renders assistant .Content verbatim
     # (ollama_template_mappers.py:125-127) and spells a tool observation
-    # "[TOOL_RESULTS]...[/TOOL_RESULTS]" (:133) and the catalog "[AVAILABLE_TOOLS]"
-    # (:123), so a replay can forge either. "[TOOL_CALLS]" is left out: that one the
-    # assistant does emit (:129).
+    # "[TOOL_RESULTS]...[/TOOL_RESULTS]" (:133) and the catalog "[AVAILABLE_TOOLS]" (:123),
+    # so a replay can forge either. "[TOOL_CALLS]" is out: that one the assistant emits (:129).
     r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\])"
-    # Llama-2's system section is a boundary for the same reason [SYSTEM_PROMPT] is:
-    # the template only ever emits it in the first user turn, never in an assistant one.
+    # Llama-2's system section is a boundary for the same reason [SYSTEM_PROMPT] is: the
+    # template only emits it in the first user turn, never an assistant one.
     r"|(?<=<)<(?=/?SYS>>)"
 )
 
 
-# TTS is not a chat template: the codec prompt is built by concatenation, so the text
-# sits between codec delimiters instead of template ones (inference.py:1918, 1948-1954,
-# llama_cpp.py:_TTS_PROMPTS). A closer pasted into it ends the text segment early or
-# opens the audio / global-token segment, which yields truncated or garbled audio (#7066).
-# Per codec, and deliberately NOT the chat sweep: the text here is meant to be SPOKEN, so
-# "please say <s>hello</s>" or "read [INST] literally" has to reach the tokenizer as
-# typed. Only what actually delimits the active codec's prompt, plus its real stop
-# tokens, is structure.
+# TTS is not a chat template: the codec prompt is concatenated, so the text sits between
+# codec delimiters instead of template ones (inference.py:1918, 1948-1954,
+# llama_cpp.py:_TTS_PROMPTS). A pasted closer ends the text segment early or opens the audio
+# / global-token segment, yielding truncated or garbled audio (#7066). Per codec, and
+# deliberately NOT the chat sweep: this text is meant to be SPOKEN, so "please say
+# <s>hello</s>" or "read [INST] literally" must reach the tokenizer as typed. Only the
+# active codec's own delimiters and stop tokens count as structure.
 _TTS_MARKUP_BY_CODEC = {
-    # <custom_token_3>{text}<|eot_id|><custom_token_4>, stop <custom_token_2>. Exactly
-    # those three, not any number: the transformers path spells the same ones as bare ids
+    # <custom_token_3>{text}<|eot_id|><custom_token_4>, stop <custom_token_2>. Those three
+    # only, not any number: the transformers path spells the same ones as bare ids
     # (inference.py:1886-1888), so "say <custom_token_999>" is ordinary text here.
     "snac": re.compile(r"<(?=custom_token_[234]>|\|eot_id\|>)"),
     # <|task_tts|><|start_content|>{text}<|end_content|><|start_global_token|>,
@@ -215,13 +196,12 @@ _TTS_MARKUP_BY_CODEC = {
         r"|global_features_(?:start|end))\|>)"
     ),
     # CSM has no sentinel of its own: _generate_csm interpolates into "[speaker_id]text"
-    # (inference.py:1911-1918) and the processor tokenizes that directly. The only
-    # structure is the leading speaker id, and only in the leading position can a paste
-    # shadow the real one, so nothing else in the text is touched.
+    # (inference.py:1911-1918) and the processor tokenizes that directly. Only the leading
+    # speaker id is structure, and only a leading paste can shadow it.
     "csm": re.compile(r"\A\[(?=\d+\])"),
 }
-# An unrecognised codec gets the union: still far narrower than the chat sweep, but it
-# does not assume a prompt shape this module has not seen.
+# An unrecognised codec gets the union: still far narrower than the chat sweep, but it does
+# not assume a prompt shape this module has not seen.
 _TTS_MARKUP_DEFAULT = re.compile(
     "|".join(f"(?:{pattern.pattern})" for pattern in _TTS_MARKUP_BY_CODEC.values())
 )
@@ -316,23 +296,21 @@ def _neutralize_leaves(
     return done[id(value)]
 
 
-# A media payload stays opaque: it is a URL or a base64 blob the processor resolves, not
-# prompt text, and rewriting one breaks the fetch rather than the prompt. Gated on the
-# part's own type, because "data" and "url" are ordinary content keys on anything else --
-# a "{'type': 'json', 'data': ...}" part is prompt text that Llama-3.1 serializes with
-# tojson, and exempting it unconditionally put the markup straight back in the prompt.
-# "input_image" is in here because the MLX image counter recognises it
-# (mlx_inference.py:130) and the registered VLM renderer passes those messages through
-# this sweep, so its payload is a URL to fetch, not prompt text.
-# Llama-3.1 renders both through one tool-result branch (chat_templates.py:517), and
-# neither resolves media: the content is serialized whole with tojson.
+# A media payload stays opaque: it is a URL or base64 blob the processor resolves, not
+# prompt text, so rewriting one breaks the fetch rather than the prompt. Gated on the part's
+# own type, because "data" and "url" are ordinary content keys on anything else -- a
+# "{'type': 'json', 'data': ...}" part is prompt text Llama-3.1 serializes with tojson, and
+# exempting it unconditionally put the markup straight back in the prompt. "input_image" is
+# here because the MLX image counter recognises it (mlx_inference.py:130) and the registered
+# VLM renderer passes those messages through this sweep.
+# Llama-3.1 renders both roles below through one tool-result branch (chat_templates.py:517),
+# and neither resolves media: the content is serialized whole with tojson.
 _TOOL_RESULT_ROLES = frozenset({"tool", "ipython"})
-# The roles a template actually compares against. A message whose role differs from one of
-# these only by case or padding is canonicalized, so the sweep and the template agree on
-# which turn it is.
+# The roles a template actually compares against. A role differing from one of these only by
+# case or padding is canonicalized, so the sweep and the template agree on the turn.
 # Gemma-4 maps "assistant" onto "model" and leaves an incoming "model" alone
 # (gemma-4.jinja:234), so both name the same replayed turn: they take the boundary subset
-# rather than the full sweep, and they keep the assistant-only structured fields.
+# rather than the full sweep, and keep the assistant-only structured fields.
 _ASSISTANT_ROLES = frozenset({"assistant", "model"})
 _SCHEMA_ROLES = frozenset({"system", "user", "assistant", "tool", "ipython", "developer", "model"})
 _MEDIA_PART_TYPES = frozenset(
@@ -365,9 +343,8 @@ def _neutralize_content_parts(
         if isinstance(part, str):
             parts.append(rewrite(part))
         elif isinstance(part, dict):
-            # isinstance first: GenerateRequest.messages is an untyped List[dict], so
-            # "type" can be a list or a dict and an unhashable value would raise
-            # TypeError out of the set lookup and 500 the request before rendering.
+            # isinstance first: GenerateRequest.messages is an untyped List[dict], so "type"
+            # can be unhashable and the set lookup would 500 the request before rendering.
             part_type = part.get("type")
             if isinstance(part_type, str) and part_type in _MEDIA_PART_TYPES and media_opaque:
                 opaque = {k: v for k, v in part.items() if k in _OPAQUE_PART_KEYS}
@@ -376,9 +353,8 @@ def _neutralize_content_parts(
                 )
                 parts.append({**swept, **opaque} if opaque else swept)
             else:
-                # Every field, not just "text": a part carrying both is still serialized
-                # whole by the tojson templates, so sweeping only "text" left the rest
-                # live (#7066).
+                # Every field, not just "text": the tojson templates serialize the part
+                # whole, so sweeping only "text" left the rest live (#7066).
                 parts.append(_neutralize_leaves(part, rewrite))
         else:
             parts.append(part)
@@ -390,13 +366,12 @@ def _neutralize_content_parts(
             return part["text"]
         return None
 
-    # Which text parts can end up adjacent depends on the renderer. A tool body is
-    # AGGREGATED: gemma-4.jinja:301-306 concatenates every text part into one string and
-    # only then emits the media placeholders, so nothing separates them. A message body is
-    # emitted in LIST ORDER (chat_templates.py:675-680, 843-850, gemma-4.jinja:334-347),
-    # so a genuine media part does sit between the fragments and already stops them
-    # forming a marker; joining across it would also move text to the far side of the
-    # image. A part the renderer simply skips separates nothing either way.
+    # Which text parts end up adjacent depends on the renderer. A tool body is AGGREGATED:
+    # gemma-4.jinja:301-306 concatenates every text part first, then emits the media
+    # placeholders, so nothing separates them. A message body is emitted in LIST ORDER
+    # (chat_templates.py:675-680, 843-850, gemma-4.jinja:334-347), so a genuine media part
+    # sits between the fragments and already stops them forming a marker; joining across it
+    # would also move text past the image. A part the renderer skips separates nothing.
     texts = [_text_of(part) for part in parts]
 
     def _joinable_runs():
@@ -421,13 +396,11 @@ def _neutralize_content_parts(
         trimmed = "".join(texts[index].strip() for index in carriers)
         if rewrite(raw) == raw and rewrite(trimmed) == trimmed:
             continue
-        # Only a run a paste split mid-marker collapses; the joined text lands on the
-        # first carrier so it stays broken whichever way the renderer joins them.
-        # The joined text lands on the first carrier and the rest are emptied rather than
-        # removed. Llama-3.1 renders these roles with "message.content | tojson"
-        # (chat_templates.py:517-523), where the JSON syntax between elements already keeps
-        # the fragments apart, so the list it serializes has to keep its shape; a
-        # concatenating renderer sees the same safe text either way (#7066).
+        # Only a run a paste split mid-marker collapses. The joined text lands on the first
+        # carrier and the rest are emptied, not removed: Llama-3.1 renders these roles with
+        # "message.content | tojson" (chat_templates.py:517-523), where the JSON syntax
+        # between elements already keeps the fragments apart, so the list must keep its
+        # shape; a concatenating renderer sees the same safe text either way (#7066).
         swept = rewrite(trimmed)
         for position, index in enumerate(carriers):
             text = swept if position == 0 else ""
@@ -473,18 +446,17 @@ def _neutralized_arguments(arguments):
         try:
             decoded = json.loads(arguments)
             safe = _neutralize_argument_leaves(decoded)
-        # RecursionError as well as a parse error: json.loads blows the stack at roughly
-        # 1000 levels of nesting, and so does the walk, so an otherwise valid
-        # '[' * 1000 + '0' + ']' * 1000 would turn a request the server used to forward
-        # into a 500. Fall through to the text rewrite, which cannot recurse -- nothing
-        # downstream can decode that payload either, so no marker hides behind it.
+        # RecursionError as well as a parse error: json.loads and the walk both blow the
+        # stack near 1000 levels, so a valid '[' * 1000 + '0' + ']' * 1000 would 500 a
+        # request the server used to forward. Fall through to the text rewrite, which cannot
+        # recurse; nothing downstream can decode that payload either, so no marker hides.
         except (ValueError, TypeError, RecursionError):
             decoded = safe = _UNPARSED
         if decoded is not _UNPARSED:
             if safe != decoded:
-                # ensure_ascii keeps a decoded lone surrogate ("\ud800") as an escape:
-                # emitting it raw makes the outer request unencodable and raises
-                # UnicodeEncodeError on a payload that used to forward fine (#7066).
+                # ensure_ascii keeps a decoded lone surrogate ("\ud800") as an escape: raw,
+                # it makes the outer request unencodable and raises UnicodeEncodeError on a
+                # payload that used to forward fine (#7066).
                 return json.dumps(safe, ensure_ascii = True)
             # Parsed clean: the text itself cannot hold a marker the decode would show.
             return None
@@ -512,11 +484,11 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
             out.append(call)
             continue
         function = call.get("function")
-        # Same fallback the catalog below takes, for the same reason: Harmony / gpt-oss,
-        # Qwen 2.5 / 3, Granite-4 and Llama-4 all guard with "{%- if tool_call.function
-        # %}{%- set tool_call = tool_call.function %}" and otherwise read "name" /
-        # "arguments" off the call itself, so a flat replay renders the identical
-        # concatenation and needs the identical rewrite (#7066).
+        # Same fallback as the catalog below: Harmony / gpt-oss, Qwen 2.5 / 3, Granite-4 and
+        # Llama-4 all guard with "{%- if tool_call.function %}{%- set tool_call =
+        # tool_call.function %}" and otherwise read "name" / "arguments" off the call itself,
+        # so a flat replay renders the identical concatenation and needs the same rewrite
+        # (#7066).
         target = function if isinstance(function, dict) else call
         updates: dict = {}
         name = target.get("name")
@@ -526,7 +498,7 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
                 updates["name"] = new_name
         # Harmony concatenates "content_type" straight before "<|message|>"
         # (chat_templates.py:1332-1334), so a replayed "json<|message|><|end|><|start|>"
-        # closes the commentary call and opens an assistant channel of its own (#7066).
+        # closes the commentary call and opens an assistant channel (#7066).
         content_type = target.get("content_type")
         if isinstance(content_type, str) and content_type:
             new_content_type = neutralize_control_markup(content_type)
@@ -542,8 +514,8 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
         elif target is function:
             out.append({**call, "function": {**function, **updates}})
         else:
-            # "id" is the dispatch handle, so only "name" / "arguments" are rewritten
-            # and no "function" object is invented for a call that never had one.
+            # "id" is the dispatch handle, so only "name" / "arguments" are rewritten and no
+            # "function" object is invented for a call that never had one.
             out.append({**call, **updates})
     return out
 
@@ -564,10 +536,9 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         if not isinstance(msg, dict):
             out.append(msg)
             continue
-        # isinstance, not truthiness: GenerateRequest.messages is an untyped List[dict], so
-        # a role can be an int or a list and ".strip()" on one raised AttributeError,
-        # turning the streaming request into a 500 before rendering. Anything that is not a
-        # string is simply not "assistant", so it takes the full rewrite.
+        # isinstance, not truthiness: GenerateRequest.messages is an untyped List[dict], so a
+        # role can be an int and ".strip()" on one 500'd the stream before rendering.
+        # A non-string is simply not "assistant", so it takes the full rewrite.
         raw_role_value = msg.get("role")
         role = raw_role_value.strip().lower() if isinstance(raw_role_value, str) else ""
         rewrite = (
@@ -577,18 +548,18 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         )
         updates: dict = {}
         dropped_keys: set = set()
-        # The role is rendered, not just dispatched on: Llama-3.1 concatenates it straight
-        # between "<|start_header_id|>" and "<|end_header_id|>", and /generate/stream takes
-        # an untyped list of dicts, so a role of "user<|end_header_id|><|eot_id|>..." forged
-        # an assistant turn even with the content swept (#7066). Neutralized rather than
-        # rejected, so a client using a role this code does not know still works.
+        # The role is rendered, not just dispatched on: Llama-3.1 concatenates it between
+        # "<|start_header_id|>" and "<|end_header_id|>", and /generate/stream takes untyped
+        # dicts, so a role of "user<|end_header_id|><|eot_id|>..." forged an assistant turn
+        # even with the content swept (#7066). Neutralized rather than rejected, so a client
+        # using a role this code does not know still works.
         raw_role = msg.get("role")
         if isinstance(raw_role, str) and raw_role:
             new_role = neutralize_control_markup(raw_role)
-            # "Assistant" and " assistant " mean assistant here but not to a template,
-            # which compares case-sensitively. That gap let a padded spelling take the
-            # lenient assistant treatment while still rendering as an assistant turn, so
-            # a known role is canonicalized and the two agree again (#7066).
+            # "Assistant" and " assistant " mean assistant here but not to a template, which
+            # compares case-sensitively. That gap let a padded spelling take the lenient
+            # assistant treatment while still rendering as one, so a known role is
+            # canonicalized and the two agree again (#7066).
             if role in _SCHEMA_ROLES and new_role != role:
                 new_role = role
             if new_role != raw_role:
@@ -600,15 +571,14 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             new_name = neutralize_control_markup(name)
             if new_name != name:
                 updates["name"] = new_name
-        # A separate reasoning field is the INNER text of a thought block whose opener and
-        # closer the template supplies itself: Qwen wraps it in "<think>...</think>"
-        # (chat_templates.py:759), Gemma-4 in "<|channel>thought ... <channel|>"
-        # (gemma-4.jinja:245), Harmony in "<|channel|>analysis<|message|> ... <|end|>"
-        # (chat_templates.py:1330). None of them is "content", so it was reaching the
-        # prompt unswept, and an embedded closer exits the thought and exposes the rest as
-        # answer text (#7066). Hence the FULL rewrite: unlike replayed "content", which
-        # carries the assistant's own think tags and which Qwen splits on to recover this
-        # very field, the field itself must never contain its enclosing delimiters.
+        # A separate reasoning field is the INNER text of a thought block the template wraps
+        # itself: Qwen in "<think>...</think>" (chat_templates.py:759), Gemma-4 in
+        # "<|channel>thought ... <channel|>" (gemma-4.jinja:245), Harmony in
+        # "<|channel|>analysis<|message|> ... <|end|>" (chat_templates.py:1330). None is
+        # "content", so it reached the prompt unswept, and an embedded closer exits the
+        # thought and exposes the rest as answer text (#7066). Hence the FULL rewrite: unlike
+        # replayed "content", which legitimately carries the assistant's own think tags, this
+        # field must never contain its enclosing delimiters.
         for field in ("reasoning", "reasoning_content", "thinking"):
             value = msg.get(field)
             if isinstance(value, str) and value:
@@ -616,13 +586,13 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 if new_value != value:
                     updates[field] = new_value
         # Gemma-4's legacy assistant-level "tool_responses": format_tool_response_block
-        # renders the name and every leaf of the payload, so markup there closes
-        # "<|tool_response>" and opens a model turn. Tool output, so the full rewrite.
+        # renders the name and every leaf, so markup there closes "<|tool_response>" and
+        # opens a model turn. Tool output, so the full rewrite.
         tool_responses = msg.get("tool_responses")
-        # Gemma-4 reads tool_responses independently of the role (gemma-4.jinja:232-279)
-        # and supplies the real "<|tool_response>" wrapper itself, so a user or system
-        # message carrying one fabricates a trusted observation with no marker in it for
-        # the sweep to catch. Assistant-only, exactly like tool_calls (#7066).
+        # Gemma-4 reads tool_responses independently of the role (gemma-4.jinja:232-279) and
+        # supplies the "<|tool_response>" wrapper itself, so a user or system message
+        # carrying one fabricates a trusted observation with no marker for the sweep to
+        # catch. Assistant-only, exactly like tool_calls (#7066).
         if tool_responses is not None and role not in _ASSISTANT_ROLES:
             logger.warning(
                 "Dropping tool_responses from a %r message: templates wrap it as a tool "
@@ -640,17 +610,17 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             if isinstance(content, str):
                 new_content = rewrite(content)
             elif isinstance(content, dict):
-                # Llama-3.1 serializes mapping content with tojson
-                # (chat_templates.py:127-128), and /generate/stream takes raw dicts, so an
-                # object value reaches the prompt as live structure too (#7066).
+                # Llama-3.1 serializes mapping content with tojson (chat_templates.py:127-128)
+                # and /generate/stream takes raw dicts, so object values reach the prompt as
+                # live structure too (#7066).
                 new_content = _neutralize_leaves(content, rewrite)
             elif isinstance(content, list):
-                # A media part is only opaque where something RESOLVES it. Nothing
-                # resolves one inside a tool result: Studio's vision and audio paths build
-                # from the last user message, while Llama-3.1's tool branch serializes the
-                # whole content iterable with tojson, so an exempt URL there lands in
-                # the prompt as live structure. That branch is keyed on "tool" OR
-                # "ipython" (chat_templates.py:517), so both roles count (#7066).
+                # A media part is only opaque where something RESOLVES it, and nothing does
+                # inside a tool result: Studio's vision and audio paths build from the last
+                # user message, while Llama-3.1's tool branch serializes the whole content
+                # iterable with tojson, so an exempt URL there lands in the prompt as live
+                # structure. That branch keys on "tool" OR "ipython" (chat_templates.py:517),
+                # so both roles count (#7066).
                 is_tool_result = role in _TOOL_RESULT_ROLES
                 new_content = _neutralize_content_parts(
                     content, rewrite, not is_tool_result, aggregated = is_tool_result
@@ -658,11 +628,10 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             if _differs(new_content, content):
                 updates["content"] = new_content
         tool_calls = msg.get("tool_calls")
-        # Llama-3.1 branches on "'tool_calls' in message" BEFORE it looks at the role
-        # (chat_templates.py:487-489) and emits an assistant tool-call turn, so the field
-        # on a user or tool message fabricates assistant history no matter how clean its
-        # own text is. It is assistant-only structure in the OpenAI schema too, so it is
-        # dropped rather than swept when the role is anything else (#7066).
+        # Llama-3.1 branches on "'tool_calls' in message" BEFORE the role
+        # (chat_templates.py:487-489) and emits an assistant tool-call turn, so the field on a
+        # user or tool message fabricates assistant history however clean its text. It is
+        # assistant-only in the OpenAI schema too, so any other role drops it (#7066).
         if tool_calls is not None and role not in _ASSISTANT_ROLES:
             logger.warning(
                 "Dropping tool_calls from a %r message: templates render it as an "
@@ -722,8 +691,8 @@ def neutralize_tool_descriptions(tools):
             )
             changed = True
             continue
-        # Both levels: an OpenAI declaration nests the schema under "function", while an
-        # MCP-shaped one carries "input_schema" on the entry itself.
+        # Both levels: OpenAI nests the schema under "function", MCP carries
+        # "input_schema" on the entry itself.
         unsafe = _unsafe_schema_identifier(_schema_roots(tool) + _schema_roots(target))
         if unsafe is not None:
             logger.warning(
@@ -744,12 +713,11 @@ def neutralize_tool_descriptions(tools):
     return out if changed else tools
 
 
-# The positions in a JSON Schema that are machine-valued rather than descriptive: a
-# property name, an enum or const literal and a required entry are all part of the
-# contract the model is told to satisfy and the controller then forwards verbatim to
-# execute_tool. Rewriting one guides the model to emit the rewritten spelling while the
-# MCP server still expects the original, so the tool breaks. function.name is already
-# dropped for exactly this reason, and these get the same treatment (#7066).
+# The machine-valued rather than descriptive positions in a JSON Schema: a property name, an
+# enum or const literal, a required entry are all part of the contract the model must satisfy
+# and the controller forwards verbatim to execute_tool. Rewriting one makes the model emit
+# the rewritten spelling while the MCP server still expects the original, so the tool breaks.
+# function.name is already dropped for this reason; these get the same treatment (#7066).
 _SCHEMA_KEYED_IDENTIFIERS = frozenset(
     {
         "properties",
@@ -757,18 +725,18 @@ _SCHEMA_KEYED_IDENTIFIERS = frozenset(
         "$defs",
         "definitions",
         # Both dependent* keywords are keyed BY a property name, and dependentRequired's
-        # values are lists of property names as well, so it is checked on both sides below.
-        # "dependencies" is draft-07's spelling of both, so it is keyed and list-valued too.
+        # values are property-name lists too, so it is checked on both sides below.
+        # "dependencies" is draft-07's spelling of both, so keyed and list-valued as well.
         "dependentSchemas",
         "dependentRequired",
         "dependencies",
     }
 )
 _SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired", "dependencies"})
-# "pattern" and "default" belong here for the same reason: a grammar built from the
-# schema forces the model to satisfy the rewritten regex or echo the rewritten default,
-# and the MCP server then validates the original and rejects the call. This is the case
-# the "[ARGS]" comment above already anticipated.
+# "pattern" and "default" belong here for the same reason: a grammar built from the schema
+# forces the model to satisfy the rewritten regex or echo the rewritten default, then the MCP
+# server validates the original and rejects the call. The case the "[ARGS]" comment above
+# anticipated.
 _SCHEMA_VALUED_IDENTIFIERS = frozenset(
     {
         "enum",
@@ -776,10 +744,10 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "required",
         "pattern",
         "default",
-        # A reference is resolved, not read: rewriting "$id", "$anchor" or the "$ref"
-        # that points at them leaves the model and llama-server's grammar working from a
-        # different schema than the MCP server registered. "$ref" can also name an
-        # external URI, which no "$defs" drop would have covered.
+        # A reference is resolved, not read: rewriting "$id", "$anchor" or a "$ref" pointing
+        # at them leaves the model and llama-server's grammar on a different schema than the
+        # MCP server registered. "$ref" can also name an external URI, which no "$defs" drop
+        # would cover.
         "$ref",
         "$id",
         "$anchor",
@@ -813,11 +781,10 @@ def _first_unsafe_leaf(value):
     return None
 
 
-# Where a real JSON Schema starts in a declaration. The semantic scan is anchored to
-# these rather than run over the whole entry, because a declaration also carries vendor
-# extension fields, and a "default" or "properties" key inside one of those is ordinary
-# descriptive text that should be neutralized like any other prose, not a reason to drop
-# the tool.
+# Where a real JSON Schema starts in a declaration. The semantic scan anchors here rather
+# than on the whole entry, because a declaration also carries vendor extension fields, and a
+# "default" or "properties" key inside one of those is ordinary prose to neutralize, not a
+# reason to drop the tool.
 _SCHEMA_ROOT_KEYS = (
     "parameters",
     "input_schema",
@@ -855,10 +822,9 @@ def _unsafe_schema_identifier(value):
                                 ):
                                     return dependent
                 elif key in _SCHEMA_VALUED_IDENTIFIERS:
-                    # Every leaf, not just a top-level string: JSON Schema lets an enum
-                    # entry or a const be any value, so "enum": [["<s>"]] and
-                    # "const": {"tag": "</think>"} are literals the model has to reproduce
-                    # exactly and the leaf rewrite would otherwise quietly re-specify.
+                    # Every leaf, not just a top-level string: an enum entry or const can be
+                    # any value, so "enum": [["<s>"]] and "const": {"tag": "</think>"} are
+                    # literals the model must reproduce exactly.
                     unsafe = _first_unsafe_leaf(item)
                     if unsafe is not None:
                         return unsafe

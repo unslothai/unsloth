@@ -11880,11 +11880,10 @@ class LlamaCppBackend:
                 return False
             return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
 
-        # Sanitized HERE, at construction, rather than at each gate: the controller is
-        # what authorizes execution, and llama-server's structured delta.tool_calls path
-        # reaches prepare_call without passing _enabled_tool_names at all. A tool dropped
-        # for unsafe markup is absent from the prompt, so it has to be absent from the
-        # controller too or it stays executable by name (#7066).
+        # Sanitized at construction, not at each gate: the controller authorizes execution,
+        # and llama-server's structured delta.tool_calls path reaches prepare_call without
+        # _enabled_tool_names at all. A tool dropped for unsafe markup is absent from the
+        # prompt, so it must leave the controller too or it stays executable by name (#7066).
         from core.inference.chat_template_helpers import (
             neutralize_tool_descriptions as _neutralize_tool_descriptions,
         )
@@ -11938,11 +11937,10 @@ class LlamaCppBackend:
                 break
             from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
-            # An MCP server's description and inputSchema are remote text the template
-            # renders into the system turn (#7066). Computed HERE, above the gate, because
-            # a tool dropped for unsafe markup is absent from the prompt and must be
-            # absent from what we are willing to EXECUTE too: otherwise the model can
-            # still name it and the raw gate would let the call through.
+            # An MCP server's description and inputSchema are remote text the template renders
+            # into the system turn (#7066). Computed above the gate: a tool dropped for unsafe
+            # markup is absent from the prompt and must be absent from what we EXECUTE too,
+            # else the model names it and the raw gate lets the call through.
             safe_tools = neutralize_tool_descriptions(active_tools)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
@@ -11960,8 +11958,8 @@ class LlamaCppBackend:
             )
 
             payload = {
-                # Re-run every iteration: tool results land in ``conversation`` as
-                # the loop goes, and a forged turn in one would render for real (#7066).
+                # Re-run every iteration: tool results land in ``conversation`` as the
+                # loop goes, and a forged turn in one would render for real (#7066).
                 "messages": neutralize_control_markup_in_messages(conversation),
                 "stream": True,
                 "stream_options": {"include_usage": True},
@@ -11972,8 +11970,8 @@ class LlamaCppBackend:
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
             }
-            # Same guard as the passthrough builder: if every name carried markup the
-            # catalog is now empty, and "tools": [] would still advertise tool use.
+            # As in the passthrough builder: if every name carried markup the catalog is
+            # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
                 payload["tools"] = safe_tools
                 payload["tool_choice"] = "auto"
@@ -13299,8 +13297,7 @@ class LlamaCppBackend:
         elif isinstance(system, list):
             system_text = _block_text(system)
 
-        # Count the prompt generation actually sends: the chat paths neutralize
-        # first, so counting raw text budgets a prompt nobody uses (#7066).
+        # Count the neutralized prompt: raw text budgets a prompt generation never sends (#7066).
         from core.inference.chat_template_helpers import (
             neutralize_control_markup,
             neutralize_control_markup_in_messages,
@@ -13531,8 +13528,7 @@ class LlamaCppBackend:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
-        # llama-server gets a raw prompt string, not messages, so the codec delimiters
-        # around the text are the only structure there is to break (#7066).
+        # Raw prompt, not messages: codec delimiters are the only structure to break (#7066).
         from core.inference.chat_template_helpers import neutralize_tts_prompt_text
 
         payload: dict = {
