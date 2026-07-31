@@ -23,6 +23,31 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
+# `unsloth studio update` spawns powershell.exe, which is Windows PowerShell 5.1,
+# and the child inherits the caller's PSModulePath. Launched from a PowerShell 7
+# prompt that path leads with PowerShell 7's module directories, which ship their
+# own Microsoft.PowerShell.Security. 5.1 finds that copy first and cannot load it:
+#
+#   The 'Get-ExecutionPolicy' command was found in the module
+#   'Microsoft.PowerShell.Security', but the module could not be loaded.
+#
+# astral's uv installer calls Get-ExecutionPolicy, and Invoke-SetupCommand makes
+# a failure there fatal, so the update stopped with exit 1 and no further output.
+#
+# Prepended, not appended: the problem is precedence, not absence. Clearing the
+# variable so 5.1 rebuilds its default does not help either, because the
+# machine-level value on the windows-latest image also leads with PS7.
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    $_UnslothSystemModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+    if (Test-Path $_UnslothSystemModules) {
+        $_UnslothKept = @(
+            $env:PSModulePath -split ';' |
+                Where-Object { $_ -and ($_ -ne $_UnslothSystemModules) }
+        )
+        $env:PSModulePath = (@($_UnslothSystemModules) + $_UnslothKept) -join ';'
+    }
+}
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
