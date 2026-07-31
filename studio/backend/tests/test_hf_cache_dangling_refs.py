@@ -2160,9 +2160,8 @@ def test_a_whole_canonical_weight_beside_another_root_file_still_serves(tmp_path
 
 
 def test_a_torn_quant_does_not_veto_the_weights_row_beside_it(tmp_path, monkeypatch):
-    """A hybrid repo carries a quant row and a weights row, each with its own payload. The weights
-    row loads model.safetensors and never opens a .gguf, so an interrupted quant download says
-    nothing about it."""
+    """The weights row loads model.safetensors and never opens a .gguf, so an interrupted quant
+    download beside it says nothing about the row."""
     _repo_with(
         tmp_path,
         snapshots = {
@@ -2205,9 +2204,8 @@ def test_a_whole_quant_does_not_vouch_for_the_weights_row_beside_it(tmp_path, mo
 
 
 def test_a_root_weight_under_a_name_the_loader_never_opens_does_not_serve(tmp_path, monkeypatch):
-    """The local-directory chain probes model.safetensors, its index, pytorch_model.bin and its
-    index, and peft resolves only the singular adapter_model.*; every other root name is one
-    nothing opens, however whole it is."""
+    """The loader probes model.safetensors, its index, pytorch_model.bin and its index, and peft
+    only the singular adapter_model.*; every other root name is one nothing opens, however whole."""
     for config, weight in (
         ('{"model_type":"llama"}', "consolidated.safetensors"),
         ('{"model_type":"llama"}', "consolidated.bin"),
@@ -2229,8 +2227,7 @@ def test_a_root_weight_under_a_name_the_loader_never_opens_does_not_serve(tmp_pa
 
 
 def test_a_root_weight_the_loader_never_opens_does_not_veto_the_name_it_does(tmp_path, monkeypatch):
-    """Control for the test above: an unopened name is not evidence either way, so the next name in
-    the chain still decides."""
+    """Control: an unopened name is no evidence, so the next name in the chain still decides."""
     for extra in ({"pytorch_model.bin": b"\0" * 256}, {"model.safetensors": b"\0" * 256}):
         root = tmp_path / next(iter(extra)).replace(".", "_")
         _repo_with(

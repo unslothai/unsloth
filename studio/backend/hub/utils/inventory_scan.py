@@ -1144,8 +1144,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                     root.endswith(suffix)
                     for root in payload.whole[kind] | payload.empty_whole[kind]
                 ):
-                    # A whole root weight under a name the loader never opens, e.g.
-                    # consolidated.safetensors beside no model.safetensors.
+                    # A whole root weight the loader never opens, e.g. consolidated.safetensors.
                     unreachable = True
                 continue
             if all(family in payload.invisible_families for family in families):
@@ -1177,9 +1176,8 @@ def _snapshot_cannot_serve_its_payload(
     ``is_gguf_repo_partial``'s rule: one complete quant or family is enough, and only a file naming
     its own total counts as proof.
 
-    *quants* is the row's own format, since a hybrid repo holds both: True judges quants only, False
-    families only, None takes whichever the snapshot offers. Without it a torn quant vetoes a whole
-    safetensors row, and a whole quant vouches for a torn one.
+    *quants* picks the row's format in a hybrid repo: True quants, False families, None either.
+    Otherwise a torn quant vetoes a whole weights row, and a whole one vouches for a torn family.
     """
     if snapshot_dir is None:
         return False
