@@ -772,8 +772,7 @@ def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
         return set()
 
 
-# The single-file name each loader opens first, from _get_resolved_checkpoint_files. Nothing else
-# under the same suffix is a fallback once one of these exists.
+# The name each loader opens first; nothing else under that suffix is a fallback.
 _LOADER_WEIGHT_NAMES = {
     "base": {".safetensors": "model.safetensors", ".bin": "pytorch_model.bin"},
     "adapter": {".safetensors": "adapter_model.safetensors", ".bin": "adapter_model.bin"},
@@ -993,8 +992,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     unloadable: set = set()
     invisible: set = set()
     for family in groups["base"]:
-        # The loader probes only its canonical index, so a set behind model-copy.safetensors.index
-        # is one it never opens, and cannot stand in for the canonical family either.
+        # Only the canonical index is probed, so a set behind any other name is one it never opens.
         index_path = (
             snapshot_dir / family[0] / f"{_LOADER_WEIGHT_NAMES['base'][family[3]]}.index.json"
         )
@@ -1084,8 +1082,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         for suffix in (".safetensors", ".bin"):
             selected = _LOADER_WEIGHT_NAMES[kind][suffix]
             if selected in payload.empty_whole[kind]:
-                # The loader opens this name first and finds nothing in it, and no other root file
-                # under the same suffix is one it falls back to. Same exemption as below.
+                # The loader opens this name first and finds it empty. Same exemption as below.
                 return kind == wanted or wanted not in payload.ungrouped
             if any(root.endswith(suffix) for root in payload.whole[kind]):
                 # Only the row's own kind proves it loads: a lone adapter_model.bin reads as checkpoint-like.
