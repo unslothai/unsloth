@@ -304,6 +304,8 @@ export interface ApiMonitorEntry {
   model: string;
   prompt?: string;
   reply?: string;
+  // True for API-key callers, not UI sessions: the panel auto-opens off this.
+  via_api_key: boolean;
   prompt_preview: string;
   reply_preview: string;
   prompt_truncated: boolean;
@@ -329,6 +331,9 @@ export interface ApiMonitorEntry {
 
 export interface ApiMonitorResponse {
   status: "idle" | "ready" | "generating";
+  // Server wall clock (seconds) at snapshot, so started_at can be dated without trusting
+  // the browser's clock. Absent on a backend older than the field.
+  server_time?: number;
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;

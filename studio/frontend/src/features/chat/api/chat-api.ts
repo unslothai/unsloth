@@ -31,6 +31,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
@@ -89,10 +90,41 @@ function parseErrorText(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
-async function parseJsonOrThrow<T>(response: Response): Promise<T> {
+/**
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the
+ * request out, which commits the status before the work finishes: a failure found
+ * after that can only arrive in-band, under a 200, as `_deferred_error`.
+ */
+function deferredError(body: unknown): { status: number; message: string } | null {
+  const deferred =
+    body && typeof body === "object"
+      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
+          ._deferred_error
+      : undefined;
+  if (!deferred || typeof deferred !== "object") return null;
+  const status =
+    typeof deferred.status_code === "number" ? deferred.status_code : 500;
+  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+}
+
+/**
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded
+ * routes may, since a truncated body means unfinished there but is legitimate elsewhere.
+ */
+async function parseJsonOrThrow<T>(
+  response: Response,
+  paddedLabel?: string,
+): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(parseErrorText(response.status, body));
+  }
+  const deferred = deferredError(body);
+  if (deferred) {
+    throw new Error(deferred.message);
+  }
+  if (paddedLabel !== undefined) {
+    assertCompletedPaddedBody(body, paddedLabel);
   }
   return body as T;
 }
@@ -127,6 +159,13 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
     `/api/inference/monitor/${encodeURIComponent(id)}`,
   );
   return parseJsonOrThrow<ApiMonitorEntry>(response);
+}
+
+export async function clearApiMonitor(): Promise<void> {
+  const response = await authFetch("/api/inference/monitor", {
+    method: "DELETE",
+  });
+  await parseJsonOrThrow<{ cleared: boolean }>(response);
 }
 
 export interface ActiveGenerationsResponse {
@@ -169,7 +208,7 @@ export async function loadModel(
       nativePathLease: undefined,
     }),
   });
-  return parseJsonOrThrow<LoadModelResponse>(response);
+  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function validateModel(
@@ -267,7 +306,7 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  await parseJsonOrThrow<unknown>(response);
+  await parseJsonOrThrow<unknown>(response, "Model unload");
 }
 
 /**

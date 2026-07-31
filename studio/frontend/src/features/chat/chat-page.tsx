@@ -61,6 +61,7 @@ import {
 } from "@/features/hub/download-manager";
 import {
   type NativeIntent,
+  NativeAttachmentTargetContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useChooseNativeModel,
@@ -2325,6 +2326,11 @@ export function ChatPage({
         ? `compare:${view.pairId}`
         : `project:${view.projectId}`;
 
+  const attachmentScope =
+    view.mode === "single" && !search.thread && !search.new && !search.project
+      ? "single:implicit"
+      : artifactViewKey;
+
   useEffect(() => {
     clearAutoOpenedArtifacts();
     closeArtifactSurface();
@@ -2564,12 +2570,22 @@ export function ChatPage({
     shouldAutoLoad: canAutoLoadPickedNativeModel,
     onAutoLoad: handleNativeModelPickerAutoLoad,
   });
+  // Dropped documents go to the thread bar, which owns the RAG upload and can
+  // materialize a thread id for a chat that hasn't been sent to yet.
+  const handleNativeAttachmentDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
+    attachmentScope,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
+    onAttach: handleNativeAttachmentDrop,
   });
 
   const handleCheckpointChange = useCallback(
@@ -3463,15 +3479,17 @@ export function ChatPage({
           // alive thread's runtime mounted) instead of remounting the provider and cutting
           // it off; returning to that thread reattaches the live run rather than reloading
           // a half-saved one.
-          <SingleContent
-            key={view.projectId ?? "single"}
-            threadId={view.threadId}
-            newThreadNonce={view.newThreadNonce}
-            projectId={view.projectId}
-            artifact={selectedArtifact}
-            artifactSurface={artifactSurface}
-            onCloseArtifact={closeArtifactSurface}
-          />
+          <NativeAttachmentTargetContext.Provider value={artifactViewKey}>
+            <SingleContent
+              key={view.projectId ?? "single"}
+              threadId={view.threadId}
+              newThreadNonce={view.newThreadNonce}
+              projectId={view.projectId}
+              artifact={selectedArtifact}
+              artifactSurface={artifactSurface}
+              onCloseArtifact={closeArtifactSurface}
+            />
+          </NativeAttachmentTargetContext.Provider>
         ) : (
           <CompareContent
             key={view.pairId}

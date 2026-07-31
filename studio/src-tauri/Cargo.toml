@@ -36,6 +36,7 @@ tauri-plugin-window-state = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+signal-hook = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "0.18"

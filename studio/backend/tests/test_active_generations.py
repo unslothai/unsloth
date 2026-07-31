@@ -344,7 +344,7 @@ def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
     from models.inference import LoadRequest
 
     inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
-    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     # Stands in for any preflight refusal; a None here is the route's own 400.
     monkeypatch.setattr(inf_mod.ModelConfig, "from_identifier", staticmethod(lambda **kwargs: None))
 
@@ -375,7 +375,7 @@ def _stub_standard_load_route(monkeypatch):
     _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
     # _stub_load_route neutralises the sidecar guard; this test is about it.
     monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", real_sidecar_check)
-    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     monkeypatch.setattr(inf_mod, "_mlx_distributed_launch_detected", lambda: False)
     monkeypatch.setattr(
         inf_mod.ModelConfig,
@@ -1680,7 +1680,7 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
     from models.inference import LoadRequest
 
     inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
-    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     monkeypatch.setattr(
         inf_mod.ModelConfig,
         "from_identifier",

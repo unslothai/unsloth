@@ -25,6 +25,7 @@ import {
   type UpdateInstallSource,
   UpdateStudioInstructions,
 } from "../components/update-studio-instructions";
+import { loadDesktopAppVersion } from "../desktop-app-version";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 type ApiObject = Record<string, unknown>;
@@ -86,6 +87,7 @@ export function AboutTab() {
   const [installSource, setInstallSource] = useState<
     UpdateInstallSource | "loading"
   >("loading");
+  const [desktopAppVersion, setDesktopAppVersion] = useState<string | null>();
 
   useEffect(() => {
     let canceled = false;
@@ -95,6 +97,14 @@ export function AboutTab() {
         setInstallSource(nextInstallSource);
       }
     });
+    // Left undefined on browser builds so the row stays off entirely.
+    if (isTauri) {
+      loadDesktopAppVersion().then((version) => {
+        if (!canceled) {
+          setDesktopAppVersion(version);
+        }
+      });
+    }
 
     return () => {
       canceled = true;
@@ -128,7 +138,10 @@ export function AboutTab() {
 
       {/* llama.cpp row lives in the shared version section so it sits with the
           Unsloth/Package rows; the prop keeps it About-only (General passes none). */}
-      <StudioVersionSection llamaCppVersion={hw.llamaCpp} />
+      <StudioVersionSection
+        llamaCppVersion={hw.llamaCpp}
+        desktopAppVersion={desktopAppVersion}
+      />
 
       <div ref={updateSectionRef} className="scroll-mt-5">
         <SettingsSection title={t("settings.about.updates")}>

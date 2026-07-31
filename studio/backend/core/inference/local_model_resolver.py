@@ -47,10 +47,18 @@ _WARM_DUTY = 10.0
 
 def _is_abs_path_id(value: str) -> bool:
     """True when an id is an absolute filesystem path (the ./models and LM Studio
-    scanners use the on-disk path as the id) rather than a repo id like org/name."""
-    from pathlib import Path
+    scanners use the on-disk path as the id) rather than a repo id like org/name.
+
+    Both spellings count on every host. Path() follows the running OS, so a
+    Windows backend read "/home/me/x.gguf" as relative and a POSIX one read
+    "C:\\models\\x.gguf" the same way, and either then reached /v1/models as a
+    published id. Ids outlive the machine that wrote them: settings sync, a WSL
+    session and a copied config all carry the other platform's spelling, and the
+    model-override identity already folds both. Neither reading can misfire on a
+    repo id, which has no leading separator, drive or UNC prefix."""
+    from pathlib import PurePosixPath, PureWindowsPath
     try:
-        return Path(value).is_absolute()
+        return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
     except Exception:
         return False
 
