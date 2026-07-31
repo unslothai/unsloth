@@ -84,6 +84,14 @@ def test_each_chat_queue_stays_sequential_and_targets_its_background_runtime():
         "async function targetHasIndexingDocuments(",
     )
     assert "schedulePromptQueueTargetStatePoll(run)" in append
+    indexing_probe = _between(
+        THREAD,
+        "async function targetHasIndexingDocuments(",
+        "function getActivePromptQueueItem(",
+    )
+    assert "const documents = await listThreadDocuments(threadId)" in indexing_probe
+    assert "catch {\n    // A failed status probe" in indexing_probe
+    assert "return true;" in indexing_probe
 
 
 def test_saved_queues_survive_navigation_but_abandoned_temporary_queues_stop():
@@ -319,6 +327,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert (
         side_two.index("acquireCompareModelLifecycle();")
+        < side_two.index("await confirmStopRunningChatsIfNeeded(")
+        < side_two.index("compareStopDecision = currentStopDecision")
         < side_two.index("const status2 = await ensureModelLoaded(model2)")
         < side_two.index("releaseCompareModelLifecycle();")
         < side_two.index("handle2.startRun()")

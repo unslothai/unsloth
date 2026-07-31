@@ -422,7 +422,10 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       (doc) => doc.status === "pending" || doc.status === "running",
     );
   } catch {
-    return item.target.isIndexing();
+    // A failed status probe cannot prove that this thread's documents are
+    // ready. Keep the queued send pending and retry instead of dispatching
+    // without the RAG documents it was explicitly waiting for.
+    return true;
   }
 }
 

@@ -998,7 +998,7 @@ export function SharedComposer({
     }
     if (content.length === 0) return;
 
-    const compareStopDecision = isGeneralizedCompare
+    let compareStopDecision = isGeneralizedCompare
       ? await confirmStopRunningChatsIfNeeded(
           "Loading models for comparison",
           "reload",
@@ -1081,6 +1081,14 @@ export function SharedComposer({
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
+      const compareSelectionNeedsLoad = (sel: CompareModelSelection) => {
+        const currentStore = useChatRuntimeStore.getState();
+        const isAlreadyActive =
+          currentStore.params.checkpoint === sel.id &&
+          (currentStore.activeGgufVariant ?? null) ===
+            (sel.ggufVariant ?? null);
+        return !isAlreadyActive || sel.config != null || loadedFromConfig;
+      };
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -1446,10 +1454,17 @@ export function SharedComposer({
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
           acquireCompareModelLifecycle();
-          const needsLoad =
-            model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
-            (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+          const needsLoad = compareSelectionNeedsLoad(model2);
           if (needsLoad) {
+            const currentStopDecision =
+              await confirmStopRunningChatsIfNeeded(
+                "Loading the second model for comparison",
+                "reload",
+              );
+            if (!currentStopDecision.proceed) {
+              throw new Error("Second comparison model load cancelled.");
+            }
+            compareStopDecision = currentStopDecision;
             toast("Loading Model 2…", {
               id: toastId,
               description: name2,
