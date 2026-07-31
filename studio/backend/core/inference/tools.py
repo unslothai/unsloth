@@ -37,6 +37,7 @@ from core.inference.mcp_client import (
     in_failure_cooloff,
     is_stdio,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
     probe_timeout,
     record_probe_failure,
@@ -7204,6 +7205,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                     headers = parse_server_headers(s),
                     timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                     use_oauth = bool(s.get("use_oauth")),
+                    **oauth_client_kwargs(s),
                 )
                 for s in uncached
             ),
@@ -7347,6 +7349,7 @@ def execute_tool(
             args = arguments,
             timeout = effective_timeout,
             use_oauth = bool(server.get("use_oauth")),
+            **oauth_client_kwargs(server),
             cancel_event = cancel_event,
             scope = mcp_scope,
             config_check = _config_current,

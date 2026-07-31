@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from utils.paths import studio_db_path, ensure_dir
+from storage.mcp_oauth_secret_crypto import (
+    decrypt_client_secret,
+    encrypt_client_secret,
+)
 
 _schema_lock = threading.Lock()
 _schema_ready = False
@@ -23,6 +27,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             headers_json TEXT,
             is_enabled INTEGER NOT NULL DEFAULT 1,
             use_oauth INTEGER NOT NULL DEFAULT 0,
+            oauth_client_id TEXT,
+            oauth_client_secret_encrypted TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -32,6 +38,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
+    if "oauth_client_id" not in cols:
+        conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_id TEXT")
+    if "oauth_client_secret_encrypted" not in cols:
+        conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_secret_encrypted TEXT")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -59,6 +69,8 @@ def create_server(
     headers_json: Optional[str] = None,
     is_enabled: bool = True,
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -67,8 +79,9 @@ def create_server(
             """
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
-                 is_enabled, use_oauth, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 is_enabled, use_oauth, oauth_client_id, oauth_client_secret_encrypted,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -77,6 +90,8 @@ def create_server(
                 headers_json,
                 int(is_enabled),
                 int(use_oauth),
+                oauth_client_id,
+                encrypt_client_secret(oauth_client_secret),
                 now,
                 now,
             ),
@@ -90,6 +105,11 @@ def update_server(id: str, changes: dict) -> bool:
     """Apply column updates and bump ``updated_at``. Returns True on a hit."""
     if not changes:
         return False
+    changes = dict(changes)
+    if "oauth_client_secret" in changes:
+        changes["oauth_client_secret_encrypted"] = encrypt_client_secret(
+            changes.pop("oauth_client_secret")
+        )
     bool_cols = {"is_enabled", "use_oauth"}
     sets, params = [], []
     for col, value in changes.items():
@@ -124,7 +144,13 @@ def get_server(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM mcp_servers WHERE id = ?", (id,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        result["oauth_client_secret"] = decrypt_client_secret(
+            result.pop("oauth_client_secret_encrypted", None)
+        )
+        return result
     finally:
         conn.close()
 
@@ -133,6 +159,13 @@ def list_servers() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["oauth_client_secret"] = decrypt_client_secret(
+                result.pop("oauth_client_secret_encrypted", None)
+            )
+            results.append(result)
+        return results
     finally:
         conn.close()
