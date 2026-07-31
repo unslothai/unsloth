@@ -84,7 +84,6 @@ import {
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts as data (the HunyuanVideo group carries both the 480p and 720p repacks), and the load kind per artifact via loadSpecFor (replacing the old PIPELINE_MODELS table).
 // The picker renders groups with a format second level -- which also surfaces LTX-2.3 in Recommended (its HF pipeline_tag is image-to-video, so the live text-to-video listing missed it).
-// HF pipeline_tag is image-to-video, so the live text-to-video listing missed it).
 const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The distilled model wants very few steps and no guidance; the full base model wants more steps and real CFG.

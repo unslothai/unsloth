@@ -533,7 +533,6 @@ async def start_training(
             # Offloaded to a worker thread: the hook diffusion/video unload() waits on the engines generation locks until an in-flight denoise step hits its cancel callback (and the export subprocess teardown can take seconds), which would otherwise freeze every concurrent status/cancel/UI request. Overlapping starts are serialized by the backend own guard.
             # The diffusion admission is held ACROSS the spawn so the cross-trainer decision is atomic: the _diffusion_training_active() check above is separated from this point by dataset validation and memory coordination, and the diffusion route likewise checks this backend well before it reserves, so two near-simultaneous starts of different types could both pass their checks and train on the same GPU.
             # Entering this context re-tests the diffusion state under the service own lock, and while it is held reserve() refuses -- so exactly one of the two wins.
-            # reserve() refuses -- so exactly one of the two wins.
             with _diffusion_gpu_admission():
                 success = await asyncio.to_thread(
                     backend.start_training,

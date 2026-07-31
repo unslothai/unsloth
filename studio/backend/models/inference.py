@@ -2879,7 +2879,6 @@ class DiffusionInferenceInfoResponse(BaseModel):
 # ── OpenAI-compatible images API (POST /v1/images/generations) ──
 # Shapes mirror OpenAI's CreateImageRequest / ImagesResponse so off-the-shelf clients work unchanged. The loaded image GGUF stands in for the model; GPT-image-only knobs (quality, style, background, output_format, ...) are accepted and ignored, like dall-e-2.
 # The size string is parsed and `stream` rejected in the route; everything Pydantic can check declaratively is here.
-# parsed and `stream` rejected in the route; everything Pydantic can check declaratively is here.
 
 
 class ImageGenerationRequest(BaseModel):

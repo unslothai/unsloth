@@ -103,6 +103,7 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 # only proves the GEMM runs). Measured with the 28-pair prequant accuracy gate on B200:
 #   qwen-image + fp8   -- every frame black (luma 0.0000, SSIM 0.016): Qwen's outliers exceed
 #                         even per-row fp8's range (the same fp8 matches bf16 on Z-Image/FLUX).
+#   qwen-image + mxfp8 -- semantic damage at 1024px (CLIP delta mean 0.0146, worst 0.064/0.102).
 #   qwen-image + nvfp4 -- LPIPS mean 0.51 vs bf16: unusable. int8 dynamic is excellent on Qwen, so auto falls through to it. The deny also applies to an EXPLICIT request (returning None gives the same GGUF fallback).
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),

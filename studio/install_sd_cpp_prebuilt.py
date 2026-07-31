@@ -423,7 +423,6 @@ def install(
     target.mkdir(parents = True, exist_ok = True)
     # Claim ownership BEFORE any partial write (download/extract/cudart fetch below). An interrupted extraction (disk full, killed process, a raising _maybe_fetch_windows_cudart) leaves the target non-empty; without the marker the next lazy install would see it as non-empty-and-unowned and trip the refusal guard above, wedging native install until the user manually deletes the directory.
     # Writing the marker first makes the retry treat this partial install as reclaimable (_may_own) and re-extract over it. Written only when _may_own (empty/new or already ours), so it never adopts a user pre-existing files.
-    # _may_own (empty/new or already ours), so it never adopts a user's pre-existing files.
     if _may_own:
         try:
             marker.touch()

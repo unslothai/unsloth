@@ -678,7 +678,6 @@ _GGML_ABORT = (
 
 def test_server_generation_restarts_on_the_cpu_backend_after_a_ggml_abort(monkeypatch):
     # ggml checks every node against the device supports_op and calls GGML_ABORT when one is not implemented, killing sd-server mid-generation with no per-op CPU fallback. Retrying on the same backend would abort identically, so the load is restarted with --backend cpu and the generation completes (slower) instead of failing.
-    # generation completes (slower) instead of failing.
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers, device = "mps")

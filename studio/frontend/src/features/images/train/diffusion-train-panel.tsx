@@ -60,7 +60,6 @@ import {
 } from "./example-dataset-cards";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info does not report families. When it does, its list wins and these labels/notes fill gaps.
-// when it does, its list wins and these labels/notes fill any gaps.
 type FamilyPreset = {
   name: string;
   label: string;
@@ -107,7 +106,6 @@ const UPLOAD_DATASET = "__upload__";
 // Dense DiT base precisions: they load a dense (bf16) base and quantise/cast it, so the backend rejects them for an already-quantised bnb-4bit repo. "nf4"/"auto" stay valid.
 const DENSE_PRECISIONS = new Set(["bf16", "int8", "fp8", "mxfp8"]);
 // Mirror the backend repo_is_prequantized heuristic: a bitsandbytes 4-bit repo already ships a quantised transformer and cannot serve the dense base precisions. Keep in sync with diffusion_train_common.repo_is_prequantized.
-// base precisions. Kept in sync with diffusion_train_common.repo_is_prequantized.
 function repoIsPrequantized(baseModel: string): boolean {
   const name = baseModel.toLowerCase();
   return (

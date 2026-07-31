@@ -2100,7 +2100,6 @@ export function HubModelPicker({
   );
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit must use a single device, not the multi-GPU sum. Specifically the device the load will land on (the lowest visible ordinal), not the largest one: on a heterogeneous host sizing against the bigger card recommends a checkpoint that then OOMs the smaller card it actually loads onto. Chat keeps the sum (llama.cpp splits layers).
   // The source is picked per row (a GGUF row sizes against the inference GPU, anything else against the system view); this only decides HOW MUCH of that source a row may claim.
-  // against the system view); this only decides HOW MUCH of that source a row may claim.
   const expanderGpuGbFrom = (info: typeof inferenceGpu) =>
     info.available
       ? task

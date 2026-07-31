@@ -1252,7 +1252,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [controlnetCapable, status?.family]);
 
   // The control types offered for the selected ControlNet: a union model advertises several (canny/depth/pose/passthrough), a plain model its own. Falls back to the preprocessing pair when nothing is selected.
-  // to the preprocessing pair when nothing is selected.
   const controlTypeOptions = useMemo(() => {
     const cn = availableControlNets.find((c) => c.id === controlnetId);
     const types = cn?.control_types?.length ? cn.control_types : ["passthrough", "canny"];
