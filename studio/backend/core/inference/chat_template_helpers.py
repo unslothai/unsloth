@@ -361,26 +361,39 @@ _OPAQUE_PART_KEYS = frozenset(
 def _redistribute_swept(texts: list, rewrite):
     """Sweep the joined *texts* and hand each carrier back its own share, or None.
 
-    None when the result would not survive a renderer that trims each part, which happens
-    when the marker's opener is the last character of a carrier: the breaking space then
-    lands at a part boundary and trimming puts the marker back together.
+    Every carrier keeps its own text in its own position: nothing is moved past a
+    neighbour, so a caption still sits on the side of the item it describes.
     """
     swept = rewrite("".join(texts))
-    out: list = []
+    pieces: list = []
+    inserted: list = []
     position = 0
     for text in texts:
-        piece: list = []
+        chars: list = []
+        flags: list = []
         consumed = 0
         while consumed < len(text) and position < len(swept):
-            piece.append(swept[position])
-            if swept[position] == text[consumed]:
+            same = swept[position] == text[consumed]
+            chars.append(swept[position])
+            flags.append(not same)
+            if same:
                 consumed += 1
             position += 1
-        out.append("".join(piece))
+        pieces.append(chars)
+        inserted.append(flags)
     if position < len(swept):
-        out[-1] += swept[position:]
-    if "".join(out) != swept:
-        return None
+        pieces[-1].extend(swept[position:])
+        inserted[-1].extend([True] * (len(swept) - position))
+    # A break landing at the very start of a carrier is stripped by a renderer that trims
+    # each part, which would let the marker re-form. The opener walks forward into the
+    # carrier holding the rest of the marker instead, so the break sits inside one carrier.
+    # Only the marker's own characters move, and only across the split they already
+    # straddle, so no text passes a neighbour (#7066).
+    for index in range(len(pieces) - 1):
+        while pieces[index] and inserted[index + 1] and inserted[index + 1][0]:
+            pieces[index + 1].insert(0, pieces[index].pop())
+            inserted[index + 1].insert(0, inserted[index].pop())
+    out = ["".join(chars) for chars in pieces]
     trimmed = "".join(piece.strip() for piece in out)
     return out if rewrite(trimmed) == trimmed else None
 
@@ -464,9 +477,10 @@ def _neutralize_content_parts(
         # on the wrong side of the item it describes (#7066).
         redistributed = _redistribute_swept([texts[index] for index in carriers], rewrite)
         if redistributed is None:
-            # Opener exactly at a carrier boundary: the breaking space would be leading or
-            # trailing and a renderer that trims each part would let the marker re-form.
-            # Only then is the run collapsed onto its first carrier.
+            # A last resort only: migrating the opener leaves the break inside a carrier for
+            # every split of every marker this module knows, so nothing reaches this today.
+            # It stays because collapsing is safe when redistribution somehow is not, and a
+            # marker that survives a trimming renderer would be worse than reordered text.
             redistributed = [rewrite(trimmed)] + [""] * (len(carriers) - 1)
         for index, text in zip(carriers, redistributed):
             part = parts[index]
@@ -914,6 +928,12 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "$schema",
         "$dynamicRef",
         "$dynamicAnchor",
+        # Draft-2019-09 spells the same recursion "$recursiveRef" / "$recursiveAnchor", and
+        # draft-04 spells "$id" as a bare "id", so a schema in an older dialect has the same
+        # base URI and resolution targets under different names.
+        "$recursiveRef",
+        "$recursiveAnchor",
+        "id",
     }
 )
 
@@ -989,6 +1009,15 @@ def _unsafe_schema_identifier(value):
                                     and neutralize_control_markup(dependent) != dependent
                                 ):
                                     return dependent
+                    # The keys of this map are names, so only its VALUES are subschemas.
+                    # Descending into the map itself would read a property literally named
+                    # "format", "default" or "id" as the keyword of the same name and drop a
+                    # perfectly ordinary tool.
+                    for value in item.values():
+                        if isinstance(value, (dict, list)) and id(value) not in seen:
+                            seen.add(id(value))
+                            stack.append(value)
+                    continue
                 elif key in _SCHEMA_VALUED_IDENTIFIERS:
                     # Every leaf, not just a top-level string: an enum entry or const can be
                     # any value, so "enum": [["<s>"]] and "const": {"tag": "</think>"} are

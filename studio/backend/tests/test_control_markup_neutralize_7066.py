@@ -3830,3 +3830,122 @@ def test_an_unknown_but_safe_role_still_works(role):
     synthesizes a delimiter is touched (#7066)."""
     out = neutralize_control_markup_in_messages([{"role": role, "content": "x"}])[0]
     assert out["role"] == role
+
+
+def test_a_marker_split_at_a_carrier_boundary_keeps_every_position():
+    """The opener migrates forward into the carrier holding the rest of the marker, so the
+    break sits inside one carrier and no text moves past the intervening item. Llama-3.1
+    serializes the list in order with "message.content | tojson"
+    (chat_templates.py:517-523), so a collapse would put later text first (#7066)."""
+    messages = [
+        {
+            "role": "tool",
+            "content": [
+                {"type": "text", "text": "before <"},
+                {"type": "json", "json": {"k": "middle"}},
+                {"type": "text", "text": "|end|> after"},
+            ],
+        }
+    ]
+    out = neutralize_control_markup_in_messages(messages)[0]["content"]
+    assert len(out) == 3 and [p.get("type") for p in out] == ["text", "json", "text"]
+    assert out[2]["text"].endswith(" after"), "later text stays after the json value"
+    assert out[0]["text"] == "before ", "and earlier text stays before it"
+    texts = [p["text"] for p in out if isinstance(p.get("text"), str)]
+    assert "<|end|>" not in "".join(texts)
+    assert "<|end|>" not in "".join(t.strip() for t in texts), "safe under a trimming render"
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["before <", "|end|> after"],
+        ["a<", "|", "end|>b"],
+        ["abc<", "|end|>"],
+        ["before <|end", "|> after"],
+    ],
+)
+def test_every_split_of_a_marker_survives_a_trimming_renderer(texts):
+    """The break must never land at a part boundary, where trimming would strip it and
+    let the marker re-form (#7066)."""
+    parts = [{"type": "text", "text": t} for t in texts]
+    out = neutralize_control_markup_in_messages([{"role": "tool", "content": parts}])[0][
+        "content"
+    ]
+    rendered = [p["text"] for p in out]
+    assert neutralize_control_markup("".join(rendered)) == "".join(rendered)
+    trimmed = "".join(t.strip() for t in rendered)
+    assert neutralize_control_markup(trimmed) == trimmed
+
+
+@pytest.mark.parametrize(
+    "name", ["format", "default", "required", "pattern", "id", "const", "enum", "$ref"]
+)
+def test_a_property_named_like_a_keyword_does_not_drop_its_tool(name):
+    """The keys of a "properties" map are names, not keywords, so a property literally
+    called "format" or "id" must not be read as the keyword of that name (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {name: {"type": "string", "description": "a </think> note"}},
+                },
+            },
+        }
+    ]
+    safe = neutralize_tool_descriptions(tools)
+    assert len(safe) == 1, "an ordinary property name is not a keyword position"
+    described = safe[0]["function"]["parameters"]["properties"][name]["description"]
+    assert "</think>" not in described, "the prose is still swept"
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"type": "object", "properties": {"</think>": {"type": "string"}}},
+        {"type": "object", "properties": {"a": {"required": ["</think>"]}}},
+        {"type": "object", "properties": {"a": {"format": "</think>"}}},
+        {"type": "object", "$defs": {"A": {"required": ["</think>"]}}},
+        {"type": "object", "$defs": {"</think>": {"type": "string"}}},
+    ],
+)
+def test_a_genuine_keyword_position_still_drops_the_tool(parameters):
+    """The name-position carve-out must not reach an actual subschema (#7066)."""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": parameters}}]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"type": "object", "id": "https://example.com/</think>"},
+        {"type": "object", "$recursiveRef": "#/</think>"},
+        {"type": "object", "$recursiveAnchor": "</think>"},
+    ],
+)
+def test_a_legacy_schema_reference_drops_the_tool(parameters):
+    """Draft-04 spells "$id" as a bare "id" and draft-2019-09 spells the recursion
+    "$recursiveRef" / "$recursiveAnchor", so an older dialect has the same base URI and
+    resolution targets under different names (#7066)."""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": parameters}}]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+def test_clean_legacy_schema_references_keep_their_tool():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "id": "https://example.com/schema",
+                    "$recursiveRef": "#",
+                },
+            },
+        }
+    ]
+    assert len(neutralize_tool_descriptions(tools)) == 1
