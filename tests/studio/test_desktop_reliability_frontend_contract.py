@@ -197,6 +197,21 @@ def test_full_app_layout_uses_its_own_initialized_marker():
     assert "hasInitializedAppLayout && hasSavedState" in source
 
 
+def test_first_app_layout_survives_a_stale_setup_window_size():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    minimum_helper = source.split("async function enforceMinimumWindowSize", 1)[1].split(
+        "async function applyAppWindowLayout", 1
+    )[0]
+    app_layout = source.split("async function applyAppWindowLayout", 1)[1].split(
+        "async function showWindowFallback", 1
+    )[0]
+
+    assert "requestedSize.width" in minimum_helper
+    assert "requestedSize.height" in minimum_helper
+    assert "requestedSize = { width: finalW, height: finalH };" in app_layout
+    assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
+
+
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 

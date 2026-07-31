@@ -25,6 +25,8 @@ import {
   listAllDocuments,
   type UploadedDocument,
 } from "@/features/rag";
+import { isTauri } from "@/lib/api-base";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
@@ -189,8 +191,15 @@ function toSortTime(value: string | number | null | undefined): number {
 // Safari and Firefox block window.open after an await (the user gesture is
 // gone), so open a blank tab synchronously and point it at the URL once
 // resolved. A blocked synchronous open is surfaced instead of silently losing
-// the file after the asynchronous URL lookup.
+// the file after the asynchronous URL lookup. The Tauri webview has no
+// window.open at all, so it goes through the OS opener.
 async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
+  if (isTauri) {
+    const url = await resolve();
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+    return;
+  }
   const win = window.open("", "_blank");
   if (!win) {
     throw new Error(
@@ -230,6 +239,45 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
   };
 }
 
+const EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/webm": "webm",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac",
+};
+
+// Name the save after the bytes the route actually returns. Uploaded documents
+// come back as extracted text (TextAttachmentAdapter also wraps it in
+// <attachment name=...>), so text/plain is .txt whatever the upload was called.
+// Managed content parts arrive named "Chat image"/"Chat audio" with no
+// extension at all, which the OS cannot recognise.
+// A dot at index 0 is a dotfile (.env), not an extension: treating it as one
+// would strip the whole name and save a bare ".txt".
+function extensionStart(name: string): number {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? dot : -1;
+}
+
+function savedAttachmentName(name: string, blobType: string): string {
+  const mime = blobType.split(";")[0].trim().toLowerCase();
+  const dot = extensionStart(name);
+  if (mime === "text/plain") {
+    if (name.toLowerCase().endsWith(".txt")) return name;
+    return `${dot === -1 ? name : name.slice(0, dot)}.txt`;
+  }
+  if (dot !== -1) return name;
+  const ext = EXT_BY_MIME[mime];
+  return ext ? `${name}.${ext}` : name;
+}
+
 function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
   const isImage =
     att.type === "image" || Boolean(att.contentType?.startsWith("image/"));
@@ -249,14 +297,27 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
     ) : (
       <FileIconThumb />
     ),
-    open: () =>
-      openResolvedUrl(async () => {
+    // Bearer-gated bytes: no URL the OS can fetch, so desktop saves instead.
+    // The fetch stays inside the resolver on web, where openResolvedUrl must
+    // reach window.open while the click's user activation is still live.
+    open: async () => {
+      if (isTauri) {
+        const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
+        await downloadFile(
+          blob,
+          savedAttachmentName(att.name, blob.type),
+          blob.type || undefined,
+        );
+        return;
+      }
+      await openResolvedUrl(async () => {
         const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
         const url = URL.createObjectURL(blob);
         // Give the new tab time to load the blob before revoking.
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
         return url;
-      }),
+      });
+    },
     remove: async () => {
       await deleteChatAttachment(att.messageId, att.id);
       // Patch any loaded runtime copy so a later repo sync cannot write the
@@ -412,6 +473,7 @@ export function UploadedFilesView() {
     try {
       await row.open();
     } catch (err) {
+      if (isDownloadCancelled(err)) return;
       toast.error("Failed to open file", {
         description: err instanceof Error ? err.message : undefined,
       });

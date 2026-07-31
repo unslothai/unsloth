@@ -521,7 +521,7 @@ export const ja = {
       setupDocs: "セットアップドキュメント:",
       codingAgents: "コーディングエージェント",
       codingAgentsHint: "このサーバーに対してコーディングエージェントを起動します。読み込み済みのモデルを使用します。ローカルサーバーでは API キーが自動的に発行され、リモートサーバーではコマンドに含まれます。",
-      codingAgentsSwap: "claude を codex、openclaw、opencode、hermes、pi に置き換えられます。",
+      codingAgentsSwap: "claude を codex、openclaw、opencode、hermes に置き換えられます。",
       codingAgentDetected: "このマシンにインストール済み",
       codingAgentsDetectedHint: "このマシンで検出されました: {agents}。",
       relativeNever: "なし",

@@ -1,7 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from auth.authentication import get_current_subject
 from core.inference.api_monitor import ApiMonitor, _trim
+import routes.inference as inference_route
+
+
+def _get_monitor(monkeypatch, *, enabled: bool):
+    """Call GET /monitor against a monitor in a known state.
+
+    Swaps the whole singleton rather than poking ``_enabled`` on it: the route
+    reads ``snapshot()``, which does not consult the flag, so a shared monitor
+    carrying rows from an earlier test would leak into the assertions.
+    """
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = enabled))
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    # Dict literal, not `overrides[key] = ...`: verify_import_hoist.py does not
+    # see Load names inside an assignment target and reports the import unused.
+    app.dependency_overrides = {get_current_subject: lambda: "test-user"}
+    return TestClient(app).get("/monitor")
 
 
 def test_api_monitor_tracks_reply_usage_and_context():
@@ -412,3 +433,68 @@ def test_request_rows_report_kind_request():
     monitor = ApiMonitor(max_entries = 2)
     monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi")
     assert monitor.snapshot()[0]["kind"] == "request"
+
+
+# ── stream framing must not depend on the monitor ───────────────────
+
+
+def test_sse_done_detection_accepts_both_spacings():
+    done = inference_route._is_openai_sse_done
+    assert done("data: [DONE]") is True
+    assert done("data:[DONE]") is True
+    assert done('data: {"choices": []}') is False
+    assert done("event: ping") is False
+    assert done("") is False
+
+
+def test_sse_done_detection_is_independent_of_the_monitor():
+    """The external-provider proxy sets ``sent_done`` from the line itself.
+
+    It used to read the monitor helper's return, which is None for every line
+    once recording is off -- so the proxy appended a second [DONE] after the
+    provider's own, changing client-visible framing based on a logging flag.
+    """
+    line = "data: [DONE]"
+    assert inference_route._monitor_openai_sse_line(None, line) is None
+    assert inference_route._is_openai_sse_done(line) is True
+
+
+# ── /monitor route: the disabled state has to reach the UI ──────────
+
+
+def test_monitor_route_reports_enabled(monkeypatch):
+    response = _get_monitor(monkeypatch, enabled = True)
+
+    assert response.status_code == 200
+    assert response.json()["logging_enabled"] is True
+
+
+def test_monitor_route_reports_disabled(monkeypatch):
+    response = _get_monitor(monkeypatch, enabled = False)
+
+    # An empty list on its own is indistinguishable from "no traffic yet", so the
+    # console needs the flag to explain itself instead of claiming idleness.
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["logging_enabled"] is False
+    assert payload["entries"] == []
+
+
+def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
+    """A disabled monitor records nothing, so the route reports an empty list
+    even after traffic that would otherwise have shown up."""
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = False))
+    inference_route.api_monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "test-user",
+    )
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "test-user"}
+    payload = TestClient(app).get("/monitor").json()
+
+    assert payload["logging_enabled"] is False
+    assert payload["entries"] == []
