@@ -913,7 +913,7 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     # The throw carries the cancellation marker, so the sweep stops rather than reopen the dialog.
     assert 'new Error("Model load cancelled.")' in autoload
     assert "unslothUserCancelled: true" in autoload
-    assert "recordTerminalFailure(failureLabel, cancelled)" in autoload
+    assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():
@@ -1271,39 +1271,43 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
 
 
-def test_chat_autoload_records_a_terminal_validation_failure():
-    """canAutoLoad runs validateModel, which prepares the token, so a dismissed dialog or a dead
-    backend throws there rather than from loadModel and the sweep's bare catches would reach the Hub
-    download. Only the two terminal markers are recorded; an ordinary failure stays per-candidate."""
+def test_chat_autoload_records_every_validation_failure():
+    """canAutoLoad runs validateModel, which prepares the token, so a dismissed dialog, a dead
+    backend or a model-specific rejection throws there rather than from loadModel. The sweep's
+    catches are bare, so every rejection has to be recorded or an unrecorded one reads as an empty
+    device and fetches the Hub default. Only a declined dialog ends the sweep."""
     adapter = _read("features/chat/api/chat-adapter.ts")
-    recorder = adapter.split("function recordTerminalFailure", 1)[1]
-    recorder = recorder.split("async function canAutoLoadRecordingTerminalFailures", 1)[0]
-    assert "unslothTransportFailure === true" in recorder
+    recorder = adapter.split("function recordCandidateFailure", 1)[1]
+    recorder = recorder.split("async function canAutoLoadRecordingFailures", 1)[0]
+    # Unconditional: no tag is consulted before recording, so a plain rejection counts too.
+    assert recorder.count("noteLoadFailure(label, error)") == 1
+    assert recorder.index("noteLoadFailure(label, error)") < recorder.index(
+        "unslothUserCancelled === true"
+    ), "recording must not sit behind a marker test"
+    # A declined dialog halts the sweep (retrying reopens it); nothing else does.
     assert "unslothUserCancelled === true" in recorder
-    assert recorder.count("noteLoadFailure(label, error)") == 2
-    # A declined dialog halts the sweep (retrying reopens it); a transport failure does not.
-    assert "autoLoadCancelled = true;" in recorder
-    assert recorder.index("autoLoadCancelled = true;") < recorder.index(
-        "unslothTransportFailure === true"
-    ), "the halt belongs to the cancellation branch, not the transport one"
+    assert recorder.count("autoLoadCancelled = true;") == 1
+    assert recorder.index("unslothUserCancelled === true") < recorder.index(
+        "autoLoadCancelled = true;"
+    ), "the halt belongs to the cancellation branch alone"
     # Rethrown by the wrapper, so the candidate still fails and control flow is unchanged.
-    wrapper = adapter.split("async function canAutoLoadRecordingTerminalFailures", 1)[1]
+    wrapper = adapter.split("async function canAutoLoadRecordingFailures", 1)[1]
     wrapper = wrapper.split("async function loadAutoLoadCandidate", 1)[0]
-    assert "recordTerminalFailure(label, error)" in wrapper
+    assert "recordCandidateFailure(label, error)" in wrapper
     assert "throw error;" in wrapper
     autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
     autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
     # The preflight and the GGUF metadata probe both record, and a cancelled sweep skips the rest.
-    assert "canAutoLoadRecordingTerminalFailures(failureLabel, {" in autoload
-    assert "recordTerminalFailure(failureLabel, error)" in autoload
+    assert "canAutoLoadRecordingFailures(failureLabel, {" in autoload
+    assert "recordCandidateFailure(failureLabel, error)" in autoload
     # The preflight's own cancellation goes through the helper too, or it records without halting.
-    assert "recordTerminalFailure(failureLabel, cancelled)" in autoload
+    assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
     assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
-    """recordTerminalFailure keys on the tag, so an untagged TypeError from a retry reads as a
+    """noteLoadFailure keys on the tag, so an untagged TypeError from a retry reads as a
     rejection: retries reissue through retryWithCurrentToken, so it tags like the first attempt."""
     src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
         encoding = "utf-8"

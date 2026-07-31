@@ -453,3 +453,37 @@ def test_a_complete_cached_row_is_still_attempted():
 
     assert _loaded_paths(out) == [GEMMA_REPO]
     assert out["result"]["loaded"] is True
+
+
+def test_a_rejected_validation_does_not_download_the_default_model():
+    """A cached candidate can be refused by /validate rather than /load, for a stale snapshot
+    load_id or corrupt files. The sweep's catches are bare, so an unrecorded rejection reads as an
+    empty device and fetches a model the user never asked for."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " validate: (p) => p.model_path === GEMMA.repo_id"
+        " ? new Error('snapshot no longer exists') : ({}) })"
+    )
+
+    assert DEFAULT_MODEL not in _loaded_paths(out)
+    assert out["result"]["loaded"] is False
+    assert out["result"]["loadFailureReported"] is True
+    [error] = _toasts(out, "toast.error")
+    assert error["msg"] == "Could not load unsloth/gemma-4-26B-A4B-it-qat-GGUF (UD-Q4_K_XL)"
+    assert "snapshot no longer exists" in error["description"]
+
+
+def test_a_rejected_validation_still_lets_a_later_cached_model_load():
+    """Control for the test above: recording the rejection must not end the sweep, since only a
+    declined token dialog does that."""
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " validate: (p) => p.model_path === 'r1'"
+        " ? new Error('snapshot no longer exists') : ({}) })"
+    )
+
+    assert _loaded_paths(out) == ["r2"]
+    assert out["result"]["loaded"] is True
+    assert _toasts(out, "toast.error") == []

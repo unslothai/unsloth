@@ -1570,25 +1570,19 @@ async function autoLoadSmallestModel(): Promise<{
     return true;
   }
 
-  function recordTerminalFailure(label: string, error: unknown): void {
-    // Only the two terminal markers: an ordinary failure lets the sweep move on.
-    const marker = error as {
-      unslothTransportFailure?: boolean;
-      unslothUserCancelled?: boolean;
-    };
+  function recordCandidateFailure(label: string, error: unknown): void {
+    // Every rejection is recorded: the sweep's catches are bare, so one left unrecorded reads as
+    // "nothing was cached" and fetches the default. Only cancelling ends the sweep.
+    const marker = error as { unslothUserCancelled?: boolean };
+    noteLoadFailure(label, error);
     if (marker?.unslothUserCancelled === true) {
-      noteLoadFailure(label, error);
       // The next candidate would reopen the same dialog, so stop rather than ask per repo. A
       // transport failure deliberately does NOT: the backend can come back mid-sweep.
       autoLoadCancelled = true;
-      return;
-    }
-    if (marker?.unslothTransportFailure === true) {
-      noteLoadFailure(label, error);
     }
   }
 
-  async function canAutoLoadRecordingTerminalFailures(
+  async function canAutoLoadRecordingFailures(
     label: string,
     payload: Parameters<typeof canAutoLoad>[0],
   ): Promise<boolean> {
@@ -1597,7 +1591,7 @@ async function autoLoadSmallestModel(): Promise<{
     } catch (error) {
       // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here,
       // where the sweep's bare catches would drop it and hit the Hub download.
-      recordTerminalFailure(label, error);
+      recordCandidateFailure(label, error);
       throw error;
     }
   }
@@ -1658,7 +1652,7 @@ async function autoLoadSmallestModel(): Promise<{
         const cancelled = Object.assign(new Error("Model load cancelled."), {
           unslothUserCancelled: true,
         });
-        recordTerminalFailure(failureLabel, cancelled);
+        recordCandidateFailure(failureLabel, cancelled);
         throw cancelled;
       }
       isDiffusion = (
@@ -1668,7 +1662,7 @@ async function autoLoadSmallestModel(): Promise<{
           hf_token: preparedToken.token,
         }).catch((error: unknown) => {
           // Same authFetch as validate and load, so a dead backend throws here first.
-          recordTerminalFailure(failureLabel, error);
+          recordCandidateFailure(failureLabel, error);
           throw error;
         })
       ).isDiffusion;
@@ -1703,7 +1697,7 @@ async function autoLoadSmallestModel(): Promise<{
       ? config.chatTemplateOverride
       : null;
     if (
-      !(await canAutoLoadRecordingTerminalFailures(failureLabel, {
+      !(await canAutoLoadRecordingFailures(failureLabel, {
         model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
