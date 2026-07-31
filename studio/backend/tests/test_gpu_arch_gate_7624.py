@@ -38,9 +38,7 @@ class TestInstalledLlamaGfxArchs:
 
     def test_no_marker_is_unknown(self, tmp_path):
         # Source build / custom-linked dir: no marker anywhere above the binary.
-        assert (
-            LlamaCppBackend._installed_llama_gfx_archs(str(tmp_path / "llama-server")) is None
-        )
+        assert LlamaCppBackend._installed_llama_gfx_archs(str(tmp_path / "llama-server")) is None
 
     def test_no_binary_is_unknown(self, monkeypatch):
         monkeypatch.setattr(

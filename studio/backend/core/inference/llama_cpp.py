@@ -3693,9 +3693,7 @@ class LlamaCppBackend:
         targets = marker.get("mapped_targets")
         if not isinstance(targets, list):
             return None
-        archs = frozenset(
-            str(t).split(":")[0].strip().lower() for t in targets if str(t).strip()
-        )
+        archs = frozenset(str(t).split(":")[0].strip().lower() for t in targets if str(t).strip())
         return archs or None
 
     @staticmethod
