@@ -44,6 +44,11 @@ def _assert_env_unset(output: str, name: str) -> None:
     assert needle in output, f"{needle!r} not found in:\n{output}"
 
 
+def _assert_env_cwd(output: str, name: str) -> None:
+    needle = f"$env:{name} = (Get-Location).Path" if os.name == "nt" else f'export {name}="$PWD"'
+    assert needle in output, f"{needle!r} not found in:\n{output}"
+
+
 def _launch_command(output: str) -> list:
     # The --no-launch recipe ends with a self-contained one-liner: inline NAME=value
     # assignments, then the command. Return just the command argv.
@@ -3820,7 +3825,10 @@ def test_write_openclaw_config_corrupt_left_alone(tmp_path, capsys):
     assert "couldn't parse" in capsys.readouterr().err
 
 
-def test_connect_openclaw_no_launch(fake_studio, tmp_path):
+def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "openclaw" in result.output
@@ -3831,30 +3839,59 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path):
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
-    assert config["agents"]["defaults"]["workspace"] == str(
-        tmp_path / "agents" / "openclaw" / "workspace"
-    )
+    assert config["agents"]["defaults"]["skipBootstrap"] is True
+    assert config["agents"]["defaults"]["workspace"] == "${OPENCLAW_WORKSPACE_DIR}"
+    _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
-def test_connect_openclaw_wsl_windows_shim_translates_workspace(fake_studio, tmp_path, monkeypatch):
-    windows_workspace = r"\\wsl.localhost\Ubuntu\tmp\openclaw\workspace"
+def test_connect_openclaw_wsl_windows_shim_translates_live_workspace(
+    fake_studio, tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/openclaw"
     )
-    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_workspace)
-
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
 
     assert result.exit_code == 0, result.output
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
     config = json.loads(config_path.read_text())
-    assert config["agents"]["defaults"]["workspace"] == windows_workspace
-    assert (config_path.parent / "workspace").is_dir()
+    assert config["agents"]["defaults"]["workspace"] == "${OPENCLAW_WORKSPACE_DIR}"
+    _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
+    assert "OPENCLAW_WORKSPACE_DIR/p" in result.output
+    assert "PWD/p" in result.output
+    assert not (config_path.parent / "workspace").exists()
+
+
+def test_connect_openclaw_saved_recipe_workspace_is_not_clobbered(
+    fake_studio, tmp_path, monkeypatch
+):
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+
+    monkeypatch.chdir(project_a)
+    recipe_a = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    monkeypatch.chdir(project_b)
+    recipe_b = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+
+    assert recipe_a.exit_code == 0, recipe_a.output
+    assert recipe_b.exit_code == 0, recipe_b.output
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config = json.loads(config_path.read_text())
+    assert config["agents"]["defaults"]["workspace"] == "${OPENCLAW_WORKSPACE_DIR}"
+    _assert_env_cwd(recipe_a.output, "OPENCLAW_WORKSPACE_DIR")
+    _assert_env_cwd(recipe_b.output, "OPENCLAW_WORKSPACE_DIR")
+    assert str(project_a) not in recipe_a.output
+    assert str(project_b) not in recipe_b.output
 
 
 def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
