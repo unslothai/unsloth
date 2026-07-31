@@ -581,7 +581,6 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
         return False
     try:
         import diffusers
-
         return hasattr(diffusers, fam.pipeline_class)
     except Exception:  # noqa: BLE001 -- no diffusers here: the load path reports it properly
         return True

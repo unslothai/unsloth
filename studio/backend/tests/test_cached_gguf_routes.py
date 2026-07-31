@@ -1995,9 +1995,7 @@ def test_gguf_picker_keeps_a_family_the_native_engine_serves(monkeypatch):
     _pretend_old_diffusers(monkeypatch, engine = ENGINE_SD_CPP)
 
     assert models_route._arch_to_task("flux2", ("unsloth/FLUX.2-klein-4B-GGUF",)) == "text-to-image"
-    assert (
-        models_route._arch_to_task("lumina2", ("unsloth/Z-Image-Turbo-GGUF",)) == "text-to-image"
-    )
+    assert models_route._arch_to_task("lumina2", ("unsloth/Z-Image-Turbo-GGUF",)) == "text-to-image"
 
 
 def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(monkeypatch):
@@ -2053,11 +2051,10 @@ def test_every_shipped_video_family_resolves_on_this_diffusers():
     # model rather than just fail late. Mirrors the image-family loop in the guard test above.
     from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
-
     for fam in _VIDEO_FAMILIES:
-        assert family_pipeline_available(fam), (
-            f"{fam.name}: {fam.pipeline_class} is not in diffusers"
-        )
+        assert family_pipeline_available(
+            fam
+        ), f"{fam.name}: {fam.pipeline_class} is not in diffusers"
 
 
 def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypatch):
@@ -2077,12 +2074,10 @@ def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypa
         for arch, repo_id, filename in picks:
             task = models_route._arch_to_task(arch, (repo_id, filename))
             try:
-                backend.validate_load_request(
-                    repo_id, gguf_filename = filename, model_kind = "gguf"
-                )
+                backend.validate_load_request(repo_id, gguf_filename = filename, model_kind = "gguf")
                 loader_accepts = True
             except (ValueError, FileNotFoundError, RuntimeError):
                 loader_accepts = False
-            assert (task == "text-to-image") == loader_accepts, (
-                f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
-            )
+            assert (
+                (task == "text-to-image") == loader_accepts
+            ), f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"

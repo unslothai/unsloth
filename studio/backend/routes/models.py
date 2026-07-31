@@ -3323,7 +3323,6 @@ def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
     try:
         from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick
-
         for hint in name_hints:
             if not hint:
                 continue
@@ -3343,7 +3342,6 @@ def _video_family_buildable(fam) -> bool:
     the other newer pipelines exist only in a newer diffusers. Fails OPEN on any probe error."""
     try:
         from core.inference.diffusion_families import family_pipeline_available
-
         return family_pipeline_available(fam)
     except Exception:  # noqa: BLE001 -- never hide a model over a probe failure
         return True
@@ -3377,6 +3375,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         # Same shape as the video branch: the arch is shared, so let the family detection the loader itself uses decide, trying each hint separately (a repo id, then a filename).
         from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick, family_gguf_loadable
+
         for hint in name_hints:
             if not hint:
                 continue
@@ -3469,6 +3468,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         try:
             from core.inference.diffusion_engine_router import family_buildable_here
             from core.inference.diffusion_families import detect_family
+
             for needle in _local_family_needles(model):
                 fam = detect_family(needle)
                 if fam is not None:
