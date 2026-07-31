@@ -324,9 +324,7 @@ _TOOL_RESULT_ROLES = frozenset({"tool", "ipython"})
 # The roles a template actually compares against. A message whose role differs from one of
 # these only by case or padding is canonicalized, so the sweep and the template agree on
 # which turn it is.
-_SCHEMA_ROLES = frozenset(
-    {"system", "user", "assistant", "tool", "ipython", "developer", "model"}
-)
+_SCHEMA_ROLES = frozenset({"system", "user", "assistant", "tool", "ipython", "developer", "model"})
 _MEDIA_PART_TYPES = frozenset(
     {"image", "image_url", "input_image", "input_audio", "audio", "audio_url", "video", "video_url"}
 )
@@ -422,9 +420,7 @@ def _neutralize_content_parts(
         dropped.update(carriers[1:])
     if not merged:
         return parts
-    return [
-        merged.get(index, part) for index, part in enumerate(parts) if index not in dropped
-    ]
+    return [merged.get(index, part) for index, part in enumerate(parts) if index not in dropped]
 
 
 def _differs(new, old) -> bool:
