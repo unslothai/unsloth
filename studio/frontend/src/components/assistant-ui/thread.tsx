@@ -3675,9 +3675,7 @@ const ComposerRightControls: FC<{
           className="size-8 rounded-full text-foreground"
           onClick={startDictation}
         >
-          {/* Glyph fills its viewBox, so it reads larger than a lucide icon
-              at the same px. */}
-          <MicIcon className="size-[23px]" />
+          <MicIcon className="size-5" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf
