@@ -208,15 +208,21 @@ export async function refreshContextUsage(options?: {
     // matched: New Chat leaves the outgoing conversation mounted and only voids
     // switchToNewThread(), so until that settles the reader still returns the branch being
     // left, and null === null would price it into the empty chat -- a bare template.
-    const liveBranch =
+    const readOwnBranch = (): readonly ThreadMessage[] | null =>
       capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId === capturedThreadId
-        ? readActiveBranch?.()
+        ? (readActiveBranch?.() ?? null)
         : null;
+
+    const liveBranch = readOwnBranch();
 
     let runMessages: readonly ThreadMessage[];
     // Re-read before publishing, so a turn sent while this count was in flight drops it.
     let countedBranch: string | null = null;
+    // The stored fallback's witness. Storage records and the runtime's own messages are
+    // different shapes, so their content hashes are not comparable; ids survive both, and
+    // the last one moves as soon as a turn is sent or an edit mints a message.
+    let countedLastId: string | null = null;
     if (liveBranch && liveBranch.length > 0) {
       runMessages = liveBranch;
       countedBranch = branchSignature(liveBranch);
@@ -226,6 +232,7 @@ export async function refreshContextUsage(options?: {
       runMessages = orderBySelectedBranch(records).map(
         storedMessageToRunMessage,
       );
+      countedLastId = runMessages.at(-1)?.id ?? "";
     }
 
     // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has
@@ -288,6 +295,18 @@ export async function refreshContextUsage(options?: {
     if (countedBranch != null) {
       const current = readActiveBranch?.();
       if (current != null && branchSignature(current) !== countedBranch) {
+        return;
+      }
+    } else if (countedLastId != null) {
+      // The count priced storage because the runtime had not mounted this thread yet. If it
+      // has since, its last id is the one witness the two shapes share. Only ever the thread
+      // this count belongs to: an empty New Chat still sees the conversation it is leaving.
+      const current = readOwnBranch();
+      if (
+        current != null &&
+        current.length > 0 &&
+        (current.at(-1)?.id ?? "") !== countedLastId
+      ) {
         return;
       }
     }

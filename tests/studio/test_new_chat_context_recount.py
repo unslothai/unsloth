@@ -1147,3 +1147,72 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
     assert (out["cached"] or {}).get("totalTokens") == 62
     assert out["counts"] == 1
     assert len(out["sent"]) == 2, "the thread's stored branch must be priced"
+
+
+@pytest.mark.parametrize(
+    ("mount", "expected_total"),
+    [
+        # The runtime mounted during the count and the user had already sent a turn, so the
+        # stored branch this count priced is a prefix of what the next request will send.
+        (
+            'live = [...stored, { id: "m3", role: "user", createdAt: new Date(3),'
+            ' content: [{ type: "text", text: "and another" }] }];',
+            None,
+        ),
+        # Mounted with the same branch: nothing moved, so the stored count still describes it.
+        ("live = stored.slice();", 62),
+        # Never mounted: there is nothing to compare against and nothing to invalidate.
+        ("", 62),
+    ],
+    ids = ["mounted_with_a_new_turn", "mounted_unchanged", "still_unmounted"],
+)
+def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(
+    mount, expected_total
+):
+    """A recount that falls back to storage runs before the thread is mounted, so it has no
+    live branch to sign. Ids survive both shapes, so the last one is the witness: if the
+    runtime has mounted a different tail by publish time, the stored total is already stale."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage,
+              seed,
+              setActiveBranchReader,
+              snapshot,
+              world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            {TWO_STORED_TURNS}
+            const stored = [
+              {{ id: "m1", role: "user", createdAt: new Date(1), content: [{{ type: "text", text: "hi" }}] }},
+              {{ id: "m2", role: "assistant", createdAt: new Date(2), content: [{{ type: "text", text: "yo" }}] }},
+            ];
+            let live = null;
+            setActiveBranchReader(() => live);
+            seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            {mount}
+            release();
+            await pending;
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              countedLength: world.countedMessages[0]?.length ?? 0,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1, "the count is still attempted"
+    assert out["countedLength"] == 2, "it priced the two stored turns"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a stored total the runtime has since contradicted must not reach the bar"
+        if expected_total is None
+        else "a stored count with nothing contradicting it must still publish"
+    )
