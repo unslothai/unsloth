@@ -1221,9 +1221,15 @@ def test_first_chat_download_uses_terminal_handoff_and_reserved_activation():
             "runFirstChatManagedDownload({",
         )
     )
-    helper = src[src.index("export async function runFirstChatManagedDownload") : src.index("/**\n * Auto-load")]
+    helper = src[
+        src.index("export async function runFirstChatManagedDownload") : src.index(
+            "/**\n * Auto-load"
+        )
+    ]
     assert helper.index("current.modelLoading") < helper.index("current.checkpoint")
-    assert helper.index("const loaded = await deps.loadModel()") < helper.index("deps.isExternalCheckpoint")
+    assert helper.index("const loaded = await deps.loadModel()") < helper.index(
+        "deps.isExternalCheckpoint"
+    )
     assert helper.index("deps.isExternalCheckpoint") < helper.index("deps.publishLoadedModel")
     assert "downloadManager.cancel" not in block
     assert "modelLoading: true, loadingModelPick: defaultPick" in block
@@ -1239,7 +1245,11 @@ def test_download_manager_pending_start_guard_is_exact_and_identity_safe():
     assert "Map<string, Promise<DownloadStartOutcome>>" in pending
     assert ".then(action)" in pending
     assert "pendingStarts.get(key) === pending" in pending
-    guard = transport[transport.index("const startKey = jobKeyOf") : transport.index("export async function requestStart")]
+    guard = transport[
+        transport.index("const startKey = jobKeyOf") : transport.index(
+            "export async function requestStart"
+        )
+    ]
     assert guard.index("pendingStarts.get(startKey)") < guard.index("hasPendingStartForRepo")
     assert guard.index("hasPendingStartForRepo") < guard.index("hasActiveSiblingOrRuntime")
     assert 'job.state === "cancelling" ? "cancelling" : "started"' in transport
