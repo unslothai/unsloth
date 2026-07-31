@@ -32,11 +32,21 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     sed -n '/^_is_studio_root() {/,/^}/p'   "$UNINSTALL_SH"
     sed -n '/^_is_unsafe_root() {/,/^}/p'   "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
+# Both blocks sit inside the main removal function, so they are indented: anchor on optional
+# leading whitespace, never on column 0, or the range matches nothing and every assertion below
+# passes or fails vacuously against a fragment that was never extracted.
 LOOP_FILE=$(mktemp -p "$_TMP_ROOT")
-sed -n '/^_custom_studio_roots | while IFS= read -r _custom_root; do/,/^done/p' "$UNINSTALL_SH" > "$LOOP_FILE"
+sed -n '/^[[:space:]]*_custom_studio_roots | while IFS= read -r _custom_root; do/,/^[[:space:]]*done/p' "$UNINSTALL_SH" > "$LOOP_FILE"
 # The real default-mode ~/.unsloth/stable-diffusion.cpp removal block (marker-guarded).
 DEFAULT_FILE=$(mktemp -p "$_TMP_ROOT")
-sed -n '/^_default_sd_cpp="\$HOME\/\.unsloth\/stable-diffusion\.cpp"/,/^fi/p' "$UNINSTALL_SH" > "$DEFAULT_FILE"
+sed -n '/^[[:space:]]*_default_sd_cpp="\$HOME\/\.unsloth\/stable-diffusion\.cpp"/,/^[[:space:]]*fi/p' "$UNINSTALL_SH" > "$DEFAULT_FILE"
+
+# A silently empty extraction is what made this suite vacuous, so fail loudly instead.
+for _f in "$HELPERS_FILE" "$LOOP_FILE" "$DEFAULT_FILE"; do
+    [ -s "$_f" ] || { echo "FAIL: extracted an empty fragment from $UNINSTALL_SH"; exit 1; }
+done
+grep -q '_remove_path' "$LOOP_FILE" || { echo "FAIL: loop fragment missing _remove_path"; exit 1; }
+grep -q '_remove_path' "$DEFAULT_FILE" || { echo "FAIL: default fragment missing _remove_path"; exit 1; }
 
 # shellcheck disable=SC1090
 . "$HELPERS_FILE"
