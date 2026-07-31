@@ -24,6 +24,7 @@ from utils.models.gguf_metadata import (
 )
 import structlog
 from loggers import get_logger
+import contextlib as _contextlib
 import os
 import re
 import subprocess
@@ -50,11 +51,39 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if an HF offline env var is truthy (canonical strip+lower parse, on/true/yes/1)."""
+    """True if an HF offline env var is truthy (strip+lower, on/true/yes/1).
+
+    An open force_hf_offline window counts even when the env momentarily disagrees: the
+    spawn window restores the user's values, and this gates detect_audio_type's raw
+    requests.get, which the patched hub constant does not cover. Function-local import
+    avoids a cycle; the env parse is the fallback.
+    """
+    try:
+        from utils.utils import hf_env_offline
+        return hf_env_offline()
+    except Exception:
+        pass
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
     )
+
+
+@_contextlib.contextmanager
+def _offline_while_reading(target: Optional[str]):
+    """Force offline while dereferencing a REMOTE model reached from a LOCAL one.
+
+    The load guard stands down for a local LoRA or GGUF, but its base can be a hub repo and
+    the lookups below fetch that base, so a "local" load would resume the retry backoff.
+    No-ops on a local target and refcounts when a window is already open.
+    """
+    try:
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+    except Exception:
+        yield  # guard unavailable (worker context): behave as before
+        return
+    with _hf_offline_if_unreachable_for(target):
+        yield
 
 
 # ── Model size extraction ────────────────────────────────────
@@ -2955,8 +2984,13 @@ class ModelConfig:
                     try:
                         meta = json.loads(meta_path.read_text(encoding = "utf-8-sig"))
                         base = meta.get("base_model")
-                        if base and is_vision_model(base, hf_token = hf_token):
-                            base_is_vision = True
+                        # Only when there IS a base to read: the exporter writes null for
+                        # a non-LoRA checkpoint, and guarding a lookup that never happens
+                        # would make a wholly local load pay the reachability probe.
+                        if base:
+                            with _offline_while_reading(base):
+                                base_is_vision = bool(is_vision_model(base, hf_token = hf_token))
+                        if base_is_vision:
                             logger.info(f"GGUF base model '{base}' is a vision model")
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
@@ -3101,8 +3135,9 @@ class ModelConfig:
         else:
             check_model = identifier
 
-        vision = is_vision_model(check_model, hf_token = hf_token)
-        audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
+        with _offline_while_reading(check_model):
+            vision = is_vision_model(check_model, hf_token = hf_token)
+            audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
         has_audio_in = is_audio_input_type(audio_type_val)
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
