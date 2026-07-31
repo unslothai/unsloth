@@ -149,14 +149,17 @@ _TURN_BOUNDARY_MARKUP = re.compile(
     # one is media the processor was handed none of, failing the Gemma / mllama count check.
     # Never legitimate in a replay, unlike think / channel / tool markup.
     r"|image|audio|video|python_tag"
-    # A tool RESULT is the tool role's structure, so a replay carrying one fabricates a
-    # trusted observation. The tool CALL spellings stay out: those the assistant does emit.
-    r"|tool_response"
+    # A tool RESULT is the tool role's structure and a tool CATALOG is the system's, so a
+    # replay carrying either fabricates trusted context. The tool CALL spellings stay out:
+    # those the assistant does emit. "tool" alone is Phi-4 Mini's catalog wrapper around
+    # .Tools (ollama_template_mappers.py:1022-1029), not its call syntax.
+    r"|tool_response|tool"
     r"|assistant|return|system|start|turn|user|call)\|?>"
     r"|\uff5c(?:User|Assistant|(?:begin|end)\u2581of\u2581sentence)\uff5c>"
     # "/?" as in the control pattern: Gemma's delimiters are bare tags, so a replayed
     # "</start_of_turn>" is as much a boundary as "<start_of_turn>".
-    r"|/?(?:(?:start|end)_of_turn|eos|bos|s|tool_response"
+    # "tools" is the Qwen catalog block around the system turn (chat_templates.py:556-568).
+    r"|/?(?:(?:start|end)_of_turn|eos|bos|s|tool_response|tools"
     r"|start_of_image|image_soft_token|audio_soft_token)>"
     r"|(?:turn|tool_response)\|>"
     r")"
@@ -314,6 +317,33 @@ _OPAQUE_PART_KEYS = frozenset(
 )
 
 
+def _redistribute_swept(texts: list, rewrite):
+    """Sweep the joined *texts* and hand each carrier back its own share, or None.
+
+    None when the result would not survive a renderer that trims each part, which happens
+    when the marker's opener is the last character of a carrier: the breaking space then
+    lands at a part boundary and trimming puts the marker back together.
+    """
+    swept = rewrite("".join(texts))
+    out: list = []
+    position = 0
+    for text in texts:
+        piece: list = []
+        consumed = 0
+        while consumed < len(text) and position < len(swept):
+            piece.append(swept[position])
+            if swept[position] == text[consumed]:
+                consumed += 1
+            position += 1
+        out.append("".join(piece))
+    if position < len(swept):
+        out[-1] += swept[position:]
+    if "".join(out) != swept:
+        return None
+    trimmed = "".join(piece.strip() for piece in out)
+    return out if rewrite(trimmed) == trimmed else None
+
+
 def _neutralize_content_parts(
     content: list,
     rewrite,
@@ -387,14 +417,17 @@ def _neutralize_content_parts(
         trimmed = "".join(texts[index].strip() for index in carriers)
         if rewrite(raw) == raw and rewrite(trimmed) == trimmed:
             continue
-        # Only a run a paste split mid-marker collapses. The joined text lands on the first
-        # carrier and the rest are emptied, not removed: Llama-3.1 renders these roles with
-        # "message.content | tojson" (chat_templates.py:517-523), where the JSON syntax
-        # between elements already keeps the fragments apart, so the list must keep its
-        # shape; a concatenating renderer sees the same safe text either way (#7066).
-        swept = rewrite(trimmed)
-        for position, index in enumerate(carriers):
-            text = swept if position == 0 else ""
+        # Break the marker inside the carrier holding its opener, so each keeps its own
+        # text: Llama-3.1 serializes the list in order with "message.content | tojson"
+        # (chat_templates.py:517-523), so moving text between carriers would put a caption
+        # on the wrong side of the item it describes (#7066).
+        redistributed = _redistribute_swept([texts[index] for index in carriers], rewrite)
+        if redistributed is None:
+            # Opener exactly at a carrier boundary: the breaking space would be leading or
+            # trailing and a renderer that trims each part would let the marker re-form.
+            # Only then is the run collapsed onto its first carrier.
+            redistributed = [rewrite(trimmed)] + [""] * (len(carriers) - 1)
+        for index, text in zip(carriers, redistributed):
             part = parts[index]
             merged[index] = text if isinstance(part, str) else {**part, "text": text}
     if not merged:
@@ -453,7 +486,7 @@ def _neutralized_arguments(arguments):
 
 
 def _neutralize_replayed_tool_call(tool_calls: list) -> list:
-    """Neutralize a replayed tool call's name and arguments, keeping "id" exact.
+    """Neutralize a replayed tool call's name, arguments and id.
 
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
     argument echoing pasted text can close the call block and open a "<|tool_response>" or
@@ -475,6 +508,8 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
         # (#7066).
         target = function if isinstance(function, dict) else call
         updates: dict = {}
+        # The id lives on the call itself in both shapes, never on the nested function.
+        id_updates: dict = {}
         name = target.get("name")
         if isinstance(name, str) and name:
             new_name = neutralize_control_markup(name)
@@ -493,14 +528,23 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
             new_arguments = _neutralized_arguments(arguments)
             if new_arguments is not None:
                 updates["arguments"] = new_arguments
-        if not updates:
+        # Kimi interpolates the id straight between "<|tool_call_begin|>" and
+        # "<|tool_call_argument_begin|>", so an id carrying the closer ends the envelope the
+        # template opened and injects structure after it, with the name and arguments clean
+        # (#7066). Rewritten with the same function as a tool result's "tool_call_id", so a
+        # replayed pair still matches on both sides.
+        call_id = call.get("id")
+        if isinstance(call_id, str) and call_id:
+            new_call_id = neutralize_control_markup(call_id)
+            if new_call_id != call_id:
+                id_updates["id"] = new_call_id
+        if not updates and not id_updates:
             out.append(call)
         elif target is function:
-            out.append({**call, "function": {**function, **updates}})
+            out.append({**call, **id_updates, "function": {**function, **updates}})
         else:
-            # "id" is the dispatch handle, so only "name" / "arguments" are rewritten and no
-            # "function" object is invented for a call that never had one.
-            out.append({**call, **updates})
+            # No "function" object is invented for a call that never had one.
+            out.append({**call, **updates, **id_updates})
     return out
 
 
@@ -549,6 +593,12 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 updates["role"] = new_role
         # Gemma-4 falls back to a tool result's "name" when "tool_call_id" matches no
         # call, concatenating it into the "<|tool_response>" block (#7066).
+        # Same rewrite as the call's "id" above, so a replayed pair still matches.
+        result_id = msg.get("tool_call_id")
+        if isinstance(result_id, str) and result_id:
+            new_result_id = neutralize_control_markup(result_id)
+            if new_result_id != result_id:
+                updates["tool_call_id"] = new_result_id
         name = msg.get("name")
         if role == "tool" and isinstance(name, str) and name:
             new_name = neutralize_control_markup(name)
@@ -712,6 +762,8 @@ _SCHEMA_KEYED_IDENTIFIERS = frozenset(
         "dependentSchemas",
         "dependentRequired",
         "dependencies",
+        # Keyed by vocabulary URI, so its keys are identifiers like a property name.
+        "$vocabulary",
     }
 )
 _SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired", "dependencies"})
@@ -733,6 +785,8 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "$ref",
         "$id",
         "$anchor",
+        # The dialect a validator resolves the whole schema against.
+        "$schema",
         "$dynamicRef",
         "$dynamicAnchor",
     }
