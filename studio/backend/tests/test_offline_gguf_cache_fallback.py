@@ -142,6 +142,7 @@ def clean_offline_env(monkeypatch):
     """Strip ``HF_HUB_OFFLINE`` / ``TRANSFORMERS_OFFLINE`` for the test."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
 
 
 class TestGgufVariantFileResolution:
@@ -819,6 +820,40 @@ class TestDetectGgufFromCache:
 
 
 class TestDetectGgufModelRemoteOffline:
+    def test_unreachable_endpoint_short_circuits_retries(
+        self, hf_cache, clean_offline_env, monkeypatch
+    ):
+        _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+        monkeypatch.setattr(
+            "utils.transformers_version.hf_endpoint_unreachable",
+            lambda timeout = 3: True,
+        )
+
+        def boom(*args, **kwargs):
+            raise AssertionError("API must not be called when endpoint is unreachable")
+
+        with patch("huggingface_hub.model_info", boom):
+            assert detect_gguf_model_remote("unsloth/a") == "a-Q4_K_M.gguf"
+
+    def test_unreachable_endpoint_lists_cached_variants_without_api(
+        self, hf_cache, clean_offline_env, monkeypatch
+    ):
+        _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+        monkeypatch.setattr(
+            "utils.transformers_version.hf_endpoint_unreachable",
+            lambda timeout = 3: True,
+        )
+
+        def boom(*args, **kwargs):
+            raise AssertionError("API must not be called when endpoint is unreachable")
+
+        with patch("huggingface_hub.model_info", boom):
+            variants, has_vision = list_gguf_variants("unsloth/a")
+        assert [variant.filename for variant in variants] == ["a-Q4_K_M.gguf"]
+        assert has_vision is False
+
     def test_offline_env_short_circuits_retries(self, hf_cache, clean_offline_env, monkeypatch):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -842,6 +877,28 @@ class TestDetectGgufModelRemoteOffline:
         ):
             out = detect_gguf_model_remote("unsloth/a")
         assert out == "a-Q4_K_M.gguf"
+
+    def test_transient_timeout_retries_before_success(self, clean_offline_env):
+        calls = 0
+
+        class ReadTimeout(Exception):
+            pass
+
+        def flaky(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise ReadTimeout("temporary timeout")
+            return _types.SimpleNamespace(
+                siblings = [_types.SimpleNamespace(rfilename = "a-Q4_K_M.gguf")]
+            )
+
+        with (
+            patch("huggingface_hub.model_info", flaky),
+            patch("time.sleep", lambda *_: None),
+        ):
+            assert detect_gguf_model_remote("unsloth/a") == "a-Q4_K_M.gguf"
+        assert calls == 3
 
     def test_remote_big_endian_only_repo_is_not_detected(self, clean_offline_env, monkeypatch):
         siblings = [
