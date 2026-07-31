@@ -537,6 +537,58 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     assert all(v.partial for v in unpinned.variants)
 
 
+def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
+    """The pinned snapshot excuses a revision-less signal because it holds that quant whole. A quant
+    it does not hold is still the cancelled download the marker describes, and hiding that leaves it
+    listed as a plain undownloaded row with nothing to resume or delete."""
+    import os
+
+    from hub.utils import download_manifest
+    from hub.utils.gguf import GgufVariantInfo
+
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Quant"
+    pinned, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
+    for path in (pinned, newer):
+        path.mkdir(parents = True)
+    (pinned / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    (newer / "Model-Q8_0-00001-of-00002.gguf").write_bytes(b"\0" * 16)
+    os.utime(pinned, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(
+            hub_cache = active, hf_home = tmp_path, source = "studio", cache_home = tmp_path
+        ),
+    )
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_root",
+        lambda create = False, root = None: (root if root is not None else active),
+    )
+    monkeypatch.setattr(
+        GV,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (
+            [
+                GgufVariantInfo(filename = "Model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 256),
+                GgufVariantInfo(filename = "Model-Q8_0.gguf", quant = "Q8_0", size_bytes = 512),
+            ],
+            False,
+            [],
+        ),
+    )
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache = active)
+
+    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path = str(pinned)))
+    by_quant = {v.quant: v for v in response.variants}
+    assert by_quant["Q4_K_M"].downloaded is True and by_quant["Q4_K_M"].partial is False
+    assert by_quant["Q8_0"].partial is True
+
+
 def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkeypatch, tmp_path):
     """blobs/ is repo-wide and each attempt rewrites it, so a retry's .incomplete belongs to the
     newest snapshot exactly as a cancel marker does. Judging the pinned quant by it hid the one

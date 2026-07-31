@@ -1015,6 +1015,9 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
+        // A folder has no download to resume, so a quant short a shard is not a pick: the load
+        // would ask llama-server for files that are not on disk.
+        const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (
@@ -1022,11 +1025,14 @@ function GgufVariantExpander({
             <button
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
+              disabled={unusableLocal}
               onClick={() =>
                 handleVariantClick(v.quant, v.downloaded, expectedBytes)
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+                unusableLocal &&
+                  "cursor-default opacity-50 hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -1035,7 +1041,11 @@ function GgufVariantExpander({
                 >
                   {v.quant}
                 </span>
-                {v.downloaded ? (
+                {unusableLocal ? (
+                  <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
+                    incomplete
+                  </span>
+                ) : v.downloaded ? (
                   <>
                     <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
                       downloaded

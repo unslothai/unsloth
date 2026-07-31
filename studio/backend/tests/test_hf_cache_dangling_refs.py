@@ -1882,6 +1882,32 @@ def test_an_empty_checkpoint_is_not_a_payload_this_walk_can_excuse(tmp_path, mon
     assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
 
 
+def test_an_empty_diffusion_weight_is_judged_like_an_empty_checkpoint(tmp_path, monkeypatch):
+    """A diffusion .safetensors names no family either, and the walk counts a non-empty one as
+    payload. An empty one has to count the same way, or the newer snapshot holding it wins the
+    selection and the pinned load opens a zero-byte weight."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "diffusion_pytorch_model.safetensors": b"\0" * 256,
+            },
+            NEWER: {
+                "config.json": b'{"model_type":"llama"}',
+                "diffusion_pytorch_model.safetensors": b"",
+            },
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    _age(repo_dir / "snapshots" / OLDER, 600)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
+
+
 def test_a_family_in_a_subdirectory_does_not_stand_in_for_the_root_one(tmp_path, monkeypatch):
     """from_pretrained reads the snapshot root and fails on the index it finds there. It does not
     go looking for an unrelated set under backup/, so that set cannot vouch for the row."""

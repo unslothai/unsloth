@@ -841,6 +841,20 @@ async def get_gguf_variants_response(
         repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
             repo_cache_dir, scan_snapshot_dir
         )
+        # The excuse is that this snapshot holds the quant whole, so it covers only those quants: one
+        # the snapshot does not hold is still the cancelled download the signal describes, and it
+        # needs its resume and delete affordances.
+        excused_quants = (
+            frozenset()
+            if repo_signal_applies or scan_snapshot_dir is None
+            else frozenset(
+                q.lower() for q in (_complete_quants_under(str(scan_snapshot_dir)) or ())
+            )
+        )
+
+        def _repo_signals_apply_to(quant: str) -> bool:
+            return repo_signal_applies or quant.lower() not in excused_quants
+
         # Manifest + marker + main incomplete-blob check: catches variants whose
         # download was cancelled or whose expected shards are missing/undersized.
         for variant in variants:
@@ -862,7 +876,7 @@ async def get_gguf_variants_response(
                     incomplete_blob_hashes = incomplete_hashes,
                     variant_blob_hashes = variant_hashes,
                     repo_cache_dir = repo_cache_dir,
-                    repo_signal_applies = repo_signal_applies,
+                    repo_signal_applies = _repo_signals_apply_to(variant.quant),
                 ):
                     partial_quants.add(variant.quant)
                     partial_quant_transports[variant.quant] = _partial_transport_for_variant(
@@ -876,10 +890,10 @@ async def get_gguf_variants_response(
                 )
         # Same attribution as the main check above: a pinned older snapshot is not judged by the
         # blobs a newer attempt left behind.
-        if incomplete_hashes and repo_signal_applies:
+        if incomplete_hashes:
             for variant in variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())
-                if requirement is None:
+                if requirement is None or not _repo_signals_apply_to(variant.quant):
                     continue
                 # companion_hashes adds the MTP drafter (mmproj_hashes covers
                 # every mmproj precision in the repo, not just the planned one).

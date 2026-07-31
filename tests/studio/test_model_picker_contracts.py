@@ -421,6 +421,16 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "model_path: modelId," not in runtime
 
 
+def test_a_local_quant_short_a_shard_is_not_selectable():
+    """The variants endpoint now reports a local folder's torn quant as partial. A folder has no
+    download to resume, so the row has to say so and refuse the pick rather than send validate and
+    load at files that are not on disk."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "const unusableLocal = isLocalPath && v.partial === true;" in picker
+    assert "disabled={unusableLocal}" in picker
+    assert "incomplete" in picker
+
+
 def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
     """The content-sized section tabs and fixed-width dropdowns must reflow,
     while an oversized tab group must shrink labels but preserve its icons."""

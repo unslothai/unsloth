@@ -913,8 +913,14 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             empty_kind = _weight_family_kind(path.name)
             empty_match = _WEIGHT_SHARD_RE.search(path.name)
             if empty_kind is None:
-                # An ungroupable payload is judged on nothing else, so an empty one must be remembered.
-                if _is_checkpoint_weight_name(name) and not _is_training_artefact_name(name):
+                # An ungroupable payload is judged on nothing else, so an empty one must be
+                # remembered. Same evidence rule as the walk below: a diffusion .safetensors counts
+                # there, so an empty one has to count here.
+                if (
+                    not _is_adapter_weight_name(name)
+                    and not _is_training_artefact_name(name)
+                    and (name.endswith(".safetensors") or _is_checkpoint_weight_name(name))
+                ):
                     empty_ungrouped.add("base")
                 continue
             if empty_match is None:
