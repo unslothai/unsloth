@@ -200,12 +200,17 @@ def _require_node():
         pytest.skip("node not available")
     if not ADAPTER.exists():
         pytest.skip("studio chat sources not present")
-    result = subprocess.run(
-        ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
+    try:
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--version"],
+            capture_output = True,
+            text = True,
+            # A cold Windows runner can take seconds just to start node, and a probe that runs out
+            # of patience means the runtime is unusable here, not that the gate is broken.
+            timeout = 60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("node could not be started")
     if result.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
 
