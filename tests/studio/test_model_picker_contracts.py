@@ -383,7 +383,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
         block = re.search(re.escape(call) + r".*?\n\s*\}", picker, re.S)
         assert block and "loadId," in block.group(0), f"{call} drops the pin"
     assert (
-        'localSource ? { preferLocalCache: true, localPath: localSource } : undefined' in picker
+        "localSource ? { preferLocalCache: true, localPath: localSource } : undefined" in picker
     ), "a downloaded row has to name its own directory or the quant reads as one to download"
     assert "cachePath={c.cache_path}" in picker
 
