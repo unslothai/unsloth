@@ -325,9 +325,7 @@ def _resolve_load_identity(
                 and not hf_cache_scan.snapshot_holds_a_complete_payload(
                     default_snapshot, quants = False
                 )
-                and hf_cache_scan.snapshot_holds_a_complete_payload(
-                    snapshot_path, quants = False
-                )
+                and hf_cache_scan.snapshot_holds_a_complete_payload(snapshot_path, quants = False)
             )
         ):
             load_id = str(snapshot_path)

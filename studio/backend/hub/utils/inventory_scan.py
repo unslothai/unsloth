@@ -607,7 +607,10 @@ def repo_signal_applies_to_snapshot(
 
 
 def _repo_signal_applies_to_snapshot(
-    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path], *, quants: Optional[bool] = None
+    repo_cache_dir: Optional[Path],
+    snapshot_dir: Optional[Path],
+    *,
+    quants: Optional[bool] = None,
 ) -> bool:
     """Whether a repo-wide partial signal describes *snapshot_dir*.
 
@@ -1191,7 +1194,10 @@ def _snapshot_cannot_serve_its_payload(
 
 
 def _recovered_snapshot_cannot_serve(
-    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path], *, quants: Optional[bool] = None
+    repo_cache_dir: Optional[Path],
+    snapshot_dir: Optional[Path],
+    *,
+    quants: Optional[bool] = None,
 ) -> bool:
     """Partial signal for a snapshot the dangling-ref recovery put back on a row.
 
