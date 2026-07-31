@@ -59,6 +59,7 @@ export function ThreadDocumentsBar({
 }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
+  const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -137,7 +138,7 @@ export function ThreadDocumentsBar({
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows.
-    if (ragSource.type === "kb") {
+    if (ragEnabled && ragSource.type === "kb") {
       useNativeIntentStore.getState().takeAttachments(nativeAttachmentTargetKey);
       toast.error("This chat retrieves from a knowledge base", {
         description: "Add these files to the knowledge base instead.",
@@ -148,9 +149,11 @@ export function ThreadDocumentsBar({
       .getState()
       .takeAttachments(nativeAttachmentTargetKey);
     if (intents.length === 0) return;
-    // Dropping a document is the intent; without retrieval on, the file would index
-    // into a bar that renders nothing and never reach a reply.
-    if (!ragEnabled) setRagEnabled(true);
+    // A stale KB preference is inactive while RAG is off; use thread retrieval.
+    if (!ragEnabled) {
+      setRagSource({ type: "thread" });
+      setRagEnabled(true);
+    }
     void upload(
       intents.map((intent) => ({
         kind: "native" as const,
@@ -170,6 +173,7 @@ export function ThreadDocumentsBar({
     ensureThreadId,
     ragEnabled,
     ragSource,
+    setRagSource,
     setRagEnabled,
   ]);
 

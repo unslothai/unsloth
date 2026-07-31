@@ -2326,6 +2326,11 @@ export function ChatPage({
         ? `compare:${view.pairId}`
         : `project:${view.projectId}`;
 
+  const attachmentScope =
+    view.mode === "single" && !search.thread && !search.new && !search.project
+      ? "single:implicit"
+      : artifactViewKey;
+
   useEffect(() => {
     clearAutoOpenedArtifacts();
     closeArtifactSurface();
@@ -2575,6 +2580,7 @@ export function ChatPage({
   );
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
+    attachmentScope,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,

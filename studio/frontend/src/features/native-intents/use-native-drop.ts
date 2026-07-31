@@ -14,6 +14,7 @@ export type NativeModelDropState =
 
 interface NativeModelDropOptions {
   enabled?: boolean;
+  attachmentScope?: string;
   nativePathLeasesSupported: boolean;
   hasActiveModel: boolean;
   isModelLoading: boolean;
@@ -102,7 +103,12 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
               dropped.paths.map(registerNativeAttachmentPath),
             );
             if (disposed) return;
-            await currentOptions.onAttach?.(intents);
+            const latestOptions = optionsRef.current;
+            const attachOptions =
+              latestOptions.attachmentScope === currentOptions.attachmentScope
+                ? latestOptions
+                : currentOptions;
+            await attachOptions.onAttach?.(intents);
           } catch (error) {
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),
