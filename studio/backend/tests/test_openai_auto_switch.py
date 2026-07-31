@@ -3798,7 +3798,11 @@ def test_an_empty_chat_still_renders_a_template(monkeypatch):
     seen = {}
 
     class _FakeResponse:
-        def __init__(self, payload, status_code = 200):
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
             self._payload = payload
             self.status_code = status_code
 
@@ -3815,7 +3819,11 @@ def test_an_empty_chat_still_renders_a_template(monkeypatch):
         def __exit__(self, *_exc):
             return False
 
-        def post(self, url, json = None):
+        def post(
+            self,
+            url,
+            json = None,
+        ):
             body = json or {}
             if url.endswith("/apply-template"):
                 seen["messages"] = body.get("messages")
